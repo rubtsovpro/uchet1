@@ -1,0 +1,17 @@
+[Unit]
+Description=Warehouse WMS (1c.pnevmopodveska1.ru)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/1c_pnevmopodveska1_ru/warehouse
+EnvironmentFile=/etc/warehouse-wms.env
+ExecStart=/usr/bin/node --experimental-sqlite dist/server.js
+TimeoutStartSec=30
+TimeoutStopSec=30
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

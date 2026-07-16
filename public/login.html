@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Анти1С — вход</title>
+  <link rel="icon" href="/logo-anti1c.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css?v=8" />
+</head>
+<body class="auth-body">
+  <div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <img src="/logo-anti1c.svg" width="64" height="64" alt="Анти1С" />
+      <div>
+        <div class="brand">Анти1С</div>
+        <p class="muted">Склад без 1С — вход сотрудников</p>
+      </div>
+    </div>
+
+    <div class="auth-tabs">
+      <button type="button" class="auth-tab active" data-tab="login">Вход</button>
+      <button type="button" class="auth-tab" data-tab="register">Регистрация</button>
+    </div>
+
+    <form id="login-form">
+      <label>Логин или email<input name="username" autocomplete="username" required placeholder="email из Amo или admin" /></label>
+      <label>Пароль<input name="password" type="password" autocomplete="current-password" required /></label>
+      <button type="submit" class="primary">Войти</button>
+    </form>
+
+    <form id="register-form" class="hidden">
+      <p class="muted">Email должен быть в списке персонала (Amo). После регистрации можно входить.</p>
+      <label>Email из Amo<input name="email" type="email" autocomplete="email" required placeholder="name@pnevmopodveska1.ru" /></label>
+      <label>Логин (необязательно)<input name="login" autocomplete="username" placeholder="оставьте пустым — будет из email" /></label>
+      <label>Пароль<input name="password" type="password" autocomplete="new-password" required minlength="6" /></label>
+      <label>Пароль ещё раз<input name="password2" type="password" autocomplete="new-password" required minlength="6" /></label>
+      <button type="submit" class="primary">Зарегистрироваться</button>
+    </form>
+
+    <p class="error" id="err" hidden></p>
+  </div>
+
+  <footer class="taxi-footer auth-footer">
+    <div class="rb-ad" id="rb-ad">
+      <div class="rb-ad-bar">
+        <button type="button" class="rb-ad-toggle" id="rb-ad-toggle" aria-expanded="false" aria-controls="rb-ad-panel" title="Разработка — Rubtsov.pro">
+          <img class="rb-ad-logo" src="/logo-rubtsov.svg" width="118" height="20" alt="rubtsov.pro" />
+          <span class="rb-ad-sep" aria-hidden="true"></span>
+          <span class="rb-ad-tag">CRM · ERP · МП</span>
+          <span class="rb-ad-chev" aria-hidden="true">▴</span>
+        </button>
+        <a class="rb-ad-phone" href="tel:+79291038434">+7 929 103-84-34</a>
+      </div>
+      <div class="rb-ad-panel" id="rb-ad-panel" hidden>
+        <div class="rb-ad-panel-head">
+          <img src="/logo-rubtsov.svg" width="140" height="24" alt="rubtsov.pro" />
+          <p>Автоматизация бизнеса: CRM, ERP, маркетплейсы и Анти1С под ключ</p>
+        </div>
+        <ul class="rb-ad-list">
+          <li>Внедрение amoCRM / Битрикс24 за 5–7 дней</li>
+          <li>Склад и ERP без хаоса 1С — как эта Анти1С</li>
+          <li>Ozon, Wildberries, Авито + интеграции с сайтом</li>
+          <li>100+ проектов · 9 лет опыта</li>
+        </ul>
+        <div class="rb-ad-contacts">
+          <a href="tel:+79291038434">+7 929 103-84-34</a>
+          <a href="mailto:info@rubtsov.pro">info@rubtsov.pro</a>
+          <a href="https://rubtsov.pro/" target="_blank" rel="noopener">rubtsov.pro</a>
+          <a href="https://wa.me/79291038434" target="_blank" rel="noopener">WhatsApp</a>
+        </div>
+        <div class="rb-ad-cta">
+          <a class="rb-ad-btn primary" href="https://rubtsov.pro/" target="_blank" rel="noopener">Бесплатная консультация</a>
+          <a class="rb-ad-btn" href="https://rubtsov.pro/cases/" target="_blank" rel="noopener">Кейсы</a>
+        </div>
+      </div>
+    </div>
+    <span class="taxi-footer-note">Разработка · Rubtsov.pro</span>
+  </footer>
+  </div>
+  <script>
+    const err = document.getElementById('err');
+    const loginForm = document.getElementById('login-form');
+    const registerForm = document.getElementById('register-form');
+    document.querySelectorAll('.auth-tab').forEach((btn) => {
+      btn.onclick = () => {
+        document.querySelectorAll('.auth-tab').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        const reg = btn.dataset.tab === 'register';
+        loginForm.classList.toggle('hidden', reg);
+        registerForm.classList.toggle('hidden', !reg);
+        err.hidden = true;
+      };
+    });
+    async function post(path, body) {
+      const res = await fetch('/api' + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.hidden = true;
+      const fd = new FormData(loginForm);
+      try {
+        await post('/login', {
+          username: fd.get('username'),
+          password: fd.get('password'),
+        });
+        location.href = '/';
+      } catch (ex) {
+        err.hidden = false;
+        err.textContent = ex.message;
+      }
+    });
+    registerForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.hidden = true;
+      const fd = new FormData(registerForm);
+      try {
+        await post('/register', {
+          email: fd.get('email'),
+          login: fd.get('login'),
+          password: fd.get('password'),
+          password2: fd.get('password2'),
+        });
+        location.href = '/';
+      } catch (ex) {
+        err.hidden = false;
+        err.textContent = ex.message;
+      }
+    });
+    (function bindRubtsovAd() {
+      const wrap = document.getElementById('rb-ad');
+      const btn = document.getElementById('rb-ad-toggle');
+      const panel = document.getElementById('rb-ad-panel');
+      if (!wrap || !btn || !panel) return;
+      const setOpen = (open) => {
+        wrap.classList.toggle('open', open);
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        panel.hidden = !open;
+      };
+      btn.addEventListener('click', () => setOpen(panel.hidden));
+      document.addEventListener('click', (e) => {
+        if (!wrap.contains(e.target)) setOpen(false);
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') setOpen(false);
+      });
+    })();
+  </script>
+</body>
+</html>

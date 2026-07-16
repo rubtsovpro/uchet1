@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect x="8" y="8" width="112" height="112" rx="14" fill="#E31C23"/>
+  <text x="64" y="82" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-size="58" font-weight="700" fill="#fff">1С</text>
+  <line x1="18" y1="110" x2="110" y2="18" stroke="#1a1a1a" stroke-width="14" stroke-linecap="round"/>
+  <line x1="18" y1="110" x2="110" y2="18" stroke="#8B0000" stroke-width="8" stroke-linecap="round"/>
+</svg>

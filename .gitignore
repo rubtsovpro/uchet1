@@ -1,0 +1,15 @@
+node_modules/
+data/
+dist/
+*.sqlite
+*.sqlite-*
+.tmp/
+tmp-upload/
+.env
+.env.*
+!.env.example
+deploy/warehouse-wms.service
+deploy/*.local.conf
+*.log
+.DS_Store
+.rubtsov/secrets.json
