@@ -632,6 +632,13 @@ async function renderDashboard() {
   const hs = s.hs || {};
   const media = s.media || {};
   const dicts = s.dicts || {};
+  const disk = s.disk || {};
+  const diskTitle = disk.total_human
+    ? `Сервер ${disk.path || '/'}: свободно ${disk.free_human} из ${disk.total_human} (${disk.free_pct}% free)`
+    : '';
+  const s3Title = disk.s3_quota_human
+    ? `S3 квота ${disk.s3_quota_human}, фото заняли ${disk.media_human}, свободно ~${disk.s3_free_human}`
+    : `Объём фото в S3 (по БД): ${disk.media_human || '—'}`;
   view.innerHTML = formChrome(
     'Начальная страница',
     `
@@ -641,7 +648,14 @@ async function renderDashboard() {
       <span>Характеристики<b>${hs.properties ?? 0}</b></span>
       <span>Цены<b>${hs.prices ?? 0}</b></span>
       <span>Остатки 1С<b>${hs.rests ?? 0}</b></span>
-      <span>Фото S3<b>${media.images ?? 0}</b></span>
+      <span title="${esc(s3Title)}">Фото S3<b>${media.images ?? 0}</b></span>
+      <span title="${esc(s3Title)}">S3 фото<b>${esc(disk.media_human || '—')}</b></span>
+      <span title="${esc(diskTitle)}">Диск свободно<b>${esc(disk.free_human || '—')}</b></span>
+      ${
+        disk.s3_quota_human
+          ? `<span title="${esc(s3Title)}">S3 свободно<b>${esc(disk.s3_free_human || '—')}</b></span>`
+          : ''
+      }
       <span>Ориент.<b>${media.withOrientation ?? 0}</b></span>
       <span>Док. 1С<b>${(s.docs1c && s.docs1c.docs) || 0}</b></span>
       <span>Сделки Amo<b>${(s.crm && s.crm.deals) || 0}</b></span>

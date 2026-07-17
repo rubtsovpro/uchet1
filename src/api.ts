@@ -31,6 +31,7 @@ import {
 } from './auth.js';
 import { auditFromContext, listAudit } from './audit.js';
 import { docsSyncMeta, syncDocsFromOdata } from './docs-sync.js';
+import { diskStats } from './disk.js';
 import {
   dealsMeta,
   getDeal,
@@ -139,6 +140,7 @@ api.get('/stats', (c) => {
     staff: staffMeta(),
     docs1c: docsSyncMeta(),
     crm: dealsMeta(),
+    disk: diskStats(process.env.WMS_DATA_DIR || '/'),
   });
 });
 
