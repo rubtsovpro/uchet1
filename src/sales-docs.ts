@@ -332,16 +332,22 @@ function nextSalesNumber(docType: SalesDocType): string {
 export function listSalesDocs(opts: {
   type?: SalesDocType | '';
   q?: string;
+  dealId?: string;
   limit?: number;
 }) {
   const type = opts.type || '';
   const q = (opts.q || '').trim();
+  const dealId = (opts.dealId || '').trim();
   const limit = Math.min(500, Math.max(1, opts.limit ?? 200));
   const where: string[] = [];
   const params: Array<string | number> = [];
   if (type) {
     where.push('doc_type = ?');
     params.push(type);
+  }
+  if (dealId) {
+    where.push('deal_id = ?');
+    params.push(dealId);
   }
   if (q) {
     where.push(
@@ -361,6 +367,34 @@ export function listSalesDocs(opts: {
      LIMIT ?`,
     params
   );
+}
+
+/** Создать пакет: счёт + заказ-наряд + УПД (и опционально СФ). */
+export function createSalesDocPackFromDeal(input: {
+  dealId: string;
+  types?: SalesDocType[];
+  vatRate?: number;
+  buyerName?: string;
+  buyerInn?: string;
+  createdBy?: string;
+}) {
+  const types = input.types?.length
+    ? input.types
+    : (['invoice', 'workorder', 'upd'] as SalesDocType[]);
+  const docs = [];
+  for (const docType of types) {
+    docs.push(
+      createSalesDocFromDeal({
+        dealId: input.dealId,
+        docType,
+        vatRate: input.vatRate,
+        buyerName: input.buyerName,
+        buyerInn: input.buyerInn,
+        createdBy: input.createdBy,
+      })
+    );
+  }
+  return docs;
 }
 
 export function getSalesDoc(id: string): (Row & { lines: Row[]; org: OrgProfile }) | null {

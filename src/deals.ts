@@ -282,5 +282,14 @@ export function getDeal(id: string) {
       docs.push({ ...m, product_guid: guid, sku: it.sku, product_name: it.name });
     }
   }
-  return { ...deal, items, documents: docs };
+  return {
+    ...deal,
+    items,
+    documents: docs,
+    sales_docs: all(
+      `SELECT id, doc_type, number, doc_date, total, status, created_at
+       FROM sales_docs WHERE deal_id = ? ORDER BY datetime(created_at) DESC`,
+      [id]
+    ),
+  };
 }

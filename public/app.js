@@ -2075,6 +2075,27 @@ async function renderDeals() {
   });
 }
 
+function openSalesPdf(docId) {
+  const url = '/api/sales-docs/' + encodeURIComponent(docId) + '/pdf';
+  const w = window.open(url, '_blank');
+  if (!w) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+}
+
+const SALES_TYPE_LABEL = {
+  invoice: 'Счёт на оплату',
+  upd: 'УПД',
+  sf: 'Счёт-фактура',
+  workorder: 'Заказ-наряд',
+};
+
 async function renderDealDetail(id) {
   const d = await api('/crm/deals/' + id);
   const title = d.name || 'Сделка ' + id;
@@ -2090,6 +2111,7 @@ async function renderDealDetail(id) {
   showForm();
   const items = d.items || [];
   const docs = d.documents || [];
+  const salesDocs = d.sales_docs || [];
   view.innerHTML = formChrome(
     title,
     `
@@ -2105,13 +2127,45 @@ async function renderDealDetail(id) {
       ${d.amo_url ? `<a class="primary" href="${esc(d.amo_url)}" target="_blank" rel="noopener">Открыть в Amo</a>` : ''}
       ${d.print_url ? `<a href="${esc(d.print_url)}" target="_blank" rel="noopener">Печать / PDF (виджет)</a>` : ''}
       <button type="button" id="deal-print">Печать в Учёт №1</button>
-      <button class="primary" type="button" id="deal-invoice">Создать счёт</button>
-      <button class="primary" type="button" id="deal-workorder">Создать заказ-наряд</button>
-      <button class="primary" type="button" id="deal-upd">Создать УПД</button>
-      <button type="button" id="deal-sf">Создать СФ</button>
+      <button class="primary" type="button" id="deal-pack" ${items.length ? '' : 'disabled'} title="Счёт + заказ-наряд + УПД">Создать все документы</button>
+      <button class="primary" type="button" id="deal-invoice" ${items.length ? '' : 'disabled'}>Создать счёт</button>
+      <button class="primary" type="button" id="deal-workorder" ${items.length ? '' : 'disabled'}>Создать заказ-наряд</button>
+      <button class="primary" type="button" id="deal-upd" ${items.length ? '' : 'disabled'}>Создать УПД</button>
+      <button type="button" id="deal-sf" ${items.length ? '' : 'disabled'}>Создать СФ</button>
       <button type="button" id="deal-resync">Обновить сделку</button>
       <span class="muted" id="deal-msg"></span>
     </div>
+    ${
+      items.length
+        ? ''
+        : '<p class="muted" style="margin:8px 0">Чтобы создать счёт / заказ-наряд / УПД, в сделке нужны позиции (товары из виджета amo1c).</p>'
+    }
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Счета, заказ-наряды, УПД (${salesDocs.length})</h3>
+    ${
+      salesDocs.length
+        ? `<table>
+        <thead><tr><th>Тип</th><th>Номер</th><th>Дата</th><th>Сумма</th><th>PDF</th></tr></thead>
+        <tbody>
+          ${salesDocs
+            .map(
+              (sd) => `
+            <tr class="clickable" data-sales="${esc(sd.id)}">
+              <td>${esc(SALES_TYPE_LABEL[sd.doc_type] || sd.doc_type)}</td>
+              <td class="mono"><span class="row-ico"></span>${esc(sd.number)}</td>
+              <td>${esc(String(sd.doc_date || '').slice(0, 10))}</td>
+              <td class="mono">${formatMoney(sd.total)}</td>
+              <td>
+                <a href="/api/sales-docs/${esc(sd.id)}/pdf" target="_blank" rel="noopener" onclick="event.stopPropagation()">открыть</a>
+                ·
+                <a href="/api/sales-docs/${esc(sd.id)}/pdf?download=1" rel="noopener" onclick="event.stopPropagation()">скачать</a>
+              </td>
+            </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>`
+        : '<p class="muted">Документов ещё нет — нажмите «Создать все документы» или отдельно счёт / заказ-наряд / УПД.</p>'
+    }
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Позиции заказа (${items.length})</h3>
     ${
       items.length
@@ -2134,7 +2188,7 @@ async function renderDealDetail(id) {
       </table>`
         : '<p class="muted">Позиций пока нет.</p>'
     }
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Документы PDF</h3>
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">PDF по товарам (номенклатура)</h3>
     ${
       docs.length
         ? `<ul class="doc-list">${docs
@@ -2166,6 +2220,9 @@ async function renderDealDetail(id) {
   view.querySelectorAll('[data-product]').forEach((tr) => {
     tr.onclick = () => renderProductDetail(tr.dataset.product);
   });
+  view.querySelectorAll('[data-sales]').forEach((tr) => {
+    tr.onclick = () => openTab('sales:' + tr.dataset.sales);
+  });
   document.getElementById('deal-print').onclick = () => {
     const area = document.getElementById('deal-print-area');
     area.classList.remove('hidden');
@@ -2196,6 +2253,8 @@ async function renderDealDetail(id) {
   };
   const makeSalesDoc = async (docType) => {
     const msg = document.getElementById('deal-msg');
+    // open blank tab immediately to avoid popup blockers after await
+    const pdfWin = window.open('about:blank', '_blank');
     msg.textContent = 'Создание…';
     try {
       const r = await api('/sales-docs/from-deal', {
@@ -2205,9 +2264,42 @@ async function renderDealDetail(id) {
       const doc = r.doc;
       msg.textContent = 'Создано: ' + (doc.number || '');
       if (doc?.id) {
+        const pdfUrl = '/api/sales-docs/' + encodeURIComponent(doc.id) + '/pdf';
+        if (pdfWin) pdfWin.location = pdfUrl;
+        else openSalesPdf(doc.id);
         openTab('sales:' + doc.id, (doc.number || docType).slice(0, 40));
-        window.open('/api/sales-docs/' + encodeURIComponent(doc.id) + '/pdf', '_blank');
+        // refresh deal card in background so journal list updates when user returns
+        setTimeout(() => {
+          if (state.activeTab === 'deal:' + id) renderDealDetail(id);
+        }, 400);
+      } else if (pdfWin) pdfWin.close();
+    } catch (e) {
+      if (pdfWin) pdfWin.close();
+      msg.textContent = e.message;
+      alert(e.message);
+    }
+  };
+  document.getElementById('deal-pack').onclick = async () => {
+    const msg = document.getElementById('deal-msg');
+    msg.textContent = 'Создание пакета…';
+    try {
+      const r = await api('/sales-docs/pack-from-deal', {
+        method: 'POST',
+        body: JSON.stringify({
+          deal_id: id,
+          types: ['invoice', 'workorder', 'upd'],
+        }),
+      });
+      const docsCreated = r.docs || [];
+      msg.textContent =
+        'Создано: ' + docsCreated.map((x) => x.number).filter(Boolean).join(', ');
+      for (const doc of docsCreated) {
+        if (doc?.id) openSalesPdf(doc.id);
       }
+      if (docsCreated[0]?.id) {
+        openTab('sales:' + docsCreated[0].id, (docsCreated[0].number || '').slice(0, 40));
+      }
+      setTimeout(() => renderDealDetail(id), 300);
     } catch (e) {
       msg.textContent = e.message;
       alert(e.message);
@@ -2218,13 +2310,6 @@ async function renderDealDetail(id) {
   document.getElementById('deal-upd').onclick = () => makeSalesDoc('upd');
   document.getElementById('deal-sf').onclick = () => makeSalesDoc('sf');
 }
-
-const SALES_TYPE_LABEL = {
-  invoice: 'Счёт на оплату',
-  upd: 'УПД',
-  sf: 'Счёт-фактура',
-  workorder: 'Заказ-наряд',
-};
 
 async function renderSalesDocs(docType) {
   const title = SALES_TYPE_LABEL[docType] || 'Документы продаж';
@@ -2237,8 +2322,8 @@ async function renderSalesDocs(docType) {
     title,
     `
     <p class="muted" style="margin:0 0 8px">
-      Создаются из сделки Amo (CRM → Сделки → открыть → «Создать счёт / УПД / СФ»).
-      Печать: «Открыть PDF» или «Скачать PDF» на карточке документа.
+      Журнал «${esc(title)}». Создание: CRM → Сделки → открыть сделку с позициями →
+      «Создать ${esc(title)}» или «Создать все документы». PDF открывается и скачивается с сервера.
     </p>
     <table>
       <thead><tr><th>Номер</th><th>Дата</th><th>Покупатель</th><th>Сделка</th><th>Сумма</th><th>PDF</th></tr></thead>
@@ -2251,23 +2336,28 @@ async function renderSalesDocs(docType) {
             <td class="mono"><span class="row-ico"></span>${esc(d.number)}</td>
             <td>${esc(String(d.doc_date || '').slice(0, 10))}</td>
             <td>${esc(d.counterparty_name || '—')}</td>
-            <td class="mono">${esc(d.deal_id || '—')}</td>
+            <td class="mono">${
+              d.deal_id
+                ? `<a href="#deal" data-deal-link="${esc(d.deal_id)}" onclick="event.stopPropagation()">${esc(d.deal_id)}</a>`
+                : '—'
+            }</td>
             <td class="mono">${formatMoney(d.total)}</td>
             <td>
-              <a href="/api/sales-docs/${esc(d.id)}/pdf" target="_blank" rel="noopener" onclick="event.stopPropagation()">PDF</a>
+              <a href="/api/sales-docs/${esc(d.id)}/pdf" target="_blank" rel="noopener" onclick="event.stopPropagation()">открыть</a>
               ·
               <a href="/api/sales-docs/${esc(d.id)}/pdf?download=1" rel="noopener" onclick="event.stopPropagation()">скачать</a>
             </td>
           </tr>`
             )
             .join('') ||
-          `<tr><td colspan="6" class="muted">Пока пусто — откройте сделку с позициями и нажмите «Создать ${esc(title)}»</td></tr>`
+          `<tr><td colspan="6" class="muted">Пока пусто — откройте сделку с позициями и создайте «${esc(title)}»</td></tr>`
         }
       </tbody>
     </table>`,
     {
       toolbar: `
         <button type="button" id="sales-goto-deals">Сделки Amo</button>
+        <button type="button" id="sales-refresh">Обновить</button>
         <button type="button" id="sales-org">Реквизиты организации</button>
         <div class="grow"></div>
         <div class="find">
@@ -2278,6 +2368,7 @@ async function renderSalesDocs(docType) {
   );
   bindFormChrome(() => showSection('sales'));
   document.getElementById('sales-goto-deals').onclick = () => openTab('deals');
+  document.getElementById('sales-refresh').onclick = () => renderSalesDocs(docType);
   document.getElementById('sales-org').onclick = () => openTab('org');
   document.getElementById('sales-search').onclick = () => {
     state.salesQ = document.getElementById('sales-q').value.trim();
@@ -2291,6 +2382,13 @@ async function renderSalesDocs(docType) {
   };
   view.querySelectorAll('[data-sales]').forEach((tr) => {
     tr.onclick = () => openTab('sales:' + tr.dataset.sales);
+  });
+  view.querySelectorAll('[data-deal-link]').forEach((a) => {
+    a.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openTab('deal:' + a.dataset.dealLink);
+    };
   });
 }
 

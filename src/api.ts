@@ -41,6 +41,7 @@ import {
 } from './deals.js';
 import {
   createSalesDocFromDeal,
+  createSalesDocPackFromDeal,
   getOrgProfile,
   getSalesDoc,
   listSalesDocs,
@@ -226,10 +227,12 @@ api.put('/org-profile', async (c) => {
 api.get('/sales-docs', (c) => {
   const type = (c.req.query('type') || '').trim() as SalesDocType | '';
   const q = (c.req.query('q') || '').trim();
+  const dealId = (c.req.query('deal_id') || '').trim();
   const items = listSalesDocs({
     type:
       type === 'invoice' || type === 'upd' || type === 'sf' || type === 'workorder' ? type : '',
     q,
+    dealId: dealId || undefined,
   });
   return c.json({
     items,
@@ -307,6 +310,50 @@ api.post('/sales-docs/from-deal', async (c) => {
     return c.json({ ok: true, doc });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
+  }
+});
+
+/** Пакет: счёт + заказ-наряд + УПД за один запрос. */
+api.post('/sales-docs/pack-from-deal', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав на документы' }, 403);
+  }
+  const body = await c.req.json().catch(() => ({})) as {
+    deal_id?: string;
+    types?: string[];
+    vat_rate?: number;
+    buyer_name?: string;
+    buyer_inn?: string;
+  };
+  const dealId = String(body.deal_id || '').trim();
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  const allowed = new Set(['invoice', 'upd', 'sf', 'workorder']);
+  const types = (body.types || [])
+    .map((t) => String(t).trim())
+    .filter((t): t is SalesDocType => allowed.has(t));
+  try {
+    const docs = createSalesDocPackFromDeal({
+      dealId,
+      types: types.length ? types : undefined,
+      vatRate: body.vat_rate,
+      buyerName: body.buyer_name,
+      buyerInn: body.buyer_inn,
+      createdBy: actor?.login || actor?.name || '',
+    });
+    for (const doc of docs) {
+      if (!doc) continue;
+      auditFromContext(c, {
+        action: 'sales_doc.create',
+        entity: 'sales_doc',
+        entityId: String(doc.id || ''),
+        summary: `${salesDocTypeLabel(doc.doc_type as SalesDocType)} из сделки ${dealId} (пакет)`,
+        after: { id: doc.id, number: doc.number, total: doc.total },
+      });
+    }
+    return c.json({ ok: true, docs: docs.filter(Boolean) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'create pack failed' }, 400);
   }
 });
 
