@@ -2112,6 +2112,12 @@ async function renderDealDetail(id) {
   const items = d.items || [];
   const docs = d.documents || [];
   const salesDocs = d.sales_docs || [];
+  const payments = d.payments || [];
+  const fiscal = d.fiscal_receipts || [];
+  const isLegal = !!(d.is_legal_entity || d.buyer_kind === 'legal' || String(d.buyer_inn || '').replace(/\D/g, '').length === 10);
+  const buyerLabel = [d.buyer_name || d.company_name, d.buyer_inn ? 'ИНН ' + d.buyer_inn : '', isLegal ? 'юрлицо' : d.buyer_kind === 'ip' ? 'ИП' : 'физлицо']
+    .filter(Boolean)
+    .join(' · ');
   view.innerHTML = formChrome(
     title,
     `
@@ -2121,17 +2127,30 @@ async function renderDealDetail(id) {
       <label>Воронка<input value="${esc(d.pipeline_name || '—')}" readonly /></label>
       <label>Статус<input value="${esc(d.status_name || '—')}" readonly /></label>
       <label>Отдел / база<input value="${esc(d.department || '—')}" readonly /></label>
+      <label>Покупатель<input value="${esc(buyerLabel || '—')}" readonly /></label>
       <label>В 1С<input value="${esc(d.queued_to_1c ? 'Да · ' + (d.queue_status || '') + (d.queued_by ? ' · ' + d.queued_by : '') : 'Нет')}" readonly /></label>
     </div>
     <div class="toolbar">
       ${d.amo_url ? `<a class="primary" href="${esc(d.amo_url)}" target="_blank" rel="noopener">Открыть в Amo</a>` : ''}
       ${d.print_url ? `<a href="${esc(d.print_url)}" target="_blank" rel="noopener">Печать / PDF (виджет)</a>` : ''}
       <button type="button" id="deal-print">Печать в Учёт №1</button>
-      <button class="primary" type="button" id="deal-pack" ${items.length ? '' : 'disabled'} title="Счёт + заказ-наряд + УПД">Создать все документы</button>
-      <button class="primary" type="button" id="deal-invoice" ${items.length ? '' : 'disabled'}>Создать счёт</button>
-      <button class="primary" type="button" id="deal-workorder" ${items.length ? '' : 'disabled'}>Создать заказ-наряд</button>
-      <button class="primary" type="button" id="deal-upd" ${items.length ? '' : 'disabled'}>Создать УПД</button>
+      <button class="primary" type="button" id="deal-qr" ${Number(d.price) > 0 ? '' : 'disabled'}>QR оплата</button>
+      ${
+        isLegal
+          ? `<button class="primary" type="button" id="deal-invoice" ${items.length ? '' : 'disabled'}>Счёт для юрлица</button>`
+          : ''
+      }
+      <button type="button" id="deal-pack" ${items.length ? '' : 'disabled'} title="Счёт + заказ-наряд + УПД">Создать все документы</button>
+      ${
+        isLegal
+          ? ''
+          : `<button type="button" id="deal-invoice" ${items.length ? '' : 'disabled'}>Создать счёт</button>`
+      }
+      <button type="button" id="deal-workorder" ${items.length ? '' : 'disabled'}>Создать заказ-наряд</button>
+      <button type="button" id="deal-upd" ${items.length ? '' : 'disabled'}>Создать УПД</button>
       <button type="button" id="deal-sf" ${items.length ? '' : 'disabled'}>Создать СФ</button>
+      <button type="button" id="deal-fiscal-advance">Чек 1 (предоплата)</button>
+      <button type="button" id="deal-fiscal-full">Чек 2 (полный)</button>
       <button type="button" id="deal-resync">Обновить сделку</button>
       <span class="muted" id="deal-msg"></span>
     </div>
@@ -2139,6 +2158,56 @@ async function renderDealDetail(id) {
       items.length
         ? ''
         : '<p class="muted" style="margin:8px 0">Чтобы создать счёт / заказ-наряд / УПД, в сделке нужны позиции (товары из виджета amo1c).</p>'
+    }
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Оплата QR (${payments.length})</h3>
+    ${
+      payments.length
+        ? `<table>
+        <thead><tr><th>Дата</th><th>Сумма</th><th>QR</th><th>Ссылка</th></tr></thead>
+        <tbody>
+          ${payments
+            .map(
+              (p) => `
+            <tr>
+              <td>${esc(String(p.created_at || '').slice(0, 19))}</td>
+              <td class="mono">${formatMoney(p.amount)}</td>
+              <td>${
+                p.has_image
+                  ? `<img src="/api/payments/${esc(p.id)}/image.png" alt="QR" width="120" height="120" style="background:#fff;border:1px solid #ddd" />`
+                  : esc(p.qrc_id || '—')
+              }</td>
+              <td class="mono" style="max-width:280px;word-break:break-all">${
+                p.payload
+                  ? `<a href="${esc(p.payload)}" target="_blank" rel="noopener">${esc(p.payload)}</a>`
+                  : '—'
+              }</td>
+            </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>`
+        : '<p class="muted">QR ещё нет — нажмите «QR оплата» (СБП Точка, сумма заказа).</p>'
+    }
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Чеки АТОЛ (${fiscal.length})</h3>
+    ${
+      fiscal.length
+        ? `<table>
+        <thead><tr><th>Тип</th><th>Статус</th><th>Сумма</th><th>Дата</th></tr></thead>
+        <tbody>
+          ${fiscal
+            .map(
+              (f) => `
+            <tr>
+              <td>${esc(f.kind === 'advance' ? 'Предоплата' : f.kind === 'full' ? 'Полный' : f.kind)}</td>
+              <td>${esc(f.status)}${f.error ? ' · ' + esc(f.error) : ''}</td>
+              <td class="mono">${formatMoney(f.amount)}</td>
+              <td>${esc(String(f.created_at || '').slice(0, 19))}</td>
+            </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>`
+        : '<p class="muted">Чеки пока черновики/не пробиты. Сначала заполните ATOL_* в .env — кнопки «Чек 1/2» готовят payload (без кассы — только prepared).</p>'
     }
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Счета, заказ-наряды, УПД (${salesDocs.length})</h3>
     ${
@@ -2305,6 +2374,42 @@ async function renderDealDetail(id) {
       alert(e.message);
     }
   };
+  document.getElementById('deal-qr').onclick = async () => {
+    const msg = document.getElementById('deal-msg');
+    msg.textContent = 'Создание QR…';
+    try {
+      const r = await api('/crm/deals/' + encodeURIComponent(id) + '/sbp-qr', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      msg.textContent = 'QR создан: ' + (r.payment?.qrc_id || '');
+      renderDealDetail(id);
+    } catch (e) {
+      msg.textContent = e.message;
+      alert(e.message);
+    }
+  };
+  const makeFiscal = async (kind) => {
+    const msg = document.getElementById('deal-msg');
+    msg.textContent = kind === 'advance' ? 'Чек предоплаты…' : 'Чек полного расчёта…';
+    try {
+      const r = await api('/crm/deals/' + encodeURIComponent(id) + '/fiscal/' + kind, {
+        method: 'POST',
+        body: JSON.stringify({ send: true }),
+      });
+      const st = r.receipt?.status || '';
+      msg.textContent =
+        'Чек: ' +
+        st +
+        (r.atol && !r.atol.configured ? ' (черновик — задайте ATOL_* в .env)' : '');
+      renderDealDetail(id);
+    } catch (e) {
+      msg.textContent = e.message;
+      alert(e.message);
+    }
+  };
+  document.getElementById('deal-fiscal-advance').onclick = () => makeFiscal('advance');
+  document.getElementById('deal-fiscal-full').onclick = () => makeFiscal('full');
   document.getElementById('deal-invoice').onclick = () => makeSalesDoc('invoice');
   document.getElementById('deal-workorder').onclick = () => makeSalesDoc('workorder');
   document.getElementById('deal-upd').onclick = () => makeSalesDoc('upd');

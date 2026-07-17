@@ -91,8 +91,10 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
     `INSERT INTO crm_deals (
        id, name, price, pipeline_id, pipeline_name, status_id, status_name,
        responsible_user_id, department, queued_to_1c, queue_status, queued_by, queued_at,
-       amo_url, print_url, items_count, created_at, updated_at, synced_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       amo_url, print_url, items_count,
+       company_id, company_name, buyer_name, buyer_inn, buyer_phone, buyer_kind, is_legal_entity,
+       created_at, updated_at, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(id) DO UPDATE SET
        name=excluded.name, price=excluded.price,
        pipeline_id=excluded.pipeline_id, pipeline_name=excluded.pipeline_name,
@@ -101,7 +103,12 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
        queued_to_1c=excluded.queued_to_1c, queue_status=excluded.queue_status,
        queued_by=excluded.queued_by, queued_at=excluded.queued_at,
        amo_url=excluded.amo_url, print_url=excluded.print_url,
-       items_count=excluded.items_count, created_at=COALESCE(excluded.created_at, crm_deals.created_at),
+       items_count=excluded.items_count,
+       company_id=excluded.company_id, company_name=excluded.company_name,
+       buyer_name=excluded.buyer_name, buyer_inn=excluded.buyer_inn,
+       buyer_phone=excluded.buyer_phone, buyer_kind=excluded.buyer_kind,
+       is_legal_entity=excluded.is_legal_entity,
+       created_at=COALESCE(excluded.created_at, crm_deals.created_at),
        updated_at=excluded.updated_at, synced_at=datetime('now')`,
     [
       id,
@@ -120,6 +127,13 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
       String(d.amo_url || ''),
       String(d.print_url || ''),
       items.length || Number(d.items_count) || 0,
+      String(d.company_id || ''),
+      String(d.company_name || ''),
+      String(d.buyer_name || ''),
+      String(d.buyer_inn || ''),
+      String(d.buyer_phone || ''),
+      String(d.buyer_kind || 'person'),
+      Number(d.is_legal_entity) === 1 || String(d.buyer_kind || '') === 'legal' ? 1 : 0,
       d.created_at ? String(d.created_at) : null,
       d.updated_at ? String(d.updated_at) : new Date().toISOString(),
     ]
@@ -291,5 +305,17 @@ export function getDeal(id: string) {
        FROM sales_docs WHERE deal_id = ? ORDER BY datetime(created_at) DESC`,
       [id]
     ),
+    payments: all(
+      `SELECT id, kind, amount, status, qrc_id, payload, account, purpose, created_at,
+              CASE WHEN length(image_png_base64)>0 THEN 1 ELSE 0 END AS has_image
+       FROM deal_payments WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 20`,
+      [id]
+    ),
+    fiscal_receipts: all(
+      `SELECT id, kind, status, amount, atol_uuid, external_id, error, created_at, updated_at
+       FROM fiscal_receipts WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 20`,
+      [id]
+    ),
+    is_legal_entity: Number(deal.is_legal_entity) === 1 || String(deal.buyer_kind) === 'legal',
   };
 }

@@ -51,6 +51,13 @@ import {
   type SalesDocType,
 } from './sales-docs.js';
 import { renderSalesDocPdf } from './sales-docs-pdf.js';
+import { createDealSbpQr, getDealPayment, listDealPayments } from './payments.js';
+import {
+  atolStatusInfo,
+  getFiscalReceipt,
+  listFiscalReceipts,
+  prepareOrSendFiscalReceipt,
+} from './atol.js';
 
 export const api = new Hono();
 
@@ -158,6 +165,100 @@ api.get('/crm/deals/:id', (c) => {
   const deal = getDeal(c.req.param('id'));
   if (!deal) return c.json({ error: 'not found' }, 404);
   return c.json(deal);
+});
+
+/** QR СБП на оплату заказа (Точка через bank). */
+api.post('/crm/deals/:id/sbp-qr', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = await c.req.json().catch(() => ({})) as {
+    amount?: number;
+    purpose?: string;
+    account?: string;
+    ttl_sec?: number;
+  };
+  try {
+    const payment = await createDealSbpQr({
+      dealId: c.req.param('id'),
+      amount: body.amount,
+      purpose: body.purpose,
+      account: body.account,
+      ttlSec: body.ttl_sec,
+    });
+    auditFromContext(c, {
+      action: 'deal.sbp_qr',
+      entity: 'deal_payment',
+      entityId: String(payment?.id || ''),
+      summary: `QR СБП по сделке ${c.req.param('id')} на ${payment?.amount}`,
+      after: { qrc_id: payment?.qrc_id, amount: payment?.amount },
+    });
+    return c.json({ ok: true, payment });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'qr failed' }, 400);
+  }
+});
+
+api.get('/crm/deals/:id/payments', (c) =>
+  c.json({ items: listDealPayments(c.req.param('id')) })
+);
+
+api.get('/payments/:id', (c) => {
+  const row = getDealPayment(c.req.param('id'));
+  if (!row) return c.json({ error: 'not found' }, 404);
+  return c.json(row);
+});
+
+api.get('/payments/:id/image.png', (c) => {
+  const row = getDealPayment(c.req.param('id'));
+  if (!row || !row.image_png_base64) return c.json({ error: 'not found' }, 404);
+  const buf = Buffer.from(String(row.image_png_base64), 'base64');
+  c.header('Content-Type', 'image/png');
+  c.header('Cache-Control', 'no-store');
+  return c.body(buf);
+});
+
+api.get('/fiscal/status', (c) => c.json(atolStatusInfo()));
+
+api.get('/crm/deals/:id/fiscal', (c) =>
+  c.json({ items: listFiscalReceipts(c.req.param('id')), atol: atolStatusInfo() })
+);
+
+/** Чек 1 (предоплата) или чек 2 (полный расчёт). send=true — в АТОЛ, иначе черновик. */
+api.post('/crm/deals/:id/fiscal/:kind', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const kind = c.req.param('kind');
+  if (kind !== 'advance' && kind !== 'full') {
+    return c.json({ error: 'kind: advance | full' }, 400);
+  }
+  const body = await c.req.json().catch(() => ({})) as { send?: boolean };
+  try {
+    const receipt = await prepareOrSendFiscalReceipt({
+      dealId: c.req.param('id'),
+      kind,
+      send: Boolean(body.send),
+    });
+    auditFromContext(c, {
+      action: 'fiscal.receipt',
+      entity: 'fiscal_receipt',
+      entityId: String(receipt?.id || ''),
+      summary: `Чек ${kind} по сделке ${c.req.param('id')}: ${receipt?.status}`,
+      after: { status: receipt?.status, amount: receipt?.amount },
+    });
+    return c.json({ ok: true, receipt, atol: atolStatusInfo() });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'fiscal failed' }, 400);
+  }
+});
+
+api.get('/fiscal/receipts/:id', (c) => {
+  const row = getFiscalReceipt(c.req.param('id'));
+  if (!row) return c.json({ error: 'not found' }, 404);
+  return c.json(row);
 });
 
 api.post('/crm/deals/sync', async (c) => {

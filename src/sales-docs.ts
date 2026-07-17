@@ -434,10 +434,14 @@ export function createSalesDocFromDeal(input: {
   const dealIdStr = String(deal.id || input.dealId);
   const buyerName =
     (input.buyerName || '').trim() ||
+    String(deal.buyer_name || '').trim() ||
+    String(deal.company_name || '').trim() ||
     String(deal.name || '').replace(/\s+mraer$/i, '').trim() ||
     `Покупатель (сделка ${dealIdStr})`;
-  const buyerInn = (input.buyerInn || '').trim();
-  const buyerPhone = (input.buyerPhone || '').trim();
+  const buyerInn =
+    (input.buyerInn || '').trim() || String(deal.buyer_inn || '').trim();
+  const buyerPhone =
+    (input.buyerPhone || '').trim() || String(deal.buyer_phone || '').trim();
 
   let sumTotal = 0;
   const lines: Array<{

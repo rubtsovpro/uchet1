@@ -497,6 +497,60 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_crm_statuses_pipe ON crm_pipeline_statuses(pipeline_id);
   `);
 
+  // покупатель / юрлицо на сделке
+  const dealCols = all<{ name: string }>('PRAGMA table_info(crm_deals)').map((c) => c.name);
+  const dealExtra: Array<[string, string]> = [
+    ['company_id', "TEXT NOT NULL DEFAULT ''"],
+    ['company_name', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_name', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_inn', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_phone', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_kind', "TEXT NOT NULL DEFAULT 'person'"],
+    ['is_legal_entity', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  if (dealCols.length) {
+    for (const [col, def] of dealExtra) {
+      if (!dealCols.includes(col)) {
+        db.exec(`ALTER TABLE crm_deals ADD COLUMN ${col} ${def}`);
+      }
+    }
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS deal_payments (
+      id TEXT PRIMARY KEY,
+      deal_id TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'sbp_qr',
+      amount REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'created',
+      qrc_id TEXT NOT NULL DEFAULT '',
+      payload TEXT NOT NULL DEFAULT '',
+      image_png_base64 TEXT NOT NULL DEFAULT '',
+      account TEXT NOT NULL DEFAULT '',
+      purpose TEXT NOT NULL DEFAULT '',
+      meta_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (deal_id) REFERENCES crm_deals(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_deal_payments_deal ON deal_payments(deal_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS fiscal_receipts (
+      id TEXT PRIMARY KEY,
+      deal_id TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL,
+      external_id TEXT NOT NULL DEFAULT '',
+      atol_uuid TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'prepared',
+      amount REAL NOT NULL DEFAULT 0,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      result_json TEXT NOT NULL DEFAULT '{}',
+      error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_fiscal_receipts_deal ON fiscal_receipts(deal_id, created_at);
+  `);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS sales_docs (
       id TEXT PRIMARY KEY,
