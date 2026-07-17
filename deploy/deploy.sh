@@ -13,8 +13,9 @@ if [[ "${1:-}" == "--local" ]]; then
   cd "$REMOTE_APP"
   git fetch origin
   git reset --hard "origin/${BRANCH}"
-  npm ci --omit=dev
+  npm ci
   npm run build
+  npm prune --omit=dev
   systemctl restart warehouse-wms
   sleep 1
   curl -sS -o /dev/null -w "health %{http_code}\n" "http://127.0.0.1:3101/api/health"
@@ -32,4 +33,4 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 git push origin "HEAD:${BRANCH}"
-ssh "$REMOTE_HOST" "cd '$REMOTE_APP' && git fetch origin && git reset --hard origin/${BRANCH} && npm ci --omit=dev && npm run build && systemctl restart warehouse-wms && sleep 1 && curl -sS -o /dev/null -w 'health %{http_code}\n' http://127.0.0.1:3101/api/health && echo OK \$(git rev-parse --short HEAD)"
+ssh "$REMOTE_HOST" "cd '$REMOTE_APP' && git fetch origin && git reset --hard origin/${BRANCH} && npm ci && npm run build && npm prune --omit=dev && systemctl restart warehouse-wms && sleep 1 && curl -sS -o /dev/null -w 'health %{http_code}\n' http://127.0.0.1:3101/api/health && echo OK \$(git rev-parse --short HEAD)"
