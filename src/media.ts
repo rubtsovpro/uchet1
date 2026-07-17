@@ -43,6 +43,8 @@ export function mediaSyncMeta() {
     documents:
       get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_media WHERE kind = 'document'`)?.c ??
       0,
+    empty:
+      get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_media WHERE kind = 'empty'`)?.c ?? 0,
     withOrientation:
       get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM product_media WHERE kind = 'image' AND orientation != ''`
@@ -77,6 +79,7 @@ async function uploadProductImages(
 
   for (const item of images) {
     const b64 = String(item.image || '').trim();
+    item.image = ''; // не держим base64 в памяти после копирования
     if (!b64) continue;
     let buf: Buffer;
     try {
@@ -136,30 +139,32 @@ async function uploadProductImages(
 
 async function fetchImagesForGuids(guids: string[]): Promise<Map<string, ImgRow>> {
   const byGuid = new Map<string, ImgRow>();
-  for (const batch of chunk(guids, 8)) {
-    let rows: ImgRow[] = [];
+  // По 1 guid: на VPS 2ГБ RAM пачка base64 из 1С убивает процесс (OOM).
+  for (const guid of guids) {
     try {
-      const raw = await hsGet(
-        'Get/image',
-        batch.map((guid) => ({ guid }))
-      );
-      rows = Array.isArray(raw) ? (raw as ImgRow[]) : [];
-    } catch {
-      for (const guid of batch) {
-        try {
-          const raw = await hsGet('Get/image', [{ guid }]);
-          if (Array.isArray(raw)) rows.push(...(raw as ImgRow[]));
-        } catch {
-          /* empty */
-        }
+      const raw = await hsGet('Get/image', [{ guid }]);
+      const rows = Array.isArray(raw) ? (raw as ImgRow[]) : [];
+      for (const row of rows) {
+        const g = String(row.guid || '').trim();
+        if (g) byGuid.set(g, row);
       }
-    }
-    for (const row of rows) {
-      const g = String(row.guid || '').trim();
-      if (g) byGuid.set(g, row);
+    } catch {
+      /* empty */
     }
   }
   return byGuid;
+}
+
+function markProductMediaChecked(productId: string, empty: boolean): void {
+  if (!empty) return;
+  // чтобы onlyMissing не крутил товары без фото снова и снова
+  const id = `${productId}|empty`;
+  run(
+    `INSERT OR IGNORE INTO product_media (
+       id, product_id, kind, mime, ext, s3_key, url, size, sha256, sort_order
+     ) VALUES (?, ?, 'empty', '', '', '', '', 0, '', 0)`,
+    [id, productId]
+  );
 }
 
 async function syncGuidList(
@@ -173,28 +178,35 @@ async function syncGuidList(
   let errors = 0;
   let productsDone = 0;
 
-  for (const batch of chunk(productIds, 8)) {
-    const byGuid = await fetchImagesForGuids(batch);
-    for (const pid of batch) {
-      const images = byGuid.get(pid)?.array_image || [];
+  for (let i = 0; i < productIds.length; i++) {
+    const pid = productIds[i];
+    try {
+      const byGuid = await fetchImagesForGuids([pid]);
+      const row = byGuid.get(pid);
+      const images = row?.array_image || [];
       if (!images.length) {
         empty += 1;
         productsDone += 1;
+        markProductMediaChecked(pid, true);
         continue;
       }
-      try {
-        const r = await uploadProductImages(cfg, pid, images, replace);
-        uploaded += r.uploaded;
-        skipped += r.skipped;
-        productsDone += 1;
-      } catch (e) {
-        errors += 1;
-        console.warn('media upload fail', pid, e instanceof Error ? e.message : e);
-      }
+      const r = await uploadProductImages(cfg, pid, images, replace);
+      uploaded += r.uploaded;
+      skipped += r.skipped;
+      productsDone += 1;
+      // освобождаем ссылки на base64 до GC
+      if (row) row.array_image = [];
+      byGuid.clear();
+    } catch (e) {
+      errors += 1;
+      console.warn('media upload fail', pid, e instanceof Error ? e.message : e);
+      productsDone += 1;
     }
-    console.log(
-      `media progress products=${productsDone}/${productIds.length} uploaded=${uploaded} empty=${empty}`
-    );
+    if ((i + 1) % 5 === 0 || i + 1 === productIds.length) {
+      console.log(
+        `media progress products=${productsDone}/${productIds.length} uploaded=${uploaded} empty=${empty} errors=${errors}`
+      );
+    }
   }
 
   return { products: productsDone, uploaded, skipped, empty, errors };
