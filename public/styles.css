@@ -562,6 +562,13 @@ th {
   font-weight: 600;
   font-size: 12px;
 }
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+th.sortable:hover { background: #efe9c8; }
+th.sortable.sorted { color: var(--taxi-green, #2e7d32); }
 tr:hover td { background: #fafafa; }
 tr.selected td { background: var(--taxi-select); }
 tbody tr.clickable { cursor: pointer; }

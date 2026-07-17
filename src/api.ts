@@ -1217,6 +1217,8 @@ api.get('/balances', (c) => {
 api.get('/docs', (c) => {
   const type = (c.req.query('type') || '').trim();
   const q = (c.req.query('q') || '').trim();
+  const sort = (c.req.query('sort') || 'date').trim();
+  const dir = (c.req.query('dir') || 'desc').trim().toLowerCase() === 'asc' ? 'ASC' : 'DESC';
   const where: string[] = [];
   const params: Array<string | number> = [];
   if (type === 'in' || type === 'out' || type === 'transfer') {
@@ -1229,6 +1231,16 @@ api.get('/docs', (c) => {
     params.push(like, like, like);
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const orderMap: Record<string, string> = {
+    number: `d.number ${dir}`,
+    type: `d.doc_type ${dir}, d.doc_date DESC`,
+    date: `d.doc_date ${dir}, d.number ${dir}`,
+    counterparty: `IFNULL(c.name,'') ${dir}, d.doc_date DESC`,
+    warehouse: `IFNULL(w.name,'') ${dir}, d.doc_date DESC`,
+    amount: `d.amount ${dir}, d.doc_date DESC`,
+    status: `d.posted ${dir}, d.doc_date DESC`,
+  };
+  const orderBy = orderMap[sort] || orderMap.date;
   return c.json(
     all(
       `SELECT d.*, w.name AS warehouse, wt.name AS warehouse_to, c.name AS counterparty
@@ -1237,7 +1249,7 @@ api.get('/docs', (c) => {
        LEFT JOIN warehouses wt ON wt.id = d.warehouse_to_id
        LEFT JOIN counterparties c ON c.id = d.counterparty_id
        ${whereSql}
-       ORDER BY d.doc_date DESC, d.number DESC
+       ORDER BY ${orderBy}
        LIMIT 300`,
       params
     )

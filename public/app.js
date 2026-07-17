@@ -19,6 +19,8 @@ const state = {
   auditPage: 1,
   docsType: '',
   docsQ: '',
+  docsSort: 'date',
+  docsDir: 'desc',
   dealsQ: '',
   dealsPage: 1,
   dealsPipeline: '',
@@ -1583,18 +1585,35 @@ async function renderBalances() {
 async function renderDocs() {
   const type = state.docsType || '';
   const q = state.docsQ || '';
-  const list = await api(
-    '/docs?' +
-      (type ? 'type=' + encodeURIComponent(type) + '&' : '') +
-      (q ? 'q=' + encodeURIComponent(q) : '')
-  );
+  const sort = state.docsSort || 'date';
+  const dir = state.docsDir || 'desc';
+  const qs = new URLSearchParams();
+  if (type) qs.set('type', type);
+  if (q) qs.set('q', q);
+  qs.set('sort', sort);
+  qs.set('dir', dir);
+  const list = await api('/docs?' + qs.toString());
   const typeMap = { in: 'Приход', out: 'Расход', transfer: 'Перемещение' };
+  const mark = (key) => {
+    if (sort !== key) return '';
+    return dir === 'asc' ? ' ▲' : ' ▼';
+  };
+  const th = (key, label) =>
+    `<th class="sortable ${sort === key ? 'sorted' : ''}" data-sort="${key}" title="Сортировка">${esc(label)}${mark(key)}</th>`;
   view.innerHTML = formChrome(
     'Документы',
     `
-    <p class="muted" style="margin:0 0 8px">Журнал из 1С (приход/расход) и локальные. Клик по строке — открыть документ.</p>
+    <p class="muted" style="margin:0 0 8px">Журнал из 1С (приход/расход) и локальные. Клик по строке — открыть документ. Клик по заголовку — сортировка.</p>
     <table>
-      <thead><tr><th>Номер</th><th>Тип</th><th>Дата</th><th>Контрагент</th><th>Склад</th><th>Сумма</th><th>Статус</th></tr></thead>
+      <thead><tr>
+        ${th('number', 'Номер')}
+        ${th('type', 'Тип')}
+        ${th('date', 'Дата')}
+        ${th('counterparty', 'Контрагент')}
+        ${th('warehouse', 'Склад')}
+        ${th('amount', 'Сумма')}
+        ${th('status', 'Статус')}
+      </tr></thead>
       <tbody>
         ${
           list
@@ -1651,6 +1670,19 @@ async function renderDocs() {
       renderDocs();
     }
   };
+  view.querySelectorAll('th.sortable').forEach((thEl) => {
+    thEl.onclick = (e) => {
+      e.stopPropagation();
+      const key = thEl.dataset.sort;
+      if (state.docsSort === key) {
+        state.docsDir = state.docsDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.docsSort = key;
+        state.docsDir = key === 'date' || key === 'amount' ? 'desc' : 'asc';
+      }
+      renderDocs();
+    };
+  });
   view.querySelectorAll('[data-doc]').forEach((tr) => {
     tr.onclick = () => renderDocDetail(tr.dataset.doc);
   });
