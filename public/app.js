@@ -50,6 +50,11 @@ const VIEW_TITLES = {
   audit: 'История / логи',
   deals: 'Сделки Amo',
   pipelines: 'Воронки Amo',
+  invoices: 'Счета на оплату',
+  upd: 'УПД',
+  sf: 'Счета-фактуры',
+  workorders: 'Заказ-наряды',
+  org: 'Реквизиты организации',
 };
 
 const SECTIONS = {
@@ -86,10 +91,12 @@ const SECTIONS = {
           title: 'Продажи',
           links: [
             { view: 'buyers', label: 'Покупатели' },
-            { view: 'docs', label: 'Заказы покупателей' },
+            { view: 'deals', label: 'Заказы покупателей (сделки)' },
             { view: 'docs', label: 'Расходные накладные' },
-            { view: 'docs', label: 'Счета на оплату' },
-            { label: 'Счета-фактуры', disabled: true },
+            { view: 'invoices', label: 'Счета на оплату' },
+            { view: 'workorders', label: 'Заказ-наряды' },
+            { view: 'upd', label: 'УПД' },
+            { view: 'sf', label: 'Счета-фактуры' },
           ],
         },
         {
@@ -303,7 +310,7 @@ const SECTIONS = {
           links: [
             { view: 'counterparties', label: 'Контрагенты' },
             { view: 'warehouses', label: 'Склады' },
-            { label: 'Организации', disabled: true },
+            { view: 'org', label: 'Реквизиты для печати (счёт / УПД)' },
           ],
         },
       ],
@@ -316,6 +323,7 @@ const SECTIONS = {
           title: 'Настройки',
           links: [
             { view: 'dashboard', label: 'Синхронизация с 1С' },
+            { view: 'org', label: 'Реквизиты организации' },
             { view: 'prices', label: 'Типы цен' },
             { view: 'staff', label: 'Пользователи' },
             { view: 'audit', label: 'История / логи' },
@@ -331,7 +339,7 @@ const SECTIONS = {
           title: 'Помощь',
           links: [
             { view: 'dashboard', label: 'Начальная страница' },
-            { label: 'О программе Анти1С', disabled: true },
+            { label: 'О программе Учёт №1', disabled: true },
           ],
         },
       ],
@@ -465,6 +473,16 @@ function renderTabs() {
 
 function formChrome(title, bodyHtml, opts = {}) {
   const closable = opts.closable !== false && state.activeTab !== 'dashboard';
+  const pageTabs = Array.isArray(opts.pageTabs) ? opts.pageTabs : null;
+  const activePageTab = opts.activePageTab || (pageTabs && pageTabs[0] && pageTabs[0].id) || '';
+  const pageTabsHtml = pageTabs
+    ? `<div class="form-pagetabs">${pageTabs
+        .map(
+          (t) =>
+            `<button type="button" class="form-pagetab ${t.id === activePageTab ? 'active' : ''}" data-pagetab="${esc(t.id)}">${esc(t.label)}</button>`
+        )
+        .join('')}</div>`
+    : '';
   return `
     <div class="form-chrome">
       <div class="form-titlebar">
@@ -476,7 +494,9 @@ function formChrome(title, bodyHtml, opts = {}) {
         <h1>${esc(title)}</h1>
         ${closable ? '<button type="button" class="close-tab" id="tb-close" title="Закрыть">✕</button>' : ''}
       </div>
+      ${pageTabsHtml}
       ${opts.toolbar ? `<div class="form-toolbar">${opts.toolbar}</div>` : ''}
+      ${opts.metrics ? `<div class="form-metrics">${opts.metrics}</div>` : ''}
       <div class="form-body">${bodyHtml}</div>
     </div>`;
 }
@@ -526,6 +546,10 @@ function openTab(id, title) {
   }
   if (id.startsWith('deal:')) {
     renderDealDetail(id.slice('deal:'.length));
+    return;
+  }
+  if (id.startsWith('sales:')) {
+    renderSalesDocDetail(id.slice('sales:'.length));
     return;
   }
   const run = routes[id];
@@ -1324,41 +1348,78 @@ function kindSelectHtml(selected, id) {
   </select></label>`;
 }
 
-async function renderCounterpartyDetail(id) {
+async function renderCounterpartyDetail(id, pageTab = 'main') {
   const c = await api('/counterparties/' + id);
-  const title = c.name || 'Контрагент';
+  const kindLabelRu =
+    c.kind === 'buyer'
+      ? 'Покупатель'
+      : c.kind === 'supplier'
+        ? 'Поставщик'
+        : c.kind === 'both'
+          ? 'Покупатель и поставщик'
+          : 'Контрагент';
+  const title = `${c.name || 'Контрагент'} (Контрагент: ${kindLabelRu})`;
   const tabId = 'company:' + id;
   if (!state.tabs.find((t) => t.id === tabId)) {
-    state.tabs.push({ id: tabId, title, closable: true });
+    state.tabs.push({ id: tabId, title: (c.name || 'Контрагент').slice(0, 40), closable: true });
   } else {
     const t = state.tabs.find((x) => x.id === tabId);
-    if (t) t.title = title;
+    if (t) t.title = (c.name || 'Контрагент').slice(0, 40);
   }
   state.activeTab = tabId;
   renderTabs();
   showForm();
   const docs = c.docs || [];
+  const docsTotal = c.docs_total ?? docs.length;
   const backList =
     state.cpMode === 'supplier'
       ? 'suppliers'
       : state.cpMode === 'buyer'
         ? 'buyers'
         : 'counterparties';
-  view.innerHTML = formChrome(
-    title,
-    `
-    <h3 style="margin:0 0 8px;font-size:13px;color:var(--taxi-green)">Карточка компании</h3>
-    <div class="form-grid">
-      <label>Название<input id="ce-name" value="${esc(c.name || '')}" /></label>
-      <label>ИНН<input id="ce-inn" class="mono" value="${esc(c.inn || '')}" /></label>
-      <label>Телефон<input id="ce-phone" value="${esc(c.phone || '')}" /></label>
-      ${kindSelectHtml(c.kind, 'ce-kind')}
+  const isBuyer = c.kind === 'buyer' || c.kind === 'both';
+  const isSupplier = c.kind === 'supplier' || c.kind === 'both';
+
+  const mainBody = `
+    <h3 class="form-section-title">О контрагенте</h3>
+    <div class="form-fields">
+      <div class="field span-2">
+        <span>Наименование</span>
+        <input id="ce-name" value="${esc(c.name || '')}" />
+      </div>
+      <div class="field">
+        <span>ИНН</span>
+        <input id="ce-inn" class="mono" value="${esc(c.inn || '')}" placeholder="не указан" />
+      </div>
+      <div class="field">
+        <span>Телефон</span>
+        <input id="ce-phone" value="${esc(c.phone || '')}" placeholder="не указан" />
+      </div>
     </div>
-    <div class="toolbar">
-      <button class="primary" type="button" id="ce-save">Сохранить</button>
-      <span class="muted" id="ce-msg"></span>
+    <h3 class="form-section-title">Классификация</h3>
+    <div class="form-fields">
+      <div class="field span-2">
+        <span>Вид</span>
+        <div class="checks">
+          <label><input type="checkbox" id="ce-buyer" ${isBuyer ? 'checked' : ''} /> Покупатель</label>
+          <label><input type="checkbox" id="ce-supplier" ${isSupplier ? 'checked' : ''} /> Поставщик</label>
+          <select id="ce-kind" class="hidden">${['buyer', 'supplier', 'both']
+            .map((k) => `<option value="${k}" ${c.kind === k ? 'selected' : ''}>${k}</option>`)
+            .join('')}</select>
+        </div>
+      </div>
     </div>
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Документы <span class="muted">(${c.docs_total ?? docs.length})</span></h3>
+    <h3 class="form-section-title">Адреса, телефоны</h3>
+    <div class="form-fields">
+      <div class="field span-2">
+        <span>Телефон</span>
+        <input value="${esc(c.phone || '')}" readonly placeholder="не указан" />
+      </div>
+    </div>
+    <p class="muted" id="ce-msg" style="margin-top:8px"></p>`;
+
+  const docsBody = `
+    <h3 class="form-section-title">Документы <span class="muted">(${docsTotal})</span></h3>
     ${
       docs.length
         ? `<table>
@@ -1379,31 +1440,97 @@ async function renderCounterpartyDetail(id) {
         </tbody>
       </table>`
         : '<p class="muted">Документов по этой компании пока нет.</p>'
-    }`
-  );
+    }`;
+
+  view.innerHTML = formChrome(title, pageTab === 'docs' ? docsBody : mainBody, {
+    pageTabs: [
+      { id: 'main', label: 'Основное' },
+      { id: 'docs', label: 'Документы' },
+      { id: 'contracts', label: 'Договоры' },
+      { id: 'bank', label: 'Банковские счета' },
+    ],
+    activePageTab: pageTab === 'docs' ? 'docs' : 'main',
+    toolbar: `
+      <button class="primary" type="button" id="ce-save-close">Записать и закрыть</button>
+      <button class="primary" type="button" id="ce-save">Записать</button>
+      <button type="button" id="ce-print" title="Печать">🖨</button>
+      <div class="grow"></div>
+      <span class="muted" id="ce-toolbar-msg"></span>`,
+    metrics: `
+      <span>Документов: <b>${docsTotal}</b></span>
+      <span>Вид: <b>${esc(kindLabelRu)}</b></span>
+      <span class="metric-link" id="ce-goto-docs">Перейти к документам →</span>`,
+  });
   bindFormChrome(() => openTab(backList));
-  document.getElementById('ce-save').onclick = async () => {
-    const msg = document.getElementById('ce-msg');
+
+  view.querySelectorAll('[data-pagetab]').forEach((btn) => {
+    btn.onclick = () => {
+      const pid = btn.dataset.pagetab;
+      if (pid === 'main' || pid === 'docs') {
+        renderCounterpartyDetail(id, pid);
+        return;
+      }
+      alert('Раздел «' + btn.textContent + '» — в разработке');
+    };
+  });
+  const gotoDocs = document.getElementById('ce-goto-docs');
+  if (gotoDocs) gotoDocs.onclick = () => renderCounterpartyDetail(id, 'docs');
+
+  const syncKindFromChecks = () => {
+    const b = document.getElementById('ce-buyer')?.checked;
+    const s = document.getElementById('ce-supplier')?.checked;
+    const sel = document.getElementById('ce-kind');
+    if (!sel) return;
+    if (b && s) sel.value = 'both';
+    else if (b) sel.value = 'buyer';
+    else if (s) sel.value = 'supplier';
+    else {
+      // API: только buyer|supplier|both — снять оба нельзя
+      document.getElementById('ce-buyer').checked = true;
+      sel.value = 'buyer';
+    }
+  };
+  document.getElementById('ce-buyer')?.addEventListener('change', syncKindFromChecks);
+  document.getElementById('ce-supplier')?.addEventListener('change', syncKindFromChecks);
+
+  const saveCp = async (andClose) => {
+    syncKindFromChecks();
+    const msg = document.getElementById('ce-msg') || document.getElementById('ce-toolbar-msg');
     const btn = document.getElementById('ce-save');
-    btn.disabled = true;
-    msg.textContent = 'Сохранение…';
+    const btn2 = document.getElementById('ce-save-close');
+    if (btn) btn.disabled = true;
+    if (btn2) btn2.disabled = true;
+    if (msg) msg.textContent = 'Сохранение…';
     try {
       await api('/counterparties/' + id, {
         method: 'PATCH',
         body: JSON.stringify({
-          name: document.getElementById('ce-name').value,
-          inn: document.getElementById('ce-inn').value,
-          phone: document.getElementById('ce-phone').value,
-          kind: document.getElementById('ce-kind').value,
+          name: document.getElementById('ce-name')?.value ?? c.name,
+          inn: document.getElementById('ce-inn')?.value ?? c.inn,
+          phone: document.getElementById('ce-phone')?.value ?? c.phone,
+          kind: document.getElementById('ce-kind')?.value ?? c.kind,
         }),
       });
-      msg.textContent = 'Сохранено';
-      setTimeout(() => renderCounterpartyDetail(id), 250);
+      if (msg) msg.textContent = 'Сохранено';
+      if (andClose) {
+        closeTab(tabId);
+        openTab(backList);
+        return;
+      }
+      setTimeout(() => renderCounterpartyDetail(id, pageTab), 250);
     } catch (e) {
-      msg.textContent = e.message;
-      btn.disabled = false;
+      if (msg) msg.textContent = e.message;
+      if (btn) btn.disabled = false;
+      if (btn2) btn2.disabled = false;
     }
   };
+  const saveBtn = document.getElementById('ce-save');
+  const saveCloseBtn = document.getElementById('ce-save-close');
+  if (saveBtn) saveBtn.onclick = () => saveCp(false);
+  if (saveCloseBtn) saveCloseBtn.onclick = () => saveCp(true);
+  const printBtn = document.getElementById('ce-print');
+  if (printBtn) printBtn.onclick = () => window.print();
+
   view.querySelectorAll('[data-doc]').forEach((tr) => {
     tr.onclick = () => renderDocDetail(tr.dataset.doc);
   });
@@ -1765,7 +1892,7 @@ async function renderPipelines() {
     `
     <p class="muted" style="margin:0 0 10px">
       Воронок: <b>${meta.pipelines ?? items.length}</b> · статусов: <b>${meta.statuses ?? '—'}</b> ·
-      сделок в Анти1С: <b>${meta.deals ?? 0}</b>
+      сделок в Учёт №1: <b>${meta.deals ?? 0}</b>
       ${meta.lastSync ? ' · синк: ' + esc(meta.lastSync) : ''}
     </p>
     <div class="toolbar">
@@ -1977,7 +2104,11 @@ async function renderDealDetail(id) {
     <div class="toolbar">
       ${d.amo_url ? `<a class="primary" href="${esc(d.amo_url)}" target="_blank" rel="noopener">Открыть в Amo</a>` : ''}
       ${d.print_url ? `<a href="${esc(d.print_url)}" target="_blank" rel="noopener">Печать / PDF (виджет)</a>` : ''}
-      <button type="button" id="deal-print">Печать в Анти1С</button>
+      <button type="button" id="deal-print">Печать в Учёт №1</button>
+      <button class="primary" type="button" id="deal-invoice">Создать счёт</button>
+      <button class="primary" type="button" id="deal-workorder">Создать заказ-наряд</button>
+      <button class="primary" type="button" id="deal-upd">Создать УПД</button>
+      <button type="button" id="deal-sf">Создать СФ</button>
       <button type="button" id="deal-resync">Обновить сделку</button>
       <span class="muted" id="deal-msg"></span>
     </div>
@@ -2061,6 +2192,239 @@ async function renderDealDetail(id) {
       renderDealDetail(id);
     } catch (e) {
       msg.textContent = e.message;
+    }
+  };
+  const makeSalesDoc = async (docType) => {
+    const msg = document.getElementById('deal-msg');
+    msg.textContent = 'Создание…';
+    try {
+      const r = await api('/sales-docs/from-deal', {
+        method: 'POST',
+        body: JSON.stringify({ deal_id: id, doc_type: docType }),
+      });
+      const doc = r.doc;
+      msg.textContent = 'Создано: ' + (doc.number || '');
+      if (doc?.id) openTab('sales:' + doc.id, (doc.number || docType).slice(0, 40));
+    } catch (e) {
+      msg.textContent = e.message;
+      alert(e.message);
+    }
+  };
+  document.getElementById('deal-invoice').onclick = () => makeSalesDoc('invoice');
+  document.getElementById('deal-workorder').onclick = () => makeSalesDoc('workorder');
+  document.getElementById('deal-upd').onclick = () => makeSalesDoc('upd');
+  document.getElementById('deal-sf').onclick = () => makeSalesDoc('sf');
+}
+
+const SALES_TYPE_LABEL = {
+  invoice: 'Счёт на оплату',
+  upd: 'УПД',
+  sf: 'Счёт-фактура',
+  workorder: 'Заказ-наряд',
+};
+
+async function renderSalesDocs(docType) {
+  const title = SALES_TYPE_LABEL[docType] || 'Документы продаж';
+  const q = state.salesQ || '';
+  const data = await api(
+    '/sales-docs?type=' + encodeURIComponent(docType) + (q ? '&q=' + encodeURIComponent(q) : '')
+  );
+  const list = data.items || [];
+  view.innerHTML = formChrome(
+    title,
+    `
+    <p class="muted" style="margin:0 0 8px">
+      Создаются из сделки Amo (CRM → Сделки → открыть → «Создать счёт / УПД / СФ»).
+      Печать: открыть документ → «Печать / PDF».
+    </p>
+    <table>
+      <thead><tr><th>Номер</th><th>Дата</th><th>Покупатель</th><th>Сделка</th><th>Сумма</th><th>Статус</th></tr></thead>
+      <tbody>
+        ${
+          list
+            .map(
+              (d) => `
+          <tr class="clickable" data-sales="${esc(d.id)}">
+            <td class="mono"><span class="row-ico"></span>${esc(d.number)}</td>
+            <td>${esc(String(d.doc_date || '').slice(0, 10))}</td>
+            <td>${esc(d.counterparty_name || '—')}</td>
+            <td class="mono">${esc(d.deal_id || '—')}</td>
+            <td class="mono">${formatMoney(d.total)}</td>
+            <td><span class="badge">${esc(d.status || '')}</span></td>
+          </tr>`
+            )
+            .join('') ||
+          `<tr><td colspan="6" class="muted">Пока пусто — откройте сделку с позициями и нажмите «Создать ${esc(title)}»</td></tr>`
+        }
+      </tbody>
+    </table>`,
+    {
+      toolbar: `
+        <button type="button" id="sales-goto-deals">Сделки Amo</button>
+        <button type="button" id="sales-org">Реквизиты организации</button>
+        <div class="grow"></div>
+        <div class="find">
+          <input id="sales-q" placeholder="Номер / покупатель / сделка" value="${esc(q)}" />
+          <button type="button" id="sales-search">Найти</button>
+        </div>`,
+    }
+  );
+  bindFormChrome(() => showSection('sales'));
+  document.getElementById('sales-goto-deals').onclick = () => openTab('deals');
+  document.getElementById('sales-org').onclick = () => openTab('org');
+  document.getElementById('sales-search').onclick = () => {
+    state.salesQ = document.getElementById('sales-q').value.trim();
+    renderSalesDocs(docType);
+  };
+  document.getElementById('sales-q').onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      state.salesQ = document.getElementById('sales-q').value.trim();
+      renderSalesDocs(docType);
+    }
+  };
+  view.querySelectorAll('[data-sales]').forEach((tr) => {
+    tr.onclick = () => openTab('sales:' + tr.dataset.sales);
+  });
+}
+
+async function renderSalesDocDetail(id) {
+  const d = await api('/sales-docs/' + id);
+  const typeLabel = SALES_TYPE_LABEL[d.doc_type] || d.doc_type;
+  const title = `${typeLabel} ${d.number || ''}`.trim();
+  const tabId = 'sales:' + id;
+  if (!state.tabs.find((t) => t.id === tabId)) {
+    state.tabs.push({ id: tabId, title: title.slice(0, 40), closable: true });
+  } else {
+    const t = state.tabs.find((x) => x.id === tabId);
+    if (t) t.title = title.slice(0, 40);
+  }
+  state.activeTab = tabId;
+  renderTabs();
+  showForm();
+  const lines = d.lines || [];
+  const backView =
+    d.doc_type === 'upd'
+      ? 'upd'
+      : d.doc_type === 'sf'
+        ? 'sf'
+        : d.doc_type === 'workorder'
+          ? 'workorders'
+          : 'invoices';
+  view.innerHTML = formChrome(
+    title,
+    `
+    <div class="form-grid">
+      <label>Тип<input value="${esc(typeLabel)}" readonly /></label>
+      <label>Номер<input class="mono" value="${esc(d.number || '')}" readonly /></label>
+      <label>Дата<input value="${esc(String(d.doc_date || '').slice(0, 10))}" readonly /></label>
+      <label>Сделка<input class="mono" value="${esc(d.deal_id || '')}" readonly /></label>
+      <label>Покупатель<input value="${esc(d.counterparty_name || '')}" readonly /></label>
+      <label>ИНН покупателя<input class="mono" value="${esc(d.counterparty_inn || '—')}" readonly /></label>
+      <label>Сумма без НДС<input class="mono" value="${esc(formatMoney(d.amount))}" readonly /></label>
+      <label>НДС ${esc(d.vat_rate || 0)}%<input class="mono" value="${esc(formatMoney(d.vat_amount))}" readonly /></label>
+      <label>Всего<input class="mono" value="${esc(formatMoney(d.total))}" readonly /></label>
+      <label>Комментарий<input value="${esc(d.comment || '')}" readonly /></label>
+    </div>
+    <h3 class="form-section-title">Строки (${lines.length})</h3>
+    ${
+      lines.length
+        ? `<table>
+        <thead><tr><th>№</th><th>SKU</th><th>Название</th><th>Кол-во</th><th>Цена</th><th>Без НДС</th><th>НДС</th></tr></thead>
+        <tbody>
+          ${lines
+            .map(
+              (l) => `
+            <tr>
+              <td class="mono">${esc(l.line_no)}</td>
+              <td class="mono">${esc(l.sku || '')}</td>
+              <td>${esc(l.name || '')}</td>
+              <td class="mono">${esc(l.qty)}</td>
+              <td class="mono">${formatMoney(l.price)}</td>
+              <td class="mono">${formatMoney(l.amount)}</td>
+              <td class="mono">${formatMoney(l.vat_amount)}</td>
+            </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>`
+        : '<p class="muted">Нет строк</p>'
+    }`,
+    {
+      toolbar: `
+        <a class="primary" href="/api/sales-docs/${esc(id)}/print" target="_blank" rel="noopener">Печать / PDF</a>
+        ${d.deal_id ? `<button type="button" id="sd-deal">Открыть сделку</button>` : ''}
+        <div class="grow"></div>
+        <span class="muted">Печать → «Сохранить как PDF» в браузере</span>`,
+    }
+  );
+  bindFormChrome(() => openTab(backView));
+  const dealBtn = document.getElementById('sd-deal');
+  if (dealBtn) dealBtn.onclick = () => openTab('deal:' + d.deal_id);
+}
+
+async function renderOrgProfile() {
+  const org = await api('/org-profile');
+  view.innerHTML = formChrome(
+    'Реквизиты организации',
+    `
+    <p class="muted" style="margin:0 0 10px">Используются в бланках счёта, УПД и счёт-фактуры. Заполните ИНН, банк и р/с.</p>
+    <h3 class="form-section-title">О продавце</h3>
+    <div class="form-grid">
+      <label class="span-2">Наименование<input id="org-name" value="${esc(org.name || '')}" /></label>
+      <label>Кратко (подпись)<input id="org-short" value="${esc(org.short_name || '')}" /></label>
+      <label>ОГРНИП<input id="org-ogrnip" class="mono" value="${esc(org.ogrnip || '')}" /></label>
+      <label>ИНН<input id="org-inn" class="mono" value="${esc(org.inn || '')}" /></label>
+      <label>КПП<input id="org-kpp" class="mono" value="${esc(org.kpp || '')}" /></label>
+      <label class="span-2">Адрес<input id="org-address" value="${esc(org.address || '')}" /></label>
+      <label>Телефон<input id="org-phone" value="${esc(org.phone || '')}" /></label>
+      <label>НДС %<input id="org-vat" class="mono" value="${esc(org.vat_rate ?? 5)}" /></label>
+      <label>Руководитель<input id="org-director" value="${esc(org.director || '')}" /></label>
+      <label>Мастер (заказ-наряд)<input id="org-master" value="${esc(org.master_title || '')}" /></label>
+    </div>
+    <h3 class="form-section-title">Банковские реквизиты</h3>
+    <div class="form-grid">
+      <label class="span-2">Банк<input id="org-bank" value="${esc(org.bank || '')}" /></label>
+      <label>БИК<input id="org-bik" class="mono" value="${esc(org.bik || '')}" /></label>
+      <label>К/с<input id="org-ks" class="mono" value="${esc(org.ks || '')}" /></label>
+      <label class="span-2">Р/с<input id="org-rs" class="mono" value="${esc(org.rs || '')}" /></label>
+    </div>
+    <p class="muted" id="org-msg"></p>`,
+    {
+      toolbar: `<button class="primary" type="button" id="org-save">Записать</button><div class="grow"></div>`,
+    }
+  );
+  bindFormChrome(() => showSection('company'));
+  document.getElementById('org-save').onclick = async () => {
+    const msg = document.getElementById('org-msg');
+    const btn = document.getElementById('org-save');
+    btn.disabled = true;
+    msg.textContent = 'Сохранение…';
+    try {
+      await api('/org-profile', {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: document.getElementById('org-name').value,
+          short_name: document.getElementById('org-short').value,
+          ogrnip: document.getElementById('org-ogrnip').value,
+          inn: document.getElementById('org-inn').value,
+          kpp: document.getElementById('org-kpp').value,
+          address: document.getElementById('org-address').value,
+          phone: document.getElementById('org-phone').value,
+          vat_rate: Number(document.getElementById('org-vat').value) || 5,
+          director: document.getElementById('org-director').value,
+          master_title: document.getElementById('org-master').value,
+          accountant: document.getElementById('org-accountant')?.value || '',
+          bank: document.getElementById('org-bank').value,
+          bik: document.getElementById('org-bik').value,
+          ks: document.getElementById('org-ks').value,
+          rs: document.getElementById('org-rs').value,
+        }),
+      });
+      msg.textContent = 'Сохранено';
+      btn.disabled = false;
+    } catch (e) {
+      msg.textContent = e.message;
+      btn.disabled = false;
     }
   };
 }
@@ -2835,6 +3199,23 @@ const routes = {
   },
   docs: renderDocs,
   in: renderIn,
+  invoices: () => {
+    state.salesQ = '';
+    renderSalesDocs('invoice');
+  },
+  workorders: () => {
+    state.salesQ = '';
+    renderSalesDocs('workorder');
+  },
+  upd: () => {
+    state.salesQ = '';
+    renderSalesDocs('upd');
+  },
+  sf: () => {
+    state.salesQ = '';
+    renderSalesDocs('sf');
+  },
+  org: renderOrgProfile,
   ideas: renderIdeas,
   staff: renderStaff,
   audit: renderAudit,

@@ -496,6 +496,75 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_crm_deal_items_deal ON crm_deal_items(deal_id);
     CREATE INDEX IF NOT EXISTS idx_crm_statuses_pipe ON crm_pipeline_statuses(pipeline_id);
   `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sales_docs (
+      id TEXT PRIMARY KEY,
+      doc_type TEXT NOT NULL,
+      number TEXT NOT NULL,
+      doc_date TEXT NOT NULL,
+      deal_id TEXT NOT NULL DEFAULT '',
+      counterparty_name TEXT NOT NULL DEFAULT '',
+      counterparty_inn TEXT NOT NULL DEFAULT '',
+      buyer_address TEXT NOT NULL DEFAULT '',
+      amount REAL NOT NULL DEFAULT 0,
+      vat_rate REAL NOT NULL DEFAULT 20,
+      vat_amount REAL NOT NULL DEFAULT 0,
+      total REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'draft',
+      comment TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS sales_doc_lines (
+      id TEXT PRIMARY KEY,
+      doc_id TEXT NOT NULL,
+      line_no INTEGER NOT NULL DEFAULT 0,
+      product_guid TEXT NOT NULL DEFAULT '',
+      sku TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      unit TEXT NOT NULL DEFAULT '',
+      qty REAL NOT NULL DEFAULT 0,
+      price REAL NOT NULL DEFAULT 0,
+      amount REAL NOT NULL DEFAULT 0,
+      vat_amount REAL NOT NULL DEFAULT 0,
+      FOREIGN KEY (doc_id) REFERENCES sales_docs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sales_docs_type ON sales_docs(doc_type, doc_date);
+    CREATE INDEX IF NOT EXISTS idx_sales_docs_deal ON sales_docs(deal_id);
+    CREATE INDEX IF NOT EXISTS idx_sales_docs_number ON sales_docs(number);
+    CREATE INDEX IF NOT EXISTS idx_sales_lines_doc ON sales_doc_lines(doc_id);
+  `);
+
+  const salesLineCols = all<{ name: string }>('PRAGMA table_info(sales_doc_lines)').map((c) => c.name);
+  if (salesLineCols.length && !salesLineCols.includes('line_kind')) {
+    db.exec(`ALTER TABLE sales_doc_lines ADD COLUMN line_kind TEXT NOT NULL DEFAULT 'goods'`);
+  }
+
+  // реквизиты ИП Безматерных (как в бланках 1С), если ещё не заданы
+  const orgRow = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['org_profile']);
+  if (!orgRow?.value) {
+    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+      'org_profile',
+      JSON.stringify({
+        name: 'Индивидуальный предприниматель Безматерных Роман Павлович',
+        short_name: 'Безматерных Р.П.',
+        inn: '231215603728',
+        kpp: '',
+        ogrnip: '322237500133521',
+        address: '350000, Краснодарский край, Селезнева, д. 84, кв. 73',
+        phone: '',
+        bank: 'ООО "Банк Точка" г. Москва',
+        bik: '044525104',
+        rs: '40802810109500030587',
+        ks: '30101810745374525104',
+        director: 'Безматерных Р.П.',
+        accountant: '',
+        master_title: 'Мастер-приемщик Пневмоподвеска №1',
+        vat_rate: 5,
+      }),
+    ]);
+  }
 }
 
 export type Row = Record<string, unknown>;

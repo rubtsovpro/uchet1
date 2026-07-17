@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="#GQB 1">
+  <rect width="64" height="64" rx="6" fill="#ffd800"/>
+  <rect x="3" y="3" width="58" height="58" rx="4" fill="none" stroke="#c9a000" stroke-width="1.5"/>
+  <text x="32" y="28" text-anchor="middle" font-family="Montserrat, Arial, sans-serif" font-size="11" font-weight="700" fill="#222">#'"</text>
+  <text x="32" y="48" text-anchor="middle" font-family="Montserrat, Arial, sans-serif" font-size="18" font-weight="800" fill="#111">1</text>
+</svg>

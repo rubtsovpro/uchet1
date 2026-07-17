@@ -39,6 +39,16 @@ import {
   syncDealsFromAmo1c,
   upsertDealRecord,
 } from './deals.js';
+import {
+  createSalesDocFromDeal,
+  getOrgProfile,
+  getSalesDoc,
+  listSalesDocs,
+  renderSalesDocPrintHtml,
+  saveOrgProfile,
+  salesDocTypeLabel,
+  type SalesDocType,
+} from './sales-docs.js';
 
 export const api = new Hono();
 
@@ -192,6 +202,92 @@ api.post('/crm/deals/ingest', async (c) => {
   }
   upsertDealRecord(body.deal);
   return c.json({ ok: true, id: String(body.deal.id) });
+});
+
+api.get('/org-profile', (c) => c.json(getOrgProfile()));
+
+api.put('/org-profile', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = await c.req.json().catch(() => ({})) as Record<string, string | number>;
+  const saved = saveOrgProfile(body as Record<string, string>);
+  auditFromContext(c, {
+    action: 'org.profile_save',
+    entity: 'org_profile',
+    summary: 'Реквизиты организации для печати счетов/УПД',
+    after: saved,
+  });
+  return c.json(saved);
+});
+
+api.get('/sales-docs', (c) => {
+  const type = (c.req.query('type') || '').trim() as SalesDocType | '';
+  const q = (c.req.query('q') || '').trim();
+  const items = listSalesDocs({
+    type:
+      type === 'invoice' || type === 'upd' || type === 'sf' || type === 'workorder' ? type : '',
+    q,
+  });
+  return c.json({
+    items,
+    labels: { invoice: 'Счёт', upd: 'УПД', sf: 'СФ', workorder: 'Заказ-наряд' },
+  });
+});
+
+api.get('/sales-docs/:id', (c) => {
+  const doc = getSalesDoc(c.req.param('id'));
+  if (!doc) return c.json({ error: 'not found' }, 404);
+  return c.json(doc);
+});
+
+api.get('/sales-docs/:id/print', (c) => {
+  const html = renderSalesDocPrintHtml(c.req.param('id'));
+  if (!html) return c.html('<p>Документ не найден</p>', 404);
+  return c.html(html);
+});
+
+api.post('/sales-docs/from-deal', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав на документы' }, 403);
+  }
+  const body = await c.req.json().catch(() => ({})) as {
+    deal_id?: string;
+    doc_type?: string;
+    vat_rate?: number;
+    buyer_name?: string;
+    buyer_inn?: string;
+    comment?: string;
+  };
+  const dealId = String(body.deal_id || '').trim();
+  const docType = String(body.doc_type || '').trim() as SalesDocType;
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  if (!['invoice', 'upd', 'sf', 'workorder'].includes(docType)) {
+    return c.json({ error: 'doc_type: invoice | upd | sf | workorder' }, 400);
+  }
+  try {
+    const doc = createSalesDocFromDeal({
+      dealId,
+      docType,
+      vatRate: body.vat_rate,
+      buyerName: body.buyer_name,
+      buyerInn: body.buyer_inn,
+      comment: body.comment,
+      createdBy: actor?.login || actor?.name || '',
+    });
+    auditFromContext(c, {
+      action: 'sales_doc.create',
+      entity: 'sales_doc',
+      entityId: String(doc?.id || ''),
+      summary: `${salesDocTypeLabel(docType)} из сделки ${dealId}`,
+      after: { id: doc?.id, number: doc?.number, total: doc?.total },
+    });
+    return c.json({ ok: true, doc });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
+  }
 });
 
 api.post('/sync/docs', async (c) => {

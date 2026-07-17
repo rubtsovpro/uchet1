@@ -14,11 +14,13 @@ import {
   registerStaff,
 } from './auth.js';
 import { writeAudit } from './audit.js';
+import { ensureOrgProfileSeeded } from './sales-docs.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '..', 'public');
 
 migrate();
+ensureOrgProfileSeeded();
 
 const PORT = Number(process.env.WMS_PORT || 3101);
 const LEGACY_COOKIE = 'wms_auth';
