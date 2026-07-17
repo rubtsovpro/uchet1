@@ -11,10 +11,12 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.14.4",
-    "hono": "^4.8.3"
+    "hono": "^4.8.3",
+    "pdfkit": "^0.19.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.32",
+    "@types/pdfkit": "^0.17.6",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }

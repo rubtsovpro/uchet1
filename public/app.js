@@ -2204,7 +2204,10 @@ async function renderDealDetail(id) {
       });
       const doc = r.doc;
       msg.textContent = 'Создано: ' + (doc.number || '');
-      if (doc?.id) openTab('sales:' + doc.id, (doc.number || docType).slice(0, 40));
+      if (doc?.id) {
+        openTab('sales:' + doc.id, (doc.number || docType).slice(0, 40));
+        window.open('/api/sales-docs/' + encodeURIComponent(doc.id) + '/pdf', '_blank');
+      }
     } catch (e) {
       msg.textContent = e.message;
       alert(e.message);
@@ -2235,10 +2238,10 @@ async function renderSalesDocs(docType) {
     `
     <p class="muted" style="margin:0 0 8px">
       Создаются из сделки Amo (CRM → Сделки → открыть → «Создать счёт / УПД / СФ»).
-      Печать: открыть документ → «Печать / PDF».
+      Печать: «Открыть PDF» или «Скачать PDF» на карточке документа.
     </p>
     <table>
-      <thead><tr><th>Номер</th><th>Дата</th><th>Покупатель</th><th>Сделка</th><th>Сумма</th><th>Статус</th></tr></thead>
+      <thead><tr><th>Номер</th><th>Дата</th><th>Покупатель</th><th>Сделка</th><th>Сумма</th><th>PDF</th></tr></thead>
       <tbody>
         ${
           list
@@ -2250,7 +2253,11 @@ async function renderSalesDocs(docType) {
             <td>${esc(d.counterparty_name || '—')}</td>
             <td class="mono">${esc(d.deal_id || '—')}</td>
             <td class="mono">${formatMoney(d.total)}</td>
-            <td><span class="badge">${esc(d.status || '')}</span></td>
+            <td>
+              <a href="/api/sales-docs/${esc(d.id)}/pdf" target="_blank" rel="noopener" onclick="event.stopPropagation()">PDF</a>
+              ·
+              <a href="/api/sales-docs/${esc(d.id)}/pdf?download=1" rel="noopener" onclick="event.stopPropagation()">скачать</a>
+            </td>
           </tr>`
             )
             .join('') ||
@@ -2351,10 +2358,12 @@ async function renderSalesDocDetail(id) {
     }`,
     {
       toolbar: `
-        <a class="primary" href="/api/sales-docs/${esc(id)}/print" target="_blank" rel="noopener">Печать / PDF</a>
+        <a class="primary" href="/api/sales-docs/${esc(id)}/pdf" target="_blank" rel="noopener">Открыть PDF</a>
+        <a class="primary" href="/api/sales-docs/${esc(id)}/pdf?download=1" rel="noopener">Скачать PDF</a>
+        <a href="/api/sales-docs/${esc(id)}/print" target="_blank" rel="noopener">HTML-бланк</a>
         ${d.deal_id ? `<button type="button" id="sd-deal">Открыть сделку</button>` : ''}
         <div class="grow"></div>
-        <span class="muted">Печать → «Сохранить как PDF» в браузере</span>`,
+        <span class="muted">PDF формируется на сервере</span>`,
     }
   );
   bindFormChrome(() => openTab(backView));

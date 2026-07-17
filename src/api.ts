@@ -49,6 +49,7 @@ import {
   salesDocTypeLabel,
   type SalesDocType,
 } from './sales-docs.js';
+import { renderSalesDocPdf } from './sales-docs-pdf.js';
 
 export const api = new Hono();
 
@@ -246,6 +247,25 @@ api.get('/sales-docs/:id/print', (c) => {
   const html = renderSalesDocPrintHtml(c.req.param('id'));
   if (!html) return c.html('<p>Документ не найден</p>', 404);
   return c.html(html);
+});
+
+/** Настоящий PDF: открыть в вкладке или скачать (?download=1). */
+api.get('/sales-docs/:id/pdf', async (c) => {
+  try {
+    const result = await renderSalesDocPdf(c.req.param('id'));
+    if (!result) return c.json({ error: 'not found' }, 404);
+    const download = c.req.query('download') === '1' || c.req.query('download') === 'true';
+    const asciiName = result.filename.replace(/[^\x20-\x7E]+/g, '_');
+    c.header('Content-Type', 'application/pdf');
+    c.header(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(result.filename)}`
+    );
+    c.header('Cache-Control', 'no-store');
+    return c.body(new Uint8Array(result.buffer));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'pdf failed' }, 500);
+  }
 });
 
 api.post('/sales-docs/from-deal', async (c) => {
