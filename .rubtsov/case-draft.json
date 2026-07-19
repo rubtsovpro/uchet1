@@ -1,0 +1,18 @@
+{
+  "task": {
+    "title": "Учёт №1: убрали иконки row-ico и зебра во всех таблицах",
+    "summary": "В списках WMS (сделки, товары, документы, контрагенты) убраны декоративные маркеры row-ico. Для всех таблиц legacy UI включена зебра (чёт/нечёт) в стиле 1С/taxi. Деплой на bank-vps с cache-bust styles v25 / legacy v60.",
+    "problem": "В строках списков оставались синие квадраты row-ico; таблицы без чередования строк тяжело читать при больших объёмах.",
+    "solution": "Полностью убрали рендер span.row-ico из app.js/legacy.js, CSS safety-net display:none, глобальная зебра через .form-body/.form-chrome table tbody tr:nth-child.",
+    "result": "0 вхождений row-ico в JS на проде; зебра на всех list-таблицах; styles?v=25, legacy.js?v=60; health 200."
+  },
+  "project": {
+    "name": "Учёт №1 — Пневмоподвеска",
+    "client": "Пневмоподвеска",
+    "stack": ["legacy JS", "CSS", "Hono", "Vite"]
+  },
+  "tags": ["erp", "website"],
+  "service_slug": "erp_crm",
+  "nda": false,
+  "publish_ready": true
+}

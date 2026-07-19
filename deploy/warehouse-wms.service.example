@@ -4,8 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/1c_pnevmopodveska1_ru/warehouse
+WorkingDirectory=/root/1c_pnevmopodveska1_ru/warehouse/api
 EnvironmentFile=/etc/warehouse-wms.env
+# Корень репо нужен для web/dist и data/ (относительные пути из dist/)
+Environment=NODE_ENV=production
 ExecStart=/usr/bin/node --experimental-sqlite dist/server.js
 TimeoutStartSec=30
 TimeoutStopSec=30

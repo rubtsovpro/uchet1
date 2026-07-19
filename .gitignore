@@ -1,6 +1,11 @@
 node_modules/
+api/node_modules/
+web/node_modules/
 data/
+api/dist/
+web/dist/
 dist/
+/public/
 *.sqlite
 *.sqlite-*
 .tmp/

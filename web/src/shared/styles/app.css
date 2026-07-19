@@ -1,0 +1,171 @@
+/* Layout helpers used by React pages (kept next to taxi.css) */
+.form-chrome {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.form-chrome-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--taxi-line-soft);
+  background: #fff;
+}
+.form-chrome-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  font-family: var(--font-display);
+}
+.form-chrome-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.form-chrome-body {
+  padding: 14px;
+  flex: 1;
+}
+.form-section-title {
+  margin: 18px 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--taxi-green);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+}
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--taxi-muted);
+}
+.form-grid label.span-2 { grid-column: span 2; }
+.form-grid input,
+.form-grid select,
+.form-grid textarea {
+  font-weight: 400;
+  color: var(--taxi-ink);
+  border: 1px solid var(--taxi-line);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  background: #fff;
+  min-height: 32px;
+}
+.form-grid input:read-only {
+  background: #f8fafc;
+  color: #475569;
+}
+
+.section-panel {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--taxi-line-soft);
+  background: #fff;
+}
+.section-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+}
+.section-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+}
+.section-link {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  cursor: pointer;
+  color: var(--taxi-blue);
+  font-size: 13px;
+}
+.section-link:hover { text-decoration: underline; }
+.section-link.active {
+  font-weight: 700;
+  color: var(--taxi-ink);
+  text-decoration: none;
+}
+a.section-link { display: inline-block; }
+.section-panel--hub {
+  padding-bottom: 28px;
+}
+
+table.grid {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  font-size: 13px;
+}
+table.grid th,
+table.grid td {
+  border-bottom: 1px solid var(--taxi-line-soft);
+  padding: 7px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+table.grid th {
+  background: var(--taxi-th);
+  font-weight: 600;
+  color: #475569;
+  font-size: 12px;
+}
+.mono { font-family: var(--mono); font-size: 12px; }
+.muted { color: var(--taxi-muted); }
+.grow { flex: 1; }
+
+.auth-card {
+  width: min(360px, 100%);
+  background: #fff;
+  border: 1px solid var(--taxi-line-soft);
+  border-radius: 10px;
+  padding: 24px 22px;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.06);
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+.auth-card h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 22px;
+}
+.auth-card form {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+.auth-card label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--taxi-muted);
+}
+.auth-card input {
+  padding: 8px 10px;
+  border: 1px solid var(--taxi-line);
+  border-radius: var(--radius);
+  color: var(--taxi-ink);
+  font-weight: 400;
+}
+.auth-card button.primary {
+  margin-top: 4px;
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .form-grid label.span-2 { grid-column: span 1; }
+}

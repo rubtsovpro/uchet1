@@ -1,35 +1,58 @@
-# Анти1С — склад WMS (`1c.pnevmopodveska1.ru`)
+# Учёт №1 (WMS)
 
-TypeScript + Hono + SQLite. Синк каталога/документов из 1С, персонал и сделки из Amo (amo1c).
+Склад и продажи для Пневмоподвески: синк с 1С / Amo, документы (счёт, УПД, заказ-наряд), медиа в S3.
+
+Стек: **Hono + SQLite** (`api/`), **React + Vite + TanStack Query** + legacy UI (`web/`).
+
+## Структура
+
+```
+api/          backend: Hono, SQLite, интеграции → dist/
+web/          frontend: React + legacy static → dist/
+data/         SQLite (WMS_DATA_DIR), вне пакетов
+docs/         ТЗ и стек
+deploy/       systemd, apache, deploy.sh
+```
+
+Фронт ходит в бэкенд **только через `/api`**. На переходный период Node из `api` раздаёт статику из `web/dist`.
 
 ## Локально
 
 ```bash
 npm ci
-cp .env.example .env   # заполнить
-npm run build
-npm start
+cp .env.example .env
+npm run build          # api + web
+npm start              # api на :3101, отдаёт web/dist
 ```
 
-## Git и деплой
-
-Репозиторий отдельный (не общий `/Downloads/php`).
-
-**Origin на VPS (bare):** `bank-vps:/root/repos/anti1c-warehouse.git`  
-**Рабочая копия на проде:** `/root/1c_pnevmopodveska1_ru/warehouse`
+Раздельные билды:
 
 ```bash
-# первый раз (уже сделано скриптом):
-# git remote add origin bank-vps:/root/repos/anti1c-warehouse.git
-
-git add -A && git commit -m "..."
-./deploy/deploy.sh
+npm run build:api
+npm run build:web
 ```
 
-Секреты только в `/etc/warehouse-wms.env` на сервере — не в git.
+Dev: `npm run dev:api` (:3101) и `npm run dev:web` (:5173, proxy `/api` → :3101).
 
-## Полезные кнопки UI
+## Деплой
 
-- Синк справочников / HS / документы 1С
-- Сделки Amo, персонал
-- Ориентация фото
+```bash
+./deploy/deploy.sh --rsync   # без требования чистого git
+# или ./deploy/deploy.sh     # push + pull на сервере
+```
+
+Прод: `1c.pnevmopodveska1.ru`. Секреты только в `/etc/warehouse-wms.env`.
+
+### Swagger / OpenAPI
+
+- UI: `/api/swagger` (не `/api/docs` — там складские документы)
+- Spec: `/api/openapi.json`
+- Вкл.: `SWAGGER_ENABLED=1` в env
+- Доступ: сессия роли `admin` / системный admin, либо `SWAGGER_BASIC_USER` + `SWAGGER_BASIC_PASS`
+- Try-it-out только для GET
+
+Классический UI: `/` и `/legacy.html` → redirect. React: `/money/*`, часть CRM/sales/org.
+
+## Bank / СБП
+
+Платежи СБП и overview Точки пока идут через `bank.pnevmopodveska1.ru` (`BANK_SBP_*`, `BANK_TOCHKA_*`). Перенос под `1c.*` — этап B плана split.
