@@ -2990,9 +2990,57 @@ a.toolbar-ico:hover {
   margin-top: 4px;
 }
 .wo-auto-grid {
-  padding: 0 12px 10px;
+  padding: 0;
   gap: 6px 10px !important;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important;
+  margin: 0;
+  max-width: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.wo-auto-body {
+  padding: 0 12px 12px;
+}
+.wo-auto-picked {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin: 0 0 4px;
+  padding: 8px 10px;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  background: #f0fdf4;
+}
+.wo-auto-picked.hidden,
+.wo-auto-editor.hidden,
+.wo-auto-actions .hidden {
+  display: none !important;
+}
+.wo-auto-picked-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  font-size: 13px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+.wo-auto-picked-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.wo-auto-editor {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f0;
+}
+.wo-auto-editor-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.35;
 }
 .wo-auto-grid > label {
   margin: 0;

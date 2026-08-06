@@ -13257,11 +13257,22 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
     btn.onclick = (e) => {
       e.preventDefault();
       const g = btn.getAttribute('data-goto');
-      if (g === 'deal:buyer' || g === 'deal:qr' || g === 'deal:items') {
-        // остаёмся на экране подготовки — фокус на поля
-        if (g === 'deal:buyer') document.getElementById('prep-buyer-inn')?.focus();
-        if (g === 'deal:qr') document.getElementById('prep-mark-paid')?.focus();
+      // На prep: ИНН/оплата можно добить здесь; «Нет на складе» и пр. — уходим в заказ
+      if (g === 'deal:buyer') {
+        document.getElementById('prep-buyer-inn')?.focus();
+        document.getElementById('prep-buyer-inn')?.scrollIntoView?.({
+          block: 'center',
+          behavior: 'smooth',
+        });
         return;
+      }
+      if (g === 'deal:qr') {
+        const paidBtn = document.getElementById('prep-mark-paid');
+        if (paidBtn) {
+          paidBtn.focus();
+          paidBtn.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+          return;
+        }
       }
       runSalesDocCreateGoto(dealId, g);
     };
@@ -16383,7 +16394,7 @@ async function renderSalesDocDetail(id) {
         const active = curPlateNorm && plateN === curPlateNorm;
         return `<button type="button" class="wo-garage-card${active ? ' is-active' : ''}" data-garage-id="${esc(
           v.id || ''
-        )}" title="Выбрать для этого ЗН">
+        )}" title="Поставить на этот заказ-наряд">
           <span class="wo-garage-plate mono">${esc(plate || 'без номера')}</span>
           <span class="wo-garage-title">${esc(title)}</span>
           <span class="wo-garage-sub muted">${esc(
@@ -16396,22 +16407,29 @@ async function renderSalesDocDetail(id) {
       <div class="span-2 wo-garage" id="wo-garage">
         <div class="wo-garage-head">
           <span class="wo-garage-label">Авто клиента</span>
-          ${
+          <span class="muted" style="font-size:11px">${
             buyerCpId
-              ? `<span class="muted" style="font-size:11px">сохраняются за контрагентом · можно несколько</span>`
-              : `<span class="muted" style="font-size:11px">контрагент не привязан — только в ЗН</span>`
-          }
+              ? 'выберите — привяжется к ЗН · или добавьте новое'
+              : 'контрагент не привязан — сохраним только в ЗН'
+          }</span>
         </div>
         <div class="wo-garage-list">
-          ${cards || `<span class="muted wo-garage-empty">Пока нет сохранённых авто</span>`}
-          <button type="button" class="wo-garage-card wo-garage-new" id="wo-garage-new" title="Новое авто">
+          ${cards || `<span class="muted wo-garage-empty">Пока нет авто у клиента</span>`}
+          <button type="button" class="wo-garage-card wo-garage-new" id="wo-garage-new" title="Добавить новое авто">
             <span class="wo-garage-plate">+</span>
-            <span class="wo-garage-title">Другое авто</span>
-            <span class="wo-garage-sub muted">СТС / вручную</span>
+            <span class="wo-garage-title">Новое авто</span>
+            <span class="wo-garage-sub muted">СТС или вручную</span>
           </button>
         </div>
       </div>`;
   })();
+  const matchedGarage = garageVehicles.find(
+    (v) =>
+      String(v.car_plate || '')
+        .toUpperCase()
+        .replace(/\s+/g, '') === curPlateNorm
+  );
+  const startEditing = !woHasPlate; // нет авто на ЗН — сразу форма нового
   const workorderVehicleHtml = isWorkorder
     ? `
     <details class="wo-auto-panel${woHasPlate ? ' is-ready' : ''}" id="wo-auto-panel"${
@@ -16422,47 +16440,72 @@ async function renderSalesDocDetail(id) {
         <span class="wo-auto-summary-meta muted">${esc(
           woHasPlate
             ? woAutoSummary || 'заполнено'
-            : 'выберите авто или заполните — иначе нет бланка и PDF'
+            : 'выберите авто клиента или добавьте новое'
         )}</span>
         <span class="wo-auto-chevron" aria-hidden="true"></span>
       </summary>
-      <div class="form-grid wo-auto-grid" id="sd-vehicle"
+      <div class="wo-auto-body" id="sd-vehicle"
            data-cp-id="${esc(buyerCpId)}"
-           data-garage-id="">
+           data-garage-id="${esc(matchedGarage?.id || '')}"
+           data-mode="${startEditing ? 'edit' : 'pick'}">
         ${garageCardsHtml}
-        <div class="span-2 sts-photos-row">
-          <div class="sts-thumbs">
-          ${
-            stsPh.front && stsPh.front_url
-              ? `<a class="sts-thumb" href="${esc(stsPh.front_url)}" target="_blank" rel="noopener" title="Лицевая"><img src="${esc(stsPh.front_url)}?t=${Date.now()}" alt="Лицевая" /><span>Лицевая</span></a>`
-              : ''
-          }
-          ${
-            stsPh.back && stsPh.back_url
-              ? `<a class="sts-thumb" href="${esc(stsPh.back_url)}" target="_blank" rel="noopener" title="Оборот"><img src="${esc(stsPh.back_url)}?t=${Date.now()}" alt="Оборот" /><span>Оборот</span></a>`
-              : ''
-          }
+        <div class="wo-auto-picked${startEditing || !woHasPlate ? ' hidden' : ''}" id="wo-auto-picked">
+          <div class="wo-auto-picked-text">
+            <b>На ЗН:</b>
+            <span class="mono">${esc(d.car_plate || '—')}</span>
+            <span class="muted">${esc(
+              [[d.car_brand, d.car_model].filter(Boolean).join(' '), d.car_year, d.car_color]
+                .filter(Boolean)
+                .join(' · ') || ''
+            )}</span>
           </div>
-          <label class="sts-upload-label" style="margin:0">Фото СТС
-            <input type="file" id="sd-sts-photos" accept="image/*" capture="environment" multiple />
-          </label>
-          <button type="button" class="primary" id="sd-sts-ocr" ${dealId ? '' : 'disabled'}>${
-            stsPh.front || stsPh.back ? 'Распознать СТС' : 'Загрузить и распознать'
-          }</button>
-          <span class="muted" id="sd-sts-ocr-msg" style="font-size:12px"></span>
+          <div class="wo-auto-picked-actions">
+            <button type="button" id="wo-auto-edit">Изменить</button>
+          </div>
         </div>
-        <label>Гос. номер<input id="sd-car-plate" value="${esc(d.car_plate || '')}" placeholder="А123ВС777" autocomplete="off" /></label>
-        <label>VIN<input id="sd-car-vin" class="mono" value="${esc(d.car_vin || '')}" autocomplete="off" /></label>
-        <label>Марка<input id="sd-car-brand" value="${esc(d.car_brand || '')}" autocomplete="off" /></label>
-        <label>Модель<input id="sd-car-model" value="${esc(d.car_model || '')}" autocomplete="off" /></label>
-        <label>Год<input id="sd-car-year" value="${esc(d.car_year || '')}" inputmode="numeric" autocomplete="off" /></label>
-        <label>Цвет<input id="sd-car-color" value="${esc(d.car_color || '')}" autocomplete="off" /></label>
-        <label>Паспорт ТС<input id="sd-car-pts" value="${esc(d.car_pts || '')}" autocomplete="off" /></label>
-        <label>Пробег<input id="sd-car-mileage" value="${esc(d.car_mileage || '')}" inputmode="numeric" autocomplete="off" /></label>
-        <label>№ СТС<input id="sd-car-sts-number" value="${esc(d.car_sts_number || '')}" autocomplete="off" /></label>
-        <div class="toolbar span-2 wo-auto-actions" style="margin:0;padding:0">
-          <button type="button" class="primary" id="sd-vehicle-save">Сохранить авто</button>
-          <span class="muted" id="sd-vehicle-msg" style="font-size:12px"></span>
+        <div class="wo-auto-editor${startEditing ? '' : ' hidden'}" id="wo-auto-editor">
+          <p class="muted wo-auto-editor-hint" id="wo-auto-editor-hint">${
+            startEditing
+              ? 'Новое авто: фото СТС или поля вручную → сохранится у клиента и на ЗН'
+              : 'Правка данных авто'
+          }</p>
+          <div class="sts-photos-row">
+            <div class="sts-thumbs">
+            ${
+              stsPh.front && stsPh.front_url
+                ? `<a class="sts-thumb" href="${esc(stsPh.front_url)}" target="_blank" rel="noopener" title="Лицевая"><img src="${esc(stsPh.front_url)}?t=${Date.now()}" alt="Лицевая" /><span>Лицевая</span></a>`
+                : ''
+            }
+            ${
+              stsPh.back && stsPh.back_url
+                ? `<a class="sts-thumb" href="${esc(stsPh.back_url)}" target="_blank" rel="noopener" title="Оборот"><img src="${esc(stsPh.back_url)}?t=${Date.now()}" alt="Оборот" /><span>Оборот</span></a>`
+                : ''
+            }
+            </div>
+            <label class="sts-upload-label" style="margin:0">Фото СТС
+              <input type="file" id="sd-sts-photos" accept="image/*" capture="environment" multiple />
+            </label>
+            <button type="button" class="primary" id="sd-sts-ocr" ${dealId ? '' : 'disabled'}>${
+              stsPh.front || stsPh.back ? 'Распознать СТС' : 'Загрузить и распознать'
+            }</button>
+            <span class="muted" id="sd-sts-ocr-msg" style="font-size:12px"></span>
+          </div>
+          <div class="form-grid wo-auto-grid">
+            <label>Гос. номер<input id="sd-car-plate" value="${esc(d.car_plate || '')}" placeholder="А123ВС777" autocomplete="off" /></label>
+            <label>VIN<input id="sd-car-vin" class="mono" value="${esc(d.car_vin || '')}" autocomplete="off" /></label>
+            <label>Марка<input id="sd-car-brand" value="${esc(d.car_brand || '')}" autocomplete="off" /></label>
+            <label>Модель<input id="sd-car-model" value="${esc(d.car_model || '')}" autocomplete="off" /></label>
+            <label>Год<input id="sd-car-year" value="${esc(d.car_year || '')}" inputmode="numeric" autocomplete="off" /></label>
+            <label>Цвет<input id="sd-car-color" value="${esc(d.car_color || '')}" autocomplete="off" /></label>
+            <label>Паспорт ТС<input id="sd-car-pts" value="${esc(d.car_pts || '')}" autocomplete="off" /></label>
+            <label>Пробег<input id="sd-car-mileage" value="${esc(d.car_mileage || '')}" inputmode="numeric" autocomplete="off" /></label>
+            <label>№ СТС<input id="sd-car-sts-number" value="${esc(d.car_sts_number || '')}" autocomplete="off" /></label>
+          </div>
+          <div class="toolbar wo-auto-actions" style="margin:8px 0 0;padding:0">
+            <button type="button" class="primary" id="sd-vehicle-save">Сохранить у клиента и на ЗН</button>
+            <button type="button" id="wo-auto-cancel" class="${startEditing && !woHasPlate ? 'hidden' : ''}">Отмена</button>
+            <span class="muted" id="sd-vehicle-msg" style="font-size:12px"></span>
+          </div>
         </div>
       </div>
     </details>`
@@ -16711,13 +16754,34 @@ async function renderSalesDocDetail(id) {
     set('sd-car-sts-number', v.car_sts_number || '');
     // пробег — на визит, при выборе из гаража не затираем текущий
   };
+  const setWoAutoMode = (mode) => {
+    const root = document.getElementById('sd-vehicle');
+    const editor = document.getElementById('wo-auto-editor');
+    const picked = document.getElementById('wo-auto-picked');
+    const cancel = document.getElementById('wo-auto-cancel');
+    const hint = document.getElementById('wo-auto-editor-hint');
+    if (root) root.dataset.mode = mode;
+    if (mode === 'edit') {
+      editor?.classList.remove('hidden');
+      picked?.classList.add('hidden');
+      cancel?.classList.toggle('hidden', !String(document.getElementById('sd-car-plate')?.value || '').trim());
+      if (hint) {
+        hint.textContent = root?.dataset?.garageId
+          ? 'Правка авто клиента'
+          : 'Новое авто: фото СТС или поля вручную → сохранится у клиента и на ЗН';
+      }
+    } else {
+      editor?.classList.add('hidden');
+      picked?.classList.remove('hidden');
+    }
+  };
   const markGarageActive = (garageId) => {
     const root = document.getElementById('sd-vehicle');
     if (root) root.dataset.garageId = garageId || '';
     document.querySelectorAll('.wo-garage-card[data-garage-id]').forEach((el) => {
       el.classList.toggle('is-active', garageId && el.getAttribute('data-garage-id') === garageId);
     });
-    document.getElementById('wo-garage-new')?.classList.toggle('is-active', !garageId);
+    document.getElementById('wo-garage-new')?.classList.toggle('is-active', !garageId && root?.dataset?.mode === 'edit');
   };
   // подсветить карточку текущего номера
   {
@@ -16732,6 +16796,29 @@ async function renderSalesDocDetail(id) {
     );
     if (match) markGarageActive(match.id);
   }
+  document.getElementById('wo-auto-edit')?.addEventListener('click', () => {
+    document.getElementById('wo-auto-panel')?.setAttribute('open', '');
+    setWoAutoMode('edit');
+    document.getElementById('sd-car-plate')?.focus();
+  });
+  document.getElementById('wo-auto-cancel')?.addEventListener('click', () => {
+    if (String(d.car_plate || '').trim()) {
+      fillWoVehicleFields(d);
+      const match = (Array.isArray(d.garage_vehicles) ? d.garage_vehicles : []).find(
+        (v) =>
+          String(v.car_plate || '')
+            .toUpperCase()
+            .replace(/\s+/g, '') ===
+          String(d.car_plate || '')
+            .toUpperCase()
+            .replace(/\s+/g, '')
+      );
+      markGarageActive(match?.id || '');
+      setWoAutoMode('pick');
+    } else {
+      setWoAutoMode('edit');
+    }
+  });
   document.getElementById('wo-garage')?.addEventListener('click', async (ev) => {
     const btn = ev.target.closest('.wo-garage-card');
     if (!btn) return;
@@ -16741,9 +16828,10 @@ async function renderSalesDocDetail(id) {
       if (mil) mil.value = '';
       markGarageActive('');
       document.getElementById('wo-auto-panel')?.setAttribute('open', '');
+      setWoAutoMode('edit');
       document.getElementById('sd-car-plate')?.focus();
       const msg = document.getElementById('sd-vehicle-msg');
-      if (msg) msg.textContent = 'Новое авто — заполните и сохраните';
+      if (msg) msg.textContent = '';
       return;
     }
     const gid = btn.getAttribute('data-garage-id') || '';
@@ -16752,9 +16840,11 @@ async function renderSalesDocDetail(id) {
     fillWoVehicleFields(v);
     markGarageActive(gid);
     document.getElementById('wo-auto-panel')?.setAttribute('open', '');
+    setWoAutoMode('pick');
     const msg = document.getElementById('sd-vehicle-msg');
     const saveBtn = document.getElementById('sd-vehicle-save');
-    if (msg) msg.textContent = 'Подставили — сохраняем в ЗН…';
+    if (msg) msg.textContent = 'Ставим авто клиента на ЗН…';
+    // временно показать editor только чтобы поля были в DOM для save — они уже в DOM even if hidden
     if (saveBtn) saveBtn.click();
   });
   document.getElementById('sd-vehicle-save')?.addEventListener('click', async () => {
@@ -16784,6 +16874,9 @@ async function renderSalesDocDetail(id) {
         save_garage: true,
         garage_vehicle_id: garageId,
       };
+      if (!body.car_plate) {
+        throw new Error('Укажите гос. номер');
+      }
       const r = await api('/sales-docs/' + encodeURIComponent(id) + '/vehicle', {
         method: 'PATCH',
         body: JSON.stringify(body),
@@ -16800,14 +16893,15 @@ async function renderSalesDocDetail(id) {
       }
       if (msg) {
         msg.textContent = r.buyer_counterparty_id
-          ? 'Сохранено в ЗН и у контрагента'
-          : 'Сохранено в ЗН';
+          ? 'Сохранено у клиента и на ЗН'
+          : 'Сохранено на ЗН';
       }
       setTimeout(() => renderSalesDocDetail(id), 300);
     } catch (e) {
       if (msg) msg.textContent = e.message || String(e);
       alert(e.message || String(e));
       if (btn) btn.disabled = false;
+      setWoAutoMode('edit');
     }
   });
   document.getElementById('sd-sts-ocr')?.addEventListener('click', async () => {
