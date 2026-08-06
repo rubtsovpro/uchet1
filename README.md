@@ -4,6 +4,8 @@
 
 Стек: **Hono + SQLite** (`api/`), **React + Vite + TanStack Query** + legacy UI (`web/`).
 
+Локальный корень проекта: `/Users/a_/Downloads/php/uchetn1` (раньше: `new_serv/1c_pnevmopodveska1_ru/warehouse`). На сервере путь прежний: `/root/1c_pnevmopodveska1_ru/warehouse`.
+
 ## Структура
 
 ```
@@ -45,11 +47,13 @@ Dev: `npm run dev:api` (:3101) и `npm run dev:web` (:5173, proxy `/api` → :31
 
 ### Swagger / OpenAPI
 
-- UI: `/api/swagger` (не `/api/docs` — там складские документы)
+- Поддомен: `https://swagger.uchetn1.ru` (алиас `api-docs.uchetn1.ru`) → `/api/swagger`
 - Spec: `/api/openapi.json`
 - Вкл.: `SWAGGER_ENABLED=1` в env
-- Доступ: сессия роли `admin` / системный admin, либо `SWAGGER_BASIC_USER` + `SWAGGER_BASIC_PASS`
+- Доступ: тот же логин WMS, только `admin` / системный admin (иначе 403; без сессии → `/login?next=`)
+- Опционально: `SWAGGER_BASIC_USER` + `SWAGGER_BASIC_PASS`
 - Try-it-out только для GET
+- DNS: A `swagger` (и при желании `api-docs`) → `155.212.160.31`, затем certbot --expand — см. `deploy/DNS-uchetn1.md`
 
 Классический UI: `/` и `/legacy.html` → redirect. React: `/money/*`, часть CRM/sales/org.
 
