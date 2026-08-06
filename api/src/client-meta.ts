@@ -19,16 +19,49 @@ export type ClientMeta = {
 const GEO_TTL_SEC = 7 * 86400;
 const GEO_TIMEOUT_MS = 1200;
 const privateIpRe =
-  /^(?:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|::1$|fc|fd|fe80)/i;
+  /^(?:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|::1$|fc|fd|fe80|:0:)/i;
 
+function normalizeIp(raw: string): string {
+  let s = String(raw || '').trim();
+  if (!s || s.toLowerCase() === 'unknown') return '';
+  // [2001:db8::1] или for="[2001:db8::1]"
+  if (s.startsWith('[') && s.includes(']')) s = s.slice(1, s.indexOf(']'));
+  // IPv4:port
+  if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(s)) s = s.replace(/:\d+$/, '');
+  return s.slice(0, 64);
+}
+
+function isPrivateOrLocal(ip: string): boolean {
+  return !ip || privateIpRe.test(ip);
+}
+
+/**
+ * Внешний IP за цепочкой прокси (HAProxy → nginx → apache → node).
+ * Берём первый публичный из CF / True-Client-IP / X-Real-IP / X-Forwarded-For.
+ * Локальные 127.0.0.1 / 10.x / 192.168.x пропускаем, если есть публичный.
+ */
 export function clientIpFromHeaders(header: (n: string) => string | undefined): string {
-  const cf = header('cf-connecting-ip')?.trim();
-  if (cf) return cf.slice(0, 64);
-  const xff = header('x-forwarded-for')?.split(',')[0]?.trim();
-  if (xff) return xff.slice(0, 64);
-  const real = header('x-real-ip')?.trim();
-  if (real) return real.slice(0, 64);
-  return '';
+  const candidates: string[] = [];
+  const push = (v?: string | null) => {
+    if (!v) return;
+    for (const part of String(v).split(',')) {
+      const ip = normalizeIp(part);
+      if (ip) candidates.push(ip);
+    }
+  };
+  push(header('cf-connecting-ip'));
+  push(header('true-client-ip'));
+  push(header('x-real-ip'));
+  push(header('x-forwarded-for'));
+  const fwd = header('forwarded');
+  if (fwd) {
+    for (const m of String(fwd).matchAll(/for=(?:"\[?)([^;"\]\s]+)/gi)) {
+      push(m[1]);
+    }
+  }
+  const publicIp = candidates.find((ip) => !isPrivateOrLocal(ip));
+  if (publicIp) return publicIp;
+  return candidates[0] || '';
 }
 
 export function clientMetaFromContext(c: Context): Pick<ClientMeta, 'ip' | 'ua'> {

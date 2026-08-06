@@ -12,15 +12,20 @@ export const openApiSpec = {
       '**Auth:** cookie-сессия `wms_sid` после `POST /api/login`.',
       'Публичные: `/api/health`, `/api/public/*`, ingest сделок (ключ).',
       '',
-      '**Swagger:** `/api/swagger` — только при `SWAGGER_ENABLED=1`,',
-      'доступ админу (сессия) или Basic Auth (`SWAGGER_BASIC_USER` / `SWAGGER_BASIC_PASS`).',
+      '**Swagger:** `https://swagger.uchetn1.ru` → `/api/swagger`. Backend API host: `https://api.uchetn1.ru`.',
+      'Вкл. при `SWAGGER_ENABLED=1`. Доступ: сессия admin / системный admin',
+      '(тот же логин WMS); опционально Basic (`SWAGGER_BASIC_*`).',
       'Try-it-out для мутаций ограничен (только GET) — полный write через UI приложения.',
       '',
       '**Не путать:** `/api/docs` — CRUD складских документов, не эта документация.',
     ].join('\n'),
     version: '0.1.0',
   },
-  servers: [{ url: '/', description: 'Same origin (1c.pnevmopodveska1.ru)' }],
+  servers: [
+    { url: 'https://swagger.uchetn1.ru', description: 'Swagger-поддомен (admin)' },
+    { url: 'https://uchetn1.ru', description: 'Учёт №1 (apex)' },
+    { url: 'https://1c.pnevmopodveska1.ru', description: 'Live WMS' },
+  ],
   tags: [
     { name: 'health' },
     { name: 'auth' },
@@ -35,6 +40,7 @@ export const openApiSpec = {
     { name: 'sales-docs' },
     { name: 'sync' },
     { name: 'staff' },
+    { name: 'chats' },
     { name: 'dicts' },
     { name: 'ops' },
     { name: 'marking' },
@@ -125,13 +131,17 @@ export const openApiSpec = {
         },
         responses: {
           '200': {
-            description: 'Сессия в cookie wms_sid',
+            description:
+              'Сессия в cookie wms_sid, либо need_2fa=true + challenge_id (код в Telegram)',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
                   properties: {
                     ok: { type: 'boolean' },
+                    need_2fa: { type: 'boolean' },
+                    challenge_id: { type: 'string' },
+                    channel: { type: 'string', enum: ['telegram'] },
                     user: { $ref: '#/components/schemas/User' },
                   },
                 },
@@ -139,32 +149,33 @@ export const openApiSpec = {
             },
           },
           '401': { description: 'Неверные учётные данные' },
+          '503': { description: '2FA обязателен, но Telegram не настроен / не отправил' },
         },
       },
     },
-    '/api/register': {
+    '/api/login/2fa': {
       post: {
         tags: ['auth'],
-        summary: 'Первичная установка пароля сотрудника (по email из Amo)',
+        summary: 'Подтверждение admin 2FA (код из Telegram)',
         security: [],
         requestBody: {
+          required: true,
           content: {
             'application/json': {
               schema: {
                 type: 'object',
+                required: ['challenge_id', 'code'],
                 properties: {
-                  email: { type: 'string' },
-                  password: { type: 'string' },
-                  password2: { type: 'string' },
-                  login: { type: 'string' },
+                  challenge_id: { type: 'string' },
+                  code: { type: 'string', description: '6 цифр' },
                 },
               },
             },
           },
         },
         responses: {
-          '200': { description: 'OK + cookie' },
-          '400': { description: 'Ошибка валидации' },
+          '200': { description: 'Сессия в cookie wms_sid' },
+          '401': { description: 'Неверный / просроченный код' },
         },
       },
     },
@@ -291,6 +302,76 @@ export const openApiSpec = {
           { name: 'warehouse_id', in: 'query', schema: { type: 'string' } },
         ],
         responses: { '200': { description: 'Остатки' } },
+      },
+    },
+    '/api/stock/valuation': {
+      get: {
+        tags: ['ops'],
+        summary: 'Стоимость склада (FIFO по приходам)',
+        description:
+          'Остаток покрывается ценами приходных (newest first = FIFO). Не себестоимость 1С. items=0 — только итоги. Также total_value_last_purchase и total_value_retail (qty×Розничная).',
+        parameters: [
+          { name: 'warehouse_id', in: 'query', schema: { type: 'string' } },
+          { name: 'q', in: 'query', schema: { type: 'string' } },
+          { name: 'page', in: 'query', schema: { type: 'integer' } },
+          { name: 'limit', in: 'query', schema: { type: 'integer' } },
+          {
+            name: 'items',
+            in: 'query',
+            schema: { type: 'string', enum: ['0', '1', 'false', 'true'] },
+            description: '0/false — без строк номенклатуры',
+          },
+        ],
+        responses: {
+          '200': {
+            description:
+              'total_value, total_value_retail, total_value_last_purchase, by_warehouse (value_purchase, value_retail), by_purchase, items, method_note',
+          },
+        },
+      },
+    },
+    '/api/warehouses/stock-totals': {
+      get: {
+        tags: ['ops'],
+        summary: 'Суммы по складам: закуп (FIFO) + розница',
+        responses: {
+          '200': {
+            description: 'items[]: warehouse_id, value_purchase, value_retail, qty, lines',
+          },
+        },
+      },
+    },
+    '/api/products/{id}/inbound-layers': {
+      get: {
+        tags: ['products'],
+        summary: 'Остаток номенклатуры по приходам (FIFO)',
+        description:
+          'Какие приходные покрывают текущий остаток: номер, дата, поставщик, qty, цена.',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': {
+            description: 'layers[], value, unit_cost, qty_unpriced, method_note',
+          },
+        },
+      },
+    },
+    '/api/products/{id}/purchase-history': {
+      get: {
+        tags: ['products'],
+        summary: 'История закупок номенклатуры',
+        description:
+          'Все строки приходных накладных по товару: дата, поставщик, номер, qty, цена (не только FIFO-остаток).',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+          {
+            name: 'limit',
+            in: 'query',
+            schema: { type: 'integer', default: 50, maximum: 200 },
+          },
+        ],
+        responses: {
+          '200': { description: 'total, items[] (doc_date, counterparty, qty, price, …)' },
+        },
       },
     },
     '/api/counterparties': {
@@ -729,13 +810,84 @@ export const openApiSpec = {
         responses: { '200': { description: 'Товар' }, '401': { description: 'Нет ключа' } },
       },
     },
+    '/api/chats': {
+      get: {
+        tags: ['chats'],
+        summary: 'Список чатов сотрудника (unread, last message)',
+        responses: { '200': { description: 'items + unread_total' }, '401': { description: 'Нет сессии' } },
+      },
+    },
+    '/api/chats/dm': {
+      post: {
+        tags: ['chats'],
+        summary: 'Get-or-create личный чат (peer_id)',
+        responses: { '200': { description: 'chat' }, '400': { description: 'Ошибка' } },
+      },
+    },
+    '/api/chats/group': {
+      post: {
+        tags: ['chats'],
+        summary: 'Создать группу (title, member_ids)',
+        responses: { '201': { description: 'chat' }, '400': { description: 'Ошибка' } },
+      },
+    },
+    '/api/chats/{id}/messages': {
+      get: {
+        tags: ['chats'],
+        summary: 'История сообщений (after/before/limit)',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'items' }, '403': { description: 'Нет доступа' } },
+      },
+      post: {
+        tags: ['chats'],
+        summary: 'Отправить текст / reply / forward',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '201': { description: 'message' } },
+      },
+    },
+    '/api/chats/{id}/attachments': {
+      post: {
+        tags: ['chats'],
+        summary: 'Загрузить файл в чат (multipart file → S3 private)',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '201': { description: 'message + attachment' } },
+      },
+    },
+    '/api/chats/attachments/{id}': {
+      get: {
+        tags: ['chats'],
+        summary: 'Скачать вложение (ACL участника чата)',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'binary' }, '403': { description: 'Нет доступа' } },
+      },
+    },
+    '/api/chats/{id}/read': {
+      post: {
+        tags: ['chats'],
+        summary: 'Пометить чат прочитанным',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'ok' } },
+      },
+    },
+    '/api/chats/directory': {
+      get: {
+        tags: ['chats'],
+        summary: 'Поиск сотрудников для нового чата',
+        responses: { '200': { description: 'items' } },
+      },
+    },
     '/api/openapi.json': {
       get: {
         tags: ['health'],
         summary: 'Эта OpenAPI-спека (сырой JSON)',
         security: [],
-        description: 'Доступен при SWAGGER_ENABLED=1 + admin/basic',
-        responses: { '200': { description: 'OpenAPI 3 JSON' }, '404': { description: 'Выключено' } },
+        description: 'SWAGGER_ENABLED=1 + сессия admin (или Basic)',
+        responses: {
+          '200': { description: 'OpenAPI 3 JSON' },
+          '401': { description: 'Нет сессии' },
+          '403': { description: 'Не админ' },
+          '404': { description: 'Выключено' },
+        },
       },
     },
     '/api/swagger': {
@@ -743,8 +895,14 @@ export const openApiSpec = {
         tags: ['health'],
         summary: 'Swagger UI',
         security: [],
-        description: 'Не путать с /api/docs (складские документы)',
-        responses: { '200': { description: 'HTML UI' }, '404': { description: 'Выключено' } },
+        description:
+          'Поддомен swagger.uchetn1.ru. Не путать с /api/docs (складские документы).',
+        responses: {
+          '200': { description: 'HTML UI' },
+          '302': { description: 'Редирект на /login?next=…' },
+          '403': { description: 'Не админ' },
+          '404': { description: 'Выключено' },
+        },
       },
     },
   },

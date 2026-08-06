@@ -31,3 +31,15 @@ export function nextCode(prefix: string, pad = 6): string {
     throw e;
   }
 }
+
+/** Поднять счётчик prefix, если в таблице уже есть большие номера PREFIX-000123. */
+export function ensureSeqAtLeast(prefix: string, minN: number): void {
+  const key = `seq_${prefix.toLowerCase()}`;
+  const n = Math.max(0, Math.floor(Number(minN) || 0));
+  if (n < 1) return;
+  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
+  const cur = row ? Number(row.value) : 0;
+  if (!Number.isFinite(cur) || cur < n) {
+    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, String(n)]);
+  }
+}

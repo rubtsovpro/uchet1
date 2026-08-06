@@ -222,3 +222,25 @@ export function buildCategoryTree(): {
     uncategorized: Number(uncategorized) || 0,
   };
 }
+
+/** Все GUID категории и её потомков (с учётом склейки одноимённых). */
+export function idsForCategoryFilter(categoryId: string): string[] {
+  const id = String(categoryId || '').trim();
+  if (!id || id === '__none__') return id ? [id] : [];
+  const { roots } = buildCategoryTree();
+  const find = (nodes: CategoryTreeNode[]): CategoryTreeNode | null => {
+    for (const n of nodes) {
+      if (n.id === id || n.ids.includes(id)) return n;
+      const hit = find(n.children);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const node = find(roots);
+  if (!node) return [id];
+  const collect = (n: CategoryTreeNode): string[] => [
+    ...n.ids,
+    ...n.children.flatMap(collect),
+  ];
+  return [...new Set(collect(node))];
+}

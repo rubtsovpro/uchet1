@@ -6,7 +6,15 @@ import type { Context } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { all, get, run } from './db.js';
 import { newGuid } from './ids.js';
-import { parseRights, type StaffRights } from './staff.js';
+import {
+  canAccessSection,
+  effectiveRightsForStaff,
+  parseRights,
+  rightsForRole,
+  type StaffRights,
+} from './staff.js';
+
+export { canAccessSection };
 
 export const COOKIE_SID = 'wms_sid';
 const SESSION_DAYS = 14;
@@ -51,27 +59,7 @@ function systemActor(): Actor {
     email: '',
     login: ENV_USER(),
     role: 'admin',
-    rights: {
-      sections: [
-        'home',
-        'crm',
-        'sales',
-        'purchases',
-        'warehouse',
-        'works',
-        'production',
-        'money',
-        'staff',
-        'company',
-        'settings',
-        'ideas',
-        'help',
-      ],
-      can_sync: true,
-      can_edit_products: true,
-      can_edit_prices: true,
-      can_edit_docs: true,
-    },
+    rights: rightsForRole('admin'),
     isSystemAdmin: true,
   };
 }
@@ -93,7 +81,7 @@ function staffToActor(row: Record<string, unknown>): Actor {
     email: String(row.email || ''),
     login: String(row.login || row.email || ''),
     role: String(row.role || 'none'),
-    rights: parseRights(String(row.rights_json || ''), String(row.role || 'none')),
+    rights: effectiveRightsForStaff(row),
     isSystemAdmin: false,
   };
 }
@@ -148,23 +136,22 @@ export function requireActor(c: Context): Actor {
   return a;
 }
 
+export type AuthPasswordResult =
+  | { ok: true; actor: Actor }
+  | { ok: false; error: string };
+
 export type LoginResult =
   | { ok: true; actor: Actor; sid: string }
   | { ok: false; error: string };
 
-export function loginWithPassword(
-  username: string,
-  password: string,
-  meta?: { ip?: string; ua?: string }
-): LoginResult {
+/** Проверка логина/пароля без создания сессии (для 2FA). */
+export function authenticatePassword(username: string, password: string): AuthPasswordResult {
   const u = username.trim();
   const p = password;
   if (!u || !p) return { ok: false, error: 'Укажите логин и пароль' };
 
   if (u === ENV_USER() && p === ENV_PASS()) {
-    const actor = systemActor();
-    const sid = createSession(actor.id, meta);
-    return { ok: true, actor, sid };
+    return { ok: true, actor: systemActor() };
   }
 
   const row = get<Record<string, unknown>>(
@@ -182,61 +169,60 @@ export function loginWithPassword(
   if (!verifyPassword(p, hash)) {
     return { ok: false, error: 'Неверный логин или пароль' };
   }
-  const actor = staffToActor(row);
-  const sid = createSession(actor.id, meta);
-  return { ok: true, actor, sid };
+  return { ok: true, actor: staffToActor(row) };
 }
 
-export type RegisterResult =
-  | { ok: true; actor: Actor; sid: string }
-  | { ok: false; error: string };
-
-export function registerStaff(
-  email: string,
+export function loginWithPassword(
+  username: string,
   password: string,
-  meta?: { ip?: string; ua?: string; login?: string }
-): RegisterResult {
-  const em = email.trim().toLowerCase();
-  if (!em || !em.includes('@')) return { ok: false, error: 'Укажите рабочий email из Amo' };
-  if (password.length < 6) return { ok: false, error: 'Пароль не короче 6 символов' };
+  meta?: { ip?: string; ua?: string }
+): LoginResult {
+  const auth = authenticatePassword(username, password);
+  if (!auth.ok) return auth;
+  const sid = createSession(auth.actor.id, meta);
+  return { ok: true, actor: auth.actor, sid };
+}
+
+/** Быстрый вход по логину + PIN смены (для планшетов на ролевых экранах). */
+export function authenticatePin(username: string, pin: string): AuthPasswordResult {
+  const u = username.trim();
+  const p = String(pin || '').replace(/\D/g, '');
+  if (!u || !p) return { ok: false, error: 'Укажите логин и PIN' };
+  if (p.length < 4 || p.length > 6) return { ok: false, error: 'PIN — от 4 до 6 цифр' };
 
   const row = get<Record<string, unknown>>(
-    `SELECT * FROM staff WHERE lower(email) = ? LIMIT 1`,
-    [em]
+    `SELECT * FROM staff
+     WHERE (lower(login) = lower(?) OR lower(email) = lower(?) OR lower(auth_login) = lower(?))
+       AND can_login = 1 AND is_active = 1
+     LIMIT 1`,
+    [u, u, u]
   );
-  if (!row) {
-    return {
-      ok: false,
-      error: 'Email не найден в персонале. Сначала «Загрузить из Amo и 1С» и разрешите вход.',
-    };
+  if (!row) return { ok: false, error: 'Неверный логин или PIN' };
+  const pinHash = String(row.pin_hash || '');
+  if (!pinHash) {
+    return { ok: false, error: 'PIN не задан — войдите паролем или попросите админа задать PIN' };
   }
-  if (!Number(row.can_login) || !Number(row.is_active)) {
-    return { ok: false, error: 'Вход для этого сотрудника запрещён — обратитесь к админу' };
+  if (!verifyPassword(p, pinHash)) {
+    return { ok: false, error: 'Неверный логин или PIN' };
   }
-  if (String(row.password_hash || '')) {
-    return { ok: false, error: 'Уже зарегистрирован — войдите по email и паролю' };
-  }
+  return { ok: true, actor: staffToActor(row) };
+}
 
-  const login =
-    (meta?.login || '').trim()
-    || String(row.login || '').trim()
-    || em.split('@')[0]!;
-  const clash = get(
-    `SELECT id FROM staff WHERE lower(login) = lower(?) AND id != ?`,
-    [login, String(row.id)]
-  );
-  if (clash) return { ok: false, error: 'Логин занят — укажите другой' };
+export function loginWithPin(
+  username: string,
+  pin: string,
+  meta?: { ip?: string; ua?: string }
+): LoginResult {
+  const auth = authenticatePin(username, pin);
+  if (!auth.ok) return auth;
+  const sid = createSession(auth.actor.id, meta);
+  return { ok: true, actor: auth.actor, sid };
+}
 
-  const hash = hashPassword(password);
-  run(
-    `UPDATE staff SET login = ?, password_hash = ?, password_set_at = datetime('now') WHERE id = ?`,
-    [login, hash, String(row.id)]
-  );
-  const updated = get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [String(row.id)]);
-  if (!updated) return { ok: false, error: 'Ошибка сохранения' };
-  const actor = staffToActor(updated);
-  const sid = createSession(actor.id, meta);
-  return { ok: true, actor, sid };
+export function staffHasPinPublic(actorId: string): boolean {
+  if (!actorId || actorId === '__admin__') return false;
+  const row = get<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = ?', [actorId]);
+  return Boolean(row?.pin_hash);
 }
 
 export function setStaffPassword(staffId: string, password: string): void {
@@ -260,10 +246,16 @@ export function changeOwnPassword(actorId: string, oldPass: string, newPass: str
 }
 
 export function publicStaffRow(row: Record<string, unknown>): Record<string, unknown> {
-  const { password_hash: _, ...rest } = row;
+  const { password_hash: _, pin_hash: __, ...rest } = row;
+  const role = String(row.role || 'none');
+  const rights = parseRights(String(row.rights_json || ''), role);
+  const isAdmin = role === 'admin';
   return {
     ...rest,
     has_password: Boolean(row.password_hash),
+    has_pin: Boolean(row.pin_hash),
+    company_ids: isAdmin ? [] : rights.company_ids || [],
+    company_access_all: isAdmin || !(rights.company_ids && rights.company_ids.length),
   };
 }
 
