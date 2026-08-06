@@ -1,11 +1,54 @@
 /**
- * Нумерация документов в формате 1С УНФ:
- *   расход / УПД / СФ / заказ-наряд → 00НФ-003845
- *   приход → 00НФ-000314
- *   счёт на оплату → простое число (в OData счетов нет — задаётся вручную или из meta)
+ * Нумерация:
+ *   новые из заказа (Amo): СФ{сделка}, УПД{сделка}, Р{сделка}, Д{сделка},
+ *     Сч{сделка}, ЗН{сделка}; заказ покупателя = номер сделки;
+ *   синк/старое из 1С УНФ: 00НФ-… / счета meta.
  */
 import { get, run } from './db.js';
 import { odataConfigFromEnv, type OdataConfig } from './odata.js';
+
+/** Префикс + номер сделки; при коллизии — «-2», «-3»… */
+export function numberFromDeal(
+  prefix: string,
+  dealId: string,
+  isTaken: (number: string) => boolean
+): string {
+  const deal = String(dealId || '')
+    .trim()
+    .replace(/\s+/g, '');
+  if (!deal) throw new Error('Нет номера сделки для нумерации документа');
+  const base = `${prefix}${deal}`;
+  if (!isTaken(base)) return base;
+  for (let i = 2; i < 1000; i++) {
+    const n = `${base}-${i}`;
+    if (!isTaken(n)) return n;
+  }
+  throw new Error(`Не удалось выделить номер ${prefix}${deal}`);
+}
+
+/** Префиксы документов продажи, привязанных к заказу. */
+export const DEAL_SALES_PREFIX: Record<string, string> = {
+  sf: 'СФ',
+  upd: 'УПД',
+  contract: 'Д',
+  invoice: 'Сч',
+  workorder: 'ЗН',
+};
+
+export function salesNumberFromDeal(docType: string, dealId: string): string {
+  const prefix = DEAL_SALES_PREFIX[docType];
+  if (!prefix) throw new Error(`Нет префикса для типа ${docType}`);
+  return numberFromDeal(prefix, dealId, (n) =>
+    Boolean(get('SELECT id FROM sales_docs WHERE number = ? LIMIT 1', [n]))
+  );
+}
+
+/** Расходная по заказу: Р{сделка}. */
+export function outNumberFromDeal(dealId: string): string {
+  return numberFromDeal('Р', dealId, (n) =>
+    Boolean(get('SELECT id FROM stock_docs WHERE number = ? LIMIT 1', [n]))
+  );
+}
 
 const KEY_OUT = 'seq_00nf_out';
 const KEY_IN = 'seq_00nf_in';
@@ -91,6 +134,14 @@ export function nextInvoiceNumber(): string {
   return String(next);
 }
 
+const KEY_CONTRACT = 'doc_seq_contract';
+
+/** Договоры с контрагентами: ДГ-00001 */
+export function nextContractNumber(): string {
+  const next = bumpSeq(KEY_CONTRACT, 0);
+  return `ДГ-${String(next).padStart(5, '0')}`;
+}
+
 export function nextOutNfNumber(): string {
   const next = bumpSeq(KEY_OUT, 0);
   return formatNfNumber(next);
@@ -107,6 +158,8 @@ export function getDocNumberingState(): DocNumberingState {
   const seqInv = readSeq(KEY_INV, 0);
   const lastOut = metaGet('doc_numbering_last_out_1c');
   const lastIn = metaGet('doc_numbering_last_in_1c');
+  const lastInv1c = metaGet('doc_numbering_last_invoice_1c');
+  const invNote = metaGet('doc_numbering_invoice_note');
   return {
     last_out_1c: lastOut,
     last_in_1c: lastIn,
@@ -118,7 +171,10 @@ export function getDocNumberingState(): DocNumberingState {
     next_invoice: String(seqInv + 1),
     synced_at: metaGet(KEY_SYNCED),
     note:
-      'Счета в OData 1С не опубликованы — last_invoice задаётся вручную. УПД/СФ/ЗН — серия расходных 00НФ-.',
+      invNote ||
+      (lastInv1c
+        ? `Последний счёт из 1С: ${lastInv1c}. УПД/СФ/ЗН — серия расходных 00НФ-.`
+        : 'Счета в OData 1С не опубликованы — укажите последний № счёта из 1С вручную (или опубликуйте Document_СчетНаОплату). УПД/СФ/ЗН — серия 00НФ-.'),
   };
 }
 
@@ -147,8 +203,7 @@ async function fetchLatestNumber(cfg: OdataConfig, entity: string): Promise<stri
 }
 
 /**
- * Подтянуть последние номера из 1С (расходная / приходная накладная).
- * Счёт в публикации OData отсутствует.
+ * Подтянуть последние номера из 1С (расходная / приходная / счёт на оплату, если опубликован).
  */
 export async function syncDocNumberingFrom1c(): Promise<DocNumberingState> {
   const cfg = odataConfigFromEnv();
@@ -166,6 +221,39 @@ export async function syncDocNumberingFrom1c(): Promise<DocNumberingState> {
     metaSet('doc_numbering_last_in_1c', lastIn);
     const n = parseTrailingNumber(lastIn);
     if (n != null) setLastOccupied('in', n);
+  }
+
+  // Счёт на оплату часто не опубликован в OData — пробуем типовые имена УНФ.
+  const invoiceCandidates = [
+    'Document_СчетНаОплату',
+    'Document_СчётНаОплату',
+    'Document_СчетНаОплатуПокупателю',
+  ];
+  let lastInv: string | null = null;
+  let invoiceErr = '';
+  for (const entity of invoiceCandidates) {
+    try {
+      lastInv = await fetchLatestNumber(cfg, entity);
+      if (lastInv) {
+        metaSet('doc_numbering_last_invoice_1c', lastInv);
+        metaSet('doc_numbering_invoice_entity', entity);
+        const n = parseTrailingNumber(lastInv);
+        if (n != null) setLastOccupied('invoice', n);
+        break;
+      }
+    } catch (e) {
+      invoiceErr = e instanceof Error ? e.message : String(e);
+    }
+  }
+  if (!lastInv) {
+    metaSet(
+      'doc_numbering_invoice_note',
+      invoiceErr
+        ? `Счёт в OData недоступен (${invoiceErr.slice(0, 120)}). Задайте last_invoice вручную или опубликуйте Document_СчетНаОплату.`
+        : 'Счёт в OData не опубликован. Задайте последний № счёта из 1С вручную или опубликуйте Document_СчетНаОплату.'
+    );
+  } else {
+    metaSet('doc_numbering_invoice_note', `Счёт подтянут из ${metaGet('doc_numbering_invoice_entity') || '1С'}: ${lastInv}`);
   }
 
   metaSet(KEY_SYNCED, new Date().toISOString());
@@ -196,12 +284,15 @@ export function applyDocNumberingPatch(patch: {
     metaSet('doc_numbering_last_in_1c', formatNfNumber(n));
   }
   if (patch.last_invoice != null && patch.last_invoice !== '') {
+    const raw = String(patch.last_invoice).trim();
     const n =
       typeof patch.last_invoice === 'number'
         ? patch.last_invoice
-        : parseTrailingNumber(String(patch.last_invoice));
+        : parseTrailingNumber(raw);
     if (n == null) throw new Error('Некорректный last_invoice');
     setLastOccupied('invoice', n);
+    metaSet('doc_numbering_last_invoice_1c', raw || String(n));
+    metaSet('doc_numbering_invoice_note', `Последний счёт задан вручную: ${raw || n}`);
   }
   return getDocNumberingState();
 }
