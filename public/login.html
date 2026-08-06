@@ -5,158 +5,309 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Учёт №1 — вход</title>
   <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700;800&family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=13" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css?v=98" />
 </head>
 <body class="auth-body">
   <div class="auth-wrap">
   <div class="auth-card">
     <div class="auth-brand">
-      <img src="/logo-uchet1.svg" width="48" height="48" alt="Учёт №1" />
-      <div>
-        <div class="brand">Учёт №1</div>
-        <p class="muted">Склад и продажи, редакция 1.0 — вход в информационную базу</p>
+      <img src="/logo-uchet1-on-dark.svg" width="48" height="48" alt="Учёт №1" />
+      <div class="auth-brand-text">
+        <div class="brand" id="screen-title">Учёт №1</div>
+        <p class="muted" id="screen-sub">Склад и продажи, редакция 1.0 — вход в информационную базу</p>
       </div>
     </div>
 
-    <div class="auth-tabs">
-      <button type="button" class="auth-tab active" data-tab="login">Вход</button>
-      <button type="button" class="auth-tab" data-tab="register">Регистрация</button>
+    <div id="quick-login" class="hidden" hidden>
+      <p class="muted" style="margin:0 0 8px">На этом устройстве</p>
+      <p style="margin:0 0 16px;font-size:1.2rem;font-weight:650;color:var(--taxi-ink,#0f172a);letter-spacing:-0.02em" id="quick-name">—</p>
+      <form id="quick-form">
+        <input type="hidden" name="username" id="quick-username" />
+        <label id="quick-secret-label">PIN или пароль
+          <input name="secret" id="quick-secret" type="password" inputmode="numeric" autocomplete="current-password" required placeholder="••••" />
+        </label>
+        <button type="submit" class="primary" id="quick-submit">Продолжить</button>
+      </form>
+      <button type="button" id="quick-other">Другой пользователь</button>
     </div>
 
     <form id="login-form">
-      <label>Логин или email<input name="username" autocomplete="username" required placeholder="email из Amo или admin" /></label>
-      <label>Пароль<input name="password" type="password" autocomplete="current-password" required /></label>
+      <label>Логин или email<input name="username" autocomplete="username" required placeholder="name@company.ru" /></label>
+      <label>Пароль или PIN<input name="password" type="password" autocomplete="current-password" required placeholder="••••••••" /></label>
       <button type="submit" class="primary">Войти</button>
     </form>
 
-    <form id="register-form" class="hidden">
-      <p class="muted">Email должен быть в списке персонала (Amo). После регистрации можно входить.</p>
-      <label>Email из Amo<input name="email" type="email" autocomplete="email" required placeholder="name@pnevmopodveska1.ru" /></label>
-      <label>Логин (необязательно)<input name="login" autocomplete="username" placeholder="оставьте пустым — будет из email" /></label>
-      <label>Пароль<input name="password" type="password" autocomplete="new-password" required minlength="6" /></label>
-      <label>Пароль ещё раз<input name="password2" type="password" autocomplete="new-password" required minlength="6" /></label>
-      <button type="submit" class="primary">Зарегистрироваться</button>
+    <form id="twofa-form" class="hidden" hidden aria-hidden="true">
+      <p class="muted" id="twofa-hint" style="margin:0 0 4px">Введите код подтверждения.</p>
+      <input type="hidden" name="challenge_id" id="twofa-challenge" />
+      <label>Код подтверждения<input name="code" id="twofa-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required placeholder="••••••" /></label>
+      <button type="submit" class="primary">Подтвердить</button>
+      <button type="button" id="twofa-back">← Назад</button>
     </form>
 
     <p class="error" id="err" hidden></p>
   </div>
-
-  <footer class="taxi-footer auth-footer">
-    <div class="rb-ad" id="rb-ad">
-      <div class="rb-ad-bar">
-        <button type="button" class="rb-ad-toggle" id="rb-ad-toggle" aria-expanded="false" aria-controls="rb-ad-panel" title="Разработка — Rubtsov.pro">
-          <img class="rb-ad-logo" src="/logo-rubtsov.svg" width="118" height="20" alt="rubtsov.pro" />
-          <span class="rb-ad-sep" aria-hidden="true"></span>
-          <span class="rb-ad-tag">CRM · ERP · МП</span>
-          <span class="rb-ad-chev" aria-hidden="true">▴</span>
-        </button>
-        <a class="rb-ad-phone" href="tel:+79291038434">+7 929 103-84-34</a>
-      </div>
-      <div class="rb-ad-panel" id="rb-ad-panel" hidden>
-        <div class="rb-ad-panel-head">
-          <img src="/logo-rubtsov.svg" width="140" height="24" alt="rubtsov.pro" />
-          <p>Автоматизация бизнеса: CRM, ERP, маркетплейсы и Учёт №1 под ключ</p>
-        </div>
-        <ul class="rb-ad-list">
-          <li>Внедрение amoCRM / Битрикс24 за 5–7 дней</li>
-          <li>Склад и ERP без хаоса — как этот Учёт №1</li>
-          <li>Ozon, Wildberries, Авито + интеграции с сайтом</li>
-          <li>100+ проектов · 9 лет опыта</li>
-        </ul>
-        <div class="rb-ad-contacts">
-          <a href="tel:+79291038434">+7 929 103-84-34</a>
-          <a href="mailto:info@rubtsov.pro">info@rubtsov.pro</a>
-          <a href="https://rubtsov.pro/" target="_blank" rel="noopener">rubtsov.pro</a>
-          <a href="https://wa.me/79291038434" target="_blank" rel="noopener">WhatsApp</a>
-        </div>
-        <div class="rb-ad-cta">
-          <a class="rb-ad-btn primary" href="https://rubtsov.pro/" target="_blank" rel="noopener">Бесплатная консультация</a>
-          <a class="rb-ad-btn" href="https://rubtsov.pro/cases/" target="_blank" rel="noopener">Кейсы</a>
-        </div>
-      </div>
-    </div>
-    <span class="taxi-footer-note">Разработка · Rubtsov.pro</span>
-  </footer>
   </div>
   <script>
+    const LAST_KEY = 'wms_last_user';
     const err = document.getElementById('err');
     const loginForm = document.getElementById('login-form');
-    const registerForm = document.getElementById('register-form');
-    document.querySelectorAll('.auth-tab').forEach((btn) => {
-      btn.onclick = () => {
-        document.querySelectorAll('.auth-tab').forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
-        const reg = btn.dataset.tab === 'register';
-        loginForm.classList.toggle('hidden', reg);
-        registerForm.classList.toggle('hidden', !reg);
+    const twofaForm = document.getElementById('twofa-form');
+    const quickBox = document.getElementById('quick-login');
+    const quickForm = document.getElementById('quick-form');
+    let twofaEnabled = false;
+    let lastUser = null;
+    let screenHome = '/';
+
+    function readLast() {
+      try {
+        const raw = localStorage.getItem(LAST_KEY);
+        if (!raw) return null;
+        const j = JSON.parse(raw);
+        if (!j || !j.login) return null;
+        return { login: String(j.login), name: String(j.name || j.login), has_pin: Boolean(j.has_pin) };
+      } catch (_) {
+        return null;
+      }
+    }
+    function saveLast(user) {
+      if (!user || !user.login) return;
+      try {
+        localStorage.setItem(
+          LAST_KEY,
+          JSON.stringify({
+            login: user.login,
+            name: user.name || user.login,
+            has_pin: Boolean(user.has_pin),
+            at: Date.now(),
+          })
+        );
+      } catch (_) {}
+    }
+    function clearLast() {
+      try { localStorage.removeItem(LAST_KEY); } catch (_) {}
+    }
+
+    function disableTwofaUi() {
+      twofaEnabled = false;
+      if (twofaForm && twofaForm.parentNode) twofaForm.parentNode.removeChild(twofaForm);
+    }
+    function enableTwofaUi() {
+      twofaEnabled = true;
+      if (twofaForm) {
+        twofaForm.hidden = false;
+        twofaForm.removeAttribute('aria-hidden');
+        twofaForm.classList.add('hidden');
+        const hint = document.getElementById('twofa-hint');
+        if (hint) hint.textContent = 'Код отправлен в Telegram. Введите 6 цифр.';
+        const lab = twofaForm.querySelector('label');
+        if (lab && lab.childNodes[0]) lab.childNodes[0].textContent = 'Код из Telegram';
+      }
+    }
+    fetch('/api/auth/2fa-status')
+      .then((r) => r.json())
+      .then((st) => {
+        if (st && st.mode !== 'off' && st.ready) enableTwofaUi();
+        else disableTwofaUi();
+      })
+      .catch(() => disableTwofaUi());
+
+    fetch('/api/auth/screen')
+      .then((r) => r.json())
+      .then((sc) => {
+        if (!sc) return;
+        if (sc.title) document.getElementById('screen-title').textContent = sc.title;
+        if (sc.subtitle) document.getElementById('screen-sub').textContent = sc.subtitle;
+        if (sc.home_path) screenHome = sc.home_path;
+        document.title = (sc.title || 'Учёт №1') + ' — вход';
+      })
+      .catch(() => {});
+
+    function showFullLogin() {
+      if (quickBox) {
+        quickBox.classList.add('hidden');
+        quickBox.hidden = true;
+      }
+      loginForm.classList.remove('hidden');
+      if (twofaForm) twofaForm.classList.add('hidden');
+    }
+    function showQuick() {
+      if (!lastUser || !quickBox) return showFullLogin();
+      quickBox.hidden = false;
+      quickBox.classList.remove('hidden');
+      loginForm.classList.add('hidden');
+      if (twofaForm) twofaForm.classList.add('hidden');
+      document.getElementById('quick-name').textContent = lastUser.name;
+      document.getElementById('quick-username').value = lastUser.login;
+      document.getElementById('quick-submit').textContent = 'Продолжить как ' + lastUser.name;
+      const lab = document.getElementById('quick-secret-label');
+      const inp = document.getElementById('quick-secret');
+      if (lastUser.has_pin) {
+        if (lab && lab.childNodes[0]) lab.childNodes[0].textContent = 'PIN смены';
+        inp.placeholder = '••••';
+        inp.inputMode = 'numeric';
+      } else {
+        if (lab && lab.childNodes[0]) lab.childNodes[0].textContent = 'Пароль';
+        inp.placeholder = 'пароль';
+        inp.inputMode = 'text';
+      }
+      inp.value = '';
+      inp.focus();
+    }
+    function showLogin() {
+      if (lastUser) showQuick();
+      else showFullLogin();
+    }
+    function showTwofa(challengeId, hint) {
+      if (!twofaEnabled || !twofaForm) {
+        err.hidden = false;
+        err.textContent = 'Двухфакторная проверка отключена. Обновите страницу и войдите по паролю.';
+        showLogin();
+        return;
+      }
+      if (quickBox) {
+        quickBox.classList.add('hidden');
+        quickBox.hidden = true;
+      }
+      loginForm.classList.add('hidden');
+      twofaForm.classList.remove('hidden');
+      document.getElementById('twofa-challenge').value = challengeId;
+      document.getElementById('twofa-hint').textContent = hint || 'Код отправлен в Telegram';
+      const codeInput = document.getElementById('twofa-code');
+      codeInput.value = '';
+      codeInput.focus();
+    }
+    const twofaBack = document.getElementById('twofa-back');
+    if (twofaBack) {
+      twofaBack.onclick = () => {
         err.hidden = true;
+        showLogin();
       };
-    });
+    }
+    document.getElementById('quick-other').onclick = () => {
+      err.hidden = true;
+      clearLast();
+      lastUser = null;
+      showFullLogin();
+    };
+
     async function post(path, body) {
-      const res = await fetch('/api' + path, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || res.statusText);
-      return data;
+      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const t = ctrl ? setTimeout(() => ctrl.abort(), 20000) : 0;
+      try {
+        const res = await fetch('/api' + path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(body),
+          signal: ctrl ? ctrl.signal : undefined,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || data.ask || res.statusText);
+        return data;
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw new Error('Сервер не ответил. Проверьте интернет и попробуйте снова.');
+        throw e;
+      } finally {
+        if (t) clearTimeout(t);
+      }
+    }
+    function setBusy(btn, on, labelIdle) {
+      if (!btn) return;
+      btn.disabled = !!on;
+      if (on) btn.dataset.label = btn.textContent || labelIdle || 'Войти';
+      btn.textContent = on ? 'Вход…' : (btn.dataset.label || labelIdle || 'Войти');
+    }
+    function goNext(data) {
+      if (data && data.user) saveLast(data.user);
+      const qs = new URLSearchParams(location.search).get('next');
+      let dest = '/';
+      if (qs && qs.startsWith('/') && !qs.startsWith('//')) dest = qs;
+      else {
+        const home = (data && data.home_path) || screenHome || '/';
+        dest = home.startsWith('/') && !home.startsWith('//') ? home : '/';
+      }
+      // TEMP: HTTPS у части клиентов ломает сессию — уводим на http://
+      const host = location.host || 'uchetn1.ru';
+      const abs = 'http://' + host + dest;
+      setTimeout(() => {
+        location.replace(abs);
+      }, 50);
+    }
+    function loginPayload(username, secret) {
+      const s = String(secret || '');
+      const digits = s.replace(/\D/g, '');
+      // короткий числовой секрет → PIN; иначе пароль
+      if (digits.length >= 4 && digits.length <= 6 && digits === s.trim()) {
+        return { username, pin: digits };
+      }
+      return { username, password: s };
     }
     loginForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       err.hidden = true;
       const fd = new FormData(loginForm);
+      const btn = loginForm.querySelector('button[type="submit"]');
+      setBusy(btn, true, 'Войти');
       try {
-        await post('/login', {
-          username: fd.get('username'),
-          password: fd.get('password'),
-        });
-        const next = new URLSearchParams(location.search).get('next') || '/';
-        location.href = next.startsWith('/') && !next.startsWith('//') ? next : '/';
+        const data = await post('/login', loginPayload(fd.get('username'), fd.get('password')));
+        if (data.need_2fa && data.challenge_id && twofaEnabled) {
+          setBusy(btn, false, 'Войти');
+          showTwofa(data.challenge_id, data.hint);
+          return;
+        }
+        goNext(data);
       } catch (ex) {
+        setBusy(btn, false, 'Войти');
         err.hidden = false;
         err.textContent = ex.message;
       }
     });
-    registerForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      err.hidden = true;
-      const fd = new FormData(registerForm);
-      try {
-        await post('/register', {
-          email: fd.get('email'),
-          login: fd.get('login'),
-          password: fd.get('password'),
-          password2: fd.get('password2'),
-        });
-        const next = new URLSearchParams(location.search).get('next') || '/';
-        location.href = next.startsWith('/') && !next.startsWith('//') ? next : '/';
-      } catch (ex) {
-        err.hidden = false;
-        err.textContent = ex.message;
-      }
-    });
-    (function bindRubtsovAd() {
-      const wrap = document.getElementById('rb-ad');
-      const btn = document.getElementById('rb-ad-toggle');
-      const panel = document.getElementById('rb-ad-panel');
-      if (!wrap || !btn || !panel) return;
-      const setOpen = (open) => {
-        wrap.classList.toggle('open', open);
-        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-        panel.hidden = !open;
-      };
-      btn.addEventListener('click', () => setOpen(panel.hidden));
-      document.addEventListener('click', (e) => {
-        if (!wrap.contains(e.target)) setOpen(false);
+    if (quickForm) {
+      quickForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        err.hidden = true;
+        const fd = new FormData(quickForm);
+        const btn = document.getElementById('quick-submit');
+        setBusy(btn, true, 'Продолжить');
+        try {
+          const data = await post('/login', loginPayload(fd.get('username'), fd.get('secret')));
+          if (data.need_2fa && data.challenge_id && twofaEnabled) {
+            setBusy(btn, false, 'Продолжить');
+            showTwofa(data.challenge_id, data.hint);
+            return;
+          }
+          goNext(data);
+        } catch (ex) {
+          setBusy(btn, false, 'Продолжить');
+          err.hidden = false;
+          err.textContent = ex.message;
+        }
       });
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') setOpen(false);
+    }
+    if (twofaForm) {
+      twofaForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        err.hidden = true;
+        const fd = new FormData(twofaForm);
+        const btn = twofaForm.querySelector('button[type="submit"]');
+        setBusy(btn, true, 'Подтвердить');
+        try {
+          const data = await post('/login/2fa', {
+            challenge_id: fd.get('challenge_id'),
+            code: String(fd.get('code') || '').replace(/\D/g, ''),
+          });
+          goNext(data);
+        } catch (ex) {
+          setBusy(btn, false, 'Подтвердить');
+          err.hidden = false;
+          err.textContent = ex.message;
+        }
       });
-    })();
+    }
+    lastUser = readLast();
+    showLogin();
   </script>
 </body>
 </html>

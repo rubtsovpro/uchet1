@@ -402,6 +402,39 @@ function productTitle(p) {
   return name || p?.id || '—';
 }
 
+/** Mount real row-action buttons via DOM (avoid bare «Переименовать» text cells). */
+function mountRowActionButtons(root, items, opts = {}) {
+  const label = opts.label || 'Переименовать';
+  const nameOf = opts.nameOf || ((item) => String(item?.name || ''));
+  const rows = [...(root.querySelectorAll(opts.rowSelector || 'tbody tr') || [])].filter(
+    (tr) => !tr.querySelector('td.muted')
+  );
+  items.forEach((item, i) => {
+    const tr = rows[i];
+    if (!tr || !item?.id) return;
+    let td = tr.querySelector('td.col-actions');
+    if (!td) {
+      td = document.createElement('td');
+      td.className = 'col-actions';
+      tr.appendChild(td);
+    }
+    const keep = opts.keepSelectors
+      ? [...td.querySelectorAll(opts.keepSelectors)].map((el) => el.cloneNode(true))
+      : [];
+    td.replaceChildren();
+    td.classList.add('col-actions');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'row-action';
+    btn.dataset.rename = String(item.id);
+    btn.dataset.name = nameOf(item);
+    btn.textContent = label;
+    td.appendChild(btn);
+    keep.forEach((el) => td.appendChild(el));
+    if (typeof opts.after === 'function') opts.after(td, item);
+  });
+}
+
 async function refreshRefs() {
   const [warehouses, units, categories] = await Promise.all([
     api('/warehouses'),
@@ -1314,7 +1347,7 @@ async function renderProducts(opts = {}) {
     }
     ${pagerHtml('ppager', data.page, data.pages, data.total)}
     <table>
-      <thead><tr><th>SKU</th><th>Название</th><th>Бренд</th><th>Ед.</th><th>Категория</th>${canEdit ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th>SKU</th><th>Название</th><th>Бренд</th><th>Ед.</th><th>Категория</th>${canEdit ? '<th class="col-actions"></th>' : ''}</tr></thead>
       <tbody>
         ${
           list
@@ -1326,7 +1359,7 @@ async function renderProducts(opts = {}) {
             <td>${esc(p.brand || '')}</td>
             <td>${esc(p.unit || '')}</td>
             <td>${esc(p.category || '')}</td>
-            ${canEdit ? `<td><button type="button" class="row-action" data-rename="${esc(p.id)}" data-name="${esc(productTitle(p))}">Переименовать</button></td>` : ''}
+            ${canEdit ? '<td class="col-actions"></td>' : ''}
           </tr>`
             )
             .join('') || `<tr><td colspan="${canEdit ? 6 : 5}" class="muted">Ничего не найдено</td></tr>`
@@ -1357,6 +1390,11 @@ async function renderProducts(opts = {}) {
     if (e.key === 'Enter') goSearch();
   };
   if (canEdit) {
+    mountRowActionButtons(view, list, {
+      label: 'Переименовать',
+      nameOf: (p) => productTitle(p),
+      rowSelector: '.form-body tbody tr.clickable',
+    });
     const add = async () => {
       await api('/products', {
         method: 'POST',
@@ -1373,7 +1411,8 @@ async function renderProducts(opts = {}) {
     document.getElementById('padd').onclick = add;
     document.getElementById('padd2').onclick = add;
     view.querySelectorAll('[data-rename]').forEach((btn) => {
-      btn.onclick = async () => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
         const name = prompt('Новое название', btn.dataset.name);
         if (!name) return;
         await api('/products/' + btn.dataset.rename, {
@@ -3186,8 +3225,7 @@ async function renderPriceTypes() {
           <tr>
             <td>${esc(p.name)}</td>
             <td class="mono">${p.products_count}</td>
-            <td>
-              <button type="button" class="row-action" data-rename="${esc(p.id)}" data-name="${esc(p.name)}">Изменить</button>
+            <td class="col-actions">
               <button type="button" data-del="${esc(p.id)}" data-name="${esc(p.name)}">Удалить</button>
             </td>
           </tr>`
@@ -3202,6 +3240,12 @@ async function renderPriceTypes() {
     }
   );
   bindFormChrome(() => showSection('sales'));
+  mountRowActionButtons(view, list, {
+    label: 'Изменить',
+    nameOf: (p) => String(p.name || ''),
+    rowSelector: '.form-body tbody tr',
+    keepSelectors: '[data-del]',
+  });
   const add = async () => {
     const msg = document.getElementById('pt-msg');
     const name = document.getElementById('pt-name').value.trim();
@@ -3219,7 +3263,8 @@ async function renderPriceTypes() {
   document.getElementById('pt-add').onclick = add;
   document.getElementById('pt-add2').onclick = add;
   view.querySelectorAll('[data-rename]').forEach((btn) => {
-    btn.onclick = async () => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
       const name = prompt('Новое название типа цены', btn.dataset.name);
       if (name == null || !name.trim() || name.trim() === btn.dataset.name) return;
       try {
@@ -3904,9 +3949,14 @@ document.querySelectorAll('.taxi-sections .sec').forEach((btn) => {
   btn.addEventListener('click', () => showSection(btn.dataset.section));
 });
 
-document.getElementById('logout').onclick = async () => {
-  await api('/logout', { method: 'POST' });
-  location.href = '/login';
+document.getElementById('logout').onclick = () => {
+  const go = () => {
+    location.replace('/login');
+  };
+  api('/logout', { method: 'POST' })
+    .catch(() => {})
+    .finally(go);
+  setTimeout(go, 800);
 };
 
 (function bindSideCollapse() {
