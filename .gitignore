@@ -27,11 +27,12 @@ deploy/*.local.conf
 .rubtsov/project.json
 .rubtsov/
 .cursor/
+.vscode/
+.idea/
 *.rdp
 services-export.csv
 services-export.json
 api/tsconfig.tsbuildinfo
 *.tsbuildinfo
-
 # Cloudflare Wrangler local cache
 **/.wrangler/
