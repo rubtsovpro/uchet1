@@ -3233,6 +3233,130 @@ function uiIcoBar(items, opts = {}) {
 }
 
 /**
+ * Единый UX PDF на карточках документов: Печать / Подпись + открыть / скачать.
+ * opts: {
+ *   id, prefix?: 'sd'|'prep',
+ *   disabled?: boolean, disabledTip?: string,
+ *   showDeal?: boolean, dealId?: string,
+ *   showPrintHtml?: boolean,  // полный HTML (договор)
+ *   showOpenDoc?: boolean, docTabLabel?: string
+ * }
+ */
+function salesDocPdfBarHtml(opts = {}) {
+  const docId = String(opts.id || '').trim();
+  if (!docId) return '';
+  const prefix = String(opts.prefix || 'sd');
+  const disabled = !!opts.disabled;
+  const disabledTip = String(opts.disabledTip || 'Сначала заполните обязательные поля');
+  const base = '/api/sales-docs/' + encodeURIComponent(docId);
+  const openHref = disabled ? '#' : base + '/pdf';
+  const dlHref = disabled ? '#' : base + '/pdf?download=1';
+  const printHref = base + '/print';
+  return `<div class="ui-ico-bar" id="${esc(prefix)}-pdf-bar">
+    <label class="ui-ico-check" title="Печать на PDF">
+      <input type="checkbox" id="${esc(prefix)}-pdf-stamp" checked ${disabled ? 'disabled' : ''} />
+      <span>Печать</span>
+    </label>
+    <label class="ui-ico-check" title="Подпись на PDF">
+      <input type="checkbox" id="${esc(prefix)}-pdf-sign" checked ${disabled ? 'disabled' : ''} />
+      <span>Подпись</span>
+    </label>
+    ${uiIcoLink({
+      id: prefix + '-pdf-open',
+      href: openHref,
+      tip: disabled ? disabledTip : 'Открыть PDF',
+      icon: 'pdf',
+      target: disabled ? undefined : '_blank',
+      attrs: disabled ? 'aria-disabled="true" tabindex="-1"' : '',
+      className: disabled ? 'is-disabled' : '',
+    })}
+    ${uiIcoLink({
+      id: prefix + '-pdf-dl',
+      href: dlHref,
+      tip: disabled ? disabledTip : 'Скачать PDF',
+      icon: 'download',
+      attrs: disabled ? 'aria-disabled="true" tabindex="-1"' : '',
+      className: disabled ? 'is-disabled' : '',
+    })}
+    ${
+      opts.showPrintHtml
+        ? uiIcoLink({
+            id: prefix + '-pdf-print',
+            href: printHref,
+            tip: 'Печать полного текста',
+            icon: 'print',
+            target: '_blank',
+          })
+        : ''
+    }
+    ${
+      opts.showOpenDoc
+        ? uiIcoBtn({
+            id: prefix + '-open-doc',
+            tip: opts.docTabLabel ? 'Открыть «' + opts.docTabLabel + '»' : 'Открыть документ',
+            icon: 'doc',
+            mod: 'is-deal',
+          })
+        : ''
+    }
+    ${
+      opts.showDeal && opts.dealId
+        ? uiIcoBtn({
+            id: prefix + '-deal',
+            tip: 'Открыть заказ покупателя',
+            icon: 'deal',
+            mod: 'is-deal',
+          })
+        : ''
+    }
+  </div>`;
+}
+
+function bindSalesDocPdfBar(opts = {}) {
+  const docId = String(opts.id || '').trim();
+  if (!docId) return;
+  const prefix = String(opts.prefix || 'sd');
+  const disabled = !!opts.disabled;
+  const sync = () => {
+    if (disabled) return;
+    const stampOn = !!document.getElementById(prefix + '-pdf-stamp')?.checked;
+    const signOn = !!document.getElementById(prefix + '-pdf-sign')?.checked;
+    const qs = new URLSearchParams();
+    if (!stampOn) qs.set('stamps', '0');
+    if (!signOn) qs.set('signs', '0');
+    const q = qs.toString();
+    const base = '/api/sales-docs/' + encodeURIComponent(docId) + '/pdf';
+    const open = document.getElementById(prefix + '-pdf-open');
+    const dl = document.getElementById(prefix + '-pdf-dl');
+    if (open) open.setAttribute('href', q ? base + '?' + q : base);
+    if (dl) {
+      const dlQs = new URLSearchParams(qs);
+      dlQs.set('download', '1');
+      dl.setAttribute('href', base + '?' + dlQs.toString());
+    }
+  };
+  document.getElementById(prefix + '-pdf-stamp')?.addEventListener('change', sync);
+  document.getElementById(prefix + '-pdf-sign')?.addEventListener('change', sync);
+  sync();
+  if (disabled) {
+    const block = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    document.getElementById(prefix + '-pdf-open')?.addEventListener('click', block);
+    document.getElementById(prefix + '-pdf-dl')?.addEventListener('click', block);
+  }
+  const dealBtn = document.getElementById(prefix + '-deal');
+  if (dealBtn && opts.dealId) {
+    dealBtn.onclick = () => openTab('deal:' + opts.dealId);
+  }
+  const openDoc = document.getElementById(prefix + '-open-doc');
+  if (openDoc) {
+    openDoc.onclick = () => openTab('sales:' + docId, opts.docTabLabel || 'Документ');
+  }
+}
+
+/**
  * Единый поиск для тулбаров и панелей (.find / .ui-find).
  * opts: inputId, btnId, placeholder, value, buttonLabel, type, inputClass, className, style, extraHtml
  */
@@ -13002,36 +13126,16 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
 
   const existingUpd = (salesDocs || []).find((d) => d && d.doc_type === 'upd' && d.id);
   const prepDocBar = existingUpd
-    ? `<div class="ui-ico-bar" id="prep-pdf-bar">
-        <label class="ui-ico-check" title="Печать на PDF">
-          <input type="checkbox" id="prep-pdf-stamp" checked />
-          <span>Печать</span>
-        </label>
-        <label class="ui-ico-check" title="Подпись на PDF">
-          <input type="checkbox" id="prep-pdf-sign" checked />
-          <span>Подпись</span>
-        </label>
-        ${uiIcoLink({
-          id: 'prep-pdf-open',
-          href: '/api/sales-docs/' + encodeURIComponent(existingUpd.id) + '/pdf',
-          tip: 'Открыть PDF',
-          icon: 'pdf',
-          target: '_blank',
-        })}
-        ${uiIcoLink({
-          id: 'prep-pdf-dl',
-          href: '/api/sales-docs/' + encodeURIComponent(existingUpd.id) + '/pdf?download=1',
-          tip: 'Скачать PDF',
-          icon: 'download',
-        })}
-        ${uiIcoBtn({
-          id: 'prep-open-doc',
-          tip: 'Открыть УПД',
-          icon: 'doc',
-          className: 'is-deal',
-        })}
-      </div>`
+    ? salesDocPdfBarHtml({
+        id: existingUpd.id,
+        prefix: 'prep',
+        showOpenDoc: true,
+        docTabLabel: 'УПД',
+        showDeal: true,
+        dealId,
+      })
     : '';
+
 
   view.innerHTML = formChrome(
     titleLabel + ' · подготовка',
@@ -13201,35 +13305,13 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
     }
   });
 
-  const bindPrepPdfBar = (docId) => {
-    if (!docId) return;
-    const syncPrepPdf = () => {
-      const stampOn = !!document.getElementById('prep-pdf-stamp')?.checked;
-      const signOn = !!document.getElementById('prep-pdf-sign')?.checked;
-      const qs = new URLSearchParams();
-      if (!stampOn) qs.set('stamps', '0');
-      if (!signOn) qs.set('signs', '0');
-      const q = qs.toString();
-      const base = '/api/sales-docs/' + encodeURIComponent(docId) + '/pdf';
-      const open = document.getElementById('prep-pdf-open');
-      const dl = document.getElementById('prep-pdf-dl');
-      if (open) open.href = base + (q ? '?' + q : '');
-      if (dl) {
-        const dlQs = new URLSearchParams(qs);
-        dlQs.set('download', '1');
-        dl.href = base + '?' + dlQs.toString();
-      }
-    };
-    document.getElementById('prep-pdf-stamp')?.addEventListener('change', syncPrepPdf);
-    document.getElementById('prep-pdf-sign')?.addEventListener('change', syncPrepPdf);
-    syncPrepPdf();
-    document.getElementById('prep-open-doc')?.addEventListener('click', () => {
-      openTab('sales:' + docId, 'УПД');
-    });
-  };
-
   if (existingUpd?.id) {
-    bindPrepPdfBar(existingUpd.id);
+    bindSalesDocPdfBar({
+      id: existingUpd.id,
+      prefix: 'prep',
+      dealId,
+      docTabLabel: 'УПД',
+    });
     const openKey = 'prep-pdf:' + existingUpd.id;
     if (state._prepAutoKey !== openKey) {
       state._prepAutoKey = openKey;
@@ -16515,49 +16597,16 @@ async function renderSalesDocDetail(id) {
         </span>`
             : ''
         }
-        <div class="ui-ico-bar" id="sd-pdf-bar">
-          ${
-            showWoDoc
-              ? `<label class="ui-ico-check" title="Печать на PDF">
-            <input type="checkbox" id="sd-pdf-stamp" checked />
-            <span>Печать</span>
-          </label>
-          <label class="ui-ico-check" title="Подпись на PDF">
-            <input type="checkbox" id="sd-pdf-sign" checked />
-            <span>Подпись</span>
-          </label>
-          ${uiIcoLink({
-            id: 'sd-pdf-open',
-            href: isContract
-              ? '/api/sales-docs/' + encodeURIComponent(id) + '/print'
-              : '/api/sales-docs/' + encodeURIComponent(id) + '/pdf',
-            tip: isContract ? 'Печать договора (полный текст)' : 'Открыть PDF',
-            icon: isContract ? 'print' : 'pdf',
-            target: '_blank',
-          })}
-          ${
-            isContract
-              ? ''
-              : uiIcoLink({
-                  id: 'sd-pdf-dl',
-                  href: '/api/sales-docs/' + encodeURIComponent(id) + '/pdf?download=1',
-                  tip: 'Скачать PDF',
-                  icon: 'download',
-                })
-          }`
-              : ''
-          }
-          ${
-            d.deal_id
-              ? uiIcoBtn({
-                  id: 'sd-deal',
-                  tip: 'Открыть заказ покупателя',
-                  icon: 'deal',
-                  mod: 'is-deal',
-                })
-              : ''
-          }
-        </div>`,
+        <div class="grow"></div>
+        ${salesDocPdfBarHtml({
+          id,
+          prefix: 'sd',
+          disabled: isWorkorder && !woHasPlate,
+          disabledTip: 'Сначала сохраните гос. номер — затем можно открыть PDF',
+          showDeal: !!d.deal_id,
+          dealId: d.deal_id || '',
+          showPrintHtml: isContract,
+        })}`,
       pageTabs: linkTabs.length ? linkTabs : undefined,
       activePageTab: 'sales:' + id,
       hintBar: dealHintBarHtml(salesDealRow),
@@ -16972,39 +17021,13 @@ async function renderSalesDocDetail(id) {
     if (sdFull) sdFull.onclick = () => makeSdFiscal('full');
   }
   {
-    const syncPdfLinks = () => {
-      const stampOn = !!document.getElementById('sd-pdf-stamp')?.checked;
-      const signOn = !!document.getElementById('sd-pdf-sign')?.checked;
-      const qs = new URLSearchParams();
-      if (!stampOn) qs.set('stamps', '0');
-      if (!signOn) qs.set('signs', '0');
-      // оба выкл — явно stamps=0&signs=0
-      if (!stampOn && !signOn) {
-        qs.set('stamps', '0');
-        qs.set('signs', '0');
-      }
-      const q = qs.toString();
-      const open = document.getElementById('sd-pdf-open');
-      const dl = document.getElementById('sd-pdf-dl');
-      if (isContract) {
-        const printBase = '/api/sales-docs/' + encodeURIComponent(id) + '/print';
-        if (open) open.setAttribute('href', q ? printBase + '?' + q : printBase);
-        return;
-      }
-      const base = '/api/sales-docs/' + encodeURIComponent(id) + '/pdf';
-      if (open) open.setAttribute('href', q ? base + '?' + q : base);
-      if (dl) {
-        const dlQs = new URLSearchParams(q);
-        dlQs.set('download', '1');
-        dl.setAttribute('href', base + '?' + dlQs.toString());
-      }
-    };
-    document.getElementById('sd-pdf-stamp')?.addEventListener('change', syncPdfLinks);
-    document.getElementById('sd-pdf-sign')?.addEventListener('change', syncPdfLinks);
-    syncPdfLinks();
+    bindSalesDocPdfBar({
+      id,
+      prefix: 'sd',
+      disabled: isWorkorder && !woHasPlate,
+      dealId: d.deal_id || '',
+    });
   }
-  const dealBtn = document.getElementById('sd-deal');
-  if (dealBtn) dealBtn.onclick = () => openTab('deal:' + d.deal_id);
   view.querySelectorAll('[data-product]').forEach((tr) => {
     tr.onclick = () => openTab('product:' + tr.dataset.product);
   });

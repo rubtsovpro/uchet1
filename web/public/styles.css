@@ -2282,6 +2282,16 @@ a.toolbar-ico:hover {
   opacity: 0.35;
   cursor: default;
 }
+.form-toolbar .toolbar-ico.is-disabled,
+.toolbar .toolbar-ico.is-disabled,
+.ui-ico-bar .toolbar-ico.is-disabled,
+.form-toolbar .toolbar-ico[aria-disabled='true'],
+.toolbar .toolbar-ico[aria-disabled='true'],
+.ui-ico-bar .toolbar-ico[aria-disabled='true'] {
+  opacity: 0.35;
+  pointer-events: none;
+  cursor: not-allowed;
+}
 .form-toolbar .toolbar-ico.is-archive,
 .toolbar .toolbar-ico.is-archive,
 .ui-ico-bar .toolbar-ico.is-archive {
