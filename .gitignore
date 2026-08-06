@@ -29,3 +29,6 @@ services-export.csv
 services-export.json
 api/tsconfig.tsbuildinfo
 *.tsbuildinfo
+
+# Cloudflare Wrangler local cache
+**/.wrangler/
