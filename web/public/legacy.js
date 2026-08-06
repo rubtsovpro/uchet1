@@ -13000,8 +13000,6 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
   // подсветить вкладку create:upd / create:upd-ship
   const activeCreateTab = 'create:' + action;
 
-  const createBtnLabel =
-    action === 'upd-ship' ? 'Создать УПД + расходную' : 'Создать «' + titleLabel + '»';
   const existingUpd = (salesDocs || []).find((d) => d && d.doc_type === 'upd' && d.id);
   const prepDocBar = existingUpd
     ? `<div class="ui-ico-bar" id="prep-pdf-bar">
@@ -13033,11 +13031,7 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
           className: 'is-deal',
         })}
       </div>`
-    : `<div class="ui-ico-bar">
-        <button type="button" class="primary" id="prep-create" ${
-          check.ready ? '' : 'disabled'
-        }>${esc(createBtnLabel)}</button>
-      </div>`;
+    : '';
 
   view.innerHTML = formChrome(
     titleLabel + ' · подготовка',
@@ -13046,8 +13040,10 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
       <div class="doc-create-gate doc-prep-gate">
         ${
           check.ready
-            ? `<p class="muted" style="margin:0 0 10px">Можно создавать. Проверьте пункты и поля покупателя ниже.</p>`
-            : `<p style="margin:0 0 10px">Закройте пункты ниже — заполните поля покупателя (ИНН, оплату) и сохраните.</p>`
+            ? existingUpd
+              ? `<p class="muted" style="margin:0 0 10px">УПД готов — откройте или скачайте PDF сверху.</p>`
+              : `<p class="muted" style="margin:0 0 10px">Данных достаточно — создаём УПД и открываем PDF…</p>`
+            : `<p style="margin:0 0 10px">Закройте пункты ниже — заполните поля покупателя (ИНН, оплату) и сохраните. Когда всё готово, УПД создастся сам.</p>`
         }
         ${listHtml || '<p class="muted">Нет специальных требований.</p>'}
       </div>
@@ -13084,10 +13080,10 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
           Сохранение обновляет заказ, документы и наименование в AmoCRM.
           ${
             existingUpd
-              ? ' УПД уже есть — откройте или скачайте PDF сверху.'
+              ? ' УПД уже есть — PDF в тулбаре сверху.'
               : !check.ready
-                ? ' Кнопка создания вверху станет активной, когда закроются блокирующие пункты.'
-                : ' Создать документ — кнопка в тулбаре сверху (как «Скачать» у готовых документов).'
+                ? ' После закрытия блокирующих пунктов УПД создастся автоматически.'
+                : ''
           }
         </p>
       </div>
@@ -13103,7 +13099,7 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
           existingUpd
             ? 'УПД ' + esc(existingUpd.number || '') + ' — открыть / скачать'
             : check.ready
-              ? 'Готово к созданию'
+              ? 'Создаём и открываем PDF…'
               : 'Сначала закройте пункты чеклиста'
         }</span>
         <div class="grow"></div>
@@ -13205,39 +13201,8 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
     }
   });
 
-  document.getElementById('prep-create')?.addEventListener('click', async () => {
-    const btn = document.getElementById('prep-create');
-    if (btn) btn.disabled = true;
-    setMsg('Создание…');
-    const tMsg = document.getElementById('prep-toolbar-msg');
-    if (tMsg) tMsg.textContent = 'Создание…';
-    try {
-      // сохранить поля ещё раз перед созданием
-      const name = String(document.getElementById('prep-buyer-name')?.value || '').trim();
-      const innVal = String(document.getElementById('prep-buyer-inn')?.value || '').replace(/\D/g, '');
-      const legal = !!document.getElementById('prep-buyer-legal')?.checked;
-      if (name) {
-        await api('/crm/deals/' + encodeURIComponent(dealId) + '/buyer', {
-          method: 'PATCH',
-          body: JSON.stringify({
-            buyer_name: name,
-            company_name: legal ? name : String(deal.company_name || ''),
-            buyer_inn: innVal,
-            is_legal_entity: legal || innVal.length === 10 ? 1 : 0,
-            buyer_kind: legal || innVal.length === 10 ? 'legal' : 'person',
-          }),
-        });
-      }
-      await createLinkedSalesDoc(dealId, action, '', null);
-    } catch (e) {
-      setMsg(e.message || String(e));
-      if (tMsg) tMsg.textContent = e.message || String(e);
-      alert(e.message || String(e));
-      if (btn) btn.disabled = false;
-    }
-  });
-
-  if (existingUpd?.id) {
+  const bindPrepPdfBar = (docId) => {
+    if (!docId) return;
     const syncPrepPdf = () => {
       const stampOn = !!document.getElementById('prep-pdf-stamp')?.checked;
       const signOn = !!document.getElementById('prep-pdf-sign')?.checked;
@@ -13245,7 +13210,7 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
       if (!stampOn) qs.set('stamps', '0');
       if (!signOn) qs.set('signs', '0');
       const q = qs.toString();
-      const base = '/api/sales-docs/' + encodeURIComponent(existingUpd.id) + '/pdf';
+      const base = '/api/sales-docs/' + encodeURIComponent(docId) + '/pdf';
       const open = document.getElementById('prep-pdf-open');
       const dl = document.getElementById('prep-pdf-dl');
       if (open) open.href = base + (q ? '?' + q : '');
@@ -13259,8 +13224,55 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
     document.getElementById('prep-pdf-sign')?.addEventListener('change', syncPrepPdf);
     syncPrepPdf();
     document.getElementById('prep-open-doc')?.addEventListener('click', () => {
-      openTab('sales:' + existingUpd.id, 'УПД');
+      openTab('sales:' + docId, 'УПД');
     });
+  };
+
+  if (existingUpd?.id) {
+    bindPrepPdfBar(existingUpd.id);
+    const openKey = 'prep-pdf:' + existingUpd.id;
+    if (state._prepAutoKey !== openKey) {
+      state._prepAutoKey = openKey;
+      setTimeout(() => openSalesPdf(existingUpd.id), 120);
+    }
+  } else if (check.ready) {
+    const autoKey = 'prep-create:' + dealId + ':' + action;
+    if (state._prepAutoKey !== autoKey) {
+      state._prepAutoKey = autoKey;
+      setTimeout(async () => {
+        const tMsg = document.getElementById('prep-toolbar-msg');
+        setMsg('Создание…');
+        if (tMsg) tMsg.textContent = 'Создаём и открываем PDF…';
+        try {
+          const name = String(document.getElementById('prep-buyer-name')?.value || '').trim();
+          const innVal = String(document.getElementById('prep-buyer-inn')?.value || '').replace(/\D/g, '');
+          const legal = !!document.getElementById('prep-buyer-legal')?.checked;
+          if (name) {
+            await api('/crm/deals/' + encodeURIComponent(dealId) + '/buyer', {
+              method: 'PATCH',
+              body: JSON.stringify({
+                buyer_name: name,
+                company_name: legal ? name : String(deal.company_name || ''),
+                buyer_inn: innVal,
+                is_legal_entity: legal || innVal.length === 10 ? 1 : 0,
+                buyer_kind: legal || innVal.length === 10 ? 'legal' : 'person',
+              }),
+            });
+          }
+          const r = await createLinkedSalesDoc(dealId, action, '', null);
+          // upd-ship: createLinkedSalesDoc может уйти на расходную — PDF УПД откроем явно
+          const updId = r?.upd?.id || r?.doc?.id;
+          if (updId && action === 'upd-ship') {
+            setTimeout(() => openSalesPdf(updId), 150);
+          }
+        } catch (e) {
+          state._prepAutoKey = '';
+          setMsg(e.message || String(e));
+          if (tMsg) tMsg.textContent = e.message || String(e);
+          alert(e.message || String(e));
+        }
+      }, 80);
+    }
   }
 }
 

@@ -147,9 +147,9 @@
   </div>
 
   <script>
-    // Надёжная загрузка: во встроенном браузере IDE defer на ~400KB часто не отрабатывает.
+    // Надёжная загрузка скрипта: у части встроенных webview defer на крупный файл срывается.
     (function () {
-      var LEGACY_SRC = '/legacy.js?v=631';
+      var LEGACY_SRC = '/legacy.js?v=632';
       var EXTRAS = [
         '/sections-parity-a.js?v=59',
         '/sections-crm-ops.js?v=1',
