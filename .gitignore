@@ -23,6 +23,9 @@ deploy/*.local.conf
 *.log
 .DS_Store
 .rubtsov/secrets.json
+.rubtsov/case-draft.json
+.rubtsov/project.json
+.rubtsov/
 .cursor/
 *.rdp
 services-export.csv
