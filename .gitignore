@@ -10,6 +10,11 @@ dist/
 *.sqlite-*
 .tmp/
 tmp-upload/
+tmp-*/
+tmp-*.mjs
+tmp-*.json
+tmp-*.csv
+tmp-*.txt
 .env
 .env.*
 !.env.example
@@ -18,3 +23,9 @@ deploy/*.local.conf
 *.log
 .DS_Store
 .rubtsov/secrets.json
+.cursor/
+*.rdp
+services-export.csv
+services-export.json
+api/tsconfig.tsbuildinfo
+*.tsbuildinfo
