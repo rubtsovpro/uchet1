@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffbf2e" />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="/logo-pnevmopodveska.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <title>Оплата заказа · демо</title>
+  <style>
+    :root {
+      --yellow: #ffbf2e;
+      --yellow-soft: #fff6e3;
+      --black: #0a0a0a;
+      --text: rgba(0, 0, 0, 0.9);
+      --muted: #585858;
+      --line: #e2e2e2;
+      --bg: #f3f1ec;
+      --bg2: #ebe6dc;
+      --card: #fff;
+      --ok: #1b8a5a;
+      --ok-soft: #e8f6ef;
+      --warn: #b45309;
+      --warn-soft: #fff7ed;
+      --bad: #c0392b;
+      --bad-soft: #fdecea;
+      --radius: 18px;
+      --pill: 30px;
+      --blue: #2b6cb0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Manrope, system-ui, sans-serif;
+      color: var(--text);
+      min-height: 100vh;
+      min-height: 100dvh;
+      padding: 0 16px 32px;
+      padding-top: 78px;
+      padding-bottom: max(32px, env(safe-area-inset-bottom));
+      background:
+        radial-gradient(120% 70% at 50% -10%, #ffe9a8 0%, transparent 55%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+    }
+    .brand-bar { height: 4px; background: var(--yellow); margin: 0 -16px 18px; }
+    .wrap {
+      max-width: 520px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .demo-nav {
+      position: fixed;
+      z-index: 50;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: calc(100% - 24px);
+      max-width: 520px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: center;
+      padding: 8px 10px;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 999px;
+      box-shadow: 0 10px 32px rgba(20, 16, 8, 0.12);
+      backdrop-filter: blur(10px);
+    }
+    .demo-nav .demo-nav-label {
+      width: 100%;
+      text-align: center;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 2px;
+    }
+    .demo-nav a {
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--text);
+      background: #fff;
+    }
+    .demo-nav a.on { background: var(--yellow); border-color: var(--yellow); }
+
+    header.top {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 4px 2px 2px;
+      animation: hero-in 0.4s ease-out both;
+    }
+    header.top .logo {
+      display: block;
+      height: 34px;
+      width: auto;
+      max-width: 240px;
+    }
+    header.top .tagline {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.4;
+      color: var(--muted);
+      max-width: 36em;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: 0 10px 28px rgba(20, 16, 8, 0.05);
+    }
+    .card.hero {
+      padding: 22px 20px 20px;
+      border-color: rgba(0, 0, 0, 0.06);
+      animation: hero-in 0.5s ease-out 0.05s both;
+    }
+    @keyframes hero-in {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 0 10px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .status-pill::before {
+      content: '';
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .status-pill.ok { background: var(--ok-soft); color: var(--ok); }
+    .status-pill.warn {
+      background: #ffedd5;
+      color: var(--warn);
+      animation: pill-pulse 1.8s ease-in-out infinite;
+    }
+    .status-pill.bad { background: var(--bad-soft); color: var(--bad); }
+    @keyframes pill-pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.02); }
+    }
+    .status-sub {
+      margin: 0 0 16px;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+
+    .order-kicker {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .amount {
+      font-size: clamp(34px, 9vw, 44px);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      margin: 6px 0 0;
+      line-height: 1.05;
+      color: var(--black);
+      font-variant-numeric: tabular-nums;
+    }
+    .amount .currency {
+      font-weight: 700;
+      color: var(--muted);
+      font-size: 0.55em;
+      margin-left: 2px;
+      vertical-align: 0.12em;
+    }
+    .ship-chip {
+      display: inline-flex;
+      margin-top: 12px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #f4f4f2;
+      border: 1px solid var(--line);
+    }
+
+    .timer {
+      display: flex;
+      flex-direction: column;
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 14px;
+      background: var(--ok-soft);
+      border: 1px solid rgba(27, 138, 90, 0.22);
+      border-left: 4px solid var(--ok);
+      text-align: center;
+    }
+    .timer-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ok);
+      margin-bottom: 4px;
+    }
+    .timer .clock {
+      font-variant-numeric: tabular-nums;
+      font-size: clamp(36px, 10vw, 48px);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      color: var(--ok);
+      margin: 2px 0 10px;
+    }
+    .timer-track {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.08);
+      overflow: hidden;
+      margin: 0 4px 10px;
+    }
+    .timer-fill {
+      height: 100%;
+      border-radius: inherit;
+      background: var(--ok);
+      transition: width 0.9s linear;
+    }
+    .timer .until {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .timer .reserve-note {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+    .timer.warn {
+      background: var(--warn-soft);
+      border-color: rgba(180, 83, 9, 0.28);
+      border-left-color: var(--warn);
+    }
+    .timer.warn .timer-label,
+    .timer.warn .clock { color: var(--warn); }
+    .timer.warn .timer-fill {
+      background: linear-gradient(90deg, #f59e0b, #ea580c);
+      animation: bar-pulse 1.4s ease-in-out infinite;
+    }
+    .timer.warn .reserve-note { color: #9a5b12; }
+    .timer.dead {
+      background: var(--bad-soft);
+      border-color: rgba(192, 57, 43, 0.28);
+      border-left-color: var(--bad);
+    }
+    .timer.dead .timer-label,
+    .timer.dead .clock { color: var(--bad); }
+    .timer.dead .timer-fill { background: var(--bad); width: 0 !important; }
+    .timer.dead .reserve-note { color: #8a3a32; }
+    .timer.ok-paid .clock { font-size: 22px; margin-bottom: 6px; }
+    .timer.ok-paid .timer-track { display: none; }
+    @keyframes bar-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.72; }
+    }
+
+    .section-label {
+      margin: 0 0 12px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .items { display: flex; flex-direction: column; gap: 12px; }
+    .item {
+      display: grid;
+      grid-template-columns: 104px 1fr auto;
+      gap: 12px;
+      align-items: start;
+      padding: 0;
+      border: 0;
+    }
+    .item + .item {
+      padding-top: 12px;
+      border-top: 1px solid #eee;
+    }
+    .item-photo-wrap {
+      width: 104px;
+      aspect-ratio: 1;
+      border-radius: 12px;
+      background: linear-gradient(160deg, #f7f5f0, #ece8e0);
+      border: 1px solid #ebe7df;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .item-photo {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      transition: transform 0.35s ease;
+    }
+    .item:hover .item-photo { transform: scale(1.05); }
+    .item-name {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      margin: 0 0 4px;
+      color: var(--black);
+    }
+    .item-sku { font-size: 12px; font-weight: 600; color: var(--muted); }
+    .item-meta { font-size: 12px; color: var(--muted); margin-top: 6px; font-weight: 500; }
+    .item-badge {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      background: var(--yellow-soft);
+      color: #8a6a10;
+      border: 1px solid rgba(255, 191, 46, 0.55);
+    }
+    .item-sum {
+      font-size: 14px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      text-align: right;
+    }
+
+    .badge-rec {
+      display: inline-block;
+      margin: 0 0 10px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: #e8f1fb;
+      color: var(--blue);
+      border: 1px solid #c5daf0;
+    }
+    .pay-title { margin: 0; font-size: 15px; font-weight: 800; color: var(--black); }
+    .pay-copy {
+      margin: 8px 0 0;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .qr-panel {
+      text-align: center;
+      padding: 18px 12px 18px;
+      border-radius: 14px;
+      background: var(--yellow-soft);
+      border: 1px solid rgba(255, 191, 46, 0.55);
+    }
+    .qr-glow {
+      display: inline-block;
+      padding: 10px;
+      border-radius: 16px;
+      background: #fff;
+      box-shadow: 0 0 0 3px rgba(255, 191, 46, 0.55), 0 0 28px 6px rgba(255, 191, 46, 0.45);
+      animation: qr-pulse 2.2s ease-in-out infinite;
+    }
+    @keyframes qr-pulse {
+      0%, 100% { box-shadow: 0 0 0 3px rgba(255, 191, 46, 0.5), 0 0 22px 4px rgba(255, 191, 46, 0.4); }
+      50% { box-shadow: 0 0 0 5px rgba(255, 191, 46, 0.75), 0 0 36px 10px rgba(255, 191, 46, 0.65); }
+    }
+    .qr-box img { display: block; width: 220px; height: 220px; border-radius: 8px; background: #fff; }
+    .btn {
+      display: block;
+      width: 100%;
+      text-align: center;
+      text-decoration: none;
+      border: 1px solid var(--yellow);
+      border-radius: var(--pill);
+      padding: 13px 16px;
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.3;
+      cursor: pointer;
+      background: var(--yellow);
+      color: var(--black);
+    }
+    .btn.ghost {
+      background: #fff;
+      border-color: var(--line);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 14px;
+      margin-top: 12px;
+    }
+    .btn.card-pay {
+      background: #fff;
+      border-color: var(--line);
+      color: var(--black);
+      font-weight: 600;
+      margin-top: 10px;
+    }
+    .more-ways[hidden] { display: none !important; }
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 10px 0 0;
+      text-align: center;
+      font-weight: 500;
+      line-height: 1.4;
+    }
+    .qr-panel .hint { margin-top: 12px; color: #6a5a30; }
+    .trust {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .success-card {
+      text-align: center;
+      padding: 28px 18px;
+      animation: hero-in 0.5s ease-out both;
+    }
+    .success-card .check {
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 14px;
+      border-radius: 50%;
+      background: var(--ok-soft);
+      color: var(--ok);
+      display: grid;
+      place-items: center;
+      font-size: 28px;
+      font-weight: 800;
+    }
+    .success-card h2 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .success-card p {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .q-form { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+    .q-form[hidden] { display: none !important; }
+    .q-form label { display: grid; gap: 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+    .q-form input, .q-form textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .q-form textarea { min-height: 96px; resize: vertical; }
+    .q-actions { display: flex; gap: 8px; }
+    .q-actions .btn { flex: 1; }
+    .q-ok {
+      margin: 10px 0 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: var(--ok-soft);
+      color: var(--ok);
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+    .manager strong { color: var(--text); }
+    .footer-note { text-align: center; font-size: 11px; color: #9a9a9a; margin-top: 4px; }
+    .footer-note a { color: var(--muted); }
+    .muted { color: var(--muted); font-size: 13px; font-weight: 500; }
+    @media (prefers-reduced-motion: reduce) {
+      .card.hero, header.top, .success-card,
+      .status-pill.warn, .timer.warn .timer-fill, .qr-glow { animation: none; }
+      .timer-fill { transition: none; }
+      .item:hover .item-photo { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="demo-nav" id="demo-nav" aria-label="Состояния демо"></nav>
+  <div class="brand-bar" aria-hidden="true"></div>
+  <div class="wrap" id="app"></div>
+  <script>
+(function () {
+  var STATES = [
+    { id: 'reserved', label: 'Резерв' },
+    { id: 'urgent', label: 'Мало времени' },
+    { id: 'paid', label: 'Оплачено' },
+    { id: 'expired', label: 'Резерв снят' },
+    { id: 'ask', label: 'Вопрос' },
+  ];
+  var params = new URLSearchParams(location.search);
+  var state = String(params.get('state') || 'reserved').toLowerCase();
+  if (!STATES.some(function (s) { return s.id === state; })) state = 'reserved';
+
+  var cardUrl = 'https://merch.tochka.com/order/?uuid=089aedef-86f2-4a75-a38d-da7498b59558';
+  var qrSrc =
+    'https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=' +
+    encodeURIComponent(cardUrl);
+
+  var TIMER_TOTAL = state === 'urgent' ? 12 * 60 : 2 * 60 * 60;
+  var expiresAtMs = null;
+  if (state === 'reserved' || state === 'ask') {
+    expiresAtMs = Date.now() + 2 * 60 * 60 * 1000;
+  } else if (state === 'urgent') {
+    expiresAtMs = Date.now() + 12 * 60 * 1000;
+  }
+
+  function pad(n) { return String(n).padStart(2, '0'); }
+  function fmtLeft(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    var s = sec % 60;
+    if (h > 0) return h + ':' + pad(m) + ':' + pad(s);
+    return pad(m) + ':' + pad(s);
+  }
+  function fmtUntil(ms) {
+    if (!ms) return '';
+    var d = new Date(ms);
+    var today = new Date();
+    var sameDay =
+      d.getFullYear() === today.getFullYear() &&
+      d.getMonth() === today.getMonth() &&
+      d.getDate() === today.getDate();
+    var time = pad(d.getHours()) + ':' + pad(d.getMinutes());
+    if (sameDay) return 'до ' + time;
+    return (
+      'до ' +
+      pad(d.getDate()) +
+      '.' +
+      pad(d.getMonth() + 1) +
+      ', ' +
+      time
+    );
+  }
+  function secondsLeft() {
+    if (!expiresAtMs) return 0;
+    return Math.max(0, Math.floor((expiresAtMs - Date.now()) / 1000));
+  }
+  function barPct(left) {
+    if (!(left > 0)) return 0;
+    return Math.min(100, Math.max(2, Math.round((left / TIMER_TOTAL) * 1000) / 10));
+  }
+
+  document.getElementById('demo-nav').innerHTML =
+    '<div class="demo-nav-label">Демо состояний оплаты</div>' +
+    STATES.map(function (s) {
+      return (
+        '<a href="?state=' +
+        s.id +
+        '"' +
+        (s.id === state ? ' class="on"' : '') +
+        '>' +
+        s.label +
+        '</a>'
+      );
+    }).join('');
+
+  function itemsHtml() {
+    return (
+      '<div class="card">' +
+      '<p class="section-label">Состав заказа</p>' +
+      '<div class="items">' +
+      '<div class="item">' +
+      '<div class="item-photo-wrap"><img class="item-photo" src="https://pnevmopodveska.s3.firstvds.ru/wms/products/d91adc0a-1ce6-11e9-079c-fa163e521143/00_3f4d0190af.jpg" alt="" loading="lazy" /></div>' +
+      '<div><p class="item-name">Пневмостойка (актив.) пер. прав. Land Rover Range Rover (L322) 2003–2013</p>' +
+      '<div class="item-sku">LR032560</div>' +
+      '<div class="item-meta">2 × 19&nbsp;000&nbsp;₽</div>' +
+      '<span class="item-badge">Хит · в резерве</span></div>' +
+      '<div class="item-sum">38&nbsp;000&nbsp;₽</div></div>' +
+      '<div class="item">' +
+      '<div class="item-photo-wrap"><img class="item-photo" src="https://pnevmopodveska.s3.firstvds.ru/wms/products/0c0a071c-6512-11e9-1899-fa163e521143/00_a7f7f611d7.jpg" alt="" loading="lazy" /></div>' +
+      '<div><p class="item-name">Блок клапанов пневмоподвески сред. Land Rover (L319, L320, L322)</p>' +
+      '<div class="item-sku">FGL64225</div>' +
+      '<div class="item-meta">1 × 19&nbsp;800&nbsp;₽</div>' +
+      '<span class="item-badge">Оригинал</span></div>' +
+      '<div class="item-sum">19&nbsp;800&nbsp;₽</div></div>' +
+      '</div></div>'
+    );
+  }
+
+  function trustHtml() {
+    return (
+      '<div class="trust" role="note">' +
+      '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<path d="M12 3l7 3v5c0 5-3.2 8.6-7 10-3.8-1.4-7-5-7-10V6l7-3z" stroke="#1b8a5a" stroke-width="1.7" fill="#e8f6ef"/>' +
+      '<path d="M9.2 12.2l1.8 1.8 3.8-4" stroke="#1b8a5a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '</svg>' +
+      '<span>Безопасная сделка · данные карты не нужны при оплате через СБП</span></div>'
+    );
+  }
+
+  function askHtml(open) {
+    return (
+      '<div class="card" id="ask-card">' +
+      '<div class="manager muted" style="line-height:1.45">Менеджер: <strong>Иван Петров</strong>' +
+      '<div style="margin-top:4px">Вопрос уйдёт в сделку и станет задачей ответственному.</div></div>' +
+      '<button type="button" class="btn ghost" id="btn-ask-open"' +
+      (open ? ' hidden' : '') +
+      '>Есть вопрос по заказу</button>' +
+      '<form class="q-form" id="ask-form"' +
+      (open ? '' : ' hidden') +
+      '>' +
+      '<label>Ваш вопрос<textarea id="ask-text" required maxlength="2000" placeholder="Например: можно ли изменить адрес доставки?"></textarea></label>' +
+      '<label>Имя (необязательно)<input id="ask-name" maxlength="120" /></label>' +
+      '<label>Телефон (необязательно)<input id="ask-phone" maxlength="40" inputmode="tel" /></label>' +
+      '<div class="q-actions"><button type="submit" class="btn">Отправить</button>' +
+      '<button type="button" class="btn ghost" id="ask-cancel" style="margin-top:0">Отмена</button></div>' +
+      '<p class="hint" id="ask-msg" style="text-align:left;margin:0">Демо: на живой /pay/… вопрос реально уходит в сделку.</p></form>' +
+      '<p class="q-ok" id="ask-ok" hidden>Вопрос отправлен менеджеру. Ответим в ближайшее время.</p></div>'
+    );
+  }
+
+  function payHtml() {
+    return (
+      '<div class="card">' +
+      '<div class="qr-panel">' +
+      '<span class="badge-rec">Рекомендуемый способ</span>' +
+      '<p class="pay-title">Оплатите заказ через СБП</p>' +
+      '<p class="pay-copy">Быстро и безопасно — в приложении вашего банка.<br/>Данные карты вводить не нужно.</p>' +
+      '<div class="qr-box" style="margin-top:14px">' +
+      '<span class="qr-glow"><img alt="QR СБП" width="220" height="220" src="' +
+      qrSrc +
+      '" /></span>' +
+      '<p class="hint">Отсканируйте QR в приложении банка</p></div>' +
+      '<a class="btn" style="margin-top:14px" href="' +
+      cardUrl +
+      '" target="_blank" rel="noopener">Оплатить через СБП</a></div>' +
+      '<button type="button" class="btn ghost" id="btn-more-ways" aria-expanded="false">Другие способы оплаты</button>' +
+      '<div class="more-ways" id="more-ways" hidden>' +
+      '<a class="btn card-pay" href="' +
+      cardUrl +
+      '">Оплатить картой</a>' +
+      '<p class="hint">Карта · эквайринг Точки</p></div></div>'
+    );
+  }
+
+  var left0 = secondsLeft();
+  var untilText = fmtUntil(expiresAtMs);
+  var banner = '';
+  var timerClass = '';
+  var timerLabel = 'Резерв ещё';
+  var clock = expiresAtMs ? fmtLeft(left0) : '00:00';
+  var untilHtml = untilText ? '<div class="until" id="until">' + untilText + '</div>' : '';
+  var note = '';
+  var middle = '';
+  var afterItems = '';
+  var showBar = true;
+  var pct = barPct(left0);
+
+  if (state === 'reserved' || state === 'ask') {
+    note = 'Не успеете оплатить — товар снова появится в продаже.';
+    banner =
+      '<div class="status-pill ok">Товар зарезервирован</div>' +
+      '<p class="status-sub">Позиции отложены специально для вас. Оплатите заказ — резерв закрепится.</p>';
+    middle = payHtml();
+    afterItems = askHtml(state === 'ask');
+  } else if (state === 'urgent') {
+    timerClass = 'warn';
+    note = 'После этого срока резерв снимем автоматически.';
+    banner =
+      '<div class="status-pill warn">Резерв скоро закончится</div>' +
+      '<p class="status-sub">Товар ещё за вами. Успейте оплатить — иначе резерв снимем.</p>';
+    middle = payHtml();
+    afterItems = askHtml(false);
+  } else if (state === 'paid') {
+    timerClass = 'ok-paid';
+    timerLabel = 'Статус';
+    clock = 'оплачено';
+    untilHtml = '';
+    note = 'Оплата получена — заказ в работе.';
+    showBar = false;
+    banner =
+      '<div class="status-pill ok">Оплата прошла успешно</div>' +
+      '<p class="status-sub">Заказ №15482 подтверждён. Свяжемся по доставке или самовывозу.</p>';
+    middle =
+      '<div class="card success-card">' +
+      '<div class="check" aria-hidden="true">✓</div>' +
+      '<h2>Спасибо! Заказ в работе</h2>' +
+      '<p>Собираем позиции со склада. Напишем, когда можно забрать или приехать на установку.</p></div>';
+    afterItems = askHtml(false);
+  } else if (state === 'expired') {
+    timerClass = 'dead';
+    timerLabel = 'Резерв снят';
+    clock = '00:00';
+    untilHtml = '';
+    note = 'Если товар ещё есть — подготовим новую ссылку.';
+    pct = 0;
+    banner =
+      '<div class="status-pill bad">Резерв на складе снят</div>' +
+      '<p class="status-sub">Время ожидания закончилось. Напишите нам — проверим наличие и пришлём новую ссылку.</p>';
+    middle =
+      '<div class="card"><button type="button" class="btn" id="btn-check-stock">Проверить наличие</button>' +
+      '<p class="hint" id="check-msg">Проверим склад в учёте и снова поставим в резерв, если товар есть.</p></div>';
+    afterItems = askHtml(false);
+  }
+
+  var barHtml = showBar
+    ? '<div class="timer-track" aria-hidden="true"><div class="timer-fill" id="timer-fill" style="width:' +
+      pct +
+      '%"></div></div>'
+    : '';
+
+  document.getElementById('app').innerHTML =
+    '<header class="top">' +
+    '<img class="logo" src="/logo-pnevmopodveska.svg" alt="Пневмоподвеска №1" height="34" />' +
+    '<p class="tagline">Профессиональное обслуживание штатной пневмоподвески автомобилей и широкий ассортимент запчастей от MRAER</p>' +
+    '</header>' +
+    '<div class="card hero">' +
+    banner +
+    '<p class="order-kicker">Заказ №15482</p>' +
+    '<div class="amount">57&nbsp;800 <span class="currency">₽</span></div>' +
+    '<div class="ship-chip">Самовывоз / установка в сервисе</div>' +
+    '<div class="timer ' +
+    timerClass +
+    '" id="timer">' +
+    '<div class="timer-label">' +
+    timerLabel +
+    '</div>' +
+    '<div class="clock" id="clock">' +
+    clock +
+    '</div>' +
+    barHtml +
+    untilHtml +
+    '<p class="reserve-note" id="reserve-note">' +
+    note +
+    '</p></div></div>' +
+    (state === 'paid' || state === 'expired' ? '' : middle) +
+    itemsHtml() +
+    (state === 'paid' || state === 'expired' ? middle : '') +
+    afterItems +
+    trustHtml() +
+    '<p class="footer-note"><a href="https://pnevmopodveska1.ru/" target="_blank" rel="noopener">pnevmopodveska1.ru</a></p>';
+
+  if (expiresAtMs && (state === 'reserved' || state === 'urgent' || state === 'ask')) {
+    setInterval(function () {
+      var left = secondsLeft();
+      var clockEl = document.getElementById('clock');
+      var untilEl = document.getElementById('until');
+      var noteEl = document.getElementById('reserve-note');
+      var timerEl = document.getElementById('timer');
+      var fill = document.getElementById('timer-fill');
+      if (clockEl) clockEl.textContent = fmtLeft(left);
+      if (untilEl) untilEl.textContent = fmtUntil(expiresAtMs);
+      if (noteEl && state !== 'urgent') {
+        noteEl.textContent = 'Не успеете оплатить — товар снова появится в продаже.';
+      } else if (noteEl && state === 'urgent') {
+        noteEl.textContent = 'После этого срока резерв снимем автоматически.';
+      }
+      if (fill) fill.style.width = barPct(left) + '%';
+      if (timerEl && state !== 'urgent') {
+        timerEl.classList.toggle('warn', left > 0 && left <= 15 * 60);
+      }
+      if (left <= 0 && state !== 'expired') {
+        location.href = '?state=expired';
+      }
+    }, 1000);
+  }
+
+  var moreBtn = document.getElementById('btn-more-ways');
+  var moreWays = document.getElementById('more-ways');
+  if (moreBtn && moreWays) {
+    moreBtn.addEventListener('click', function () {
+      var open = moreWays.hasAttribute('hidden');
+      if (open) {
+        moreWays.removeAttribute('hidden');
+        moreBtn.setAttribute('aria-expanded', 'true');
+        moreBtn.textContent = 'Скрыть другие способы';
+      } else {
+        moreWays.setAttribute('hidden', '');
+        moreBtn.setAttribute('aria-expanded', 'false');
+        moreBtn.textContent = 'Другие способы оплаты';
+      }
+    });
+  }
+  var askOpen = document.getElementById('btn-ask-open');
+  var askForm = document.getElementById('ask-form');
+  var askCancel = document.getElementById('ask-cancel');
+  var askOk = document.getElementById('ask-ok');
+  if (askOpen && askForm) {
+    askOpen.addEventListener('click', function () {
+      askForm.hidden = false;
+      askOpen.hidden = true;
+      if (askOk) askOk.hidden = true;
+    });
+  }
+  if (askCancel && askForm && askOpen) {
+    askCancel.addEventListener('click', function () {
+      askForm.hidden = true;
+      askOpen.hidden = false;
+    });
+  }
+  if (askForm) {
+    askForm.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      askForm.hidden = true;
+      if (askOpen) askOpen.hidden = true;
+      if (askOk) askOk.hidden = false;
+    });
+  }
+  var checkBtn = document.getElementById('btn-check-stock');
+  if (checkBtn) {
+    checkBtn.addEventListener('click', function () {
+      var msg = document.getElementById('check-msg');
+      checkBtn.disabled = true;
+      if (msg) msg.textContent = 'Демо: на живой /pay/… проверяем склад и, если есть, снова резервируем…';
+      setTimeout(function () {
+        if (msg) {
+          msg.textContent =
+            'Демо: товар «есть» — открыли бы новую ссылку с резервом. Если нет — форма менеджеру.';
+        }
+        checkBtn.disabled = false;
+        if (askOpen) askOpen.click();
+      }, 900);
+    });
+  }
+})();
+  </script>
+</body>
+</html>

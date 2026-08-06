@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0d7377" />
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <title>Приёмщик · СТО · Учёт №1</title>
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('uchet1_reception_theme');
+        if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+      } catch (_) {}
+    })();
+  </script>
+  <style>
+    :root, [data-theme="light"] {
+      --bg: #e8f0f0; --bg2: #d4e4e4; --card: #fff; --text: #0f1f1f; --muted: #5a6f6f;
+      --line: #b8cece; --accent: #0d7377; --ok: #1b8a5a; --bad: #c0392b; --warn: #c47a12;
+      --shadow: 0 2px 10px rgba(13,50,50,.08); --tap: 48px;
+    }
+    [data-theme="dark"] {
+      --bg: #0c1414; --bg2: #132020; --card: #1a2828; --text: #e8f4f4; --muted: #8aa0a0;
+      --line: #2a4040; --accent: #2dd4bf; --ok: #22a06b; --bad: #ef4444; --warn: #f59e0b;
+      --shadow: 0 2px 14px rgba(0,0,0,.45); color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(180deg, var(--bg), var(--bg2)); color: var(--text);
+      min-height: 100dvh; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom));
+    }
+    .chrome { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+    header.top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+    .brand { display: flex; gap: 10px; align-items: center; }
+    .brand h1 { margin: 0; font-size: 18px; font-weight: 800; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
+    .btn-tool {
+      min-height: var(--tap); padding: 0 14px; border-radius: 12px; border: 1px solid var(--line);
+      background: var(--card); color: var(--text); font-weight: 700; font-size: 14px; cursor: pointer;
+    }
+    .btn-tool.primary { background: var(--accent); color: #fff; border-color: transparent; }
+    [data-theme="dark"] .btn-tool.primary { color: #042f2e; }
+    .nav-links { display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px; }
+    .nav-links a { color: var(--accent); font-weight: 700; text-decoration: none; }
+    .panel, .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+      padding: 12px; box-shadow: var(--shadow);
+    }
+    .card { margin-bottom: 8px; }
+    .card .plate { font-size: 18px; font-weight: 800; font-family: ui-monospace, Menlo, monospace; margin: 0 0 4px; }
+    .muted { color: var(--muted); font-size: 13px; line-height: 1.4; }
+    .badge {
+      display: inline-block; font-size: 11px; font-weight: 800; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 999px; margin-bottom: 6px;
+    }
+    .badge.expected { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+    .badge.arrived { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+    .badge.on_lift { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+    .badge.done { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .field { display: grid; gap: 6px; margin-bottom: 10px; }
+    .field label { font-size: 12px; font-weight: 700; color: var(--muted); }
+    input {
+      width: 100%; min-height: 44px; border-radius: 12px; border: 1px solid var(--line);
+      background: var(--bg); color: var(--text); padding: 0 12px; font-size: 16px;
+    }
+    .err {
+      color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
+      border-radius: 12px; padding: 10px 12px; font-weight: 600;
+    }
+    .okmsg {
+      color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+      border-radius: 12px; padding: 10px 12px; font-weight: 600;
+    }
+    .who { font-size: 13px; color: var(--muted); font-weight: 600; align-self: center; }
+    h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="chrome">
+    <header class="top">
+      <div class="brand">
+        <img class="brand-logo" src="/logo-uchet1.svg" width="28" height="28" alt="Учёт №1" />
+        <h1>Приёмщик · СТО</h1>
+      </div>
+      <div class="toolbar">
+        <span class="who" id="who"></span>
+        <button type="button" class="btn-tool" id="theme-btn">Тема</button>
+        <button type="button" class="btn-tool primary" id="reload">Обновить</button>
+        <button type="button" class="btn-tool" id="logout">Выйти</button>
+      </div>
+    </header>
+
+    <div class="nav-links">
+      <a href="/lift">Подъёмник</a>
+      <a href="/help">Помощь</a>
+      <a href="/">Меню</a>
+    </div>
+
+    <div id="err" class="err" hidden></div>
+    <div id="ok" class="okmsg" hidden></div>
+
+    <section class="panel">
+      <h2>Добавить на сегодня</h2>
+      <div class="field"><label>Время</label><input id="a-time" type="time" /></div>
+      <div class="field"><label>Госномер</label><input id="a-plate" placeholder="А123ВС777" autocomplete="off" /></div>
+      <div class="field"><label>Клиент</label><input id="a-client" /></div>
+      <div class="field"><label>Модель</label><input id="a-model" placeholder="Toyota Land Cruiser" /></div>
+      <div class="field"><label>Телефон</label><input id="a-phone" inputmode="tel" /></div>
+      <div class="field"><label>Комментарий</label><input id="a-note" /></div>
+      <div class="actions">
+        <button type="button" class="btn-tool primary" id="a-add">Записать</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Ожидаются сегодня · <span id="day-label">—</span></h2>
+      <div id="list"></div>
+    </section>
+  </div>
+
+  <script>
+    const THEME_KEY = 'uchet1_reception_theme';
+
+    function applyTheme(theme) {
+      const t = theme === 'dark' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', t);
+      try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
+      const logo = document.querySelector('.brand-logo');
+      if (logo) logo.src = t === 'dark' ? '/logo-uchet1-on-dark.svg' : '/logo-uchet1.svg';
+    }
+    (function () {
+      let t = 'light';
+      try { t = localStorage.getItem(THEME_KEY) || 'light'; } catch (_) {}
+      applyTheme(t);
+    })();
+
+    async function api(path, opts) {
+      const res = await fetch('/api' + path, {
+        credentials: 'same-origin',
+        ...opts,
+        headers: {
+          ...(opts && opts.body ? { 'Content-Type': 'application/json' } : {}),
+          ...((opts && opts.headers) || {}),
+        },
+      });
+      if (res.status === 401) {
+        location.href = '/login?next=' + encodeURIComponent('/reception');
+        throw new Error('login');
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+      );
+    }
+    function showErr(msg) {
+      const el = document.getElementById('err');
+      el.hidden = !msg; el.textContent = msg || '';
+    }
+    function showOk(msg) {
+      const el = document.getElementById('ok');
+      el.hidden = !msg; el.textContent = msg || '';
+      if (msg) setTimeout(() => { el.hidden = true; }, 2000);
+    }
+
+    function statusLabel(s) {
+      return ({ expected: 'Ожидается', arrived: 'Прибыл', on_lift: 'На подъёмнике', done: 'Готово', cancelled: 'Отмена' })[s] || s;
+    }
+
+    function render(data) {
+      document.getElementById('day-label').textContent = data.day || '—';
+      const box = document.getElementById('list');
+      const items = data.items || [];
+      if (!items.length) {
+        box.innerHTML = '<div class="muted">На сегодня записей нет — добавьте авто выше.</div>';
+        return;
+      }
+      box.innerHTML = items.map((a) => `
+        <div class="card">
+          <span class="badge ${esc(a.status)}">${esc(statusLabel(a.status))}</span>
+          <p class="plate">${esc(a.plate || '—')} ${a.time_hm ? '· ' + esc(a.time_hm) : ''}</p>
+          <div class="muted">
+            ${esc(a.model || '—')}<br/>
+            ${esc(a.client_name || '—')}${a.phone ? ' · ' + esc(a.phone) : ''}<br/>
+            ${a.work_order_id ? 'ЗН привязан' : 'ЗН ещё нет'}
+            ${a.note ? '<br/>' + esc(a.note) : ''}
+          </div>
+          <div class="actions">
+            ${a.status === 'expected' ? `<button type="button" class="btn-tool primary" data-arrive="${esc(a.id)}">Прибыл</button>` : ''}
+            ${a.status === 'arrived' ? `<a class="btn-tool primary" href="/lift" style="display:inline-flex;align-items:center;text-decoration:none">На подъёмник →</a>` : ''}
+            ${a.status !== 'done' && a.status !== 'cancelled' ? `<button type="button" class="btn-tool" data-done="${esc(a.id)}">Готово</button>` : ''}
+          </div>
+        </div>`).join('');
+
+      box.querySelectorAll('[data-arrive]').forEach((btn) => {
+        btn.onclick = async () => {
+          try {
+            await api('/sto/reception/appointments/' + btn.dataset.arrive + '/arrive', { method: 'POST', body: '{}' });
+            showOk('Отмечен прибывшим — можно ставить на подъёмник');
+            await load();
+          } catch (e) { showErr(e.message); }
+        };
+      });
+      box.querySelectorAll('[data-done]').forEach((btn) => {
+        btn.onclick = async () => {
+          try {
+            await api('/sto/reception/appointments/' + btn.dataset.done, {
+              method: 'PATCH',
+              body: JSON.stringify({ status: 'done' }),
+            });
+            showOk('Готово');
+            await load();
+          } catch (e) { showErr(e.message); }
+        };
+      });
+    }
+
+    async function load() {
+      showErr('');
+      const data = await api('/sto/reception/today');
+      render(data);
+    }
+
+    document.getElementById('theme-btn').onclick = () => {
+      const cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+      applyTheme(cur === 'dark' ? 'light' : 'dark');
+    };
+    document.getElementById('reload').onclick = () => load().catch((e) => showErr(e.message));
+    document.getElementById('logout').onclick = () => {
+      const go = () => { location.replace('/login?next=/reception'); };
+      api('/logout', { method: 'POST', body: '{}' }).catch(() => {}).finally(go);
+      setTimeout(go, 800);
+    };
+    document.getElementById('a-add').onclick = async () => {
+      try {
+        showErr('');
+        const plate = document.getElementById('a-plate').value.trim();
+        if (!plate) throw new Error('Укажите госномер');
+        await api('/sto/reception/appointments', {
+          method: 'POST',
+          body: JSON.stringify({
+            time_hm: document.getElementById('a-time').value,
+            plate,
+            client_name: document.getElementById('a-client').value,
+            model: document.getElementById('a-model').value,
+            phone: document.getElementById('a-phone').value,
+            note: document.getElementById('a-note').value,
+          }),
+        });
+        ['a-plate', 'a-client', 'a-model', 'a-phone', 'a-note'].forEach((id) => {
+          document.getElementById(id).value = '';
+        });
+        showOk('Запись добавлена');
+        await load();
+      } catch (e) { showErr(e.message); }
+    };
+
+    api('/me').then((u) => {
+      document.getElementById('who').textContent = u.name || u.login || '';
+    }).catch(() => {});
+    load().catch((e) => showErr(e.message));
+  </script>
+</body>
+</html>

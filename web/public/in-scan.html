@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#0d7377" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <meta name="wms-inscan-rev" content="dm-11" />
+  <title>Приёмка · скан марок · Учёт №1</title>
+  <style>
+    :root {
+      --bg: #e8f0f0; --card: #fff; --text: #0f1f1f; --muted: #5a6f6f;
+      --line: #b8cece; --accent: #0d7377; --ok: #1b8a5a; --ok-press: #147048;
+      --bad: #c0392b; --warn: #c47a12; --shadow: 0 2px 10px rgba(13,50,50,.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(180deg, var(--bg), #d4e4e4); color: var(--text);
+      min-height: 100dvh; padding: 12px; padding-bottom: calc(96px + env(safe-area-inset-bottom));
+    }
+    .chrome { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+    .top {
+      display: flex; align-items: center; gap: 10px; background: var(--card);
+      border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: var(--shadow);
+    }
+    .top h1 { margin: 0; font-size: 16px; color: var(--accent); }
+    .top .grow { flex: 1; }
+    .btn {
+      min-height: 44px; border-radius: 12px; border: 1px solid var(--line);
+      background: var(--card); color: var(--text); font-weight: 700; padding: 0 14px;
+      touch-action: manipulation;
+    }
+    .btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+    .btn.cam { min-width: 52px; padding: 0 12px; font-size: 18px; }
+    .btn.cam.on { background: var(--accent); color: #fff; border-color: transparent; }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+      padding: 12px; box-shadow: var(--shadow);
+    }
+    .cam-panel {
+      background: #0f172a; border: 1px solid var(--line); border-radius: 12px;
+      overflow: hidden; box-shadow: var(--shadow); position: relative;
+    }
+    .cam-panel .reader {
+      width: 100%; height: 180px; max-height: 28vh; background: #0f172a;
+    }
+    .cam-panel .reader video { object-fit: cover !important; }
+    .cam-panel .cam-bar {
+      display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+      background: rgba(15,23,42,.92); color: #e2e8f0; font-size: 13px; font-weight: 600;
+    }
+    .cam-panel .cam-bar .grow { flex: 1; }
+    .cam-panel .cam-bar .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #64748b;
+    }
+    .cam-panel .cam-bar .dot.on { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.25); }
+    .cam-panel .cam-bar .btn {
+      min-height: 36px; font-size: 13px; padding: 0 10px;
+      background: #1e293b; color: #e2e8f0; border-color: #334155;
+    }
+    .scan-row { display: flex; gap: 8px; }
+    .scan-row input {
+      flex: 1; min-height: 52px; border: 1px solid var(--line); border-radius: 12px;
+      padding: 12px; font-size: 18px; font-weight: 700; font-family: ui-monospace, monospace;
+    }
+    .msg { min-height: 1.2em; font-weight: 600; font-size: 14px; margin: 8px 0 0; }
+    .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); } .msg.warn { color: var(--warn); }
+    .alert {
+      background: #fff7ed; border: 1px solid #fdba74; color: #9a3412;
+      border-radius: 10px; padding: 10px 12px; font-weight: 600; font-size: 14px;
+    }
+    .alert.bad { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+    .unit-row {
+      display: flex; gap: 8px; align-items: center; padding: 10px 0;
+      border-bottom: 1px solid var(--line); font-size: 14px;
+    }
+    .unit-row:last-child { border-bottom: 0; }
+    .unit-row .mono { font-family: ui-monospace, monospace; font-weight: 700; }
+    .badge {
+      font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+      background: #e2e8f0; color: #334155;
+    }
+    .badge.ok { background: #dcfce7; color: #166534; }
+    .badge.wait { background: #ffedd5; color: #9a3412; }
+    .badge.partial { background: #fef3c7; color: #92400e; }
+    .badge.extra { background: #fee2e2; color: #991b1b; }
+    .prod-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+    .prod-table th, .prod-table td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .prod-table th { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+    .prod-table tr.ok { background: #ecfdf5; }
+    .prod-table tr.partial { background: #fffbeb; }
+    .prod-table tr.wait { background: transparent; }
+    .prod-table tr.flash { outline: 2px solid var(--ok); background: #bbf7d0 !important; transition: background .4s; }
+    .prod-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .units-fold { margin-top: 8px; }
+    .units-fold summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted); }
+    .dock {
+      position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; width: 100%;
+      max-width: 720px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+      background: linear-gradient(180deg, transparent, var(--bg) 28%); box-sizing: border-box;
+    }
+    .check {
+      width: 100%; min-height: 64px; border: 0; border-radius: 16px; background: var(--ok);
+      color: #fff; font-size: 22px; font-weight: 800; box-shadow: 0 6px 18px rgba(27,138,90,.4);
+      touch-action: manipulation;
+    }
+    .check:active { background: var(--ok-press); }
+    .muted { color: var(--muted); }
+    .extra-box { display: none; margin-top: 10px; gap: 8px; flex-direction: column; }
+    .extra-box.on { display: flex; }
+    select, .extra-box input {
+      min-height: 48px; border-radius: 12px; border: 1px solid var(--line); padding: 10px; font-size: 15px;
+    }
+    #info-panel { scroll-margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="chrome">
+    <header class="top">
+      <img src="/logo-uchet1.svg" width="28" height="28" alt="" />
+      <h1>Приёмка · скан</h1>
+      <div class="grow"></div>
+      <a class="btn" href="/supply?v=dm9">Заказы</a>
+      <button type="button" class="btn" id="logout">Выйти</button>
+    </header>
+
+    <div class="cam-panel" id="cam-panel">
+      <div id="scan-reader" class="reader"></div>
+      <div class="cam-bar">
+        <span class="dot" id="cam-dot"></span>
+        <span class="grow" id="cam-hint">Камера: марка (Data Matrix) или штрихкод</span>
+        <button type="button" class="btn" id="cam-toggle">Стоп</button>
+      </div>
+    </div>
+
+    <div class="card" id="scan-card">
+      <div class="scan-row">
+        <input id="code" type="text" inputmode="text" autocomplete="off" autocorrect="off" spellcheck="false"
+          placeholder="Марка или штрихкод" />
+        <button type="button" class="btn primary" id="lookup">Найти</button>
+      </div>
+      <p class="msg muted" id="msg">Наведите камеру сверху — снизу появится действие</p>
+    </div>
+
+    <div id="info-panel">
+      <div id="action-box" class="card muted" style="font-size:13px" hidden></div>
+      <input id="ret-comment" placeholder="Комментарий к возврату (необяз.)" style="margin-top:8px;display:none;width:100%;min-height:44px;border:1px solid var(--line);border-radius:12px;padding:10px;font-size:15px;background:var(--card)" />
+      <div id="alert" class="alert" hidden style="margin-top:8px"></div>
+
+      <div class="card" id="order-card" hidden style="margin-top:8px">
+        <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+          <strong id="ord-num">—</strong>
+          <span class="muted" id="ord-sup">—</span>
+          <span class="badge" id="ord-st">—</span>
+        </div>
+        <p class="muted" id="ord-meta" style="margin:6px 0 0;font-size:13px"></p>
+        <p id="ord-receive-label" style="margin:8px 0 0;font-weight:700;font-size:14px;color:var(--accent)"></p>
+        <div id="products"></div>
+        <details class="units-fold" id="units-fold" hidden>
+          <summary>Марки поштучно</summary>
+          <div id="units"></div>
+        </details>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button type="button" class="btn primary" id="btn-finish">Завершить (с недостачей — ок)</button>
+          <button type="button" class="btn" id="btn-extra-toggle">Излишек (+)</button>
+          <a class="btn" id="btn-labels" href="#" target="_blank">Этикетки</a>
+        </div>
+        <div class="extra-box" id="extra-box">
+          <input id="extra-product" list="product-list" placeholder="Товар: GUID или поиск по списку ниже" />
+          <datalist id="product-list"></datalist>
+          <input id="extra-note" placeholder="Комментарий несоответствия" />
+          <button type="button" class="btn primary" id="btn-extra">Сгенерировать DM и оприходовать</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dock">
+    <button type="button" class="check" id="check">✓ Подтвердить</button>
+  </div>
+
+  <script>
+    const api = async (path, opts) => {
+      const r = await fetch('/api' + path, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...(opts && opts.headers) },
+        ...opts,
+      });
+      if (r.status === 401) {
+        location.replace('/login?next=' + encodeURIComponent('/in/scan'));
+        throw new Error('auth');
+      }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || r.statusText || 'error');
+      return data;
+    };
+
+    let current = null;
+    let productsCache = [];
+    let pendingAction = null;
+    let lastScanned = '';
+    let scanBusy = false;
+    let lastFlashPid = '';
+    let autoReceive = true;
+
+    const qs = new URLSearchParams(location.search);
+    const bootTaskId = (qs.get('task') || '').trim();
+    const bootOrderId = (qs.get('order') || '').trim();
+
+    const setMsg = (t, kind) => {
+      const el = document.getElementById('msg');
+      el.textContent = t || '';
+      el.className = 'msg ' + (kind || 'muted');
+    };
+
+    const setAlert = (text, bad) => {
+      const el = document.getElementById('alert');
+      if (!text) { el.hidden = true; return; }
+      el.hidden = false;
+      el.textContent = text;
+      el.className = 'alert' + (bad ? ' bad' : '');
+    };
+
+    function showAction(data) {
+      pendingAction = data;
+      const box = document.getElementById('action-box');
+      const comment = document.getElementById('ret-comment');
+      const btn = document.getElementById('check');
+      if (!data) {
+        box.hidden = true;
+        comment.style.display = 'none';
+        btn.textContent = '✓ Подтвердить';
+        return;
+      }
+      box.hidden = false;
+      const dealHtml = data.deal && data.deal.deal_id
+        ? '<div style="margin-top:4px"><strong>Заказ покупателя:</strong> ' +
+          esc(data.deal.deal_name || data.deal.deal_id) +
+          (data.deal.buyer_name ? ' · ' + esc(data.deal.buyer_name) : '') +
+          '</div>'
+        : '';
+      const supplier =
+        (data.order && (data.order.supplier_name || data.order.counterparty_name)) ||
+        (data.supplier_unit && data.supplier_unit.supplier_name) ||
+        '';
+      const orderHtml = data.order
+        ? '<div style="margin-top:4px"><strong>Основание:</strong> заказ поставщику <b>' +
+          esc(data.order.number) +
+          '</b>' +
+          (supplier ? ' · поставщик <b>' + esc(supplier) + '</b>' : '') +
+          '</div>'
+        : '';
+      const productHtml = data.product
+        ? '<div style="margin-top:4px"><strong>Товар:</strong> ' +
+          esc(data.product.sku || '') + ' · ' + esc(data.product.name || '') +
+          '</div>'
+        : '';
+      const unitSt = data.product_unit ? String(data.product_unit.status || '') : '';
+      const salePrice = Number(data.sale_price) || 0;
+      const priceHtml =
+        data.action === 'return' && salePrice > 0
+          ? '<div style="margin-top:4px"><strong>Цена продажи:</strong> ' +
+            esc(String(salePrice)) +
+            ' ₽ <span class="muted">(вернём в требование возврата денег)</span></div>'
+          : data.action === 'return'
+            ? '<div class="muted" style="margin-top:4px;font-size:12px">Цена продажи не найдена — требование без суммы</div>'
+            : '';
+      box.innerHTML =
+        '<div><strong>' + esc(data.action_label || data.action) + '</strong>' +
+        ' <span class="badge">' + esc(data.action || '') + '</span></div>' +
+        productHtml + orderHtml + dealHtml + priceHtml +
+        (unitSt ? '<div class="muted" style="margin-top:4px;font-size:12px">Статус единицы: ' + esc(unitSt) + '</div>' : '');
+      if (data.action === 'return') {
+        comment.style.display = 'block';
+        btn.textContent =
+          salePrice > 0 ? '✓ Возврат · ' + salePrice + ' ₽' : '✓ Оформить возврат';
+      } else if (data.action === 'receive') {
+        comment.style.display = 'none';
+        btn.textContent = supplier ? '✓ Оприходовать · ' + supplier : '✓ Оприходовать';
+      } else if (data.action === 'receive_free' || data.action === 'unknown') {
+        comment.style.display = 'none';
+        btn.textContent = data.product ? '✓ Приход · ' + (data.product.sku || 'товар') : '✓ Приход без основания';
+      } else if (data.action === 'to_sto') {
+        comment.style.display = 'none';
+        btn.textContent = '✓ На СТО';
+      } else if (data.action === 'install') {
+        comment.style.display = 'none';
+        btn.textContent = '✓ УПД + списание';
+      } else {
+        comment.style.display = 'none';
+        btn.textContent = '✓ Подтвердить';
+      }
+      try {
+        document.getElementById('info-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } catch (_) {}
+    }
+
+    function statusRu(st) {
+      const m = {
+        received: 'на складе',
+        partial: 'частично',
+        in_transit: 'в приёмке',
+        expected: 'ожидается',
+        draft: 'черновик',
+        picking: 'приёмка',
+        handed: 'закрыто',
+      };
+      return m[String(st || '').toLowerCase()] || st || '—';
+    }
+
+    function renderOrder(order, flashPid) {
+      current = order;
+      const card = document.getElementById('order-card');
+      if (!order) { card.hidden = true; return; }
+      card.hidden = false;
+      if (flashPid) lastFlashPid = flashPid;
+      document.getElementById('ord-num').textContent = order.number || '—';
+      document.getElementById('ord-sup').textContent =
+        (order.is_return || order.task_kind === 'return' ? 'Возврат · ' : '') +
+        (order.supplier_name || order.counterparty_name || '—');
+      const stEl = document.getElementById('ord-st');
+      stEl.textContent =
+        order.is_return || order.task_kind === 'return'
+          ? 'возврат · ' + statusRu(order.status)
+          : statusRu(order.status);
+      stEl.className =
+        'badge ' +
+        (order.status === 'received' ? 'ok' : order.status === 'partial' ? 'partial' : 'wait');
+      const units = order.units || [];
+      const pending = Number(order.units_pending != null
+        ? order.units_pending
+        : units.filter((u) => !u.is_extra && u.status !== 'received').length);
+      const received = Number(order.units_received != null
+        ? order.units_received
+        : units.filter((u) => u.status === 'received').length);
+      const total = Number(order.units_total != null ? order.units_total : units.length);
+      document.getElementById('ord-meta').textContent =
+        'Оприходовано ' + received + ' / ' + total +
+        (pending ? ' · не пришло ' + pending : '') +
+        (order.mismatch ? ' · недостача зафиксирована' : '');
+      const recvLabel = document.getElementById('ord-receive-label');
+      recvLabel.textContent = order.receive_label || '';
+      recvLabel.style.color =
+        pending === 0 && received > 0 ? 'var(--ok)' : received > 0 ? 'var(--warn)' : 'var(--accent)';
+
+      if (order.mismatch || (pending > 0 && order.status === 'partial')) {
+        setAlert(
+          (order.mismatch_note || '') ||
+            ('Часть товара не пришла из заказа: ' + pending + ' марок. Приходная частичная — на складе ' + received + '.'),
+          true
+        );
+      } else if (pending > 0) {
+        setAlert('Сканируйте марки — позиции подсветятся как оприходованные на складе', false);
+      } else if (received > 0) {
+        setAlert('Все позиции оприходованы · товары на складе', false);
+      } else setAlert('');
+
+      const products = order.products || [];
+      const prodEl = document.getElementById('products');
+      if (products.length) {
+        prodEl.innerHTML =
+          `<table class="prod-table"><thead><tr>
+            <th>Товар</th><th>Артикул</th>
+            <th class="num">Ок</th><th class="num">Из заказа</th><th class="num">Не пришло</th><th></th>
+          </tr></thead><tbody>` +
+          products
+            .map((p) => {
+              const cls = p.line_status || 'wait';
+              const flash =
+                lastFlashPid && p.product_id && p.product_id === lastFlashPid ? ' flash' : '';
+              const lab =
+                cls === 'ok'
+                  ? 'на складе'
+                  : cls === 'partial'
+                    ? 'частично'
+                    : 'ждёт';
+              return `<tr class="${cls}${flash}" data-pid="${esc(p.product_id || '')}">
+                <td>${esc(p.name || '—')}</td>
+                <td class="mono">${esc(p.sku || '—')}</td>
+                <td class="num mono">${esc(String(p.received || 0))}</td>
+                <td class="num mono">${esc(String(p.expected || 0))}</td>
+                <td class="num mono">${esc(String(p.missing || 0))}</td>
+                <td><span class="badge ${cls}">${lab}</span></td>
+              </tr>`;
+            })
+            .join('') +
+          '</tbody></table>';
+      } else {
+        prodEl.innerHTML = '';
+      }
+
+      const fold = document.getElementById('units-fold');
+      document.getElementById('btn-labels').href =
+        '/api/supply/orders/' + encodeURIComponent(order.id) + '/labels.html';
+      if (units.length) {
+        fold.hidden = false;
+        document.getElementById('units').innerHTML = units
+          .map((u) => {
+            const cls = u.is_extra ? 'extra' : u.status === 'received' ? 'ok' : 'wait';
+            const lab =
+              u.is_extra ? 'излишек' : u.status === 'received' ? 'на складе' : 'не пришло';
+            return `<div class="unit-row">
+              <span class="mono">${esc(u.serial)}</span>
+              <span class="grow">${esc(u.sku || '')} · ${esc(u.product_name || '')}</span>
+              <span class="badge ${cls}">${lab}</span>
+            </div>`;
+          })
+          .join('');
+      } else {
+        fold.hidden = true;
+        document.getElementById('units').innerHTML = '';
+      }
+
+      const fin = document.getElementById('btn-finish');
+      if (pending > 0) {
+        fin.textContent = 'Завершить с недостачей (' + pending + ')';
+        fin.hidden = false;
+      } else if (received > 0) {
+        fin.textContent = 'Закрыть приёмку';
+        fin.hidden = false;
+      } else {
+        fin.hidden = true;
+      }
+    }
+
+    async function loadBoard(orderId) {
+      if (!orderId) return;
+      try {
+        const board = await api('/supply/inbound-board/' + encodeURIComponent(orderId));
+        renderOrder(board);
+        setMsg(board.receive_label || 'Готово к скану марок', 'ok');
+      } catch (e) {
+        setMsg(e.message || 'Не удалось загрузить заказ', 'bad');
+      }
+    }
+
+    async function loadTaskBoard(taskId) {
+      if (!taskId) return;
+      try {
+        const board = await api('/supply/inbound-task/' + encodeURIComponent(taskId));
+        renderOrder(board);
+        setMsg('Требование на склад · сканируйте марки из заказа', 'ok');
+      } catch (e) {
+        setMsg(e.message || 'Задание не найдено', 'bad');
+      }
+    }
+
+    function esc(s) {
+      return String(s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    async function lookup() {
+      const code = document.getElementById('code').value.trim();
+      if (!code) { setMsg('Введите марку или штрихкод', 'bad'); return; }
+      setMsg('Определяю действие…');
+      try {
+        const data = await api('/supply/scan', { method: 'POST', body: JSON.stringify({ code }) });
+        showAction(data);
+        if (data.order) renderOrder(data.order);
+        else if (data.action !== 'return' && !current) renderOrder(null);
+        if (data.action === 'receive' && autoReceive) {
+          await apply();
+          return;
+        }
+        if (data.action === 'receive') {
+          setMsg('Приход из поставки · нажмите ✓', 'ok');
+        } else if (data.action === 'receive_free' || data.action === 'unknown') {
+          setMsg(
+            data.product
+              ? 'Штрихкод товара · оформим приход (новая марка)'
+              : 'Основание не определено · оформим приход без основания',
+            'ok'
+          );
+        } else if (data.action === 'return') {
+          setMsg('Это возврат от клиента · нажмите ✓', 'ok');
+        } else if (data.action === 'to_sto') {
+          setMsg('На основном складе · нажмите ✓ чтобы переместить на СТО', 'ok');
+        } else if (data.action === 'install') {
+          setMsg('На СТО · нажмите ✓ для УПД и списания', 'ok');
+        } else if (data.action === 'on_sto') {
+          setMsg(data.action_label, 'warn');
+        } else if (data.action === 'already_received' || data.action === 'in_stock') {
+          setMsg(data.action_label || 'Уже на складе', 'warn');
+          if (data.order) renderOrder(data.order);
+        } else {
+          setMsg(data.action_label || 'Приход без основания · нажмите ✓', 'ok');
+        }
+      } catch (e) {
+        setMsg(e.message || 'Не найден', 'bad');
+        showAction(null);
+      }
+    }
+
+    async function apply() {
+      const code = document.getElementById('code').value.trim();
+      if (!code) { setMsg('Введите марку или штрихкод', 'bad'); return; }
+      setMsg('Обработка…');
+      try {
+        const data = await api('/supply/scan-apply', {
+          method: 'POST',
+          body: JSON.stringify({
+            code,
+            comment: document.getElementById('ret-comment').value.trim() || undefined,
+          }),
+        });
+        document.getElementById('code').value = '';
+        document.getElementById('ret-comment').value = '';
+        showAction(null);
+        lastScanned = '';
+        const flashPid =
+          (data.product_unit && data.product_unit.product_id) ||
+          (data.order && data.serial
+            ? ((data.order.units || []).find(
+                (u) => String(u.serial).toLowerCase() === String(data.serial).toLowerCase()
+              ) || {}).product_id
+            : '') ||
+          '';
+        if (data.order) renderOrder(data.order, flashPid);
+        else if (current && current.id) await loadBoard(current.id);
+
+        if (data.action === 'return') {
+          const dealLabel = data.deal
+            ? (data.deal.deal_name || data.deal.deal_id || '')
+            : '';
+          const money = data.money_refund && data.money_refund.number
+            ? ' · ТВД ' + data.money_refund.number
+            : '';
+          const price =
+            data.sale_price || data.amount
+              ? ' · ' + (data.sale_price || data.amount) + ' ₽'
+              : '';
+          setMsg(
+            '✓ Возврат ' + (data.serial || code) + (dealLabel ? ' → ' + dealLabel : '') + price + money,
+            'ok'
+          );
+        } else if (data.action === 'to_sto') {
+          setMsg('✓ На СТО: ' + (data.serial || code), 'ok');
+        } else if (data.action === 'install') {
+          setMsg('✓ УПД ' + ((data.upd && data.upd.number) || 'ok') + ' · ' + (data.serial || code), 'ok');
+        } else if (data.action === 'receive' || data.action === 'receive_free' || !data.action) {
+          const left = data.order ? Number(data.order.units_pending) || 0 : 0;
+          setMsg(
+            '✓ Оприходован на склад: ' +
+              (data.serial || code) +
+              (left ? ' · осталось ' + left : ' · комплект'),
+            'ok'
+          );
+        } else {
+          setMsg('✓ ' + (data.action_label || data.serial || code), 'ok');
+        }
+        try { if (navigator.vibrate) navigator.vibrate([30, 40, 30]); } catch (_) {}
+      } catch (e) {
+        setMsg(e.message || 'Ошибка', 'bad');
+      }
+    }
+
+    document.getElementById('lookup').onclick = () => lookup();
+    document.getElementById('check').onclick = () => apply();
+    document.getElementById('code').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); apply(); }
+    });
+    document.getElementById('code').addEventListener('input', () => {
+      pendingAction = null;
+      document.getElementById('action-box').hidden = true;
+    });
+    document.getElementById('btn-finish').onclick = async () => {
+      if (!current) return;
+      const pending = Number(current.units_pending) || 0;
+      if (pending > 0) {
+        const ok = confirm(
+          'Завершить приёмку с недостачей?\nНе пришло марок: ' +
+            pending +
+            '\nПриходная останется частичной — товары из заказа, которые не пришли, будут отмечены.'
+        );
+        if (!ok) return;
+      }
+      try {
+        const order = await api(
+          '/supply/orders/' + encodeURIComponent(current.id) + '/finish',
+          { method: 'POST', body: '{}' }
+        );
+        renderOrder(order);
+        setMsg(
+          pending > 0
+            ? 'Приёмка закрыта с недостачей · на складе только оприходованное'
+            : 'Приёмка закрыта · все на складе',
+          pending > 0 ? 'warn' : 'ok'
+        );
+      } catch (e) { setMsg(e.message, 'bad'); }
+    };
+    document.getElementById('btn-extra-toggle').onclick = () => {
+      document.getElementById('extra-box').classList.toggle('on');
+    };
+    document.getElementById('btn-extra').onclick = async () => {
+      if (!current) return;
+      const product_id = document.getElementById('extra-product').value.trim();
+      const note = document.getElementById('extra-note').value.trim();
+      if (!product_id) { setMsg('Укажите product_id', 'bad'); return; }
+      try {
+        const data = await api('/supply/receive-extra', {
+          method: 'POST',
+          body: JSON.stringify({ order_id: current.id, product_id, note }),
+        });
+        renderOrder(data.order);
+        setMsg('✓ Излишек ' + data.serial, 'ok');
+        document.getElementById('code').value = data.serial || '';
+      } catch (e) { setMsg(e.message, 'bad'); }
+    };
+    document.getElementById('logout').onclick = () => {
+      fetch('/api/logout', { method: 'POST', credentials: 'include', body: '{}' }).finally(() => {
+        location.replace('/login?next=' + encodeURIComponent('/in/scan'));
+      });
+    };
+
+    api('/products?limit=80').then((d) => {
+      productsCache = d.items || d.products || [];
+      const dl = document.getElementById('product-list');
+      dl.innerHTML = productsCache.slice(0, 80).map((p) =>
+        `<option value="${esc(p.id)}">${esc(p.sku || '')} · ${esc(p.name || '')}</option>`
+      ).join('');
+    }).catch(() => {});
+
+    let dmScanner = null;
+    let camRunning = false;
+
+    function loadScriptOnce(src) {
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-scan-lib="' + src + '"]');
+        if (existing) {
+          if (existing.dataset.ready === '1') return resolve();
+          existing.addEventListener('load', () => resolve());
+          existing.addEventListener('error', () => reject(new Error('load failed')));
+          return;
+        }
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = true;
+        s.dataset.scanLib = src;
+        s.onload = () => { s.dataset.ready = '1'; resolve(); };
+        s.onerror = () => reject(new Error('Не удалось загрузить сканер'));
+        document.head.appendChild(s);
+      });
+    }
+
+    function setCamUi(on, hint) {
+      camRunning = !!on;
+      const dot = document.getElementById('cam-dot');
+      const btn = document.getElementById('cam-toggle');
+      const h = document.getElementById('cam-hint');
+      if (dot) dot.classList.toggle('on', !!on);
+      if (btn) btn.textContent = on ? 'Стоп' : 'Камера';
+      if (h && hint) h.textContent = hint;
+    }
+
+    async function stopCamera() {
+      if (dmScanner) {
+        try { await dmScanner.stop(); } catch (_) {}
+        try { await dmScanner.clear(); } catch (_) {}
+        dmScanner = null;
+      }
+      setCamUi(false, 'Камера выкл. · USB-сканер или кнопка «Камера»');
+    }
+
+    function scanFormats() {
+      const f = window.Html5QrcodeSupportedFormats;
+      if (!f) return undefined;
+      return [
+        f.DATA_MATRIX,
+        f.QR_CODE,
+        f.CODE_128,
+        f.CODE_39,
+        f.EAN_13,
+        f.EAN_8,
+        f.UPC_A,
+        f.UPC_E,
+        f.ITF,
+      ].filter((x) => x != null);
+    }
+
+    async function onDecoded(decoded) {
+      const code = String(decoded || '').trim();
+      if (!code || scanBusy) return;
+      if (code === lastScanned) return;
+      lastScanned = code;
+      scanBusy = true;
+      document.getElementById('code').value = code;
+      setMsg('Скан: ' + code, 'ok');
+      try { if (navigator.vibrate) navigator.vibrate(25); } catch (_) {}
+      try {
+        // сразу оприходуем приходные марки; остальное — через lookup
+        await lookup();
+      } finally {
+        setTimeout(() => { scanBusy = false; }, 900);
+      }
+    }
+
+    async function startCamera() {
+      const hint = document.getElementById('cam-hint');
+      try {
+        await loadScriptOnce('https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js');
+        if (!window.Html5Qrcode) throw new Error('Html5Qrcode недоступен');
+        if (dmScanner) {
+          try { await dmScanner.stop(); } catch (_) {}
+          try { await dmScanner.clear(); } catch (_) {}
+          dmScanner = null;
+        }
+        dmScanner = new window.Html5Qrcode('scan-reader');
+        const boxW = Math.min(160, Math.floor((window.innerWidth - 48) * 0.42));
+        const boxH = Math.min(110, Math.floor(boxW * 0.7));
+        await dmScanner.start(
+          { facingMode: 'environment' },
+          {
+            fps: 12,
+            qrbox: { width: boxW, height: boxH },
+            aspectRatio: 1.777,
+            formatsToSupport: scanFormats(),
+          },
+          onDecoded,
+          () => {}
+        );
+        setCamUi(true, 'Наведите на марку или штрихкод');
+      } catch (e) {
+        setCamUi(false, e.message || 'Камера недоступна');
+        setMsg(e.message || 'Камера недоступна — используйте USB-сканер', 'bad');
+      }
+    }
+
+    document.getElementById('cam-toggle').onclick = () => {
+      if (camRunning) stopCamera();
+      else startCamera();
+    };
+
+    startCamera();
+    if (bootTaskId) loadTaskBoard(bootTaskId);
+    else if (bootOrderId) loadBoard(bootOrderId);
+  </script>
+</body>
+</html>

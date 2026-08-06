@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <title>Заказы поставщику · Data Matrix · Учёт №1</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta name="wms-supply-rev" content="dm-scan-9" />
+  <style>
+    :root {
+      --bg:#e8f0f0; --card:#fff; --text:#0f1f1f; --muted:#5a6f6f; --line:#b8cece;
+      --accent:#0d7377; --ok:#1b8a5a; --bad:#c0392b; --warn:#c47a12;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,sans-serif;background:linear-gradient(180deg,var(--bg),#d4e4e4);color:var(--text);padding:12px}
+    .wrap{max-width:960px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+    .top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+    h1{margin:0;font-size:18px;color:var(--accent)}
+    .grow{flex:1}
+    .btn{min-height:40px;border-radius:10px;border:1px solid var(--line);background:var(--card);padding:0 12px;font-weight:700;cursor:pointer}
+    .btn.primary{background:var(--accent);color:#fff;border-color:transparent}
+    .btn.ok{background:var(--ok);color:#fff;border-color:transparent}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+    table{width:100%;border-collapse:collapse;font-size:14px}
+    th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}
+    tr.clickable{cursor:pointer} tr.clickable:hover{background:#f0fdfa}
+    .mono{font-family:ui-monospace,monospace;font-weight:700}
+    .muted{color:var(--muted)}
+    .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:#e2e8f0}
+    .badge.bad{background:#fee2e2;color:#991b1b}
+    .badge.warn{background:#ffedd5;color:#9a3412}
+    .badge.ok{background:#dcfce7;color:#166534}
+    label{display:block;font-size:12px;font-weight:700;margin:8px 0 4px}
+    input,select,textarea{width:100%;min-height:42px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:15px}
+    textarea{min-height:72px}
+    .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    @media(max-width:700px){.row2{grid-template-columns:1fr}}
+    .line{display:grid;grid-template-columns:2fr 80px 1fr auto;gap:8px;margin-bottom:8px;align-items:center}
+    .err{color:var(--bad);font-weight:600}
+    .okmsg{color:var(--ok);font-weight:600}
+    .scan-field{display:flex;gap:8px;align-items:stretch}
+    .scan-field input{flex:1}
+    .btn.cam{min-width:48px;padding:0 10px;font-size:18px}
+    .dm-scan-overlay{
+      position:fixed;inset:0;z-index:300;background:rgba(15,23,42,.72);
+      display:flex;align-items:center;justify-content:center;padding:16px;
+    }
+    .dm-scan-overlay[hidden]{display:none !important}
+    .dm-scan-card{
+      background:#fff;border-radius:14px;width:min(420px,96vw);padding:14px;
+      box-shadow:0 18px 48px rgba(0,0,0,.35);
+    }
+    .dm-scan-card h3{margin:0 0 8px;font-size:16px;color:var(--accent)}
+    .dm-scan-reader{width:100%;min-height:240px;border-radius:12px;overflow:hidden;background:#0f172a}
+    .dm-scan-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+    .dm-scan-hint{margin:8px 0 0;font-size:13px;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <img src="/logo-uchet1.svg" width="28" height="28" alt="" />
+      <h1>Заказы поставщику · Data Matrix</h1>
+      <div class="grow"></div>
+      <a class="btn" href="/in/scan?v=dm5">Скан DM</a>
+      <a class="btn" href="/">Учёт №1</a>
+      <button type="button" class="btn primary" id="btn-new">Заказ поставщику</button>
+    </header>
+    <p id="flash" class="muted"></p>
+    <div class="card" id="list-card">
+      <table>
+        <thead><tr><th>Номер</th><th>Поставщик</th><th>Статус</th><th>DM</th><th>ETA</th></tr></thead>
+        <tbody id="tbody"><tr><td colspan="5" class="muted">Загрузка…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="card" id="form-card" hidden>
+      <h2 style="margin:0 0 8px;font-size:16px" id="form-title">Новый заказ поставщику</h2>
+      <div class="row2">
+        <div>
+          <label>Поставщик (id)</label>
+          <input id="cp-id" list="cp-list" placeholder="GUID контрагента" />
+          <datalist id="cp-list"></datalist>
+        </div>
+        <div>
+          <label>Срок поставки (ETA)</label>
+          <input id="eta" type="date" />
+        </div>
+      </div>
+      <label>Комментарий</label>
+      <textarea id="comment"></textarea>
+      <label>Строки</label>
+      <div id="lines"></div>
+      <button type="button" class="btn" id="add-line">+ строка</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button type="button" class="btn primary" id="save">Создать</button>
+        <button type="button" class="btn" id="cancel">Отмена</button>
+      </div>
+    </div>
+    <div class="card" id="detail-card" hidden>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <strong id="d-num"></strong>
+        <span id="d-st" class="badge"></span>
+        <span class="muted" id="d-sup"></span>
+        <div class="grow"></div>
+        <button type="button" class="btn" id="d-to-pay">На оплату</button>
+        <button type="button" class="btn ok" id="d-paid">Оплачено → Data Matrix</button>
+        <a class="btn" id="d-labels" href="#" target="_blank">Этикетки DM</a>
+        <button type="button" class="btn" id="d-to-chat" title="Вставить эту поставку в чат сотрудников">В чат</button>
+        <a class="btn primary" id="d-scan" href="/in/scan?v=dm5">Скан DM</a>
+      </div>
+      <p id="d-mis" class="err" hidden></p>
+      <p class="muted" id="d-meta"></p>
+      <table>
+        <thead><tr><th>Data Matrix</th><th>Товар</th><th>Статус</th></tr></thead>
+        <tbody id="d-units"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2 style="margin:0 0 8px;font-size:16px">Генератор Data Matrix</h2>
+      <p class="muted" style="margin:0 0 8px;font-size:13px">Квадратный Data Matrix для этикетки (локальный код, не КМ Честного знака из ЦРПТ).</p>
+      <div class="row2">
+        <div>
+          <label>Содержимое Data Matrix</label>
+          <div class="scan-field">
+            <input id="dm-text" placeholder="Сканируйте или вставьте код" autocomplete="off" />
+            <button type="button" class="btn cam" data-dm-scan="dm-text" title="Камера · Data Matrix">📷</button>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+            <button type="button" class="btn primary" id="dm-gen">Сгенерировать DM</button>
+            <a class="btn" id="dm-png" href="#" target="_blank" title="Скачать Data Matrix PNG">DM PNG</a>
+            <a class="btn" id="dm-svg" href="#" target="_blank" title="Скачать Data Matrix SVG">DM SVG</a>
+            <button type="button" class="btn" id="dm-print">Печать DM</button>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:center;min-height:140px;background:#f8fafc;border-radius:12px;border:1px dashed var(--line)">
+          <img id="dm-preview" alt="Data Matrix" width="128" height="128" style="image-rendering:pixelated;display:none" />
+          <span id="dm-ph" class="muted">Превью DM</span>
+        </div>
+      </div>
+    </div>
+    <div class="card" id="dm-prefix-card">
+      <h2 style="margin:0 0 8px;font-size:16px">Префикс Data Matrix поставщика</h2>
+      <p class="muted" style="margin:0 0 8px;font-size:13px">
+        Буквы в начале кода внутри Data Matrix после «Оплачено» (пример: <span class="mono">OZN</span>5157429692).
+      </p>
+      <div class="row2">
+        <div>
+          <label>Поставщик</label>
+          <select id="pref-cp"><option value="">Выберите поставщика…</option></select>
+        </div>
+        <div>
+          <label>Префикс DM (OZN, BER…)</label>
+          <input id="pref-val" maxlength="8" placeholder="OZN" autocomplete="off" class="mono" />
+        </div>
+      </div>
+      <button type="button" class="btn primary" id="pref-save" style="margin-top:10px">Сохранить префикс DM</button>
+    </div>
+    <div class="card">
+      <h2 style="margin:0 0 8px;font-size:16px">Скан делает всё сам</h2>
+      <p class="muted" style="margin:0 0 10px;font-size:13px">
+        Приход из поставки, возврат от клиента, перемещение на СТО и УПД — по статусу Data Matrix.
+        Отдельные поля не нужны.
+      </p>
+      <a class="btn primary" href="/in/scan?v=dm5" style="display:inline-flex;align-items:center;text-decoration:none">Открыть скан DM</a>
+    </div>
+  </div>
+  <div id="dm-scan-overlay" class="dm-scan-overlay" hidden>
+    <div class="dm-scan-card">
+      <h3>Скан Data Matrix</h3>
+      <div id="dm-scan-reader" class="dm-scan-reader"></div>
+      <p class="dm-scan-hint" id="dm-scan-hint">Наведите камеру на квадратный Data Matrix</p>
+      <div class="dm-scan-actions">
+        <button type="button" class="btn" id="dm-scan-close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    const api = async (path, opts) => {
+      const r = await fetch('/api' + path, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+      });
+      if (r.status === 401) {
+        location.replace('/login?next=' + encodeURIComponent('/supply'));
+        throw new Error('auth');
+      }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'error');
+      return data;
+    };
+    const flash = (t, ok) => {
+      const el = document.getElementById('flash');
+      el.textContent = t || '';
+      el.className = ok ? 'okmsg' : (t ? 'err' : 'muted');
+    };
+    const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const stBadge = (s) => {
+      const bad = s === 'partial' || s === 'closed';
+      const ok = s === 'received' || s === 'in_transit';
+      const warn = s === 'to_pay' || s === 'paid';
+      return `<span class="badge ${bad ? 'bad' : ok ? 'ok' : warn ? 'warn' : ''}">${esc(s)}</span>`;
+    };
+
+    async function loadList() {
+      const data = await api('/supply/orders?limit=100');
+      const items = data.items || [];
+      document.getElementById('tbody').innerHTML = items.map((r) => `
+        <tr class="clickable" data-id="${esc(r.id)}">
+          <td class="mono">${esc(r.number)}</td>
+          <td>${esc(r.supplier_name || '—')}</td>
+          <td>${stBadge(r.status)}${r.mismatch ? ' <span class="badge bad">≠</span>' : ''}</td>
+          <td class="mono">${esc(r.units_received || 0)}/${esc(r.units_total || 0)}</td>
+          <td>${esc(r.eta_date || '—')}</td>
+        </tr>`).join('') || '<tr><td colspan="5" class="muted">Пока нет заказов</td></tr>';
+      document.querySelectorAll('#tbody tr[data-id]').forEach((tr) => {
+        tr.onclick = () => openDetail(tr.getAttribute('data-id'));
+      });
+    }
+
+    async function openDetail(id) {
+      const o = await api('/supply/orders/' + encodeURIComponent(id));
+      document.getElementById('detail-card').hidden = false;
+      document.getElementById('form-card').hidden = true;
+      document.getElementById('d-num').textContent = o.number;
+      document.getElementById('d-st').outerHTML = stBadge(o.status).replace('badge', 'badge" id="d-st');
+      document.getElementById('d-sup').textContent = o.supplier_name || '';
+      document.getElementById('d-meta').textContent = (o.comment || '') + (o.paid_at ? ' · оплачен ' + o.paid_at : '');
+      const mis = document.getElementById('d-mis');
+      if (o.mismatch) { mis.hidden = false; mis.textContent = 'Несоответствие: ' + (o.mismatch_note || 'да'); }
+      else mis.hidden = true;
+      document.getElementById('d-labels').href = '/api/supply/orders/' + encodeURIComponent(o.id) + '/labels.html';
+      document.getElementById('d-to-chat').onclick = () => {
+        const ref = {
+          type: 'supply_order',
+          id: String(o.id),
+          label:
+            'Поставка ' +
+            (o.number || o.id.slice(0, 8)) +
+            (o.supplier_name ? ' · ' + o.supplier_name : ''),
+          href: '/supply?order=' + encodeURIComponent(o.id),
+        };
+        try {
+          sessionStorage.setItem('uchet1-chat-pending-ref', JSON.stringify(ref));
+        } catch (_) {}
+        window.location.href = '/chats';
+      };
+      try {
+        const u = new URL(location.href);
+        u.searchParams.set('order', o.id);
+        history.replaceState(null, '', u.pathname + '?' + u.searchParams.toString());
+      } catch (_) {}
+      document.getElementById('d-to-pay').onclick = async () => {
+        try { await api('/supply/orders/' + o.id + '/status', { method: 'POST', body: JSON.stringify({ status: 'to_pay' }) }); flash('На оплату', true); openDetail(o.id); loadList(); }
+        catch (e) { flash(e.message); }
+      };
+      document.getElementById('d-paid').onclick = async () => {
+        try {
+          const row = await api('/supply/orders/' + o.id + '/mark-paid', { method: 'POST', body: '{}' });
+          flash('Data Matrix: ' + ((row.units && row.units.length) || 0), true);
+          openDetail(o.id); loadList();
+        } catch (e) { flash(e.message); }
+      };
+      document.getElementById('d-units').innerHTML = (o.units || []).map((u) => `
+        <tr>
+          <td class="mono">
+            <img src="/api/datamatrix.png?text=${encodeURIComponent(u.serial)}&scale=2" width="40" height="40" alt="DM" style="vertical-align:middle;margin-right:8px;image-rendering:pixelated" />
+            ${esc(u.serial)}
+          </td>
+          <td>${esc(u.sku)} · ${esc(u.product_name)}</td>
+          <td>${stBadge(u.status)}${u.is_extra ? ' extra' : ''}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="3" class="muted">Коды Data Matrix появятся после «Оплачено»</td></tr>';
+    }
+
+    function addLine(product_id = '', qty = 1) {
+      const box = document.getElementById('lines');
+      const div = document.createElement('div');
+      div.className = 'line';
+      div.innerHTML = `
+        <input class="pid" list="prod-list" placeholder="product_id" value="${esc(product_id)}" />
+        <input class="qty" type="number" min="1" value="${qty}" />
+        <input class="price" type="number" step="0.01" placeholder="цена" />
+        <button type="button" class="btn rm">✕</button>`;
+      div.querySelector('.rm').onclick = () => div.remove();
+      box.appendChild(div);
+    }
+
+    document.getElementById('btn-new').onclick = () => {
+      document.getElementById('form-card').hidden = false;
+      document.getElementById('detail-card').hidden = true;
+      document.getElementById('lines').innerHTML = '';
+      addLine();
+    };
+    document.getElementById('add-line').onclick = () => addLine();
+    document.getElementById('cancel').onclick = () => { document.getElementById('form-card').hidden = true; };
+    document.getElementById('save').onclick = async () => {
+      const counterparty_id = document.getElementById('cp-id').value.trim();
+      const lines = [...document.querySelectorAll('#lines .line')].map((el) => ({
+        product_id: el.querySelector('.pid').value.trim(),
+        qty: Number(el.querySelector('.qty').value) || 1,
+        price: Number(el.querySelector('.price').value) || 0,
+      })).filter((l) => l.product_id);
+      try {
+        const row = await api('/supply/orders', {
+          method: 'POST',
+          body: JSON.stringify({
+            counterparty_id,
+            eta_date: document.getElementById('eta').value,
+            comment: document.getElementById('comment').value,
+            lines,
+          }),
+        });
+        flash('Создан ' + row.number, true);
+        document.getElementById('form-card').hidden = true;
+        loadList();
+        openDetail(row.id);
+      } catch (e) { flash(e.message); }
+    };
+
+    let prefCpMap = {};
+    document.getElementById('pref-save').onclick = async () => {
+      const id = document.getElementById('pref-cp').value.trim();
+      const barcode_prefix = document.getElementById('pref-val').value.trim();
+      if (!id) { flash('Выберите поставщика'); return; }
+      if (!barcode_prefix) { flash('Укажите префикс Data Matrix'); return; }
+      try {
+        await api('/counterparties/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          body: JSON.stringify({ barcode_prefix }),
+        });
+        if (prefCpMap[id]) prefCpMap[id].barcode_prefix = barcode_prefix.toUpperCase();
+        flash('Префикс Data Matrix: ' + barcode_prefix.toUpperCase(), true);
+        const sel = document.getElementById('pref-cp');
+        const opt = sel?.selectedOptions?.[0];
+        if (opt) opt.textContent = (prefCpMap[id]?.name || opt.textContent.split(' · ')[0]) + ' · DM ' + barcode_prefix.toUpperCase();
+      } catch (e) { flash(e.message); }
+    };
+    document.getElementById('pref-cp')?.addEventListener('change', () => {
+      const id = document.getElementById('pref-cp').value.trim();
+      const cur = prefCpMap[id];
+      document.getElementById('pref-val').value = cur?.barcode_prefix || '';
+    });
+
+    const dmPreview = () => {
+      const text = document.getElementById('dm-text').value.trim();
+      const img = document.getElementById('dm-preview');
+      const ph = document.getElementById('dm-ph');
+      if (!text) { flash('Введите текст для Data Matrix'); return; }
+      const url = '/api/datamatrix.png?text=' + encodeURIComponent(text) + '&scale=4&t=' + Date.now();
+      img.src = url;
+      img.style.display = 'block';
+      ph.style.display = 'none';
+      document.getElementById('dm-png').href = '/api/datamatrix.png?text=' + encodeURIComponent(text) + '&scale=6';
+      document.getElementById('dm-svg').href = '/api/datamatrix.svg?text=' + encodeURIComponent(text) + '&scale=6';
+      flash('Data Matrix: ' + text, true);
+    };
+    document.getElementById('dm-gen').onclick = () => dmPreview();
+    document.getElementById('dm-text').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); dmPreview(); }
+    });
+    document.getElementById('dm-print').onclick = () => {
+      const text = document.getElementById('dm-text').value.trim();
+      if (!text) { flash('Введите текст'); return; }
+      const w = window.open('', '_blank');
+      if (!w) return;
+      w.document.write(`<!DOCTYPE html><html><head><title>DM ${text.replace(/[<>]/g,'')}</title>
+<style>body{font-family:system-ui;display:flex;flex-direction:column;align-items:center;padding:24px}
+img{width:180px;height:180px;image-rendering:pixelated}
+.code{margin-top:12px;font:800 18px ui-monospace,monospace}</style></head>
+<body onload="print()"><img src="/api/datamatrix.png?text=${encodeURIComponent(text)}&scale=6"/><div class="code">${text.replace(/[<>&]/g,'')}</div></body></html>`);
+      w.document.close();
+    };
+
+    /* ——— Камера / сканер Data Matrix (генератор) ——— */
+    let dmScanner = null;
+    let dmScanTarget = null;
+    let dmScanAppend = false;
+
+    function loadScriptOnce(src) {
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-scan-lib="' + src + '"]');
+        if (existing) {
+          if (existing.dataset.ready === '1') return resolve();
+          existing.addEventListener('load', () => resolve());
+          existing.addEventListener('error', () => reject(new Error('load failed')));
+          return;
+        }
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = true;
+        s.dataset.scanLib = src;
+        s.onload = () => { s.dataset.ready = '1'; resolve(); };
+        s.onerror = () => reject(new Error('Не удалось загрузить сканер'));
+        document.head.appendChild(s);
+      });
+    }
+
+    async function ensureHtml5QrLib() {
+      await loadScriptOnce('https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js');
+      if (!window.Html5Qrcode) throw new Error('Html5Qrcode недоступен');
+    }
+
+    async function closeDmScan() {
+      const overlay = document.getElementById('dm-scan-overlay');
+      if (dmScanner) {
+        try { await dmScanner.stop(); } catch (_) {}
+        try { await dmScanner.clear(); } catch (_) {}
+        dmScanner = null;
+      }
+      if (overlay) overlay.hidden = true;
+      dmScanTarget = null;
+    }
+
+    function applyDmCode(raw) {
+      const code = String(raw || '').trim();
+      if (!code || !dmScanTarget) return;
+      const input = document.getElementById(dmScanTarget);
+      if (!input) return;
+      if (dmScanAppend) {
+        const cur = input.value.trim();
+        const parts = cur ? cur.split(/[\s,;]+/).filter(Boolean) : [];
+        if (!parts.includes(code)) parts.push(code);
+        input.value = parts.join(', ');
+      } else {
+        input.value = code;
+      }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flash('Data Matrix: ' + code, true);
+      closeDmScan();
+      if (dmScanTarget === 'dm-text') dmPreview();
+      input.focus();
+    }
+
+    async function openDmScan(inputId, append) {
+      dmScanTarget = inputId;
+      dmScanAppend = !!append;
+      const overlay = document.getElementById('dm-scan-overlay');
+      const hint = document.getElementById('dm-scan-hint');
+      overlay.hidden = false;
+      if (hint) hint.textContent = 'Наведите камеру на квадратный Data Matrix';
+      try {
+        await ensureHtml5QrLib();
+        if (dmScanner) {
+          try { await dmScanner.stop(); } catch (_) {}
+          try { await dmScanner.clear(); } catch (_) {}
+        }
+        const formats = window.Html5QrcodeSupportedFormats;
+        const config = {
+          fps: 10,
+          qrbox: { width: 220, height: 220 },
+          formatsToSupport: formats
+            ? [formats.DATA_MATRIX, formats.QR_CODE, formats.CODE_128, formats.EAN_13]
+            : undefined,
+        };
+        dmScanner = new window.Html5Qrcode('dm-scan-reader');
+        await dmScanner.start(
+          { facingMode: 'environment' },
+          config,
+          (decoded) => applyDmCode(decoded),
+          () => {}
+        );
+      } catch (e) {
+        if (hint) hint.textContent = e.message || String(e);
+        flash(e.message || 'Камера недоступна — введите код вручную или USB-сканером');
+      }
+    }
+
+    document.getElementById('dm-scan-close').onclick = () => closeDmScan();
+    document.getElementById('dm-scan-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'dm-scan-overlay') closeDmScan();
+    });
+    document.querySelectorAll('[data-dm-scan]').forEach((btn) => {
+      btn.onclick = () => openDmScan(btn.getAttribute('data-dm-scan'), btn.hasAttribute('data-dm-append'));
+    });
+
+    Promise.all([
+      api('/counterparties?limit=200').catch(() => ({ items: [] })),
+      api('/products?limit=100').catch(() => ({ items: [] })),
+      loadList(),
+    ]).then(([cps, prods]) => {
+      const cpItems = cps.items || cps.counterparties || [];
+      prefCpMap = {};
+      cpItems.forEach((c) => {
+        prefCpMap[c.id] = {
+          name: c.name || c.id,
+          barcode_prefix: String(c.barcode_prefix || '').trim(),
+        };
+      });
+      const prefSel = document.getElementById('pref-cp');
+      if (prefSel) {
+        prefSel.innerHTML =
+          '<option value="">Выберите поставщика…</option>' +
+          cpItems
+            .map((c) => {
+              const pref = String(c.barcode_prefix || '').trim();
+              return `<option value="${esc(c.id)}">${esc(c.name || c.id)}${pref ? ' · DM ' + esc(pref) : ''}</option>`;
+            })
+            .join('');
+      }
+      const cpList = document.getElementById('cp-list');
+      if (cpList) {
+        cpList.innerHTML = cpItems
+          .map(
+            (c) =>
+              `<option value="${esc(c.id)}">${esc(c.name)} ${c.barcode_prefix ? '(DM ' + esc(c.barcode_prefix) + ')' : ''}</option>`
+          )
+          .join('');
+      }
+      const pItems = prods.items || prods.products || [];
+      const dl = document.createElement('datalist');
+      dl.id = 'prod-list';
+      dl.innerHTML = pItems.map((p) =>
+        `<option value="${esc(p.id)}">${esc(p.sku)} · ${esc(p.name)}</option>`
+      ).join('');
+      document.body.appendChild(dl);
+      const orderId = new URLSearchParams(location.search).get('order');
+      if (orderId) openDetail(orderId);
+    });
+  </script>
+</body>
+</html>

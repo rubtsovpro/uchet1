@@ -1,0 +1,2261 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0d7377" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <title>Склад · задачи · Учёт №1</title>
+  <!-- pick-ui rev=no-shift-20260802 -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('uchet1_pick_theme');
+        if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+      } catch (_) {}
+    })();
+  </script>
+  <style>
+    :root, [data-theme="light"] {
+      --bg: #e8f0f0;
+      --bg2: #d4e4e4;
+      --card: #ffffff;
+      --text: #0f1f1f;
+      --muted: #5a6f6f;
+      --line: #b8cece;
+      --accent: #0d7377;
+      --accent-soft: #c5e8e9;
+      --ok: #1b8a5a;
+      --ok-press: #147048;
+      --bad: #c0392b;
+      --bad-press: #9b2d22;
+      --warn: #c47a12;
+      --overdue: #b91c1c;
+      --hot: #c2410c;
+      --normal: #0d7377;
+      --wait: #64748b;
+      --shadow: 0 2px 10px rgba(13, 50, 50, .08);
+      --tap: 72px;
+    }
+    [data-theme="dark"] {
+      --bg: #0c1414;
+      --bg2: #132020;
+      --card: #1a2828;
+      --text: #e8f4f4;
+      --muted: #8aa0a0;
+      --line: #2a4040;
+      --accent: #2dd4bf;
+      --accent-soft: #134e4a;
+      --ok: #22a06b;
+      --ok-press: #1b8a5a;
+      --bad: #ef4444;
+      --bad-press: #dc2626;
+      --warn: #f59e0b;
+      --overdue: #f87171;
+      --hot: #fb923c;
+      --normal: #2dd4bf;
+      --wait: #94a3b8;
+      --shadow: 0 2px 14px rgba(0, 0, 0, .45);
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+      color: var(--text);
+      min-height: 100vh;
+      min-height: 100dvh;
+      padding: 12px;
+      padding-bottom: max(12px, env(safe-area-inset-bottom));
+      -webkit-tap-highlight-color: transparent;
+    }
+    .chrome {
+      max-width: 720px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: calc(100vh - 24px);
+      min-height: calc(100dvh - 24px);
+      padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    }
+    header.top {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 8px;
+      min-height: 52px;
+      max-height: 64px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 6px 10px;
+      box-shadow: var(--shadow);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-shrink: 1;
+    }
+    .brand-logo {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+      border-radius: 50%;
+      display: block;
+    }
+    .brand-text {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .brand .sub {
+      color: var(--muted);
+      font-size: 12px;
+      margin: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 6px;
+      align-items: center;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    .toolbar .who {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      max-width: 140px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    header.top .btn-tool {
+      min-height: 36px;
+      padding: 6px 10px;
+      font-size: 13px;
+      border-radius: 10px;
+    }
+    #logout {
+      margin-left: 2px;
+      flex-shrink: 0;
+    }
+    .btn-tool {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-size: 14px;
+      font-weight: 700;
+      min-height: 48px;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    /* Theme toggle: compact switch */
+    #theme-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      padding: 4px 6px;
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+      min-width: 0;
+      min-height: 36px;
+    }
+    #theme-btn:hover { filter: brightness(0.97); }
+    #theme-btn:active { filter: brightness(0.94); }
+    #theme-btn .theme-lbl { display: none; }
+    #theme-btn .theme-switch {
+      position: relative;
+      width: 40px;
+      height: 24px;
+      flex-shrink: 0;
+      border-radius: 999px;
+      background: #9bb8b8;
+      border: 2px solid transparent;
+      transition: background .2s ease, border-color .2s ease;
+    }
+    #theme-btn .theme-switch::after {
+      content: "";
+      position: absolute;
+      top: 1px;
+      left: 1px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
+      transition: transform .2s ease;
+    }
+    #theme-btn[aria-pressed="true"] .theme-switch {
+      background: var(--accent);
+      border-color: var(--brand-dark, #134e4a);
+    }
+    #theme-btn[aria-pressed="true"] .theme-switch::after {
+      transform: translateX(16px);
+    }
+    [data-theme="dark"] #theme-btn {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    [data-theme="dark"] #theme-btn .theme-switch {
+      background: #2a4040;
+    }
+    [data-theme="dark"] #theme-btn[aria-pressed="true"] .theme-switch {
+      background: var(--accent);
+    }
+    .btn-tool:active { background: var(--accent-soft); }
+    .btn-tool.primary-tool {
+      background: var(--accent);
+      color: #fff;
+      border-color: transparent;
+    }
+    [data-theme="dark"] .btn-tool.primary-tool { color: #042f2e; }
+    .auto-live {
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      padding: 0 4px;
+    }
+    .auto-live.is-pulse { color: var(--accent); }
+    .dlg-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+    .counts {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .counts span, .urg span {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .counts b, .urg b {
+      display: block;
+      font-size: 22px;
+      margin-top: 2px;
+      color: var(--text);
+      font-weight: 800;
+    }
+    .urg {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+    .urg .u-overdue b { color: var(--overdue); }
+    .urg .u-hot b { color: var(--hot); }
+    .urg .u-normal b { color: var(--normal); }
+    .urg .u-wait b { color: var(--wait); }
+    .err {
+      color: var(--bad);
+      background: color-mix(in srgb, var(--bad) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+      flex: 1;
+    }
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .group { margin-bottom: 14px; }
+    .group:last-child { margin-bottom: 0; }
+    .group-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0 0 8px;
+      padding: 6px 4px;
+    }
+    .group-head strong {
+      font-size: 17px;
+      font-weight: 800;
+    }
+    .group-head .n {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .list { display: flex; flex-direction: column; gap: 8px; }
+    .row {
+      border: 2px solid var(--line);
+      border-radius: 14px;
+      background: var(--card);
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+    .row[data-urgency="overdue"] { border-color: var(--overdue); }
+    .row[data-urgency="hot"] { border-color: var(--hot); }
+    .row.open { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .row-main {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 14px;
+      min-height: 64px;
+      cursor: pointer;
+      width: 100%;
+      text-align: left;
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+    }
+    .badge {
+      flex-shrink: 0;
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      padding: 6px 8px;
+      border-radius: 8px;
+      line-height: 1.2;
+      max-width: 92px;
+      text-align: center;
+    }
+    .badge.overdue { background: color-mix(in srgb, var(--overdue) 18%, transparent); color: var(--overdue); }
+    .badge.hot { background: color-mix(in srgb, var(--hot) 18%, transparent); color: var(--hot); }
+    .badge.normal { background: color-mix(in srgb, var(--normal) 18%, transparent); color: var(--normal); }
+    .badge.wait { background: color-mix(in srgb, var(--wait) 18%, transparent); color: var(--wait); }
+    .row-body { flex: 1; min-width: 0; }
+    .row-body strong { font-size: 18px; font-weight: 800; display: block; }
+    .meta { color: var(--muted); font-size: 14px; line-height: 1.4; margin-top: 4px; }
+    .why { color: var(--warn); font-size: 13px; margin-top: 4px; font-weight: 600; }
+    .detail {
+      display: none;
+      border-top: 1px solid var(--line);
+      padding: 12px 14px 14px;
+      background: color-mix(in srgb, var(--accent-soft) 35%, var(--card));
+    }
+    .row.open .detail { display: block; }
+    .title { font-size: 20px; font-weight: 800; margin: 0 0 6px; }
+    .lines { margin: 10px 0 0; padding: 0; list-style: none; }
+    .lines li {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .pay-warn {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--warn) 16%, transparent);
+      color: var(--warn);
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .btn-huge {
+      appearance: none;
+      border: 0;
+      border-radius: 18px;
+      min-height: var(--tap);
+      padding: 20px 12px;
+      font-size: 22px;
+      font-weight: 800;
+      cursor: pointer;
+      color: #fff;
+      touch-action: manipulation;
+      letter-spacing: -0.01em;
+    }
+    .btn-huge:disabled { opacity: .45; cursor: default; }
+    .btn-ok { background: var(--ok); }
+    .btn-ok:active:not(:disabled) { background: var(--ok-press); }
+    .btn-bad { background: var(--bad); }
+    .btn-bad:active:not(:disabled) { background: var(--bad-press); }
+    .muted { color: var(--muted); }
+    .done-panel, .blocked-panel { margin-top: 4px; }
+    .done-panel .row, .blocked-panel .row { border-width: 1px; opacity: .92; }
+    .done-panel .row-main, .blocked-panel .row-main { cursor: default; min-height: 52px; }
+    dialog {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--card);
+      color: var(--text);
+      padding: 18px;
+      width: min(460px, 94vw);
+    }
+    dialog::backdrop { background: rgba(0, 0, 0, .55); }
+    textarea {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      font-size: 17px;
+      margin: 10px 0 14px;
+      min-height: 100px;
+      resize: vertical;
+      font-family: inherit;
+    }
+    .dlg-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+    .scan-bar {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      box-shadow: var(--shadow);
+    }
+    .scan-bar-top {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .scan-bar input {
+      flex: 1;
+      min-width: 0;
+      min-height: 52px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 18px;
+      font-weight: 700;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .scan-bar input:focus {
+      outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+      border-color: var(--accent);
+    }
+    .scan-bar .cam-toggle {
+      flex: 0 0 auto;
+      min-width: 96px;
+      min-height: 52px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+      font-weight: 700;
+      font-size: 15px;
+      touch-action: manipulation;
+    }
+    .scan-bar .cam-on {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .scan-check-dock {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 0;
+      z-index: 40;
+      width: 100%;
+      max-width: 720px;
+      padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+      box-sizing: border-box;
+      background: linear-gradient(180deg, transparent 0%, var(--bg) 22%, var(--bg) 100%);
+      pointer-events: none;
+    }
+    .scan-check-dock .scan-check {
+      pointer-events: auto;
+    }
+    .scan-check {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 64px;
+      border: none;
+      border-radius: 16px;
+      background: var(--ok);
+      color: #fff;
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: 0.02em;
+      box-shadow: 0 6px 18px rgba(27, 138, 90, .4);
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .scan-check .scan-check-lbl {
+      font-size: 20px;
+      font-weight: 800;
+    }
+    .scan-check:active {
+      background: var(--ok-press);
+      transform: scale(0.99);
+    }
+    .scan-check.has-code {
+      animation: check-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes check-pulse {
+      0%, 100% { box-shadow: 0 6px 18px rgba(27, 138, 90, .4); }
+      50% { box-shadow: 0 6px 26px rgba(27, 138, 90, .6); }
+    }
+    .scan-msg {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      min-height: 1.2em;
+    }
+    .scan-msg.ok { color: var(--ok); }
+    .scan-msg.bad { color: var(--bad); }
+    .cam-panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .cam-panel[hidden] { display: none !important; }
+    .cam-wrap {
+      position: relative;
+      background: #000;
+      height: min(26vh, 180px);
+      min-height: 130px;
+      max-height: 200px;
+      overflow: hidden;
+    }
+    .cam-wrap video,
+    .cam-wrap canvas.cam-mirror,
+    .cam-wrap #cam-reader,
+    .cam-wrap #cam-reader video {
+      width: 100% !important;
+      height: 100% !important;
+      max-width: none !important;
+      max-height: none !important;
+      object-fit: cover !important;
+      display: block !important;
+      background: #000;
+    }
+    .cam-wrap #cam-video {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100% !important;
+      height: 100% !important;
+      opacity: 0.01;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .cam-wrap canvas.cam-mirror {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+    }
+    .cam-wrap #cam-reader {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+    }
+    .cam-wrap #cam-reader video {
+      position: absolute !important;
+      inset: 0 !important;
+      opacity: 1 !important;
+      z-index: 1 !important;
+    }
+    .cam-wrap #cam-reader img { display: none !important; }
+    .cam-frame {
+      pointer-events: none;
+      position: absolute;
+      inset: 12% 10%;
+      z-index: 3;
+      border: 2px solid rgba(45, 212, 191, .9);
+      border-radius: 12px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, .28);
+    }
+    .cam-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: var(--card);
+      border-top: 1px solid var(--line);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .cam-status .cam-hint {
+      flex: 1;
+      min-width: 0;
+      color: var(--muted);
+    }
+    .cam-status .cam-hint.is-live { color: var(--accent); }
+    .cam-status .err {
+      flex: 1;
+      margin: 0;
+      font-size: 13px;
+    }
+    .cam-status #cam-stop {
+      flex: 0 0 auto;
+      min-height: 40px;
+      padding: 8px 12px;
+    }
+    .session-done .row {
+      border-left: 4px solid var(--ok);
+    }
+    .session-done .row.fresh {
+      background: color-mix(in srgb, var(--ok) 12%, var(--card));
+    }
+    /* ——— чат на экране сборки ——— */
+    .chat-fab-root {
+      position: fixed;
+      right: max(12px, env(safe-area-inset-right));
+      bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+      z-index: 90;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+      pointer-events: none;
+    }
+    .chat-fab-root[hidden] { display: none !important; }
+    .chat-fab-root > * { pointer-events: auto; }
+    .chat-fab {
+      position: relative;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      border: 0;
+      background: linear-gradient(145deg, #0d9488 0%, #0f766e 100%);
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(15, 118, 110, 0.35);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .chat-fab.has-unread,
+    .chat-fab.is-open {
+      box-shadow: 0 8px 24px rgba(15, 118, 110, 0.5), 0 0 0 3px rgba(45, 212, 191, 0.35);
+    }
+    .chat-fab-badge {
+      position: absolute;
+      top: -2px;
+      right: -2px;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: #dc2626;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 20px;
+      text-align: center;
+      box-shadow: 0 0 0 2px var(--card);
+    }
+    .chat-pop {
+      width: min(380px, calc(100vw - 24px));
+      height: min(520px, calc(100dvh - 100px));
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      color: var(--text);
+    }
+    .chat-pop.hidden { display: none; }
+    .chat-pop-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg);
+      flex-shrink: 0;
+    }
+    .chat-pop-head strong { font-size: 14px; }
+    .chat-pop-unread { font-size: 12px; }
+    .chat-pop-link {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .chat-pop-x, .chat-pop-back {
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 14px;
+      padding: 4px 8px;
+    }
+    .chat-pop-back { color: var(--accent); }
+    .chat-pop-body { flex: 1; min-height: 0; overflow: auto; }
+    .chat-pop-list { display: flex; flex-direction: column; }
+    .chat-pop-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+    .chat-pop-item.has-unread { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    .chat-pop-item-top, .chat-pop-item-bottom {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      justify-content: space-between;
+    }
+    .chat-pop-item-title {
+      font-size: 13px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chat-pop-item-time { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+    .chat-pop-item-preview {
+      font-size: 12px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+      margin-top: 2px;
+    }
+    .chat-pop-item-badge {
+      flex-shrink: 0;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 18px;
+      text-align: center;
+    }
+    .chat-pop-thread { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+    .chat-pop-thread-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+      flex-shrink: 0;
+    }
+    .chat-pop-msgs {
+      flex: 1;
+      overflow: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: var(--bg);
+      min-height: 0;
+    }
+    .chat-pop-msg {
+      max-width: 85%;
+      align-self: flex-start;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px 12px 12px 4px;
+      padding: 8px 10px;
+    }
+    .chat-pop-msg.mine {
+      align-self: flex-end;
+      background: color-mix(in srgb, var(--accent) 18%, var(--card));
+      border-radius: 12px 12px 4px 12px;
+    }
+    .chat-pop-msg-who { font-size: 11px; font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+    .chat-pop-msg-body { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+    .chat-pop-msg-time { font-size: 10px; color: var(--muted); margin-top: 4px; text-align: right; }
+    .chat-pop-compose {
+      display: flex;
+      gap: 6px;
+      padding: 10px;
+      border-top: 1px solid var(--line);
+      background: var(--card);
+      flex-shrink: 0;
+    }
+    .chat-pop-compose input {
+      flex: 1;
+      min-width: 0;
+      height: 40px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 0 12px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 15px;
+    }
+    .chat-pop-compose button {
+      width: 44px;
+      height: 40px;
+      border-radius: 10px;
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    .grow { flex: 1; }
+    @media (max-width: 420px) {
+      .urg { grid-template-columns: repeat(2, 1fr); }
+      .btn-huge { font-size: 19px; }
+      .who { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="chrome">
+    <header class="top">
+      <div class="brand">
+        <img class="brand-logo" src="/logo-uchet1.svg" width="28" height="28" alt="Учёт №1" />
+        <div class="brand-text">
+          <h1>Склад · задачи</h1>
+          <span class="sub" id="day">—</span>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span class="who" id="who"></span>
+        <button type="button" class="btn-tool" id="theme-btn" title="Тема: светлая / тёмная" aria-pressed="false" aria-label="Переключить тему">
+          <span class="theme-switch" aria-hidden="true"></span>
+          <span class="theme-lbl">Тёмная</span>
+        </button>
+        <span class="auto-live muted" id="auto-live" title="Очередь обновляется сама">авто · —</span>
+        <button type="button" class="btn-tool" id="logout">Выйти</button>
+      </div>
+    </header>
+
+    <div class="cam-panel" id="cam-panel" hidden>
+      <div class="cam-wrap" id="cam-wrap">
+        <video id="cam-video" playsinline webkit-playsinline muted autoplay></video>
+        <canvas class="cam-mirror" id="cam-mirror" aria-hidden="true"></canvas>
+        <div id="cam-reader" hidden></div>
+        <div class="cam-frame" aria-hidden="true"></div>
+      </div>
+      <div class="cam-status">
+        <span class="cam-hint" id="cam-hint">Живая камера</span>
+        <p class="err" id="cam-err" hidden></p>
+        <button type="button" class="btn-tool" id="cam-stop">Стоп</button>
+      </div>
+    </div>
+
+    <div class="scan-bar" id="scan-bar">
+      <div class="scan-bar-top">
+        <input id="scan-input" type="text" inputmode="text" autocomplete="off" autocorrect="off" spellcheck="false"
+          placeholder="Штрихкод задания" aria-label="Штрихкод или номер задания" />
+        <button type="button" class="cam-toggle" id="scan-cam" title="Живая камера" aria-pressed="false">Камера</button>
+      </div>
+    </div>
+    <p class="scan-msg muted" id="scan-msg" aria-live="polite"></p>
+
+    <div class="counts" id="counts"></div>
+    <div class="urg" id="urg"></div>
+    <div id="err" class="err" hidden></div>
+
+    <section class="panel session-done" id="done-panel">
+      <h2>Добавлено · по ШК</h2>
+      <div class="list" id="done-list"><div class="muted">Пока пусто — наведите камеру и нажмите ✓</div></div>
+    </section>
+
+    <section class="panel" id="open-panel">
+      <h2>Очередь на сегодня</h2>
+      <div id="groups">Загрузка…</div>
+    </section>
+
+    <section class="panel blocked-panel">
+      <h2>Не сделано · почему</h2>
+      <div class="list" id="blocked-list"></div>
+    </section>
+
+    <div class="scan-check-dock">
+      <button type="button" class="scan-check" id="scan-go" title="Подтвердить" aria-label="Подтвердить штрихкод">
+        <span aria-hidden="true">✓</span>
+        <span class="scan-check-lbl">Чек</span>
+      </button>
+    </div>
+  </div>
+
+  <dialog id="why-dlg">
+    <form method="dialog" id="why-form">
+      <h3 style="margin:0 0 6px;font-size:20px">Почему не сделано?</h3>
+      <p class="muted" style="margin:0;font-size:14px">Обязательно — иначе нельзя снять с очереди.</p>
+      <textarea id="why-text" rows="3" required placeholder="Нет товара / ждём оплату / клиент отменил…"></textarea>
+      <div class="dlg-actions">
+        <button type="button" class="btn-tool" id="why-cancel">Отмена</button>
+        <button type="submit" class="btn-huge btn-bad" style="min-height:56px;font-size:18px;padding:12px 18px">Не сделано</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="chat-fab-root" class="chat-fab-root" hidden>
+    <div id="chat-pop" class="chat-pop hidden" role="dialog" aria-label="Чаты">
+      <div class="chat-pop-head">
+        <strong>Чаты</strong>
+        <span class="chat-pop-unread muted" id="chat-pop-unread"></span>
+        <div class="grow"></div>
+        <a class="chat-pop-link" href="/chats" id="chat-pop-full">Открыть</a>
+        <button type="button" class="chat-pop-x" id="chat-pop-close" title="Закрыть" aria-label="Закрыть">✕</button>
+      </div>
+      <div id="chat-pop-body" class="chat-pop-body">
+        <p class="muted" style="margin:12px">Загрузка…</p>
+      </div>
+    </div>
+    <button type="button" class="chat-fab" id="chat-fab" title="Чаты" aria-label="Чаты">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 5.5h16v11H9.5L6 20v-3.5H4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 10h8M8 13h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <span class="chat-fab-badge" id="chat-fab-badge" hidden>0</span>
+    </button>
+  </div>
+
+  <script>
+    const THEME_KEY = 'uchet1_pick_theme';
+    let cancelId = null;
+    let me = null;
+    let selectedId = null;
+    let board = null;
+    let lastRefreshAt = null;
+    let scanBusy = false;
+    let camStream = null;
+    let camTimer = null;
+    let camDetector = null;
+    let camHtml5 = null;
+    let camZxing = null;
+    let camMirrorRaf = 0;
+    let lastCamCode = '';
+    let lastCamAt = 0;
+
+    function applyTheme(theme) {
+      const t = theme === 'dark' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', t);
+      try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
+      const btn = document.getElementById('theme-btn');
+      if (btn) {
+        const dark = t === 'dark';
+        btn.setAttribute('aria-pressed', dark ? 'true' : 'false');
+        btn.title = dark ? 'Тема: тёмная (нажмите для светлой)' : 'Тема: светлая (нажмите для тёмной)';
+        btn.setAttribute('aria-label', dark ? 'Включить светлую тему' : 'Включить тёмную тему');
+        const lbl = btn.querySelector('.theme-lbl');
+        if (lbl) lbl.textContent = dark ? 'Светлая' : 'Тёмная';
+      }
+      const logo = document.querySelector('.brand-logo');
+      if (logo) logo.src = t === 'dark' ? '/logo-uchet1-on-dark.svg' : '/logo-uchet1.svg';
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', t === 'dark' ? '#0c1414' : '#0d7377');
+    }
+
+    (function initTheme() {
+      let t = 'light';
+      try { t = localStorage.getItem(THEME_KEY) || 'light'; } catch (_) {}
+      applyTheme(t);
+    })();
+
+    function fmtTime(d) {
+      const x = d instanceof Date ? d : new Date(d);
+      if (!Number.isFinite(x.getTime())) return '—';
+      return x.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function updateAutoLabel() {
+      const el = document.getElementById('auto-live');
+      if (!el) return;
+      if (lastRefreshAt) {
+        el.textContent = 'авто · ' + fmtTime(lastRefreshAt);
+        el.title = 'Очередь обновляется сама. Последнее: ' + lastRefreshAt.toLocaleString('ru-RU');
+        el.classList.add('is-pulse');
+        setTimeout(() => el.classList.remove('is-pulse'), 600);
+      } else {
+        el.textContent = 'авто · —';
+        el.title = 'Очередь обновляется сама';
+      }
+    }
+
+    async function api(path, opts) {
+      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const t = ctrl ? setTimeout(() => ctrl.abort(), 25000) : 0;
+      try {
+        const res = await fetch('/api' + path, {
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          signal: ctrl ? ctrl.signal : undefined,
+          ...opts,
+        });
+        if (res.status === 401) {
+          const next = location.pathname || '/pick';
+          if (!location.pathname.startsWith('/login')) {
+            location.replace('/login?next=' + encodeURIComponent(next));
+          }
+          throw new Error('login');
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw new Error('Нет ответа сервера (таймаут). Проверьте Wi‑Fi / интернет.');
+        throw e;
+      } finally {
+        if (t) clearTimeout(t);
+      }
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+      );
+    }
+
+    function showErr(msg) {
+      const el = document.getElementById('err');
+      el.hidden = !msg;
+      el.textContent = msg || '';
+    }
+
+    function urgencyBadge(t) {
+      const u = t.urgency || 'normal';
+      const label = t.urgency_label || u;
+      return `<span class="badge ${esc(u)}">${esc(label)}</span>`;
+    }
+
+    function taskDetailHtml(t) {
+      const lines = (t.lines || [])
+        .map((l) => `<li><span>${esc(l.name || l.sku || '—')}</span><b>×${esc(l.qty)}</b></li>`)
+        .join('');
+      const ch = t.channel_label || t.channel || '—';
+      const pay =
+        t.can_hand === false
+          ? '<div class="pay-warn">Оплата ещё не прошла — «Сделал» поставит «к выдаче», курьеру не отдаст.</div>'
+          : '';
+      return `
+        <div class="title">${esc(t.number)}</div>
+        <div class="meta">
+          ${esc(t.status_label || t.status || '')} · ${esc(t.pick_type_label || '')}<br/>
+          ${esc(t.buyer_name || '—')} · ${esc(t.city || '—')}<br/>
+          ${esc(ch)} · позиций: ${esc(t.lines_count ?? (t.lines || []).length)}
+          ${t.amount_locked ? ' · ' + Number(t.amount_locked).toLocaleString('ru-RU') + ' ₽' : ''}
+          ${t.age_hours != null ? ' · ' + esc(t.age_hours) + ' ч' : ''}
+          ${t.comment ? '<br/>' + esc(t.comment) : ''}
+        </div>
+        ${lines ? `<ul class="lines">${lines}</ul>` : ''}
+        ${pay}
+        <div class="actions">
+          <button class="btn-huge btn-ok" type="button" data-done="${esc(t.id)}">Сделал</button>
+          <button class="btn-huge btn-bad" type="button" data-fail="${esc(t.id)}">Не сделал</button>
+        </div>`;
+    }
+
+    function bindDetailActions(root) {
+      root.querySelectorAll('[data-done]').forEach((btn) => {
+        btn.onclick = async (e) => {
+          e.stopPropagation();
+          try {
+            btn.disabled = true;
+            await api('/warehouse/tasks/' + btn.dataset.done + '/done', { method: 'POST', body: '{}' });
+            selectedId = null;
+            await load();
+          } catch (err) {
+            showErr(err.message);
+            btn.disabled = false;
+          }
+        };
+      });
+      root.querySelectorAll('[data-fail]').forEach((btn) => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          cancelId = btn.dataset.fail;
+          document.getElementById('why-text').value = '';
+          document.getElementById('why-dlg').showModal();
+          document.getElementById('why-text').focus();
+        };
+      });
+    }
+
+    async function openTask(id) {
+      selectedId = id;
+      renderGroups();
+      const row = document.querySelector('.row[data-id="' + String(id).replace(/"/g, '') + '"]');
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const detail = row.querySelector('.detail');
+        if (detail && !detail.dataset.loaded) {
+          detail.innerHTML = '<div class="muted">Загрузка…</div>';
+          try {
+            const t = await api('/warehouse/tasks/' + id);
+            detail.innerHTML = taskDetailHtml(t);
+            detail.dataset.loaded = '1';
+            bindDetailActions(detail);
+          } catch (e) {
+            detail.innerHTML = '<div class="err">' + esc(e.message) + '</div>';
+          }
+        }
+      }
+    }
+
+    function renderGroups() {
+      const box = document.getElementById('groups');
+      const groups = (board && board.groups) || [];
+      if (!groups.length) {
+        box.innerHTML = '<div class="muted">Очередь пуста — можно передохнуть.</div>';
+        return;
+      }
+      box.innerHTML = groups
+        .map((g) => {
+          const items = (g.items || [])
+            .map((t) => {
+              const open = selectedId === t.id ? ' open' : '';
+              return `
+              <div class="row${open}" data-id="${esc(t.id)}" data-urgency="${esc(t.urgency || 'normal')}">
+                <button type="button" class="row-main" data-open="${esc(t.id)}">
+                  ${urgencyBadge(t)}
+                  <div class="row-body">
+                    <strong>${esc(t.number)}</strong>
+                    <div class="meta">${esc(t.status_label || '')} · ${esc(t.buyer_name || '—')} · ${esc(t.city || '—')} · ${esc(t.channel_label || t.channel || '')}</div>
+                  </div>
+                </button>
+                <div class="detail">${selectedId === t.id ? '<div class="muted">Загрузка…</div>' : ''}</div>
+              </div>`;
+            })
+            .join('');
+          return `
+            <div class="group" data-type="${esc(g.type)}">
+              <div class="group-head">
+                <strong>${esc(g.label)}</strong>
+                <span class="n">${esc(g.count)}</span>
+              </div>
+              <div class="list">${items}</div>
+            </div>`;
+        })
+        .join('');
+
+      box.querySelectorAll('[data-open]').forEach((btn) => {
+        btn.onclick = () => {
+          const id = btn.dataset.open;
+          if (selectedId === id) {
+            selectedId = null;
+            renderGroups();
+            return;
+          }
+          openTask(id);
+        };
+      });
+
+      if (selectedId) {
+        const detail = box.querySelector('.row.open .detail');
+        if (detail && !detail.dataset.loaded) {
+          api('/warehouse/tasks/' + selectedId)
+            .then((t) => {
+              if (!detail.isConnected) return;
+              detail.innerHTML = taskDetailHtml(t);
+              detail.dataset.loaded = '1';
+              bindDetailActions(detail);
+            })
+            .catch((e) => {
+              if (detail.isConnected) detail.innerHTML = '<div class="err">' + esc(e.message) + '</div>';
+            });
+        }
+      }
+    }
+
+    function renderClosed(el, items, mode) {
+      if (!items.length) {
+        el.innerHTML = '<div class="muted">Пусто</div>';
+        return;
+      }
+      el.innerHTML = items
+        .map(
+          (t) => `
+        <div class="row" data-urgency="${esc(t.urgency || 'normal')}">
+          <div class="row-main">
+            ${urgencyBadge(t)}
+            <div class="row-body">
+              <strong>${esc(t.number)}</strong>
+              <div class="meta">${esc(t.status_label || '')} · ${esc(t.buyer_name || '—')} · ${esc(t.city || '—')}</div>
+              ${mode === 'blocked' && t.block_reason ? `<div class="why">${esc(t.block_reason)}</div>` : ''}
+            </div>
+          </div>
+        </div>`
+        )
+        .join('');
+    }
+
+    async function load() {
+      showErr('');
+      if (!me) {
+        try {
+          me = await api('/me');
+          const who = document.getElementById('who');
+          if (who && me) {
+            who.textContent = (me.name || me.login || '') + (me.role ? ' · ' + me.role : '');
+          }
+        } catch (_) {}
+      }
+      const secs = (me && me.rights && me.rights.sections) || [];
+      const okPick =
+        !me ||
+        me.isSystemAdmin ||
+        me.role === 'admin' ||
+        secs.includes('pick');
+      if (me && !okPick) {
+        showErr('Недостаточно прав для экрана сборки. Откройте доступ «/pick» в Персонал → матрица доступов.');
+        return;
+      }
+      const data = await api('/warehouse/pick/today');
+      board = data;
+      lastRefreshAt = new Date();
+      updateAutoLabel();
+      const dayEl = document.getElementById('day');
+      dayEl.textContent = data.day || '—';
+      dayEl.title = 'iPad / телефон';
+      const c = data.counts || {};
+      document.getElementById('counts').innerHTML = `
+        <span>Очередь<b>${c.open || 0}</b></span>
+        <span>Сделано<b>${c.done || 0}</b></span>
+        <span>Не сделано<b>${c.blocked || 0}</b></span>`;
+      const u = data.urgency_counts || {};
+      document.getElementById('urg').innerHTML = `
+        <span class="u-overdue">Просрочено<b>${u.overdue || 0}</b></span>
+        <span class="u-hot">Срочно<b>${u.hot || 0}</b></span>
+        <span class="u-normal">Обычные<b>${u.normal || 0}</b></span>
+        <span class="u-wait">Подождут<b>${u.wait || 0}</b></span>`;
+      if (selectedId && !(data.open || []).some((t) => t.id === selectedId)) {
+        selectedId = null;
+      }
+      renderGroups();
+      renderDoneList(data.done || []);
+      renderClosed(document.getElementById('blocked-list'), data.blocked || [], 'blocked');
+    }
+
+    document.getElementById('theme-btn').onclick = () => {
+      const cur = document.documentElement.getAttribute('data-theme') || 'light';
+      applyTheme(cur === 'dark' ? 'light' : 'dark');
+    };
+
+    document.getElementById('logout').onclick = () => {
+      const next = '/login?next=' + encodeURIComponent('/pick');
+      const go = () => { location.replace(next); };
+      // Не ждать сеть: при таймауте fetch «Выйти» зависало.
+      api('/logout', { method: 'POST', body: '{}' }).catch(() => {}).finally(go);
+      setTimeout(go, 800);
+    };
+
+    document.getElementById('why-cancel').onclick = () => document.getElementById('why-dlg').close();
+    document.getElementById('why-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const why = document.getElementById('why-text').value.trim();
+      if (!why || !cancelId) return;
+      try {
+        await api('/warehouse/tasks/' + cancelId + '/status', {
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'cancelled', block_reason: why }),
+        });
+        document.getElementById('why-dlg').close();
+        cancelId = null;
+        selectedId = null;
+        await load();
+      } catch (err) {
+        showErr(err.message);
+      }
+    };
+
+    function setScanMsg(text, kind) {
+      const el = document.getElementById('scan-msg');
+      if (!el) return;
+      el.textContent = text || '';
+      el.className = 'scan-msg' + (kind === 'ok' ? ' ok' : kind === 'bad' ? ' bad' : ' muted');
+    }
+
+    const CAM_PREF_KEY = 'uchet1_pick_cam';
+    let camWanted = false;
+    let sessionDoneFresh = []; // id недавно подтверждённых
+
+    function syncCheckBtn() {
+      const btn = document.getElementById('scan-go');
+      const inp = document.getElementById('scan-input');
+      if (!btn) return;
+      const has = !!(inp && String(inp.value || '').trim());
+      btn.classList.toggle('has-code', has);
+    }
+
+    function renderDoneList(items) {
+      const el = document.getElementById('done-list');
+      if (!el) return;
+      const list = Array.isArray(items) ? items.slice() : [];
+      if (!list.length && !sessionDoneFresh.length) {
+        el.innerHTML = '<div class="muted">Пока пусто — считайте ШК и нажмите ✓</div>';
+        return;
+      }
+      // свежие сверху, без дублей
+      const byId = new Map();
+      for (const t of list) if (t && t.id) byId.set(t.id, t);
+      for (const t of sessionDoneFresh) if (t && t.id) byId.set(t.id, t);
+      const ordered = [];
+      const seen = new Set();
+      for (const t of sessionDoneFresh) {
+        if (!t || !t.id || seen.has(t.id)) continue;
+        seen.add(t.id);
+        ordered.push(t);
+      }
+      for (const t of list) {
+        if (!t || !t.id || seen.has(t.id)) continue;
+        seen.add(t.id);
+        ordered.push(t);
+      }
+      const freshIds = new Set(sessionDoneFresh.map((t) => t && t.id).filter(Boolean));
+      el.innerHTML = ordered
+        .slice(0, 40)
+        .map((t) => {
+          const fresh = freshIds.has(t.id) ? ' fresh' : '';
+          const code = t.barcode || t.number || '';
+          return `
+        <div class="row${fresh}" data-urgency="${esc(t.urgency || 'normal')}">
+          <div class="row-main">
+            ${urgencyBadge(t)}
+            <div class="row-body">
+              <strong>${esc(t.number || code)}</strong>
+              <div class="meta">${esc(t.status_label || t.status || 'сделано')} · ШК ${esc(code)} · ${esc(t.buyer_name || '—')}</div>
+            </div>
+          </div>
+        </div>`;
+        })
+        .join('');
+    }
+
+
+    function setCamUi(on) {
+      camWanted = !!on;
+      const panel = document.getElementById('cam-panel');
+      const btn = document.getElementById('scan-cam');
+      if (panel) panel.hidden = !on;
+      if (btn) {
+        btn.classList.toggle('cam-on', on);
+        btn.textContent = on ? 'Камера · вкл' : 'Камера';
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      }
+      try {
+        if (on) localStorage.setItem(CAM_PREF_KEY, '1');
+        else localStorage.removeItem(CAM_PREF_KEY);
+      } catch (_) {}
+    }
+
+    function setCamHint(text, live) {
+      const hint = document.getElementById('cam-hint');
+      if (!hint) return;
+      hint.textContent = text || '';
+      hint.classList.toggle('is-live', !!live);
+      hint.hidden = false;
+      const errEl = document.getElementById('cam-err');
+      if (errEl) errEl.hidden = true;
+    }
+
+    function setCamErr(text) {
+      const errEl = document.getElementById('cam-err');
+      const hint = document.getElementById('cam-hint');
+      if (hint) hint.hidden = !!text;
+      if (!errEl) return;
+      errEl.textContent = text || '';
+      errEl.hidden = !text;
+    }
+
+    async function submitScan(raw, opts) {
+      const code = String(raw || '').trim();
+      if (!code) {
+        setScanMsg('Введите штрихкод или номер', 'bad');
+        return;
+      }
+      if (scanBusy) return;
+      scanBusy = true;
+      const inp = document.getElementById('scan-input');
+      if (inp) inp.value = code;
+      syncCheckBtn();
+      setScanMsg('Отправка… ' + code, '');
+      if (camWanted) setCamHint('Отправка…', true);
+      try {
+        const row = await api('/warehouse/tasks/scan-done', {
+          method: 'POST',
+          body: JSON.stringify({ barcode: code }),
+        });
+        const num = row.number || code;
+        const st = row.status_label || row.status || '';
+        setScanMsg('✓ ' + num + (st ? ' · ' + st : ''), 'ok');
+        if (camWanted) setCamHint('✓ ' + num + ' · следующий ШК', true);
+        try {
+          if (navigator.vibrate) navigator.vibrate([30, 40, 30]);
+        } catch (_) {}
+        // клац ✓: ШК очищается, товар появляется снизу
+        if (inp) inp.value = '';
+        syncCheckBtn();
+        selectedId = null;
+        const entry = {
+          id: row.id || ('tmp-' + Date.now()),
+          number: row.number || num,
+          barcode: row.barcode || code,
+          status: row.status || 'done',
+          status_label: row.status_label || st || 'сделано',
+          buyer_name: row.buyer_name || '',
+          urgency: row.urgency || 'normal',
+        };
+        sessionDoneFresh = [entry].concat(sessionDoneFresh.filter((t) => t.id !== entry.id)).slice(0, 30);
+        renderDoneList((board && board.done) || []);
+        const donePanel = document.getElementById('done-panel');
+        if (donePanel) donePanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        await load();
+      } catch (err) {
+        setScanMsg(err.message || 'Ошибка скана', 'bad');
+        showErr(err.message);
+        if (camWanted) setCamHint('Ошибка · проверьте ШК и нажмите ✓', false);
+      } finally {
+        scanBusy = false;
+        if (inp) {
+          inp.focus();
+          if (inp.value) inp.select();
+        }
+        syncCheckBtn();
+      }
+    }
+
+    function stopCamera() {
+      if (camTimer) {
+        clearTimeout(camTimer);
+        camTimer = null;
+      }
+      if (camMirrorRaf) {
+        cancelAnimationFrame(camMirrorRaf);
+        camMirrorRaf = 0;
+      }
+      camDetector = null;
+      lastCamCode = '';
+      if (camZxing) {
+        try {
+          if (typeof camZxing.stop === 'function') camZxing.stop();
+          else if (typeof camZxing.stopContinuousDecode === 'function') camZxing.stopContinuousDecode();
+          else if (typeof camZxing.reset === 'function') camZxing.reset();
+        } catch (_) {}
+        camZxing = null;
+      }
+      if (camHtml5) {
+        const h = camHtml5;
+        camHtml5 = null;
+        try { h.stop().catch(() => {}); } catch (_) {}
+        try { h.clear(); } catch (_) {}
+      }
+      if (camStream) {
+        camStream.getTracks().forEach((t) => t.stop());
+        camStream = null;
+      }
+      const video = document.getElementById('cam-video');
+      if (video) {
+        try { video.pause(); } catch (_) {}
+        try { video.srcObject = null; } catch (_) {}
+        video.removeAttribute('src');
+        video.hidden = false;
+        video.style.display = '';
+        video.style.opacity = '';
+      }
+      const mirror = document.getElementById('cam-mirror');
+      if (mirror) {
+        const ctx = mirror.getContext && mirror.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, mirror.width || 0, mirror.height || 0);
+        mirror.hidden = false;
+      }
+      const reader = document.getElementById('cam-reader');
+      if (reader) {
+        reader.hidden = true;
+        reader.setAttribute('hidden', '');
+        reader.innerHTML = '';
+      }
+      const wrap = document.getElementById('cam-wrap');
+      if (wrap) wrap.classList.remove('is-photo', 'is-html5');
+      setCamUi(false);
+      setCamHint('Камера выкл');
+      setCamErr('');
+    }
+
+    function isPhoneCam() {
+      try {
+        if (window.matchMedia('(pointer: coarse)').matches) return true;
+        if (window.matchMedia('(max-width: 900px)').matches) return true;
+      } catch (_) {}
+      return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
+    }
+
+    function startMirrorLoop() {
+      const video = document.getElementById('cam-video');
+      const mirror = document.getElementById('cam-mirror');
+      if (!video || !mirror) return;
+      const ctx = mirror.getContext('2d', { alpha: false });
+      if (!ctx) return;
+      mirror.hidden = false;
+      const tick = () => {
+        camMirrorRaf = 0;
+        if (!camWanted || !camStream) return;
+        try {
+          if (video.readyState >= 2 && video.videoWidth > 0) {
+            if (mirror.width !== video.videoWidth || mirror.height !== video.videoHeight) {
+              mirror.width = video.videoWidth;
+              mirror.height = video.videoHeight;
+            }
+            ctx.drawImage(video, 0, 0, mirror.width, mirror.height);
+          }
+        } catch (_) {}
+        camMirrorRaf = requestAnimationFrame(tick);
+      };
+      if (camMirrorRaf) cancelAnimationFrame(camMirrorRaf);
+      camMirrorRaf = requestAnimationFrame(tick);
+    }
+
+    function loadScriptOnce(src) {
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-scan-lib="' + src + '"]');
+        if (existing) {
+          if (existing.dataset.ready === '1') return resolve();
+          existing.addEventListener('load', () => resolve());
+          existing.addEventListener('error', () => reject(new Error('load failed')));
+          return;
+        }
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = true;
+        s.dataset.scanLib = src;
+        s.onload = () => {
+          s.dataset.ready = '1';
+          resolve();
+        };
+        s.onerror = () => reject(new Error('Не удалось загрузить библиотеку сканера'));
+        document.head.appendChild(s);
+      });
+    }
+
+    async function ensureHtml5QrLib() {
+      await loadScriptOnce('https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js');
+      if (!window.Html5Qrcode) throw new Error('Html5Qrcode недоступен');
+    }
+
+    async function ensureZxingLib() {
+      if (window.ZXingBrowser && window.ZXingBrowser.BrowserMultiFormatReader) return;
+      await loadScriptOnce('https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/zxing-browser.min.js');
+      if (!(window.ZXingBrowser && window.ZXingBrowser.BrowserMultiFormatReader)) {
+        throw new Error('ZXing недоступен');
+      }
+    }
+
+    async function attachVideoPreview(stream) {
+      const video = document.getElementById('cam-video');
+      const reader = document.getElementById('cam-reader');
+      const wrap = document.getElementById('cam-wrap');
+      const mirror = document.getElementById('cam-mirror');
+      if (!video) throw new Error('Нет video');
+      if (wrap) wrap.classList.remove('is-photo', 'is-html5');
+      if (reader) {
+        reader.hidden = true;
+        reader.setAttribute('hidden', '');
+        reader.innerHTML = '';
+      }
+      if (mirror) {
+        mirror.hidden = false;
+        mirror.removeAttribute('hidden');
+      }
+      // iOS: атрибуты ДО srcObject
+      video.removeAttribute('hidden');
+      video.hidden = false;
+      video.muted = true;
+      video.defaultMuted = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.setAttribute('muted', '');
+      video.setAttribute('playsinline', '');
+      video.setAttribute('webkit-playsinline', '');
+      video.setAttribute('autoplay', '');
+      video.srcObject = stream;
+      await new Promise((resolve) => {
+        const done = () => resolve();
+        if (video.readyState >= 1) return done();
+        video.onloadedmetadata = done;
+        setTimeout(done, 1200);
+      });
+      try {
+        await video.play();
+      } catch (_) {
+        try { await video.play(); } catch (__) {}
+      }
+      // ждём первые кадры (на телефоне бывает задержка)
+      for (let i = 0; i < 25; i++) {
+        if (video.videoWidth > 0) break;
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      startMirrorLoop();
+      if (video.videoWidth > 0) {
+        setCamHint('Камера · ' + video.videoWidth + '×' + video.videoHeight, true);
+      } else {
+        setCamHint('Камера запущена · наведите на ШК', true);
+      }
+    }
+
+    async function startDecodeOnVideo(stream) {
+      const video = document.getElementById('cam-video');
+      if (typeof BarcodeDetector !== 'undefined') {
+        try {
+          camDetector = new BarcodeDetector({
+            formats: ['code_128', 'ean_13', 'ean_8', 'code_39', 'qr_code', 'upc_a', 'upc_e'],
+          });
+          setCamHint('Наведите на ШК задания', true);
+          lastCamCode = '';
+          lastCamAt = 0;
+          tickNativeDetector();
+          return true;
+        } catch (_) {
+          camDetector = null;
+        }
+      }
+      try {
+        await ensureZxingLib();
+        const Reader = window.ZXingBrowser.BrowserMultiFormatReader;
+        const codeReader = new Reader();
+        // Не decodeFromStream — он ломает превью на iOS. Видео уже играет.
+        if (typeof codeReader.decodeFromVideoElementContinuously === 'function') {
+          codeReader.decodeFromVideoElementContinuously(video, (result) => {
+            if (result) onCamCode(result.getText());
+          });
+          camZxing = codeReader;
+        } else {
+          const controls = await codeReader.decodeFromStream(stream, video, (result) => {
+            if (result) onCamCode(result.getText());
+          });
+          camZxing = controls && typeof controls.stop === 'function' ? controls : codeReader;
+          startMirrorLoop();
+        }
+        setCamHint('Наведите на ШК задания', true);
+        lastCamCode = '';
+        lastCamAt = 0;
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    async function startLiveCamera() {
+      if (!window.isSecureContext) {
+        openCamPanel();
+        setCamErr('Живая камера только по HTTPS.');
+        return;
+      }
+      if (camStream || camHtml5 || camZxing) {
+        setCamUi(true);
+        showLiveModeUi();
+        return;
+      }
+      openCamPanel();
+      showLiveModeUi();
+      setCamHint('Запуск камеры…', true);
+      setCamErr('');
+
+      let lastErr = null;
+
+      // Телефон: сразу html5-qrcode (свой video, обычно стабильнее на Safari/Chrome mobile)
+      if (isPhoneCam()) {
+        try {
+          await startCameraHtml5();
+          showLiveModeUi();
+          setCamHint('Наведите на ШК задания', true);
+          lastCamCode = '';
+          lastCamAt = 0;
+          return;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+
+      const tryConstraints = [
+        { audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+        { audio: false, video: { facingMode: { ideal: 'environment' } } },
+        { audio: false, video: { facingMode: 'environment' } },
+        { audio: false, video: true },
+      ];
+      let stream = null;
+
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        for (const constraints of tryConstraints) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+            break;
+          } catch (e) {
+            lastErr = e;
+          }
+        }
+      } else {
+        lastErr = new Error('getUserMedia недоступен');
+      }
+
+      if (!stream) {
+        // ещё раз html5 (ноут / если телефонный путь упал раньше)
+        try {
+          await startCameraHtml5();
+          showLiveModeUi();
+          setCamHint('Наведите на ШК задания', true);
+          return;
+        } catch (e) {
+          lastErr = e;
+        }
+        openCamPanel();
+        setCamErr((lastErr && lastErr.message) || 'Нет доступа к камере');
+        return;
+      }
+
+      camStream = stream;
+      try {
+        await attachVideoPreview(stream);
+      } catch (e) {
+        lastErr = e;
+      }
+
+      const decoded = await startDecodeOnVideo(stream);
+      if (decoded) return;
+
+      // Последний шанс: html5-qrcode
+      try {
+        if (camStream) {
+          camStream.getTracks().forEach((t) => t.stop());
+          camStream = null;
+        }
+        if (camMirrorRaf) {
+          cancelAnimationFrame(camMirrorRaf);
+          camMirrorRaf = 0;
+        }
+        const video = document.getElementById('cam-video');
+        if (video) video.srcObject = null;
+        await startCameraHtml5();
+        showLiveModeUi();
+        setCamHint('Наведите на ШК задания', true);
+        return;
+      } catch (e) {
+        lastErr = e;
+      }
+
+      openCamPanel();
+      setCamErr(
+        (lastErr && lastErr.message) ||
+          'Камера недоступна — обновите страницу или проверьте разрешение.'
+      );
+    }
+
+    function openCamera() {
+      if (!window.isSecureContext) {
+        setCamErr('Нужен HTTPS для камеры'); return;
+      }
+      startLiveCamera();
+    }
+
+    function toggleCamera() {
+      if (camWanted && (camStream || camHtml5 || camZxing || camTimer || camMirrorRaf)) stopCamera();
+      else if (camWanted) stopCamera();
+      else openCamera();
+    }
+
+    async function onCamCode(code) {
+      const raw = String(code || '').trim();
+      if (!raw) return;
+      const now = Date.now();
+      if (raw === lastCamCode && now - lastCamAt < 1600) return;
+      lastCamCode = raw;
+      lastCamAt = now;
+      const inp = document.getElementById('scan-input');
+      if (inp) {
+        inp.value = raw;
+        inp.focus();
+        inp.select();
+      }
+      syncCheckBtn();
+      setScanMsg('Считано: ' + raw + ' · нажмите ✓', 'ok');
+      setCamHint('Считано · нажмите ✓', true);
+      try {
+        if (navigator.vibrate) navigator.vibrate(25);
+      } catch (_) {}
+    }
+
+    async function tickNativeDetector() {
+      const video = document.getElementById('cam-video');
+      if (!camWanted) return;
+      if (!video || !camStream || !camDetector || scanBusy) {
+        camTimer = setTimeout(tickNativeDetector, 250);
+        return;
+      }
+      if (video.readyState < 2) {
+        camTimer = setTimeout(tickNativeDetector, 120);
+        return;
+      }
+      try {
+        const codes = await camDetector.detect(video);
+        if (codes && codes.length) {
+          await onCamCode(codes[0].rawValue);
+          camTimer = setTimeout(tickNativeDetector, 500);
+          return;
+        }
+      } catch (_) {}
+      camTimer = setTimeout(tickNativeDetector, 180);
+    }
+
+    async function startCameraHtml5() {
+      await ensureHtml5QrLib();
+      const reader = document.getElementById('cam-reader');
+      const video = document.getElementById('cam-video');
+      const mirror = document.getElementById('cam-mirror');
+      const wrap = document.getElementById('cam-wrap');
+      if (!reader) throw new Error('Нет cam-reader');
+      if (wrap) {
+        wrap.classList.remove('is-photo');
+        wrap.classList.add('is-html5');
+      }
+      if (mirror) {
+        mirror.hidden = true;
+        mirror.setAttribute('hidden', '');
+      }
+      if (video) {
+        try { video.pause(); } catch (_) {}
+        video.srcObject = null;
+        video.hidden = true;
+        video.setAttribute('hidden', '');
+      }
+      reader.innerHTML = '';
+      reader.hidden = false;
+      reader.removeAttribute('hidden');
+      // контейнер должен быть видимым до start()
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const html5 = new window.Html5Qrcode('cam-reader', { verbose: false });
+      camHtml5 = html5;
+      const boxFn = (w, h) => ({
+        width: Math.max(180, Math.floor(w * 0.82)),
+        height: Math.max(90, Math.floor(h * 0.34)),
+      });
+      const config = {
+        fps: isPhoneCam() ? 6 : 10,
+        qrbox: boxFn,
+        // aspectRatio на мобилках часто даёт чёрный экран — не задаём
+      };
+      if (!isPhoneCam()) config.aspectRatio = 1.777;
+
+      await html5.start(
+        { facingMode: 'environment' },
+        config,
+        (decoded) => { onCamCode(decoded); },
+        () => {}
+      );
+
+      // форсим видимость video, который создаёт библиотека
+      const polish = () => {
+        reader.querySelectorAll('video').forEach((v) => {
+          v.removeAttribute('hidden');
+          v.muted = true;
+          v.defaultMuted = true;
+          v.playsInline = true;
+          v.setAttribute('playsinline', '');
+          v.setAttribute('webkit-playsinline', '');
+          v.setAttribute('muted', '');
+          v.style.cssText =
+            'position:absolute!important;inset:0!important;width:100%!important;height:100%!important;object-fit:cover!important;opacity:1!important;display:block!important;z-index:1!important;';
+          v.play().catch(() => {});
+        });
+        const region = reader.querySelector('#cam-reader__scan_region, [id$="__scan_region"]');
+        if (region) {
+          region.style.cssText = 'position:absolute;inset:0;width:100%!important;height:100%!important;';
+        }
+      };
+      polish();
+      setTimeout(polish, 200);
+      setTimeout(polish, 700);
+    }
+
+    function showLiveModeUi() {
+      const wrap = document.getElementById('cam-wrap');
+      if (wrap) wrap.classList.remove('is-photo');
+    }
+
+    function openCamPanel() {
+      setCamUi(true);
+      setCamErr('');
+      showLiveModeUi();
+      setCamHint('Запуск камеры…', true);
+    }
+
+    document.getElementById('scan-go').onclick = () => {
+      submitScan(document.getElementById('scan-input').value);
+    };
+    document.getElementById('scan-input').addEventListener('input', syncCheckBtn);
+    document.getElementById('scan-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitScan(e.target.value);
+      }
+    });
+    document.getElementById('scan-cam').onclick = () => toggleCamera();
+    document.getElementById('cam-stop').onclick = () => stopCamera();
+    syncCheckBtn();
+
+    function startChatWidget() {
+      const root = document.getElementById('chat-fab-root');
+      const fab = document.getElementById('chat-fab');
+      const badge = document.getElementById('chat-fab-badge');
+      const pop = document.getElementById('chat-pop');
+      const body = document.getElementById('chat-pop-body');
+      const closeBtn = document.getElementById('chat-pop-close');
+      const unreadLabel = document.getElementById('chat-pop-unread');
+      if (!root || !fab || !pop || !body) return;
+
+      let popOpen = false;
+      let activeId = '';
+      let lastUnread = 0;
+      let chatOk = false;
+
+      const canChat = () => {
+        if (!me) return false;
+        if (me.isSystemAdmin || me.role === 'admin') return true;
+        const secs = (me.rights && me.rights.sections) || [];
+        if (!Array.isArray(secs) || !secs.length) return true;
+        return secs.includes('chats');
+      };
+
+      const setBadge = (n) => {
+        const count = Math.max(0, Number(n) || 0);
+        if (badge) {
+          if (count > 0) {
+            badge.hidden = false;
+            badge.textContent = count > 99 ? '99+' : String(count);
+          } else {
+            badge.hidden = true;
+          }
+        }
+        fab.classList.toggle('has-unread', count > 0);
+        if (unreadLabel) unreadLabel.textContent = count > 0 ? count + ' новых' : '';
+        if (count > lastUnread && lastUnread >= 0 && document.hidden) {
+          try {
+            if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+              new Notification('Учёт №1 · Чаты', {
+                body: 'Новых сообщений: ' + count,
+                tag: 'wms-chats-unread',
+              });
+            }
+          } catch (_) {}
+        }
+        lastUnread = count;
+      };
+
+      const formatChatTime = (iso) => {
+        if (!iso) return '';
+        try {
+          const d = new Date(String(iso).includes('T') ? iso : String(iso).replace(' ', 'T') + 'Z');
+          if (Number.isNaN(d.getTime())) return String(iso).slice(11, 16);
+          return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        } catch (_) {
+          return '';
+        }
+      };
+
+      const renderList = (items) => {
+        if (!items.length) {
+          body.innerHTML =
+            '<p class="muted" style="margin:16px">Пока нет чатов. Нажмите «Открыть» для полного экрана.</p>';
+          return;
+        }
+        body.innerHTML =
+          '<div class="chat-pop-list">' +
+          items
+            .map((c) => {
+              const preview = c.last_message
+                ? esc(
+                    (c.last_message.sender_name ? c.last_message.sender_name + ': ' : '') +
+                      (c.last_message.body || (c.last_message.has_attachment ? 'Вложение' : ''))
+                  )
+                : '<span class="muted">Нет сообщений</span>';
+              return (
+                '<button type="button" class="chat-pop-item ' +
+                (c.unread ? 'has-unread' : '') +
+                '" data-chat-id="' +
+                esc(c.id) +
+                '">' +
+                '<div class="chat-pop-item-top">' +
+                '<span class="chat-pop-item-title">' +
+                esc(c.title || (c.type === 'group' ? 'Группа' : 'Чат')) +
+                '</span>' +
+                '<span class="chat-pop-item-time">' +
+                esc(formatChatTime((c.last_message && c.last_message.created_at) || c.updated_at)) +
+                '</span></div>' +
+                '<div class="chat-pop-item-bottom"><span class="chat-pop-item-preview">' +
+                preview +
+                '</span>' +
+                (c.unread
+                  ? '<span class="chat-pop-item-badge">' +
+                    esc(c.unread > 99 ? '99+' : c.unread) +
+                    '</span>'
+                  : '') +
+                '</div></button>'
+              );
+            })
+            .join('') +
+          '</div>';
+        body.querySelectorAll('[data-chat-id]').forEach((btn) => {
+          btn.onclick = () => openThread(btn.dataset.chatId);
+        });
+      };
+
+      const openThread = async (chatId) => {
+        activeId = chatId;
+        body.innerHTML = '<p class="muted" style="margin:16px">Загрузка…</p>';
+        try {
+          const [chatsData, msgsData] = await Promise.all([
+            api('/chats'),
+            api('/chats/' + encodeURIComponent(chatId) + '/messages?limit=40'),
+          ]);
+          const chat = (chatsData.items || []).find((c) => c.id === chatId);
+          const title = (chat && chat.title) || 'Чат';
+          const msgs = msgsData.items || [];
+          await api('/chats/' + encodeURIComponent(chatId) + '/read', {
+            method: 'POST',
+            body: '{}',
+          }).catch(() => null);
+          body.innerHTML =
+            '<div class="chat-pop-thread">' +
+            '<div class="chat-pop-thread-head">' +
+            '<button type="button" class="chat-pop-back" id="chat-pop-back">←</button>' +
+            '<strong>' +
+            esc(title) +
+            '</strong>' +
+            '<a class="chat-pop-link" href="/chats">Полный</a></div>' +
+            '<div class="chat-pop-msgs" id="chat-pop-msgs">' +
+            (msgs
+              .map((m) => {
+                const mine = me && m.sender_id === me.id;
+                return (
+                  '<div class="chat-pop-msg ' +
+                  (mine ? 'mine' : '') +
+                  '">' +
+                  (mine ? '' : '<div class="chat-pop-msg-who">' + esc(m.sender_name || '') + '</div>') +
+                  '<div class="chat-pop-msg-body">' +
+                  esc(m.body || (m.attachments && m.attachments.length ? 'Вложение' : '')) +
+                  '</div>' +
+                  '<div class="chat-pop-msg-time">' +
+                  esc(formatChatTime(m.created_at)) +
+                  '</div></div>'
+                );
+              })
+              .join('') || '<p class="muted" style="margin:8px">Напишите первое сообщение</p>') +
+            '</div>' +
+            '<form class="chat-pop-compose" id="chat-pop-form">' +
+            '<input id="chat-pop-input" placeholder="Сообщение…" autocomplete="off" />' +
+            '<button type="submit">➤</button></form></div>';
+          const msgsEl = document.getElementById('chat-pop-msgs');
+          if (msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight;
+          document.getElementById('chat-pop-back').onclick = () => {
+            activeId = '';
+            refresh(true);
+          };
+          const form = document.getElementById('chat-pop-form');
+          const input = document.getElementById('chat-pop-input');
+          form.onsubmit = async (e) => {
+            e.preventDefault();
+            const text = (input.value || '').trim();
+            if (!text) return;
+            input.disabled = true;
+            try {
+              await api('/chats/' + encodeURIComponent(chatId) + '/messages', {
+                method: 'POST',
+                body: JSON.stringify({ body: text }),
+              });
+              input.value = '';
+              openThread(chatId);
+              pollUnread();
+            } catch (err) {
+              alert(err.message || 'Не отправлено');
+            } finally {
+              input.disabled = false;
+              input.focus();
+            }
+          };
+          input.focus();
+          pollUnread();
+        } catch (e) {
+          body.innerHTML = '<p class="err" style="margin:16px">' + esc(e.message) + '</p>';
+        }
+      };
+
+      const refresh = async (forceList) => {
+        try {
+          const data = await api('/chats');
+          chatOk = true;
+          root.hidden = false;
+          setBadge(data.unread_total || 0);
+          if (forceList || (popOpen && !activeId)) renderList(data.items || []);
+        } catch (_) {
+          if (!chatOk) root.hidden = true;
+        }
+      };
+
+      const pollUnread = async () => {
+        try {
+          const data = await api('/chats/unread');
+          chatOk = true;
+          root.hidden = false;
+          setBadge(data.unread_total || 0);
+        } catch (_) {
+          if (!chatOk) root.hidden = true;
+        }
+      };
+
+      const openPop = () => {
+        popOpen = true;
+        pop.classList.remove('hidden');
+        fab.classList.add('is-open');
+        activeId = '';
+        refresh(true);
+        if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+          Notification.requestPermission().catch(() => null);
+        }
+      };
+      const closePop = () => {
+        popOpen = false;
+        activeId = '';
+        pop.classList.add('hidden');
+        fab.classList.remove('is-open');
+      };
+
+      fab.onclick = (e) => {
+        e.stopPropagation();
+        if (popOpen) closePop();
+        else openPop();
+      };
+      if (closeBtn) {
+        closeBtn.onclick = (e) => {
+          e.stopPropagation();
+          closePop();
+        };
+      }
+      document.addEventListener(
+        'pointerdown',
+        (e) => {
+          if (!popOpen) return;
+          const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+          if (path.includes(root)) return;
+          if (e.target && root.contains(e.target)) return;
+          closePop();
+        },
+        true
+      );
+
+      if (!canChat()) {
+        root.hidden = true;
+        return;
+      }
+      root.hidden = false;
+      refresh(false);
+      setInterval(() => {
+        if (document.visibilityState === 'hidden' && !popOpen) {
+          pollUnread();
+          return;
+        }
+        if (popOpen && activeId) {
+          pollUnread();
+          return;
+        }
+        refresh(popOpen && !activeId);
+      }, 8000);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') pollUnread();
+      });
+    }
+
+    function scheduleBoardAutoRefresh() {
+      const TICK_MS = 12000;
+      setInterval(() => {
+        if (document.visibilityState === 'hidden') return;
+        if (scanBusy) return;
+        load().catch(() => {});
+      }, TICK_MS);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') load().catch(() => {});
+      });
+    }
+
+    updateAutoLabel();
+    load()
+      .then(() => startChatWidget())
+      .catch((e) => {
+        showErr(e.message);
+        startChatWidget();
+      });
+    scheduleBoardAutoRefresh();
+
+    // Камеру на мобиле не стартуем сами — только по кнопке (иначе Safari/Android
+    // могут бесконечно ждать разрешение и «крутить» сеть).
+    try {
+      if (localStorage.getItem(CAM_PREF_KEY) === '1') {
+        const panel = document.getElementById('cam-panel');
+        const hint = document.getElementById('cam-hint');
+        if (panel) {
+          panel.hidden = false;
+          if (hint) {
+            hint.textContent = 'Нажмите «Камера», чтобы включить сканер';
+            hint.classList.remove('is-live');
+          }
+        }
+      }
+    } catch (_) {}
+  </script>
+</body>
+</html>

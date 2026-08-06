@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0d7377" />
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <title>Подъёмник · СТО · Учёт №1</title>
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('uchet1_lift_theme');
+        if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+      } catch (_) {}
+    })();
+  </script>
+  <style>
+    :root, [data-theme="light"] {
+      --bg: #e8f0f0; --bg2: #d4e4e4; --card: #fff; --text: #0f1f1f; --muted: #5a6f6f;
+      --line: #b8cece; --accent: #0d7377; --accent-soft: #c5e8e9; --ok: #1b8a5a;
+      --bad: #c0392b; --warn: #c47a12; --shadow: 0 2px 10px rgba(13,50,50,.08); --tap: 48px;
+    }
+    [data-theme="dark"] {
+      --bg: #0c1414; --bg2: #132020; --card: #1a2828; --text: #e8f4f4; --muted: #8aa0a0;
+      --line: #2a4040; --accent: #2dd4bf; --accent-soft: #134e4a; --ok: #22a06b;
+      --bad: #ef4444; --warn: #f59e0b; --shadow: 0 2px 14px rgba(0,0,0,.45); color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(180deg, var(--bg), var(--bg2)); color: var(--text);
+      min-height: 100dvh; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom));
+      -webkit-tap-highlight-color: transparent;
+    }
+    .chrome { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+    header.top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+    .brand { display: flex; gap: 10px; align-items: center; }
+    .brand h1 { margin: 0; font-size: 18px; font-weight: 800; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .who { font-size: 13px; color: var(--muted); font-weight: 600; }
+    .btn, .btn-tool {
+      min-height: var(--tap); padding: 0 14px; border-radius: 12px; border: 1px solid var(--line);
+      background: var(--card); color: var(--text); font-weight: 700; font-size: 14px; cursor: pointer;
+    }
+    .btn.primary, .btn-tool.primary { background: var(--accent); color: #fff; border-color: transparent; }
+    [data-theme="dark"] .btn.primary, [data-theme="dark"] .btn-tool.primary { color: #042f2e; }
+    .btn.danger { background: color-mix(in srgb, var(--bad) 14%, var(--card)); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); color: var(--bad); }
+    .btn.ok { background: color-mix(in srgb, var(--ok) 16%, var(--card)); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); color: var(--ok); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .nav-links { display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px; }
+    .nav-links a { color: var(--accent); font-weight: 700; text-decoration: none; }
+    .shift-bar, .panel, .lift-card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+      padding: 12px; box-shadow: var(--shadow);
+    }
+    .shift-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .shift-bar .label { font-weight: 800; }
+    .shift-bar .muted { color: var(--muted); font-size: 13px; }
+    .err, .okmsg {
+      border-radius: 12px; padding: 10px 12px; font-size: 14px; font-weight: 600;
+    }
+    .err { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent); }
+    .okmsg { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); }
+    .lifts { display: grid; gap: 10px; }
+    .lift-card { cursor: pointer; }
+    .lift-card:active { transform: scale(.99); }
+    .lift-card.busy { border-color: var(--accent); }
+    .lift-card .name { font-size: 17px; font-weight: 800; margin: 0 0 4px; }
+    .lift-card .meta { color: var(--muted); font-size: 13px; line-height: 1.4; }
+    .badge {
+      display: inline-block; font-size: 11px; font-weight: 800; text-transform: uppercase;
+      letter-spacing: .04em; padding: 3px 8px; border-radius: 999px; margin-bottom: 6px;
+    }
+    .badge.free { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+    .badge.busy { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+    .panel h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .row-line { display: flex; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+    .row-line:last-child { border-bottom: 0; }
+    .muted { color: var(--muted); }
+    .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, monospace; }
+    input, select {
+      width: 100%; min-height: 44px; border-radius: 12px; border: 1px solid var(--line);
+      background: var(--bg); color: var(--text); padding: 0 12px; font-size: 16px;
+    }
+    .field { display: grid; gap: 6px; margin-bottom: 10px; }
+    .field label { font-size: 12px; font-weight: 700; color: var(--muted); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .search-hit {
+      padding: 10px; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 6px; cursor: pointer;
+      background: var(--bg);
+    }
+    .search-hit b { display: block; margin-bottom: 2px; }
+    dialog {
+      border: 1px solid var(--line); border-radius: 16px; padding: 18px; max-width: 420px;
+      width: calc(100% - 24px); background: var(--card); color: var(--text); box-shadow: var(--shadow);
+    }
+    dialog::backdrop { background: rgba(15,31,31,.45); }
+    .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tabs button.active { background: var(--accent); color: #fff; border-color: transparent; }
+    [data-theme="dark"] .tabs button.active { color: #042f2e; }
+    .locked {
+      opacity: .55; pointer-events: none; filter: grayscale(.2);
+    }
+    .locked-note {
+      background: color-mix(in srgb, var(--warn) 14%, var(--card));
+      border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line));
+      color: var(--warn); border-radius: 12px; padding: 10px 12px; font-weight: 700; font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="chrome">
+    <header class="top">
+      <div class="brand">
+        <img class="brand-logo" src="/logo-uchet1.svg" width="28" height="28" alt="Учёт №1" />
+        <h1>Подъёмник · СТО</h1>
+      </div>
+      <div class="toolbar">
+        <span class="who" id="who"></span>
+        <button type="button" class="btn-tool" id="theme-btn">Тема</button>
+        <button type="button" class="btn-tool primary" id="reload">Обновить</button>
+        <button type="button" class="btn-tool" id="logout">Выйти</button>
+      </div>
+    </header>
+
+    <div class="nav-links">
+      <a href="/reception">Приёмщик</a>
+      <a href="/help">Помощь</a>
+      <a href="/">Меню</a>
+    </div>
+
+    <div class="shift-bar" id="shift-bar">
+      <span class="label">Смена мастера</span>
+      <span class="muted" id="shift-status">загрузка…</span>
+      <button type="button" class="btn-tool primary" id="shift-toggle">Начать смену</button>
+    </div>
+
+    <div id="locked-note" class="locked-note" hidden>
+      Без смены нельзя назначать авто, списывать материалы и фиксировать работы. Нажмите «Начать смену» и введите PIN.
+    </div>
+    <div id="err" class="err" hidden></div>
+    <div id="ok" class="okmsg" hidden></div>
+
+    <div class="tabs">
+      <button type="button" class="btn-tool active" data-tab="board">Подъёмники</button>
+      <button type="button" class="btn-tool" data-tab="myworks">Мои работы сегодня</button>
+    </div>
+
+    <section id="tab-board">
+      <div class="lifts" id="lifts"></div>
+      <div class="panel" id="detail" hidden></div>
+    </section>
+
+    <section id="tab-myworks" hidden>
+      <div class="panel">
+        <h2>Работы слесаря за сегодня</h2>
+        <div id="myworks"></div>
+      </div>
+    </section>
+  </div>
+
+  <dialog id="pin-dlg">
+    <form method="dialog" id="pin-form">
+      <h3 style="margin:0 0 6px;font-size:20px">Начало смены</h3>
+      <p class="muted" style="margin:0;font-size:14px" id="pin-hint">Подтвердите личность PIN или паролем.</p>
+      <div class="field" style="margin-top:12px">
+        <label for="pin-secret">PIN / пароль</label>
+        <input id="pin-secret" type="password" inputmode="numeric" autocomplete="one-time-code" />
+      </div>
+      <p class="err" id="pin-err" hidden style="margin:8px 0 0"></p>
+      <div class="dlg-actions">
+        <button type="button" class="btn-tool" id="pin-cancel">Отмена</button>
+        <button type="submit" class="btn-tool primary">Подтвердить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="assign-dlg">
+    <form method="dialog" id="assign-form">
+      <h3 style="margin:0 0 6px;font-size:20px">Назначить на подъёмник</h3>
+      <p class="muted" id="assign-lift-name" style="margin:0 0 10px;font-size:14px"></p>
+      <div class="field">
+        <label>Поиск (номер / VIN / клиент / ЗН)</label>
+        <input id="assign-q" type="search" placeholder="А123ВС777" />
+      </div>
+      <div id="assign-hits"></div>
+      <div class="field">
+        <label>Госномер</label>
+        <input id="assign-plate" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label>Клиент</label>
+        <input id="assign-client" />
+      </div>
+      <div class="field">
+        <label>Модель</label>
+        <input id="assign-model" />
+      </div>
+      <input type="hidden" id="assign-wo" />
+      <input type="hidden" id="assign-appt" />
+      <p class="err" id="assign-err" hidden></p>
+      <div class="dlg-actions">
+        <button type="button" class="btn-tool" id="assign-cancel">Отмена</button>
+        <button type="submit" class="btn-tool primary">Поставить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    const THEME_KEY = 'uchet1_lift_theme';
+    let me = null;
+    let shiftState = null;
+    let board = null;
+    let catalog = [];
+    let selectedLiftId = null;
+    let assignLiftId = null;
+    let searchTimer = null;
+
+    function applyTheme(theme) {
+      const t = theme === 'dark' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', t);
+      try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
+      const logo = document.querySelector('.brand-logo');
+      if (logo) logo.src = t === 'dark' ? '/logo-uchet1-on-dark.svg' : '/logo-uchet1.svg';
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', t === 'dark' ? '#0c1414' : '#0d7377');
+    }
+    (function () {
+      let t = 'light';
+      try { t = localStorage.getItem(THEME_KEY) || 'light'; } catch (_) {}
+      applyTheme(t);
+    })();
+
+    async function api(path, opts) {
+      const res = await fetch('/api' + path, {
+        credentials: 'same-origin',
+        ...opts,
+        headers: {
+          ...(opts && opts.body ? { 'Content-Type': 'application/json' } : {}),
+          ...((opts && opts.headers) || {}),
+        },
+      });
+      if (res.status === 401) {
+        location.href = '/login?next=' + encodeURIComponent(location.pathname || '/lift');
+        throw new Error('login');
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+      );
+    }
+    function showErr(msg) {
+      const el = document.getElementById('err');
+      el.hidden = !msg;
+      el.textContent = msg || '';
+    }
+    function showOk(msg) {
+      const el = document.getElementById('ok');
+      el.hidden = !msg;
+      el.textContent = msg || '';
+      if (msg) setTimeout(() => { el.hidden = true; }, 2200);
+    }
+
+    function shiftOpen() {
+      return !!(shiftState && shiftState.shift);
+    }
+    function opsAllowed() {
+      if (!shiftState) return false;
+      if (!shiftState.require_shift) return true;
+      return shiftOpen();
+    }
+
+    function renderShift() {
+      const status = document.getElementById('shift-status');
+      const toggle = document.getElementById('shift-toggle');
+      const note = document.getElementById('locked-note');
+      const who = document.getElementById('who');
+      const s = shiftState && shiftState.shift;
+      const staff = shiftState && shiftState.staff;
+      if (who && staff) who.textContent = staff.name || staff.login || '';
+      if (s) {
+        status.textContent = 'с ' + new Date(s.started_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        toggle.textContent = 'Завершить смену';
+      } else {
+        status.textContent = 'не начата';
+        toggle.textContent = 'Начать смену';
+      }
+      note.hidden = opsAllowed();
+      document.getElementById('tab-board').classList.toggle('locked', !opsAllowed());
+    }
+
+    function statusRu(st) {
+      return ({
+        draft: 'Черновик', booked: 'Записан', in_progress: 'В работе',
+        waiting_parts: 'Ждёт запчасть', ready: 'Готов', handed: 'Выдан',
+        cancelled: 'Отменён', done: 'Готово', planned: 'План',
+      })[st] || st || '—';
+    }
+
+    function renderBoard() {
+      const box = document.getElementById('lifts');
+      const items = (board && board.items) || [];
+      if (!items.length) {
+        box.innerHTML = '<div class="muted">Нет подъёмников. Добавьте в ресурсы СТО.</div>';
+        return;
+      }
+      box.innerHTML = items.map((L) => {
+        const wo = L.work_order;
+        const busy = !!L.busy && wo;
+        const body = busy
+          ? `<div class="meta"><b class="mono">${esc(wo.plate || '—')}</b> · ${esc(wo.model || wo.vehicle || '—')}<br/>
+             ${esc(wo.customer_name || '—')} · ${esc(wo.number || '')}<br/>
+             ${esc(statusRu(wo.status))} · на подъёмнике ${esc(wo.minutes_on_lift != null ? wo.minutes_on_lift + ' мин' : '—')}</div>`
+          : `<div class="meta">Свободен — назначьте авто</div>`;
+        return `<div class="lift-card ${busy ? 'busy' : ''}" data-lift="${esc(L.id)}">
+          <span class="badge ${busy ? 'busy' : 'free'}">${busy ? 'Занят' : 'Свободен'}</span>
+          <p class="name">${esc(L.name)}</p>
+          ${body}
+        </div>`;
+      }).join('');
+      box.querySelectorAll('[data-lift]').forEach((el) => {
+        el.onclick = () => openLift(el.dataset.lift);
+      });
+    }
+
+    function openLift(liftId) {
+      selectedLiftId = liftId;
+      const L = ((board && board.items) || []).find((x) => x.id === liftId);
+      const detail = document.getElementById('detail');
+      if (!L) { detail.hidden = true; return; }
+      detail.hidden = false;
+      if (!L.busy || !L.work_order) {
+        detail.innerHTML = `
+          <h2>${esc(L.name)}</h2>
+          <p class="muted">Подъёмник свободен.</p>
+          <div class="actions">
+            <button type="button" class="btn primary" id="btn-assign" ${opsAllowed() ? '' : 'disabled'}>Назначить авто</button>
+          </div>`;
+        const btn = document.getElementById('btn-assign');
+        if (btn) btn.onclick = () => openAssign(L.id, L.name);
+        return;
+      }
+      const wo = L.work_order;
+      const works = (wo.works || []).map((w) =>
+        `<div class="row-line"><span>${esc(w.name)}</span><b>×${esc(w.qty)}</b></div>`
+      ).join('') || '<div class="muted">Нет строк работ на наряде</div>';
+      const mats = (wo.materials || []).map((m) =>
+        `<div class="row-line"><span>${esc(m.name)} <span class="muted mono">${esc(m.sku)}</span><br/><span class="muted">${esc(m.staff_name)} · ${esc(m.stock_note || '')}</span></span><b>×${esc(m.qty)}</b></div>`
+      ).join('') || '<div class="muted">Материалы ещё не списывали</div>';
+      const logs = (wo.work_logs || []).map((l) =>
+        `<div class="row-line"><span><b>${esc(l.work_name)}</b><br/><span class="muted">${esc(l.staff_name)} · ${esc(statusRu(l.status))}${l.hours ? ' · ' + l.hours + ' ч' : ''}</span></span><span class="muted">${esc((l.finished_at || l.created_at || '').slice(11, 16))}</span></div>`
+      ).join('') || '<div class="muted">Слесарь ещё не отметил работы</div>';
+      const catOpts = catalog.map((c) =>
+        `<option value="${esc(c.id)}" data-hours="${esc(c.hours_default)}">${esc(c.name)}</option>`
+      ).join('');
+      detail.innerHTML = `
+        <h2>${esc(L.name)} · задание</h2>
+        <p style="margin:0 0 8px;font-size:18px;font-weight:800" class="mono">${esc(wo.plate || '—')}</p>
+        <div class="muted" style="margin-bottom:12px;line-height:1.45">
+          ${esc(wo.model || wo.vehicle || '—')}<br/>
+          Клиент: <b>${esc(wo.customer_name || '—')}</b><br/>
+          Наряд: <b>${esc(wo.number || '—')}</b> · ${esc(statusRu(wo.status))}<br/>
+          Мастер: ${esc(wo.master_staff_name || '—')} · ${esc(wo.minutes_on_lift != null ? wo.minutes_on_lift + ' мин на подъёмнике' : '')}
+        </div>
+
+        <h2>Работы на наряде</h2>
+        ${works}
+
+        <h2 style="margin-top:16px">Мои выполненные работы</h2>
+        ${logs}
+        <div class="field" style="margin-top:10px">
+          <label>Из справочника</label>
+          <select id="log-catalog"><option value="">— текстом —</option>${catOpts}</select>
+        </div>
+        <div class="field">
+          <label>Название работы</label>
+          <input id="log-name" placeholder="Например: замена баллона" />
+        </div>
+        <div class="field">
+          <label>Часы</label>
+          <input id="log-hours" type="number" min="0" step="0.5" value="1" />
+        </div>
+        <div class="actions">
+          <button type="button" class="btn ok" id="btn-log-done" ${opsAllowed() ? '' : 'disabled'}>Отметить выполненной</button>
+        </div>
+
+        <h2 style="margin-top:16px">Материалы</h2>
+        ${mats}
+        <div class="field" style="margin-top:10px">
+          <label>Поиск номенклатуры</label>
+          <input id="mat-q" type="search" placeholder="Артикул / название" />
+        </div>
+        <div id="mat-hits"></div>
+        <div class="field">
+          <label>Количество</label>
+          <input id="mat-qty" type="number" min="0.001" step="1" value="1" />
+        </div>
+        <input type="hidden" id="mat-pid" />
+        <div class="actions">
+          <button type="button" class="btn primary" id="btn-mat" ${opsAllowed() ? '' : 'disabled'}>Списать / привязать</button>
+        </div>
+
+        <div class="actions" style="margin-top:18px">
+          <button type="button" class="btn danger" id="btn-free" ${opsAllowed() ? '' : 'disabled'}>Освободить подъёмник</button>
+          <button type="button" class="btn" id="btn-free-ready" ${opsAllowed() ? '' : 'disabled'}>Готово + освободить</button>
+        </div>`;
+
+      document.getElementById('log-catalog').onchange = (e) => {
+        const opt = e.target.selectedOptions[0];
+        if (opt && opt.value) {
+          document.getElementById('log-name').value = opt.textContent || '';
+          document.getElementById('log-hours').value = opt.dataset.hours || '1';
+        }
+      };
+      document.getElementById('btn-log-done').onclick = async () => {
+        try {
+          showErr('');
+          await api('/sto/work-logs', {
+            method: 'POST',
+            body: JSON.stringify({
+              work_order_id: wo.id,
+              lift_id: L.id,
+              catalog_id: document.getElementById('log-catalog').value || undefined,
+              work_name: document.getElementById('log-name').value,
+              hours: Number(document.getElementById('log-hours').value) || 0,
+              status: 'done',
+            }),
+          });
+          showOk('Работа записана за вами');
+          await load();
+          openLift(L.id);
+        } catch (e) { showErr(e.message); }
+      };
+
+      let matTimer = null;
+      document.getElementById('mat-q').oninput = () => {
+        clearTimeout(matTimer);
+        matTimer = setTimeout(() => searchProducts(document.getElementById('mat-q').value), 280);
+      };
+      document.getElementById('btn-mat').onclick = async () => {
+        try {
+          showErr('');
+          const pid = document.getElementById('mat-pid').value;
+          if (!pid) throw new Error('Выберите товар из поиска');
+          await api('/sto/lift/orders/' + wo.id + '/materials', {
+            method: 'POST',
+            body: JSON.stringify({
+              product_id: pid,
+              qty: Number(document.getElementById('mat-qty').value) || 1,
+              write_off: true,
+            }),
+          });
+          showOk('Материал добавлен');
+          await load();
+          openLift(L.id);
+        } catch (e) { showErr(e.message); }
+      };
+      document.getElementById('btn-free').onclick = () => freeLift(L.id, false);
+      document.getElementById('btn-free-ready').onclick = () => freeLift(L.id, true);
+    }
+
+    async function searchProducts(q) {
+      const box = document.getElementById('mat-hits');
+      if (!box) return;
+      if (!String(q || '').trim()) { box.innerHTML = ''; return; }
+      try {
+        const data = await api('/products?q=' + encodeURIComponent(q) + '&limit=8');
+        box.innerHTML = (data.items || []).map((p) =>
+          `<div class="search-hit" data-pid="${esc(p.id)}" data-name="${esc(p.name)}">
+            <b>${esc(p.name)}</b>
+            <span class="muted mono">${esc(p.sku || '')}</span>
+          </div>`
+        ).join('') || '<div class="muted">Ничего не найдено</div>';
+        box.querySelectorAll('[data-pid]').forEach((el) => {
+          el.onclick = () => {
+            document.getElementById('mat-pid').value = el.dataset.pid;
+            document.getElementById('mat-q').value = el.dataset.name || '';
+            box.innerHTML = '<div class="okmsg" style="border:0">Выбрано: ' + esc(el.dataset.name) + '</div>';
+          };
+        });
+      } catch (e) {
+        box.innerHTML = '<div class="err">' + esc(e.message) + '</div>';
+      }
+    }
+
+    async function freeLift(liftId, markDone) {
+      try {
+        showErr('');
+        await api('/sto/lift/' + liftId + '/free', {
+          method: 'POST',
+          body: JSON.stringify({ mark_done: markDone }),
+        });
+        showOk(markDone ? 'Готово, подъёмник свободен' : 'Подъёмник освобождён');
+        selectedLiftId = null;
+        document.getElementById('detail').hidden = true;
+        await load();
+      } catch (e) { showErr(e.message); }
+    }
+
+    function openAssign(liftId, liftName) {
+      if (!opsAllowed()) { showErr('Сначала начните смену'); return; }
+      assignLiftId = liftId;
+      document.getElementById('assign-lift-name').textContent = liftName;
+      document.getElementById('assign-q').value = '';
+      document.getElementById('assign-plate').value = '';
+      document.getElementById('assign-client').value = '';
+      document.getElementById('assign-model').value = '';
+      document.getElementById('assign-wo').value = '';
+      document.getElementById('assign-appt').value = '';
+      document.getElementById('assign-hits').innerHTML = '';
+      document.getElementById('assign-err').hidden = true;
+      document.getElementById('assign-dlg').showModal();
+    }
+
+    async function runAssignSearch(q) {
+      const box = document.getElementById('assign-hits');
+      if (!String(q || '').trim()) { box.innerHTML = ''; return; }
+      try {
+        const data = await api('/sto/lift/search?q=' + encodeURIComponent(q));
+        box.innerHTML = (data.items || []).slice(0, 8).map((it) => {
+          const plate = it.plate || '';
+          const client = it.client_name || '';
+          const label = it.source === 'appointment'
+            ? `Запись ${it.time_hm || ''} · ${plate}`
+            : `ЗН ${it.number || it.work_order_id || ''} · ${plate}`;
+          return `<div class="search-hit" data-json="${esc(JSON.stringify(it))}"><b>${esc(label)}</b><span class="muted">${esc(client)} · ${esc(it.model || it.vehicle || '')}</span></div>`;
+        }).join('') || '<div class="muted">Нет совпадений — заполните поля вручную</div>';
+        box.querySelectorAll('.search-hit').forEach((el) => {
+          el.onclick = () => {
+            try {
+              const it = JSON.parse(el.getAttribute('data-json'));
+              document.getElementById('assign-plate').value = it.plate || '';
+              document.getElementById('assign-client').value = it.client_name || '';
+              document.getElementById('assign-model').value = it.model || it.vehicle || '';
+              document.getElementById('assign-wo').value = it.work_order_id || (it.source === 'work_order' ? it.id : '') || '';
+              document.getElementById('assign-appt').value = it.source === 'appointment' ? it.id : '';
+            } catch (_) {}
+          };
+        });
+      } catch (e) {
+        box.innerHTML = '<div class="err">' + esc(e.message) + '</div>';
+      }
+    }
+
+    async function loadMyWorks() {
+      const box = document.getElementById('myworks');
+      if (!me) { box.innerHTML = '<div class="muted">—</div>'; return; }
+      const day = (shiftState && shiftState.local && shiftState.local.day) || new Date().toISOString().slice(0, 10);
+      const data = await api('/sto/work-logs?day=' + encodeURIComponent(day) + '&staff_id=' + encodeURIComponent(me.id));
+      const sum = data.summary || {};
+      const items = data.items || [];
+      box.innerHTML = `
+        <div class="muted" style="margin-bottom:10px">Всего: <b>${esc(sum.count || 0)}</b> · выполнено: <b>${esc(sum.done || 0)}</b> · часов: <b>${esc(sum.hours || 0)}</b></div>
+        ${items.length ? items.map((l) => `
+          <div class="row-line">
+            <span><b>${esc(l.work_name)}</b><br/>
+            <span class="muted mono">${esc(l.order_plate || '—')}</span> · ${esc(l.order_number || '')} · ${esc(l.lift_name || '')}<br/>
+            <span class="muted">${esc(statusRu(l.status))}${l.hours ? ' · ' + l.hours + ' ч' : ''}</span></span>
+            <span class="muted">${esc((l.created_at || '').slice(11, 16))}</span>
+          </div>`).join('') : '<div class="muted">Сегодня вы ещё не отмечали работы</div>'}`;
+    }
+
+    async function refreshShift() {
+      shiftState = await api('/sto/lift/shift');
+      if (shiftState.staff) me = { ...(me || {}), ...shiftState.staff };
+      renderShift();
+      return shiftState;
+    }
+
+    async function load() {
+      showErr('');
+      await refreshShift();
+      board = await api('/sto/lift/board');
+      const cat = await api('/sto/work-catalog').catch(() => ({ items: [] }));
+      catalog = cat.items || [];
+      renderBoard();
+      if (selectedLiftId) openLift(selectedLiftId);
+      if (!document.getElementById('tab-myworks').hidden) await loadMyWorks();
+    }
+
+    document.getElementById('theme-btn').onclick = () => {
+      const cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+      applyTheme(cur === 'dark' ? 'light' : 'dark');
+    };
+    document.getElementById('reload').onclick = () => load().catch((e) => showErr(e.message));
+    document.getElementById('logout').onclick = () => {
+      const go = () => { location.replace('/login?next=/lift'); };
+      api('/logout', { method: 'POST', body: '{}' }).catch(() => {}).finally(go);
+      setTimeout(go, 800);
+    };
+    document.getElementById('shift-toggle').onclick = async () => {
+      if (shiftOpen()) {
+        try {
+          await api('/sto/lift/shift/end', { method: 'POST', body: '{}' });
+          await load();
+        } catch (e) { showErr(e.message); }
+        return;
+      }
+      document.getElementById('pin-err').hidden = true;
+      document.getElementById('pin-secret').value = '';
+      const idn = shiftState && shiftState.staff && shiftState.staff.identity;
+      document.getElementById('pin-hint').textContent =
+        idn === 'pin' ? 'Введите PIN смены (раздел Персонал).' : idn === 'session' ? 'Сессия admin — PIN не нужен, можно подтвердить пустым.' : 'Введите пароль сотрудника.';
+      document.getElementById('pin-dlg').showModal();
+      document.getElementById('pin-secret').focus();
+    };
+    document.getElementById('pin-cancel').onclick = () => document.getElementById('pin-dlg').close();
+    document.getElementById('pin-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const secret = document.getElementById('pin-secret').value;
+      const idn = shiftState && shiftState.staff && shiftState.staff.identity;
+      try {
+        await api('/sto/lift/shift/start', {
+          method: 'POST',
+          body: JSON.stringify(idn === 'password' ? { password: secret } : { pin: secret }),
+        });
+        document.getElementById('pin-dlg').close();
+        await load();
+      } catch (err) {
+        const el = document.getElementById('pin-err');
+        el.hidden = false;
+        el.textContent = err.message;
+      }
+    };
+
+    document.getElementById('assign-q').oninput = () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => runAssignSearch(document.getElementById('assign-q').value), 280);
+    };
+    document.getElementById('assign-cancel').onclick = () => document.getElementById('assign-dlg').close();
+    document.getElementById('assign-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('assign-err');
+      err.hidden = true;
+      try {
+        await api('/sto/lift/assign', {
+          method: 'POST',
+          body: JSON.stringify({
+            lift_id: assignLiftId,
+            work_order_id: document.getElementById('assign-wo').value || undefined,
+            appointment_id: document.getElementById('assign-appt').value || undefined,
+            plate: document.getElementById('assign-plate').value,
+            client_name: document.getElementById('assign-client').value,
+            model: document.getElementById('assign-model').value,
+          }),
+        });
+        document.getElementById('assign-dlg').close();
+        showOk('Авто на подъёмнике');
+        await load();
+        openLift(assignLiftId);
+      } catch (ex) {
+        err.hidden = false;
+        err.textContent = ex.message;
+      }
+    };
+
+    document.querySelectorAll('.tabs [data-tab]').forEach((btn) => {
+      btn.onclick = async () => {
+        document.querySelectorAll('.tabs [data-tab]').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        const tab = btn.dataset.tab;
+        document.getElementById('tab-board').hidden = tab !== 'board';
+        document.getElementById('tab-myworks').hidden = tab !== 'myworks';
+        if (tab === 'myworks') {
+          try { await loadMyWorks(); } catch (e) { showErr(e.message); }
+        }
+      };
+    });
+
+    api('/me').then((u) => { me = u; }).catch(() => {});
+    load().catch((e) => showErr(e.message));
+  </script>
+</body>
+</html>

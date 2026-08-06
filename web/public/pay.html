@@ -1,0 +1,1141 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffbf2e" />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <title>Оплата заказа</title>
+  <style>
+    :root {
+      --yellow: #ffbf2e;
+      --yellow-soft: #fff6e3;
+      --black: #0a0a0a;
+      --text: rgba(0, 0, 0, 0.9);
+      --muted: #585858;
+      --line: #e2e2e2;
+      --bg: #f3f1ec;
+      --bg2: #ebe6dc;
+      --card: #fff;
+      --ok: #1b8a5a;
+      --ok-soft: #e8f6ef;
+      --warn: #b45309;
+      --warn-soft: #fff7ed;
+      --bad: #c0392b;
+      --bad-soft: #fdecea;
+      --radius: 18px;
+      --pill: 30px;
+      --blue: #2b6cb0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Manrope, system-ui, sans-serif;
+      color: var(--text);
+      min-height: 100vh;
+      min-height: 100dvh;
+      padding: 0 16px 28px;
+      padding-bottom: max(28px, env(safe-area-inset-bottom));
+      background:
+        radial-gradient(120% 70% at 50% -10%, #ffe9a8 0%, transparent 55%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+    }
+    .brand-bar {
+      height: 4px;
+      background: var(--yellow);
+      margin: 0 -16px 18px;
+    }
+    .wrap {
+      max-width: 520px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    header.top {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+      padding: 2px 4px 6px;
+    }
+    header.top .brand {
+      font-weight: 800;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+      color: var(--black);
+    }
+    header.top .sub {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: 0 10px 28px rgba(20, 16, 8, 0.05);
+    }
+    .card.hero {
+      padding: 22px 20px 20px;
+      border-color: rgba(0, 0, 0, 0.06);
+      animation: hero-in 0.45s ease-out both;
+    }
+    @keyframes hero-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: none; }
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 0 10px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      line-height: 1.2;
+    }
+    .status-pill::before {
+      content: '';
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+    .status-pill.ok { background: var(--ok-soft); color: var(--ok); }
+    .status-pill.warn {
+      background: #ffedd5;
+      color: var(--warn);
+      animation: pill-pulse 1.8s ease-in-out infinite;
+    }
+    .status-pill.bad { background: var(--bad-soft); color: var(--bad); }
+    @keyframes pill-pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.02); }
+    }
+    .status-sub {
+      margin: 0 0 16px;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.45;
+      color: var(--muted);
+      max-width: 36em;
+    }
+    .order-kicker {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    h1 {
+      margin: 0;
+      font-size: inherit;
+      font-weight: inherit;
+    }
+    .amount {
+      font-size: clamp(34px, 9vw, 44px);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      margin: 6px 0 0;
+      line-height: 1.05;
+      color: var(--black);
+      font-variant-numeric: tabular-nums;
+    }
+    .amount .currency {
+      font-weight: 700;
+      color: var(--muted);
+      font-size: 0.55em;
+      margin-left: 2px;
+      vertical-align: 0.12em;
+    }
+    .ship-chip {
+      display: inline-flex;
+      margin-top: 12px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      background: #f4f4f2;
+      border: 1px solid var(--line);
+    }
+    .muted { color: var(--muted); font-size: 13px; font-weight: 500; }
+    .timer {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0;
+      margin-top: 18px;
+      padding: 16px 16px 14px;
+      border-radius: 14px;
+      background: var(--ok-soft);
+      border: 1px solid rgba(27, 138, 90, 0.22);
+      border-left: 4px solid var(--ok);
+      text-align: center;
+    }
+    .timer-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ok);
+      margin-bottom: 4px;
+    }
+    .timer .clock {
+      font-variant-numeric: tabular-nums;
+      font-size: clamp(36px, 10vw, 48px);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      color: var(--ok);
+      margin: 2px 0 10px;
+    }
+    .timer-track {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.08);
+      overflow: hidden;
+      margin: 0 4px 10px;
+    }
+    .timer-fill {
+      height: 100%;
+      border-radius: inherit;
+      background: var(--ok);
+      width: 100%;
+      transition: width 0.9s linear;
+    }
+    .timer .until {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .timer .reserve-note {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+    .timer.warn {
+      background: var(--warn-soft);
+      border-color: rgba(180, 83, 9, 0.28);
+      border-left-color: var(--warn);
+    }
+    .timer.warn .timer-label { color: var(--warn); }
+    .timer.warn .clock { color: var(--warn); }
+    .timer.warn .timer-fill {
+      background: linear-gradient(90deg, #f59e0b, #ea580c);
+      animation: bar-pulse 1.4s ease-in-out infinite;
+    }
+    .timer.warn .reserve-note { color: #9a5b12; }
+    .timer.dead {
+      background: var(--bad-soft);
+      border-color: rgba(192, 57, 43, 0.28);
+      border-left-color: var(--bad);
+    }
+    .timer.dead .timer-label { color: var(--bad); }
+    .timer.dead .clock { color: var(--bad); }
+    .timer.dead .timer-fill { background: var(--bad); width: 0 !important; }
+    .timer.dead .reserve-note { color: #8a3a32; }
+    .timer.ok-paid {
+      background: var(--ok-soft);
+      border-color: rgba(27, 138, 90, 0.22);
+      border-left-color: var(--ok);
+    }
+    .timer.ok-paid .clock {
+      font-size: 22px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+    .timer.ok-paid .timer-track { display: none; }
+    @keyframes bar-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.72; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .card.hero, .status-pill.warn, .timer.warn .timer-fill { animation: none; }
+      .timer-fill { transition: none; }
+    }
+    .items { display: flex; flex-direction: column; gap: 0; }
+    .item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid #eee;
+    }
+    .item:first-child { padding-top: 0; }
+    .item:last-child { padding-bottom: 0; border-bottom: 0; }
+    .item-name {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      margin: 0 0 2px;
+      color: var(--black);
+    }
+    .item-sku { font-size: 12px; font-weight: 600; color: var(--muted); }
+    .item-meta { font-size: 12px; color: var(--muted); margin-top: 4px; font-weight: 500; }
+    .item-sum {
+      font-size: 14px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      text-align: right;
+      color: var(--black);
+    }
+    .item-edit {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .qty-box {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .qty-box button {
+      width: 34px;
+      height: 34px;
+      border: 0;
+      background: transparent;
+      font-size: 18px;
+      font-weight: 700;
+      cursor: pointer;
+      color: var(--text);
+      font-family: inherit;
+    }
+    .qty-box button:disabled { opacity: 0.35; cursor: not-allowed; }
+    .qty-box .qty-val {
+      min-width: 28px;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .btn-remove {
+      border: 0;
+      background: transparent;
+      color: var(--bad);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+      padding: 6px 4px;
+    }
+    .items-hint {
+      margin: 0 0 10px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 500;
+      line-height: 1.4;
+    }
+    .item-tag {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .pay-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--black);
+    }
+    .pay-copy {
+      margin: 8px 0 0;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .badge-rec {
+      display: inline-block;
+      margin: 0 0 10px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      background: #e8f1fb;
+      color: var(--blue);
+      border: 1px solid #c5daf0;
+    }
+    .qr-panel {
+      text-align: center;
+      padding: 16px 12px 18px;
+      border-radius: 14px;
+      background: var(--yellow-soft);
+      border: 1px solid rgba(255, 191, 46, 0.55);
+      margin-bottom: 4px;
+    }
+    .qr-glow {
+      display: inline-block;
+      padding: 10px;
+      border-radius: 16px;
+      background: #fff;
+      box-shadow:
+        0 0 0 3px rgba(255, 191, 46, 0.55),
+        0 0 28px 6px rgba(255, 191, 46, 0.55);
+      animation: qr-pulse 2.2s ease-in-out infinite;
+    }
+    @keyframes qr-pulse {
+      0%, 100% {
+        box-shadow:
+          0 0 0 3px rgba(255, 191, 46, 0.5),
+          0 0 22px 4px rgba(255, 191, 46, 0.45);
+      }
+      50% {
+        box-shadow:
+          0 0 0 5px rgba(255, 191, 46, 0.75),
+          0 0 36px 10px rgba(255, 191, 46, 0.7);
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .qr-glow { animation: none; }
+    }
+    .qr-box img {
+      display: block;
+      width: 220px;
+      height: 220px;
+      background: #fff;
+      border-radius: 8px;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      text-align: center;
+      text-decoration: none;
+      border: 1px solid var(--yellow);
+      border-radius: var(--pill);
+      padding: 13px 16px;
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.3;
+      cursor: pointer;
+      background: var(--yellow);
+      color: var(--black);
+    }
+    .btn:hover { filter: brightness(0.97); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
+    .btn.ghost {
+      background: #fff;
+      border-color: var(--line);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 14px;
+      margin-top: 12px;
+    }
+    .btn.card-pay {
+      background: #fff;
+      border-color: var(--line);
+      color: var(--black);
+      font-weight: 600;
+      margin-top: 10px;
+    }
+    .btn.yandex-pay {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      background: #000;
+      border-color: #000;
+      color: #fff;
+      font-weight: 700;
+      margin-top: 10px;
+      padding: 12px 16px;
+    }
+    .btn.yandex-pay:hover { filter: brightness(1.12); }
+    .btn.yandex-pay .yp-btn-inner {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+    .btn.yandex-pay .yp-logo {
+      flex: 0 0 auto;
+      width: 28px;
+      height: 28px;
+      display: block;
+    }
+    .btn.yandex-pay .yp-btn-text {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 1px;
+      text-align: left;
+      line-height: 1.15;
+    }
+    .btn.yandex-pay .yp-btn-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+    .btn.yandex-pay .yp-btn-sub {
+      font-size: 11px;
+      font-weight: 600;
+      opacity: 0.72;
+      letter-spacing: 0.02em;
+    }
+    .more-ways[hidden] { display: none !important; }
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 10px 0 0;
+      text-align: center;
+      font-weight: 500;
+      line-height: 1.4;
+    }
+    .qr-panel .hint { margin-top: 12px; color: #6a5a30; }
+    .trust {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 4px;
+      padding: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .trust svg { flex-shrink: 0; }
+    .manager {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .manager strong { color: var(--text); font-weight: 700; }
+    .q-form { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+    .q-form[hidden] { display: none !important; }
+    .q-form label {
+      display: grid;
+      gap: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .q-form input,
+    .q-form textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text);
+      background: #fff;
+    }
+    .q-form textarea { min-height: 96px; resize: vertical; }
+    .q-form .q-actions { display: flex; gap: 8px; }
+    .q-form .q-actions .btn { flex: 1; }
+    .q-ok {
+      margin: 10px 0 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: var(--ok-soft);
+      color: var(--ok);
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+    .err {
+      background: var(--bad-soft);
+      color: var(--bad);
+      border-radius: 10px;
+      padding: 12px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .footer-note {
+      text-align: center;
+      font-size: 11px;
+      color: #9a9a9a;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="brand-bar" aria-hidden="true"></div>
+  <div class="wrap" id="app">
+    <div class="card muted">Загрузка…</div>
+  </div>
+  <script>
+(function () {
+  const app = document.getElementById('app');
+  const path = location.pathname.replace(/\/+$/, '');
+  const m = path.match(/\/pay\/([^/]+)$/);
+  const token = m ? decodeURIComponent(m[1]) : '';
+
+  function money(n) {
+    const x = Math.round(Number(n) || 0);
+    return x.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + '\u00a0₽';
+  }
+  function moneyPlain(n) {
+    const x = Math.round(Number(n) || 0);
+    return x.toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+  }
+  function esc(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function fmtLeft(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    if (h > 0) return h + ':' + pad(m) + ':' + pad(s);
+    return pad(m) + ':' + pad(s);
+  }
+  function fmtUntil(iso) {
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return '';
+    const d = new Date(t);
+    const pad = (n) => String(n).padStart(2, '0');
+    const today = new Date();
+    const sameDay =
+      d.getFullYear() === today.getFullYear() &&
+      d.getMonth() === today.getMonth() &&
+      d.getDate() === today.getDate();
+    const time = pad(d.getHours()) + ':' + pad(d.getMinutes());
+    if (sameDay) return 'до ' + time;
+    const day =
+      pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + pad(String(d.getFullYear()).slice(-2));
+    return 'до ' + day + ', ' + time;
+  }
+  function timerClass(left, phase) {
+    if (phase === 'paid') return 'ok-paid';
+    if (phase === 'expired' || left <= 0) return 'dead';
+    if (left <= 5 * 60) return 'dead';
+    if (left <= 15 * 60 || phase === 'urgent') return 'warn';
+    return '';
+  }
+
+  if (!token) {
+    app.innerHTML = '<div class="err">Неверная ссылка оплаты</div>';
+    return;
+  }
+
+  let state = null;
+  let tickTimer = null;
+  let pollTimer = null;
+
+  async function api(path, opts) {
+    const r = await fetch(path, {
+      ...opts,
+      headers: { Accept: 'application/json', ...(opts && opts.headers) },
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'Ошибка ' + r.status);
+    return data;
+  }
+
+  function headerHtml() {
+    return `
+      <header class="top">
+        <div class="brand">Оплата заказа</div>
+        <div class="sub">Безопасная ссылка · СБП</div>
+      </header>`;
+  }
+
+  function trustHtml() {
+    return `
+      <div class="trust" role="note">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 3l7 3v5c0 5-3.2 8.6-7 10-3.8-1.4-7-5-7-10V6l7-3z" stroke="#1b8a5a" stroke-width="1.7" fill="#e8f6ef"/>
+          <path d="M9.2 12.2l1.8 1.8 3.8-4" stroke="#1b8a5a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>Безопасная сделка · данные карты не нужны при оплате через СБП</span>
+      </div>`;
+  }
+
+  function managerHtml() {
+    const mgr = state.manager || {};
+    const name = String(mgr.name || '').trim();
+    return `
+      <div class="card" id="ask-card">
+        <div class="manager">
+          ${name ? `Менеджер: <strong>${esc(name)}</strong>` : 'Вопрос по заказу'}
+          <div class="muted" style="margin-top:4px">Напишите — вопрос уйдёт в сделку, менеджер получит задачу ответить.</div>
+        </div>
+        <button type="button" class="btn ghost" id="btn-ask-open">Есть вопрос по заказу</button>
+        <form class="q-form" id="ask-form" hidden>
+          <label>Ваш вопрос
+            <textarea id="ask-text" name="text" required maxlength="2000" placeholder="Например: можно ли изменить адрес доставки?"></textarea>
+          </label>
+          <label>Имя (необязательно)
+            <input id="ask-name" name="contact_name" maxlength="120" autocomplete="name" />
+          </label>
+          <label>Телефон (необязательно)
+            <input id="ask-phone" name="contact_phone" maxlength="40" autocomplete="tel" inputmode="tel" />
+          </label>
+          <div class="q-actions">
+            <button type="submit" class="btn" id="ask-send">Отправить</button>
+            <button type="button" class="btn ghost" id="ask-cancel" style="margin-top:0">Отмена</button>
+          </div>
+          <p class="hint" id="ask-msg" style="margin:0;text-align:left"></p>
+        </form>
+        <p class="q-ok" id="ask-ok" hidden>Вопрос отправлен менеджеру. Ответим в ближайшее время.</p>
+      </div>`;
+  }
+
+  function render() {
+    if (!state) return;
+    const st = String(state.status || '');
+    const phase = String(state.phase || (st === 'paid' ? 'paid' : st === 'expired' || st === 'cancelled' ? 'expired' : 'pending'));
+    const paid = phase === 'paid' || st === 'paid';
+    const expired = phase === 'expired' || st === 'expired' || st === 'cancelled';
+    const left = Number(state.seconds_left) || 0;
+    const tClass = timerClass(left, paid ? 'paid' : expired || left <= 0 ? 'expired' : phase);
+    const orderNo = String(state.deal_number || '').trim();
+    const title = orderNo ? 'Заказ №' + orderNo : String(state.deal_name || 'Заказ');
+    const until = fmtUntil(state.expires_at);
+    const ship = String(state.ship_label || '').trim();
+
+    const items = state.items || [];
+    const canEdit = Boolean(state.can_edit_items);
+    const rows = items.length
+      ? items.map((it) => {
+          const editable = canEdit && it.editable && it.id;
+          const maxQ = Number(it.max_qty != null ? it.max_qty : it.qty) || 0;
+          const q = Number(it.qty) || 0;
+          return `
+          <div class="item" data-item="${esc(it.id || '')}">
+            <div>
+              <p class="item-name">${esc(it.name)}</p>
+              ${it.sku ? `<div class="item-sku">${esc(it.sku)}</div>` : ''}
+              <div class="item-meta">${esc(q)} × ${money(it.price)}</div>
+              ${
+                editable
+                  ? `<div class="item-edit">
+                      <div class="qty-box">
+                        <button type="button" class="qty-minus" data-id="${esc(it.id)}" aria-label="Меньше">−</button>
+                        <span class="qty-val">${esc(q)}</span>
+                        <button type="button" class="qty-plus" data-id="${esc(it.id)}" data-max="${esc(maxQ)}" aria-label="Больше" ${q >= maxQ ? 'disabled' : ''}>+</button>
+                      </div>
+                      <button type="button" class="btn-remove" data-id="${esc(it.id)}">Убрать</button>
+                    </div>`
+                  : it.item_kind === 'service'
+                    ? '<div class="item-tag">услуга</div>'
+                    : ''
+              }
+            </div>
+            <div class="item-sum">${money(it.amount)}</div>
+          </div>`;
+        }).join('')
+      : '<p class="muted">Позиции не указаны</p>';
+
+    let payBlock = '';
+    let stateBanner = '';
+
+    if (paid) {
+      stateBanner = `
+        <div class="status-pill ok">Оплата прошла успешно</div>
+        <p class="status-sub">Заказ${orderNo ? ' №' + esc(orderNo) : ''} подтверждён. Свяжемся по доставке или самовывозу.</p>`;
+      payBlock = `<p class="muted" style="margin:0">Спасибо! Заказ передан в работу.</p>`;
+    } else if (expired || left <= 0) {
+      stateBanner = `
+        <div class="status-pill bad">Резерв на складе снят</div>
+        <p class="status-sub">Время ожидания закончилось. Напишите нам — проверим наличие и пришлём новую ссылку.</p>`;
+      payBlock = `
+        <button type="button" class="btn" id="btn-check-stock">Проверить наличие</button>
+        <p class="hint" id="check-msg">Проверим склад и снова поставим в резерв, если товар ещё есть.</p>`;
+    } else {
+      if (phase === 'urgent' || left <= 15 * 60) {
+        stateBanner = `
+          <div class="status-pill warn">Резерв скоро закончится</div>
+          <p class="status-sub">Товар ещё за вами. Успейте оплатить — иначе резерв снимем.</p>`;
+      } else {
+        stateBanner = `
+          <div class="status-pill ok">Товар зарезервирован</div>
+          <p class="status-sub">Позиции отложены специально для вас. Оплатите заказ — резерв закрепится.</p>`;
+      }
+      const sbp = state.sbp || {};
+      const acq = state.acquiring || {};
+      const yp = state.yandex_pay || {};
+      const sbpUrl = String(sbp.payload || '').trim();
+      const sbpLink = /^https?:\/\//i.test(sbpUrl)
+        ? `<a class="btn" id="btn-sbp" style="margin-top:14px" href="${esc(sbpUrl)}" target="_blank" rel="noopener">Оплатить через СБП</a>`
+        : '';
+      const ypLogo = `<svg class="yp-logo" viewBox="0 0 28 28" width="28" height="28" aria-hidden="true" focusable="false"><rect width="28" height="28" rx="7" fill="#FC3F1D"/><path fill="#fff" d="M14.2 6.2h3.1c1.05 0 1.85.24 2.4.82.54.57.8 1.32.8 2.22 0 .82-.2 1.5-.6 2.02-.4.52-1 .86-1.75 1.02l2.9 5.12h-2.75l-2.55-4.78h-.7v4.78h-2.35V6.2zm2.35 4.9c.48 0 .85-.12 1.1-.36.26-.24.38-.58.38-.98 0-.42-.12-.74-.38-.96-.25-.23-.62-.34-1.1-.34h-.9v2.64h.9z"/></svg>`;
+      const ypBlock =
+        yp.configured || yp.available
+          ? `<button type="button" class="btn yandex-pay" id="btn-yandex" style="margin-top:10px" aria-label="Оплатить частями через Яндекс Сплит">
+            <span class="yp-btn-inner">${ypLogo}<span class="yp-btn-text"><span class="yp-btn-title">Оплатить частями</span><span class="yp-btn-sub">Яндекс Сплит</span></span></span>
+          </button>
+          <p class="hint" id="yp-msg" style="margin-top:6px">${yp.url ? 'Ссылка готова — откроется оплата частями' : esc(yp.message || 'Рассрочка Яндекс Сплит — без полной оплаты сразу')}</p>`
+          : '';
+      payBlock = `
+        <div class="qr-panel">
+          <span class="badge-rec">Рекомендуемый способ</span>
+          <p class="pay-title">Оплатите заказ через СБП</p>
+          <p class="pay-copy">Быстро и безопасно — в приложении вашего банка.<br/>Данные карты вводить не нужно.</p>
+          <div class="qr-box" style="margin-top:14px">
+            ${sbp.has_image && sbp.image_url
+              ? `<span class="qr-glow"><img src="${esc(sbp.image_url)}" alt="QR СБП" width="220" height="220" /></span>`
+              : '<p class="muted">QR СБП недоступен</p>'}
+            <p class="hint">Отсканируйте QR в приложении банка</p>
+          </div>
+          ${sbpLink}
+          ${ypBlock}
+        </div>
+        <button type="button" class="btn ghost" id="btn-more-ways" aria-expanded="false" aria-controls="more-ways">
+          Другие способы оплаты
+        </button>
+        <div class="more-ways" id="more-ways" hidden>
+          <button type="button" class="btn card-pay" id="btn-card">Оплатить картой</button>
+          <p class="hint" id="card-msg">${acq.available ? 'Оплата картой через банк' : esc(acq.message || 'Эквайринг подключим при необходимости')}</p>
+        </div>`;
+    }
+
+    const clockLabel = paid
+      ? 'оплачено'
+      : expired || left <= 0
+        ? '00:00'
+        : fmtLeft(left);
+    const timerLabel = paid
+      ? 'Статус'
+      : expired || left <= 0
+        ? 'Резерв снят'
+        : 'Резерв ещё';
+
+    const totalSec = Math.max(60, (Number(state.timer_minutes) || 120) * 60);
+    const barPct =
+      paid || expired || left <= 0
+        ? 0
+        : Math.min(100, Math.max(2, Math.round((left / totalSec) * 1000) / 10));
+
+    let reserveNote = '';
+    if (paid) {
+      reserveNote = 'Оплата получена — заказ в работе.';
+    } else if (expired || left <= 0) {
+      reserveNote = 'Если товар ещё есть — подготовим новую ссылку.';
+    } else if (phase === 'urgent' || left <= 15 * 60) {
+      reserveNote = 'После этого срока резерв снимем автоматически.';
+    } else {
+      reserveNote = 'Не успеете оплатить — товар снова появится в продаже.';
+    }
+
+    app.innerHTML = `
+      ${headerHtml()}
+      <div class="card hero">
+        ${stateBanner}
+        <h1 class="order-kicker" id="order-title"></h1>
+        <div class="amount">${moneyPlain(state.amount)} <span class="currency">₽</span></div>
+        ${ship ? `<div class="ship-chip">${esc(ship)}</div>` : ''}
+        <div class="timer ${tClass}" id="timer">
+          <div class="timer-label">${timerLabel}</div>
+          <div class="clock" id="clock">${clockLabel}</div>
+          ${
+            !paid
+              ? `<div class="timer-track" aria-hidden="true"><div class="timer-fill" id="timer-fill" style="width:${barPct}%"></div></div>`
+              : ''
+          }
+          ${!paid && until && !(expired || left <= 0) ? `<div class="until" id="until">${esc(until)}</div>` : ''}
+          <p class="reserve-note" id="reserve-note">${esc(reserveNote)}</p>
+        </div>
+      </div>
+      ${!paid && !(expired || left <= 0) ? `<div class="card" id="pay-card">${payBlock}</div>` : ''}
+      <div class="card">
+        <p class="muted" style="margin:0 0 8px;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.04em">Состав заказа</p>
+        ${canEdit ? '<p class="items-hint">Товары со склада можно уменьшить или убрать — сумма и QR обновятся. Увеличить нельзя. Услуги без изменений.</p>' : ''}
+        <div class="items">${rows}</div>
+        <p class="hint" id="items-msg" style="text-align:left;margin:8px 0 0"></p>
+      </div>
+      ${paid || expired || left <= 0 ? `<div class="card" id="pay-card">${payBlock}</div>` : ''}
+      ${managerHtml()}
+      ${trustHtml()}
+    `;
+
+    const h1 = document.getElementById('order-title');
+    if (h1) h1.textContent = title;
+
+    async function patchItems(patches) {
+      const msg = document.getElementById('items-msg');
+      if (msg) msg.textContent = 'Обновляем сумму и QR…';
+      app.querySelectorAll('.qty-minus, .qty-plus, .btn-remove').forEach((b) => {
+        b.disabled = true;
+      });
+      try {
+        const data = await api('/api/public/pay/' + encodeURIComponent(token) + '/items', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: patches }),
+        });
+        state = data;
+        render();
+        startTick();
+        const ok = document.getElementById('items-msg');
+        if (ok) ok.textContent = 'Сумма и QR обновлены — оплачивайте актуальный заказ.';
+      } catch (e) {
+        if (msg) msg.textContent = e.message || 'Не удалось изменить';
+        app.querySelectorAll('.qty-minus, .qty-plus, .btn-remove').forEach((b) => {
+          b.disabled = false;
+        });
+      }
+    }
+
+    app.querySelectorAll('.qty-minus').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.getAttribute('data-id');
+        const it = (state.items || []).find((x) => String(x.id) === String(id));
+        if (!it) return;
+        const next = Math.max(0, (Number(it.qty) || 0) - 1);
+        patchItems([{ id, qty: next }]);
+      };
+    });
+    app.querySelectorAll('.qty-plus').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.getAttribute('data-id');
+        const maxQ = Number(btn.getAttribute('data-max')) || 0;
+        const it = (state.items || []).find((x) => String(x.id) === String(id));
+        if (!it) return;
+        const next = Math.min(maxQ, (Number(it.qty) || 0) + 1);
+        if (next === Number(it.qty)) return;
+        patchItems([{ id, qty: next }]);
+      };
+    });
+    app.querySelectorAll('.btn-remove').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.getAttribute('data-id');
+        if (!confirm('Убрать эту позицию из оплаты?')) return;
+        patchItems([{ id, qty: 0 }]);
+      };
+    });
+
+    const moreBtn = document.getElementById('btn-more-ways');
+    const moreWays = document.getElementById('more-ways');
+    if (moreBtn && moreWays) {
+      moreBtn.onclick = () => {
+        const open = moreWays.hasAttribute('hidden');
+        if (open) {
+          moreWays.removeAttribute('hidden');
+          moreBtn.setAttribute('aria-expanded', 'true');
+          moreBtn.textContent = 'Скрыть другие способы';
+        } else {
+          moreWays.setAttribute('hidden', '');
+          moreBtn.setAttribute('aria-expanded', 'false');
+          moreBtn.textContent = 'Другие способы оплаты';
+        }
+      };
+    }
+
+    const btn = document.getElementById('btn-card');
+    if (btn) {
+      btn.onclick = async () => {
+        const msg = document.getElementById('card-msg');
+        btn.disabled = true;
+        if (msg) msg.textContent = 'Создаём ссылку…';
+        try {
+          if (state.acquiring && state.acquiring.url) {
+            location.href = state.acquiring.url;
+            return;
+          }
+          const r = await api('/api/public/pay/' + encodeURIComponent(token) + '/acquiring', {
+            method: 'POST',
+          });
+          if (r.url) {
+            location.href = r.url;
+            return;
+          }
+          throw new Error(r.error || 'эквайринг не подключён');
+        } catch (e) {
+          if (msg) msg.textContent = e.message || 'эквайринг не подключён';
+          btn.disabled = false;
+        }
+      };
+    }
+
+    const btnYp = document.getElementById('btn-yandex');
+    if (btnYp) {
+      btnYp.onclick = async () => {
+        const msg = document.getElementById('yp-msg');
+        btnYp.disabled = true;
+        if (msg) msg.textContent = 'Открываем Яндекс Пэй…';
+        try {
+          if (state.yandex_pay && state.yandex_pay.url) {
+            location.href = state.yandex_pay.url;
+            return;
+          }
+          const r = await api('/api/public/pay/' + encodeURIComponent(token) + '/yandex-pay', {
+            method: 'POST',
+          });
+          if (r.url) {
+            location.href = r.url;
+            return;
+          }
+          throw new Error(r.error || 'Яндекс Пэй не подключён');
+        } catch (e) {
+          if (msg) msg.textContent = e.message || 'Яндекс Пэй не подключён';
+          btnYp.disabled = false;
+        }
+      };
+    }
+
+    const checkBtn = document.getElementById('btn-check-stock');
+    if (checkBtn) {
+      checkBtn.onclick = async () => {
+        const msg = document.getElementById('check-msg');
+        checkBtn.disabled = true;
+        if (msg) msg.textContent = 'Проверяем наличие на складе…';
+        try {
+          const data = await api(
+            '/api/public/pay/' + encodeURIComponent(token) + '/renew-reserve',
+            { method: 'POST' }
+          );
+          if (data.available && (data.token || data.renew_token || data.url)) {
+            if (msg) msg.textContent = 'Товар есть — снова в резерве. Открываем оплату…';
+            const nextToken = data.renew_token || data.token;
+            const next = nextToken
+              ? '/pay/' + encodeURIComponent(nextToken)
+              : String(data.url || '');
+            if (next) {
+              location.href = next;
+              return;
+            }
+          }
+          if (msg) {
+            msg.textContent =
+              data.message ||
+              (Array.isArray(data.missing) && data.missing.length
+                ? 'Нет в наличии: ' + data.missing.join('; ')
+                : 'Сейчас нет нужного количества. Напишите менеджеру ниже.');
+          }
+          const openAsk = document.getElementById('btn-ask-open');
+          if (openAsk) openAsk.click();
+        } catch (e) {
+          if (msg) msg.textContent = e.message || 'Не удалось проверить наличие';
+        } finally {
+          checkBtn.disabled = false;
+        }
+      };
+    }
+
+    const askOpen = document.getElementById('btn-ask-open');
+    const askForm = document.getElementById('ask-form');
+    const askCancel = document.getElementById('ask-cancel');
+    const askOk = document.getElementById('ask-ok');
+    if (askOpen && askForm) {
+      askOpen.onclick = () => {
+        askForm.hidden = false;
+        askOpen.hidden = true;
+        if (askOk) askOk.hidden = true;
+        document.getElementById('ask-text')?.focus();
+      };
+    }
+    if (askCancel && askForm && askOpen) {
+      askCancel.onclick = () => {
+        askForm.hidden = true;
+        askOpen.hidden = false;
+      };
+    }
+    if (askForm) {
+      askForm.onsubmit = async (ev) => {
+        ev.preventDefault();
+        const msg = document.getElementById('ask-msg');
+        const send = document.getElementById('ask-send');
+        const text = String(document.getElementById('ask-text')?.value || '').trim();
+        if (text.length < 3) {
+          if (msg) msg.textContent = 'Напишите вопрос (минимум 3 символа)';
+          return;
+        }
+        if (send) send.disabled = true;
+        if (msg) msg.textContent = 'Отправляем…';
+        try {
+          await api('/api/public/pay/' + encodeURIComponent(token) + '/question', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text,
+              contact_name: String(document.getElementById('ask-name')?.value || '').trim(),
+              contact_phone: String(document.getElementById('ask-phone')?.value || '').trim(),
+            }),
+          });
+          askForm.hidden = true;
+          if (askOpen) askOpen.hidden = true;
+          if (askOk) askOk.hidden = false;
+          if (msg) msg.textContent = '';
+        } catch (e) {
+          if (msg) msg.textContent = e.message || 'Не удалось отправить';
+          if (send) send.disabled = false;
+        }
+      };
+    }
+  }
+
+  function startTick() {
+    if (tickTimer) clearInterval(tickTimer);
+    tickTimer = setInterval(() => {
+      if (!state || state.status !== 'pending') return;
+      state.seconds_left = Math.max(0, (Number(state.seconds_left) || 0) - 1);
+      const left = state.seconds_left;
+      if (left > 0 && left <= 15 * 60) state.phase = 'urgent';
+      if (left <= 0) state.phase = 'expired';
+      const clock = document.getElementById('clock');
+      const timer = document.getElementById('timer');
+      const fill = document.getElementById('timer-fill');
+      if (clock) clock.textContent = fmtLeft(left);
+      if (timer) {
+        timer.className = 'timer ' + timerClass(left, state.phase);
+      }
+      if (fill) {
+        const totalSec = Math.max(60, (Number(state.timer_minutes) || 120) * 60);
+        const pct = left <= 0 ? 0 : Math.min(100, Math.max(2, Math.round((left / totalSec) * 1000) / 10));
+        fill.style.width = pct + '%';
+      }
+      // при смене зоны (urgent / expired) — полный перерисов
+      if (left === 15 * 60 || left === 5 * 60 || left === 0) render();
+      if (left <= 0) pollOnce();
+    }, 1000);
+  }
+
+  async function pollOnce() {
+    try {
+      state = await api('/api/public/pay/' + encodeURIComponent(token) + '/poll', { method: 'POST' });
+      render();
+      startTick();
+    } catch (e) {
+      /* keep UI */
+    }
+  }
+
+  async function boot() {
+    try {
+      state = await api('/api/public/pay/' + encodeURIComponent(token));
+      render();
+      startTick();
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(pollOnce, 8000);
+    } catch (e) {
+      app.innerHTML = '<div class="err">' + esc(e.message || 'Ссылка не найдена') + '</div>';
+    }
+  }
+
+  boot();
+})();
+  </script>
+</body>
+</html>
