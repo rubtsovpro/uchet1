@@ -3262,42 +3262,53 @@ a.toolbar-ico:hover {
   align-items: stretch;
   min-height: 38px;
 }
-.deal-hint-bar-main {
+/* Одна рамка у бара — кнопки внутри без своих контуров (.taxi button иначе даёт border) */
+.taxi .deal-hint-bar button.deal-hint-bar-main,
+.taxi .deal-hint-bar button.deal-hint-bar-expand,
+.deal-hint-bar button.deal-hint-bar-main,
+.deal-hint-bar button.deal-hint-bar-expand {
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  min-height: 0 !important;
+  height: auto;
+  color: inherit;
+  -webkit-text-fill-color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.taxi .deal-hint-bar button.deal-hint-bar-main,
+.deal-hint-bar button.deal-hint-bar-main {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px 7px 12px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
+  padding: 7px 10px 7px 12px !important;
   text-align: left;
-  color: inherit;
-  font: inherit;
 }
-.deal-hint-bar-main:hover {
-  background: rgba(13, 148, 136, 0.1);
+.taxi .deal-hint-bar button.deal-hint-bar-main:hover,
+.deal-hint-bar button.deal-hint-bar-main:hover {
+  background: rgba(13, 148, 136, 0.1) !important;
 }
-.deal-hint-bar-expand {
+.taxi .deal-hint-bar button.deal-hint-bar-expand,
+.deal-hint-bar button.deal-hint-bar-expand {
   flex: 0 0 36px;
-  border: 0;
-  border-left: 0;
-  background: transparent;
-  cursor: pointer;
-  color: #64748b;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 10px 0 4px;
+  padding: 0 10px 0 4px !important;
+  color: #64748b;
+  -webkit-text-fill-color: #64748b;
 }
-.deal-hint-bar-expand:hover {
-  background: rgba(13, 148, 136, 0.1);
+.taxi .deal-hint-bar button.deal-hint-bar-expand:hover,
+.deal-hint-bar button.deal-hint-bar-expand:hover,
+.taxi .deal-hint-bar button.deal-hint-bar-main:hover + button.deal-hint-bar-expand {
+  background: rgba(13, 148, 136, 0.1) !important;
   color: var(--taxi-green, #0d9488);
-}
-.deal-hint-bar-main:hover + .deal-hint-bar-expand {
-  background: rgba(13, 148, 136, 0.1);
+  -webkit-text-fill-color: var(--taxi-green, #0d9488);
 }
 .deal-hint-bar-label {
   flex: 0 0 auto;
