@@ -2,6 +2,26 @@
  * Операционный дашборд Э1 + зеркало «Доход» (локально) + хук СДЭК-виджет.
  */
 import { all, get } from './db.js';
+import { getCdekBridgeSettings } from './integration-settings.js';
+import {
+  productInboundLayers,
+  productPurchaseHistory,
+  stockValuation,
+  stockValuationSummary,
+  warehouseStockMoneyTotals,
+  VALUATION_METHOD_NOTE,
+  type StockValuationOpts,
+} from './stock-valuation.js';
+
+export {
+  productInboundLayers,
+  productPurchaseHistory,
+  stockValuation,
+  stockValuationSummary,
+  warehouseStockMoneyTotals,
+  VALUATION_METHOD_NOTE,
+  type StockValuationOpts,
+};
 
 function statusLabel(st: string): string {
   const map: Record<string, string> = {
@@ -85,6 +105,8 @@ export function opsDashboard() {
        WHERE date(created_at) = date('now','localtime')`
     ) || { c: 0, s: 0 };
 
+  const stockValue = stockValuationSummary();
+
   return {
     warehouse: {
       new: map.new || 0,
@@ -101,16 +123,14 @@ export function opsDashboard() {
       channel_label: channelLabel(String((t as { channel: string }).channel)),
     })),
     income_today: { count: incomeToday.c, sum: incomeToday.s },
-    cdek_widget_template:
-      process.env.CDEK_WIDGET_URL ||
-      'https://widget.pnevmopodveska1.ru/cdek/widget.php?l={lead_id}',
+    stock_value: stockValue,
+    cdek_widget_template: getCdekBridgeSettings().widget_url,
+    cdek_native: Boolean(getCdekBridgeSettings().wms_key),
   };
 }
 
 export function cdekWidgetUrl(dealId: string): string {
-  const tpl =
-    process.env.CDEK_WIDGET_URL ||
-    'https://widget.pnevmopodveska1.ru/cdek/widget.php?l={lead_id}';
+  const tpl = getCdekBridgeSettings().widget_url;
   return tpl
     .replace('{lead_id}', encodeURIComponent(dealId))
     .replace('{deal_id}', encodeURIComponent(dealId));
@@ -141,3 +161,4 @@ export function listIncomeMirror(opts: { limit?: number; q?: string }) {
     params
   );
 }
+

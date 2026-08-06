@@ -7,6 +7,7 @@
  */
 import { all, db, get, run } from './db.js';
 import { rebuildDictionaries } from './dicts.js';
+import { invalidateStockValuationCache } from './stock-valuation.js';
 
 const HS_BASE = (process.env.HS_BASE_URL || '').replace(/\/?$/, '/');
 const HS_USER = process.env.HS_USER || '';
@@ -684,6 +685,7 @@ async function syncRestsInternal(
       throw e;
     }
   }
+  invalidateStockValuationCache();
   return { warehouses: whs.length, rows };
 }
 

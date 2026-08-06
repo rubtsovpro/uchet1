@@ -63,6 +63,94 @@ function applyOrientation(id: string, dims: ImageSize | null): void {
   );
 }
 
+/** Ручная загрузка фото (экран фотографа) → S3 + product_media. */
+export async function uploadManualProductPhoto(
+  productId: string,
+  buf: Buffer
+): Promise<{
+  id: string;
+  url: string;
+  size: number;
+  mime: string;
+  orientation: string;
+  new_file: boolean;
+}> {
+  const pid = String(productId || '').trim().toLowerCase();
+  if (!isUuid(pid)) throw new Error('Некорректный id товара');
+  const product = get<{ id: string }>('SELECT id FROM products WHERE id = ?', [pid]);
+  if (!product) throw new Error('Товар не найден');
+  if (!buf || buf.length < 32) throw new Error('Файл слишком маленький');
+  if (buf.length > 25 * 1024 * 1024) throw new Error('Файл больше 25 МБ');
+
+  const cfg = s3ConfigFromEnv();
+  if (!cfg) throw new Error('S3 не настроен (S3_ENDPOINT / BUCKET / ACCESS_KEY / SECRET_KEY)');
+
+  const { ext, mime, kind } = detectMediaType(buf);
+  if (kind !== 'image') throw new Error('Нужно изображение (JPEG, PNG, WebP, GIF)');
+
+  const sha = createHash('sha256').update(buf).digest('hex');
+  const dims = readImageSize(buf);
+  const existing = get<{ id: string; url: string; size: number; mime: string; orientation: string }>(
+    'SELECT id, url, size, mime, orientation FROM product_media WHERE product_id = ? AND sha256 = ?',
+    [pid, sha]
+  );
+  if (existing) {
+    if (!existing.orientation && dims) applyOrientation(existing.id, dims);
+    // убрать маркер «пусто в 1С», если был
+    run(`DELETE FROM product_media WHERE product_id = ? AND kind = 'empty'`, [pid]);
+    return {
+      id: existing.id,
+      url: existing.url,
+      size: Number(existing.size) || buf.length,
+      mime: existing.mime || mime,
+      orientation: existing.orientation || dims?.orientation || '',
+      new_file: false,
+    };
+  }
+
+  const maxSort =
+    get<{ m: number }>(
+      `SELECT COALESCE(MAX(sort_order), -1) AS m FROM product_media WHERE product_id = ? AND kind = 'image'`,
+      [pid]
+    )?.m ?? -1;
+  const sortOrder = Number(maxSort) + 1;
+  const key = `wms/products/${pid}/${String(sortOrder).padStart(2, '0')}_${sha.slice(0, 10)}.${ext}`;
+  const url = await s3PutObject(cfg, key, buf, mime, true);
+  const id = `${pid}|${sha}`;
+  run(
+    `INSERT INTO product_media (id, product_id, kind, mime, ext, s3_key, url, size, sha256, sort_order, width, height, orientation)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       url=excluded.url, s3_key=excluded.s3_key, sort_order=excluded.sort_order,
+       width=excluded.width, height=excluded.height, orientation=excluded.orientation,
+       synced_at=datetime('now')`,
+    [
+      id,
+      pid,
+      'image',
+      mime,
+      ext,
+      key,
+      url,
+      buf.length,
+      sha,
+      sortOrder,
+      dims?.width || 0,
+      dims?.height || 0,
+      dims?.orientation || '',
+    ]
+  );
+  run(`DELETE FROM product_media WHERE product_id = ? AND kind = 'empty'`, [pid]);
+  return {
+    id,
+    url,
+    size: buf.length,
+    mime,
+    orientation: dims?.orientation || '',
+    new_file: true,
+  };
+}
+
 async function uploadProductImages(
   cfg: S3Config,
   productId: string,
@@ -195,8 +283,16 @@ async function syncGuidList(
       if (row) row.array_image = [];
       byGuid.clear();
     } catch (e) {
-      errors += 1;
-      console.warn('media upload fail', pid, e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : String(e);
+      // HS Get/image >220MB: skip + mark empty so onlyMissing не крутит вечно
+      if (/response too large/i.test(msg)) {
+        console.warn('media skip oversized', pid, msg);
+        markProductMediaChecked(pid, true);
+        empty += 1;
+      } else {
+        errors += 1;
+        console.warn('media upload fail', pid, msg);
+      }
       productsDone += 1;
     }
     if ((i + 1) % 5 === 0 || i + 1 === productIds.length) {
