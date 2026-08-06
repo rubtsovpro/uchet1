@@ -5,7 +5,14 @@ export type StaffMe = {
   email?: string;
   role?: string;
   isSystemAdmin?: boolean;
-  rights?: Record<string, unknown>;
+  rights?: {
+    sections?: string[];
+    can_sync?: boolean;
+    can_edit_products?: boolean;
+    can_edit_prices?: boolean;
+    can_edit_docs?: boolean;
+    [key: string]: unknown;
+  };
 };
 
 export type OrgProfile = {
@@ -24,6 +31,11 @@ export type OrgProfile = {
   accountant: string;
   master_title: string;
   vat_rate: number;
+  stamp_url?: string | null;
+  signature_url?: string | null;
+  has_stamp?: boolean;
+  has_signature?: boolean;
+  stamp_source?: 'upload' | 'bundled' | null;
 };
 
 export type DocNumbering = {
@@ -78,8 +90,10 @@ export type TochkaOverview = {
   customers?: Array<{
     customer_code: string;
     inn: string;
+    ogrn?: string;
     label: string;
     full_name?: string;
+    short_name?: string;
   }>;
   accounts?: TochkaAccountRow[];
   operations?: TochkaOperationRow[];
@@ -95,7 +109,7 @@ export type TochkaOverview = {
   error?: string;
 };
 
-export type SalesDocType = 'invoice' | 'upd' | 'sf' | 'workorder';
+export type SalesDocType = 'invoice' | 'upd' | 'sf' | 'workorder' | 'contract';
 
 export type SalesDocRow = {
   id: string;

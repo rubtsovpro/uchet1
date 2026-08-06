@@ -8,6 +8,7 @@ import { SalesDocPage } from '@/features/sales/SalesDocPage';
 import { DealsPage } from '@/features/crm/DealsPage';
 import { DealPage } from '@/features/crm/DealPage';
 import { MoneyTochkaPage } from '@/features/money/MoneyTochkaPage';
+import { ChatsPage } from '@/features/chats/ChatsPage';
 
 function SectionHub() {
   return (
@@ -34,8 +35,9 @@ export function AppRouter() {
         <Route path="sales/doc/:id" element={<SalesDocPage />} />
         <Route path="company" element={<SectionHub />} />
         <Route path="company/org" element={<OrgProfilePage />} />
-        <Route path="money" element={<Navigate to="/money/tochka" replace />} />
         <Route path="money/tochka" element={<MoneyTochkaPage />} />
+        <Route path="chats" element={<ChatsPage />} />
+        {/* /money — классическое меню Денег (legacy); Точка остаётся на /money/tochka */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

@@ -18,10 +18,17 @@ export async function api<T = unknown>(path: string, opts: RequestOpts = {}): Pr
     ...rest,
     headers: {
       Accept: 'application/json',
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...(body !== undefined && !(body instanceof FormData)
+        ? { 'Content-Type': 'application/json' }
+        : {}),
       ...headers,
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body:
+      body === undefined
+        ? undefined
+        : body instanceof FormData
+          ? body
+          : JSON.stringify(body),
   });
 
   if (res.status === 401) {

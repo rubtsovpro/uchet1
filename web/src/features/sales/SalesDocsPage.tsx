@@ -9,6 +9,7 @@ const LABELS: Record<SalesDocType, string> = {
   upd: 'УПД',
   sf: 'Счета-фактуры',
   workorder: 'Заказ-наряды',
+  contract: 'Договоры',
 };
 
 type Props = { type: SalesDocType };
@@ -26,8 +27,8 @@ export function SalesDocsPage({ type }: Props) {
       title={LABELS[type]}
       toolbar={
         <>
-          <Link to="/company/org">Реквизиты и нумерация</Link>
-          <Link to="/crm/deals">Создать из сделки</Link>
+          <Link to="/organizations">Юрлица и печать</Link>
+          <Link to="/crm/deals">Создать из заказа</Link>
         </>
       }
     >

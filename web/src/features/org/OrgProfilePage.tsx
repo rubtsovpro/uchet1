@@ -1,24 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '@/shared/api/client';
-import type { DocNumbering, OrgProfile } from '@/shared/api/types';
+import type { DocNumbering } from '@/shared/api/types';
 import { Page } from '@/shared/ui/Page';
 
+/** Нумерация документов. Реквизиты/печать — у каждого юрлица в «Организации». */
 export function OrgProfilePage() {
   const qc = useQueryClient();
-  const orgQ = useQuery({ queryKey: ['org-profile'], queryFn: () => api<OrgProfile>('/org-profile') });
   const numQ = useQuery({ queryKey: ['doc-numbering'], queryFn: () => api<DocNumbering>('/doc-numbering') });
 
-  const [org, setOrg] = useState<Partial<OrgProfile>>({});
   const [lastOut, setLastOut] = useState('');
   const [lastIn, setLastIn] = useState('');
   const [lastInv, setLastInv] = useState('');
-  const [msg, setMsg] = useState('');
   const [numMsg, setNumMsg] = useState('');
-
-  useEffect(() => {
-    if (orgQ.data) setOrg(orgQ.data);
-  }, [orgQ.data]);
 
   useEffect(() => {
     if (!numQ.data) return;
@@ -27,15 +22,6 @@ export function OrgProfilePage() {
     setLastInv(String(numQ.data.seq_invoice || ''));
     if (numQ.data.synced_at) setNumMsg(`Синк 1С: ${numQ.data.synced_at}`);
   }, [numQ.data]);
-
-  const saveOrg = useMutation({
-    mutationFn: () => api('/org-profile', { method: 'PUT', body: org }),
-    onSuccess: () => {
-      setMsg('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['org-profile'] });
-    },
-    onError: (e: Error) => setMsg(e.message),
-  });
 
   const syncNum = useMutation({
     mutationFn: () => api<DocNumbering>('/doc-numbering/sync-from-1c', { method: 'POST', body: {} }),
@@ -59,67 +45,24 @@ export function OrgProfilePage() {
     onError: (e: Error) => setNumMsg(e.message),
   });
 
-  const field = (key: keyof OrgProfile, label: string, extra?: string) => (
-    <label className={extra}>
-      {label}
-      <input
-        className={key === 'inn' || key === 'bik' || key === 'rs' || key === 'ks' || key === 'ogrnip' ? 'mono' : undefined}
-        value={String(org[key] ?? '')}
-        onChange={(e) => setOrg((o) => ({ ...o, [key]: e.target.value }))}
-      />
-    </label>
-  );
-
   return (
     <Page
-      title="Реквизиты организации"
+      title="Нумерация документов"
       toolbar={
         <>
-          <button className="primary" type="button" disabled={saveOrg.isPending} onClick={() => saveOrg.mutate()}>
-            Записать реквизиты
-          </button>
           <button type="button" disabled={syncNum.isPending} onClick={() => syncNum.mutate()}>
             Подтянуть номера из 1С
           </button>
-          <button type="button" disabled={saveNum.isPending} onClick={() => saveNum.mutate()}>
+          <button type="button" className="primary" disabled={saveNum.isPending} onClick={() => saveNum.mutate()}>
             Сохранить нумерацию
           </button>
         </>
       }
     >
-      <p className="muted" style={{ margin: '0 0 10px' }}>
-        Используются в бланках счёта, УПД и счёт-фактуры.
+      <p style={{ margin: '0 0 12px', lineHeight: 1.45 }}>
+        Реквизиты, печать и подпись задаются у каждого юрлица:{' '}
+        <Link to="/organizations">Компания → Организации</Link> → контур → вкладка «Юрлица».
       </p>
-
-      <h3 className="form-section-title">О продавце</h3>
-      <div className="form-grid">
-        {field('name', 'Наименование', 'span-2')}
-        {field('short_name', 'Кратко (подпись)')}
-        {field('ogrnip', 'ОГРНИП')}
-        {field('inn', 'ИНН')}
-        {field('kpp', 'КПП')}
-        {field('address', 'Адрес', 'span-2')}
-        {field('phone', 'Телефон')}
-        <label>
-          НДС %
-          <input
-            className="mono"
-            value={String(org.vat_rate ?? 5)}
-            onChange={(e) => setOrg((o) => ({ ...o, vat_rate: Number(e.target.value) || 5 }))}
-          />
-        </label>
-        {field('director', 'Руководитель')}
-        {field('master_title', 'Мастер (заказ-наряд)')}
-      </div>
-
-      <h3 className="form-section-title">Банковские реквизиты</h3>
-      <div className="form-grid">
-        {field('bank', 'Банк', 'span-2')}
-        {field('bik', 'БИК')}
-        {field('ks', 'К/с')}
-        {field('rs', 'Р/с', 'span-2')}
-      </div>
-      <p className="muted">{msg}</p>
 
       <h3 className="form-section-title">Нумерация документов</h3>
       <p className="muted" style={{ margin: '0 0 10px' }}>

@@ -2,9 +2,18 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/shared/api/client';
 import type { StaffMe } from '@/shared/api/types';
-import { NAV_SECTIONS, SECTION_LINKS } from './nav';
+import { NAV_SECTIONS_NOW, SECTION_LINKS } from './nav';
 import { NavIcon } from './NavIcon';
+import { ChatFab } from '@/features/chats/ChatFab';
 import { useSideCollapsed } from './useSideCollapsed';
+
+function canAccessSection(me: StaffMe | undefined, sectionId: string): boolean {
+  if (!me) return true;
+  if (me.isSystemAdmin || me.role === 'admin') return true;
+  const secs = me.rights?.sections;
+  if (!Array.isArray(secs)) return true;
+  return secs.includes(sectionId);
+}
 
 export function ShellLayout() {
   const { collapsed, toggle } = useSideCollapsed();
@@ -15,10 +24,20 @@ export function ShellLayout() {
     queryFn: () => api<StaffMe>('/me'),
   });
 
+  const chatsBadge = useQuery({
+    queryKey: ['chats'],
+    queryFn: () => api<{ unread_total: number }>('/chats'),
+    refetchInterval: 8_000,
+    enabled: canAccessSection(me.data, 'chats') || me.data?.role === 'admin' || me.data?.isSystemAdmin,
+  });
+
+  const visibleSections = NAV_SECTIONS_NOW.filter((s) => canAccessSection(me.data, s.id));
+
   const activeSection =
-    NAV_SECTIONS.find((s) => location.pathname === '/' && s.id === 'home')
-    || NAV_SECTIONS.find((s) => s.id !== 'home' && location.pathname.startsWith(`/${s.id}`))
-    || NAV_SECTIONS[0];
+    visibleSections.find((s) => location.pathname === '/' && s.id === 'home')
+    || visibleSections.find((s) => s.id !== 'home' && location.pathname.startsWith(`/${s.id}`))
+    || visibleSections[0]
+    || NAV_SECTIONS_NOW[0];
 
   const links = SECTION_LINKS[activeSection.id];
   const onSectionRoot =
@@ -28,9 +47,14 @@ export function ShellLayout() {
   // На корне раздела — полный список функций; на подстранице — компактная полоса
   const showSectionPanel = Boolean(links?.length);
 
-  const logout = async () => {
-    await api('/logout', { method: 'POST', body: {} }).catch(() => undefined);
-    window.location.href = '/login';
+  const logout = () => {
+    const go = () => {
+      window.location.replace('/login');
+    };
+    void api('/logout', { method: 'POST', body: {} })
+      .catch(() => undefined)
+      .finally(go);
+    window.setTimeout(go, 800);
   };
 
   return (
@@ -47,9 +71,9 @@ export function ShellLayout() {
         >
           <span /><span /><span />
         </button>
-        <div className="taxi-title">ПП 1 / Учёт №1, редакция 1.0 / Пневмоподвеска</div>
-        <div className="taxi-search">
-          <input type="search" placeholder="Поиск Ctrl+Shift+F" autoComplete="off" />
+        <div className="taxi-title">
+          <span className="taxi-product">Учёт №1</span>
+          <span className="taxi-org">Пневмоподвеска</span>
         </div>
         <div className="taxi-top-actions">
           <span className="taxi-user" title={me.data?.role || ''}>
@@ -68,8 +92,8 @@ export function ShellLayout() {
             <button
               type="button"
               className="taxi-side-collapse"
-              title="Скрыть меню"
-              aria-label="Скрыть меню"
+              title={collapsed ? 'Показать меню' : 'Скрыть меню'}
+              aria-label={collapsed ? 'Показать меню' : 'Скрыть меню'}
               onClick={toggle}
             >
               <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
@@ -78,35 +102,49 @@ export function ShellLayout() {
             </button>
           </div>
           <nav className="taxi-sections">
-            {NAV_SECTIONS.map((sec) => {
+            {visibleSections.map((sec) => {
               const to = sec.href || (sec.id === 'home' ? '/' : `/${sec.id}`);
-              const reactOwned =
-                sec.id === 'home'
-                || sec.id === 'crm'
-                || sec.id === 'sales'
-                || sec.id === 'company'
-                || sec.id === 'money';
+              // Только экраны, которые реально живут в React SPA.
+              // «Главное» (/) и корни разделов — legacy.html; клиентский NavLink
+              // оставляет index.html и главная «не открывается».
+              const reactOwned = sec.id === 'chats';
+              const chatBadge =
+                sec.id === 'chats' && (chatsBadge.data?.unread_total || 0) > 0 ? (
+                  <span className="sec-badge">
+                    {(chatsBadge.data?.unread_total || 0) > 99
+                      ? '99+'
+                      : chatsBadge.data?.unread_total}
+                  </span>
+                ) : null;
               if (!reactOwned) {
                 return (
                   <a
                     key={sec.id}
                     className={activeSection.id === sec.id ? 'sec active' : 'sec'}
                     href={to}
+                    title={sec.label}
+                    onClick={(e) => {
+                      // Полный переход на legacy.html (не SPA). Иначе «Главное» из /chats не открывается.
+                      e.preventDefault();
+                      window.location.assign(to);
+                    }}
                   >
                     <NavIcon name={sec.icon} />
-                    {sec.label}
+                    <span className="sec-label">{sec.label}</span>
+                    {chatBadge}
                   </a>
                 );
               }
               return (
                 <NavLink
                   key={sec.id}
-                  to={sec.id === 'money' ? '/money/tochka' : to}
-                  end={sec.id === 'home'}
+                  to={to}
+                  title={sec.label}
                   className={({ isActive }) => (isActive || activeSection.id === sec.id ? 'sec active' : 'sec')}
                 >
                   <NavIcon name={sec.icon} />
-                  {sec.label}
+                  <span className="sec-label">{sec.label}</span>
+                  {chatBadge}
                 </NavLink>
               );
             })}
@@ -135,10 +173,11 @@ export function ShellLayout() {
                           }
                           onClick={() => {
                             if (
-                              item.to!.startsWith('/money')
+                              item.to === '/money/tochka'
                               || item.to!.startsWith('/crm/deals')
                               || item.to!.startsWith('/sales/')
                               || item.to!.startsWith('/company/org')
+                              || item.to!.startsWith('/chats')
                             ) {
                               navigate(item.to!);
                             } else {
@@ -168,9 +207,7 @@ export function ShellLayout() {
         </main>
       </div>
 
-      <footer className="taxi-footer">
-        <span className="taxi-footer-note">Разработка · Rubtsov.pro</span>
-      </footer>
+      {location.pathname.startsWith('/chats') ? null : <ChatFab me={me.data} />}
     </div>
   );
 }
