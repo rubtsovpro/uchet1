@@ -12940,25 +12940,45 @@ function runSalesDocCreateGoto(dealId, goto) {
   const id = String(dealId || '').trim();
   if (!g || !id) return;
   closeCreateLightbox();
-  if (g === 'deal:items') {
+  const afterDeal = (fn) => {
     openTab('deal:' + id);
-    setTimeout(() => activateDealTab('items'), 200);
+    let tries = 0;
+    const tick = () => {
+      tries += 1;
+      if (fn() || tries >= 25) return;
+      setTimeout(tick, 120);
+    };
+    setTimeout(tick, 80);
+  };
+  if (g === 'deal:items') {
+    afterDeal(() => {
+      const ok = activateDealTab('items');
+      if (ok) {
+        document.getElementById('deal-scan-unit')?.focus?.();
+        document.getElementById('deal-item-add-open')?.scrollIntoView?.({
+          block: 'center',
+          behavior: 'smooth',
+        });
+      }
+      return ok;
+    });
     return;
   }
   if (g === 'deal:buyer') {
-    openTab('deal:' + id);
-    setTimeout(() => {
+    afterDeal(() => {
       activateDealTab('main') || activateDealTab('buyer');
-      document.getElementById('deal-buyer-inn')?.focus?.();
-      document
-        .querySelector('[data-deal-section="main"], #deal-buyer-inn, .deal-buyer')
-        ?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
-    }, 200);
+      const inn = document.getElementById('deal-buyer-inn') || document.getElementById('prep-buyer-inn');
+      if (inn) {
+        inn.focus?.();
+        inn.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+        return true;
+      }
+      return !!document.querySelector('[data-deal-section="items"], .form-org-legal');
+    });
     return;
   }
   if (g === 'deal:qr') {
-    openTab('deal:' + id);
-    setTimeout(() => activateDealTab('qr'), 200);
+    afterDeal(() => activateDealTab('qr') || activateDealTab('legal-pay'));
     return;
   }
   if (g === 'structure') {
@@ -12966,7 +12986,6 @@ function runSalesDocCreateGoto(dealId, goto) {
     return;
   }
   if (g === 'create:workorder') {
-    /* после создания ЗН откроется карточка — здесь только к заказу */
     openTab('deal:' + id);
   }
 }
