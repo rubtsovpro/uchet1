@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Брендбук · Учёт №1</title>
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --brand: #0f766e;
+      --brand-deep: #0d9488;
+      --brand-dark: #134e4a;
+      --brand-soft: #ccfbf1;
+      --ink: #1e293b;
+      --muted: #64748b;
+      --line: #cbd5e1;
+      --bg: #f1f5f9;
+      --card: #fff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Roboto, system-ui, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(900px 420px at 0% -10%, var(--brand-soft) 0%, transparent 55%),
+        var(--bg);
+      line-height: 1.5;
+      padding: 24px 16px 48px;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    header.hero {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    header.hero img { width: 64px; height: 64px; border-radius: 14px; }
+    h1 {
+      margin: 0;
+      font-family: Montserrat, sans-serif;
+      font-weight: 800;
+      font-size: 28px;
+      letter-spacing: -0.02em;
+      color: var(--brand);
+    }
+    .sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px 20px;
+      margin-bottom: 14px;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-family: Montserrat, sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--brand-dark);
+    }
+    p, li { font-size: 14px; margin: 0 0 8px; }
+    ul { margin: 0; padding-left: 18px; }
+    .swatches { display: flex; flex-wrap: wrap; gap: 10px; }
+    .swatch {
+      width: 88px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      font-size: 11px;
+      text-align: center;
+    }
+    .swatch i { display: block; height: 40px; }
+    .swatch span { display: block; padding: 6px 4px; color: var(--muted); }
+    .marks { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-end; }
+    .marks figure { margin: 0; text-align: center; }
+    .marks img { display: block; border-radius: 12px; }
+    .marks figcaption { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .dark-tile {
+      background: #0c1414;
+      padding: 14px;
+      border-radius: 12px;
+      display: inline-block;
+    }
+    a { color: var(--brand); }
+    .back { font-size: 13px; margin-bottom: 16px; display: inline-block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="/help">← Помощь</a>
+    <header class="hero">
+      <img src="/logo-uchet1.svg" width="64" height="64" alt="Учёт №1" />
+      <div>
+        <h1>Брендбук · Учёт №1</h1>
+        <div class="sub">Квадрат + «1» и мелкая «n.» · uchetn1.ru · teal / slate</div>
+      </div>
+    </header>
+
+    <section>
+      <h2>Знак</h2>
+      <p>Официальный mark: <strong>квадрат</strong>, в центре крупная «1»; к стволу <strong>прижата</strong> мелкая метка «n.» (домен <code>uchetn1.ru</code>). Не равновесное «N1».</p>
+      <div class="marks">
+        <figure>
+          <img src="/logo-uchet1.svg" width="72" height="72" alt="" />
+          <figcaption>Light · logo-uchet1.svg</figcaption>
+        </figure>
+        <figure>
+          <div class="dark-tile"><img src="/logo-uchet1-on-dark.svg" width="72" height="72" alt="" /></div>
+          <figcaption>Dark · on-dark.svg</figcaption>
+        </figure>
+        <figure>
+          <img src="/logo-uchet1.svg" width="24" height="24" alt="" />
+          <figcaption>Favicon 24</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section>
+      <h2>Цвета (shell)</h2>
+      <div class="swatches">
+        <div class="swatch"><i style="background:#0f766e"></i><span>#0f766e</span></div>
+        <div class="swatch"><i style="background:#0d9488"></i><span>#0d9488</span></div>
+        <div class="swatch"><i style="background:#134e4a"></i><span>#134e4a</span></div>
+        <div class="swatch"><i style="background:#ccfbf1"></i><span>#ccfbf1</span></div>
+        <div class="swatch"><i style="background:#0f172a"></i><span>#0f172a</span></div>
+        <div class="swatch"><i style="background:#f1f5f9"></i><span>#f1f5f9</span></div>
+      </div>
+      <p style="margin-top:12px">Pick accent light: <code>#0d7377</code>. Без фиолетовых AI-клише.</p>
+    </section>
+
+    <section>
+      <h2>Тёмная схема (/pick)</h2>
+      <p><code>data-theme="dark"</code> · фон под логотип on-dark · accent = яркий teal логотипа.</p>
+      <div class="swatches">
+        <div class="swatch"><i style="background:#0c1414"></i><span>--bg #0c1414</span></div>
+        <div class="swatch"><i style="background:#132020"></i><span>--bg2 #132020</span></div>
+        <div class="swatch"><i style="background:#1a2828"></i><span>--card #1a2828</span></div>
+        <div class="swatch"><i style="background:#e8f4f4"></i><span>--text #e8f4f4</span></div>
+        <div class="swatch"><i style="background:#8aa0a0"></i><span>--muted #8aa0a0</span></div>
+        <div class="swatch"><i style="background:#2a4040"></i><span>--line #2a4040</span></div>
+        <div class="swatch"><i style="background:#2dd4bf"></i><span>--accent #2dd4bf</span></div>
+        <div class="swatch"><i style="background:#134e4a"></i><span>--accent-soft</span></div>
+        <div class="swatch"><i style="background:#042f2e"></i><span>#042f2e on accent</span></div>
+      </div>
+      <ul style="margin-top:12px">
+        <li>Фоны: <code>--bg</code> / <code>--bg2</code> / <code>--card</code></li>
+        <li>Текст: <code>--text</code>, вторичный <code>--muted</code></li>
+        <li>Рамки: <code>--line #2a4040</code></li>
+        <li>Акцент: <code>#2dd4bf</code> (как градиент on-dark логотипа); текст на primary-кнопке <code>#042f2e</code></li>
+        <li>theme-color meta: <code>#0c1414</code></li>
+        <li>Логотип: <code>logo-uchet1-on-dark.svg</code>, не CSS-инверсия light</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Типографика</h2>
+      <ul>
+        <li>Shell: Montserrat (заголовки) + Roboto</li>
+        <li>/pick: system-ui (без лишних веб-шрифтов)</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Полный документ</h2>
+      <p>Полная версия для команды разработки: <code>docs/BRANDBOOK-uchet1.md</code> в репозитории warehouse.</p>
+      <p><a href="/">Вернуться в Учёт №1</a></p>
+    </section>
+  </div>
+</body>
+</html>

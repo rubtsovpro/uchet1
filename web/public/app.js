@@ -131,10 +131,6 @@ const SECTIONS = {
             { label: 'Анализ продаж', disabled: true },
           ],
         },
-        {
-          title: 'Сервис',
-          links: [{ view: 'dashboard', label: 'Синхронизация с 1С' }],
-        },
       ],
     ],
   },
@@ -145,68 +141,13 @@ const SECTIONS = {
           title: 'Закупки',
           links: [
             { view: 'suppliers', label: 'Поставщики' },
-            { label: 'Заказы поставщикам', disabled: true },
             { view: 'in', label: 'Приходные накладные' },
-            { label: 'Счета на оплату (полученные)', disabled: true },
             { view: 'docs', label: 'Документы' },
           ],
         },
         {
-          title: 'Переработка',
-          links: [{ label: 'Документы переработчиков', disabled: true }],
-        },
-        {
-          title: 'Расчеты с поставщиками',
-          links: [
-            { label: 'Сверки взаиморасчетов', disabled: true },
-            { label: 'Корректировки долга', disabled: true },
-          ],
-        },
-      ],
-      [
-        {
-          title: 'Торговые предложения',
-          links: [{ label: 'Торговые предложения', disabled: true }],
-        },
-        {
           title: 'Товары и услуги',
-          links: [
-            { view: 'products', label: 'Номенклатура' },
-            { label: 'Номера ГТД', disabled: true },
-          ],
-        },
-        {
-          title: 'Цены',
-          links: [
-            { label: 'Прайс-листы поставщиков', disabled: true },
-            { view: 'prices', label: 'Виды цен' },
-          ],
-        },
-        {
-          title: 'Планирование',
-          links: [{ label: 'Расчет потребностей', disabled: true }],
-        },
-        {
-          title: 'Доставка',
-          links: [{ label: 'СДЭК', disabled: true }],
-        },
-      ],
-      [
-        {
-          title: 'Отчеты',
-          links: [{ label: 'Анализ заявок на закупку', disabled: true }],
-        },
-        {
-          title: 'Аналитика',
-          links: [{ label: 'Отчеты', disabled: true }],
-        },
-        {
-          title: 'Сервис',
-          links: [
-            { label: 'Загрузить документы из сканов', disabled: true },
-            { label: 'Выгрузка товаров в ТСД', disabled: true },
-            { view: 'dashboard', label: 'Синхронизация с 1С' },
-          ],
+          links: [{ view: 'products', label: 'Номенклатура' }],
         },
       ],
     ],
@@ -223,6 +164,13 @@ const SECTIONS = {
             { view: 'in', label: 'Приход' },
             { label: 'Перемещения', disabled: true },
             { label: 'Инвентаризации', disabled: true },
+          ],
+        },
+        {
+          title: 'Доставка',
+          links: [
+            { view: 'cdek-deals', label: 'СДЭК · сделки' },
+            { view: 'cdek-settings', label: 'СДЭК · настройки' },
           ],
         },
       ],
@@ -322,7 +270,6 @@ const SECTIONS = {
         {
           title: 'Настройки',
           links: [
-            { view: 'dashboard', label: 'Синхронизация с 1С' },
             { view: 'org', label: 'Реквизиты организации' },
             { view: 'prices', label: 'Типы цен' },
             { view: 'staff', label: 'Пользователи' },
@@ -400,6 +347,39 @@ function productTitle(p) {
   if (name && !looksLikeGuid(name)) return name;
   if (sku) return sku;
   return name || p?.id || '—';
+}
+
+/** Mount real row-action buttons via DOM (avoid bare «Переименовать» text cells). */
+function mountRowActionButtons(root, items, opts = {}) {
+  const label = opts.label || 'Переименовать';
+  const nameOf = opts.nameOf || ((item) => String(item?.name || ''));
+  const rows = [...(root.querySelectorAll(opts.rowSelector || 'tbody tr') || [])].filter(
+    (tr) => !tr.querySelector('td.muted')
+  );
+  items.forEach((item, i) => {
+    const tr = rows[i];
+    if (!tr || !item?.id) return;
+    let td = tr.querySelector('td.col-actions');
+    if (!td) {
+      td = document.createElement('td');
+      td.className = 'col-actions';
+      tr.appendChild(td);
+    }
+    const keep = opts.keepSelectors
+      ? [...td.querySelectorAll(opts.keepSelectors)].map((el) => el.cloneNode(true))
+      : [];
+    td.replaceChildren();
+    td.classList.add('col-actions');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'row-action';
+    btn.dataset.rename = String(item.id);
+    btn.dataset.name = nameOf(item);
+    btn.textContent = label;
+    td.appendChild(btn);
+    keep.forEach((el) => td.appendChild(el));
+    if (typeof opts.after === 'function') opts.after(td, item);
+  });
 }
 
 async function refreshRefs() {
@@ -1314,7 +1294,7 @@ async function renderProducts(opts = {}) {
     }
     ${pagerHtml('ppager', data.page, data.pages, data.total)}
     <table>
-      <thead><tr><th>SKU</th><th>Название</th><th>Бренд</th><th>Ед.</th><th>Категория</th>${canEdit ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th>SKU</th><th>Название</th><th>Бренд</th><th>Ед.</th><th>Категория</th></tr></thead>
       <tbody>
         ${
           list
@@ -1326,10 +1306,9 @@ async function renderProducts(opts = {}) {
             <td>${esc(p.brand || '')}</td>
             <td>${esc(p.unit || '')}</td>
             <td>${esc(p.category || '')}</td>
-            ${canEdit ? `<td><button type="button" class="row-action" data-rename="${esc(p.id)}" data-name="${esc(productTitle(p))}">Переименовать</button></td>` : ''}
           </tr>`
             )
-            .join('') || `<tr><td colspan="${canEdit ? 6 : 5}" class="muted">Ничего не найдено</td></tr>`
+            .join('') || '<tr><td colspan="5" class="muted">Ничего не найдено</td></tr>'
         }
       </tbody>
     </table>
@@ -1340,7 +1319,7 @@ async function renderProducts(opts = {}) {
         <div class="grow"></div>
         <div class="find">
           <input id="pq" placeholder="Поиск (Ctrl+F)" value="${esc(q)}" autocomplete="off" />
-          <button type="button" id="psearch">Найти</button>
+          <button type="button" class="find-go" id="psearch">Найти</button>
         </div>
         <button type="button">Ещё ▾</button>`,
     }
@@ -1372,17 +1351,6 @@ async function renderProducts(opts = {}) {
     };
     document.getElementById('padd').onclick = add;
     document.getElementById('padd2').onclick = add;
-    view.querySelectorAll('[data-rename]').forEach((btn) => {
-      btn.onclick = async () => {
-        const name = prompt('Новое название', btn.dataset.name);
-        if (!name) return;
-        await api('/products/' + btn.dataset.rename, {
-          method: 'PATCH',
-          body: JSON.stringify({ name }),
-        });
-        renderProducts();
-      };
-    });
   }
   bindPager('ppager', (d) => {
     state.productsPage = Math.max(1, state.productsPage + d);
@@ -1400,10 +1368,25 @@ async function renderProducts(opts = {}) {
   });
 }
 
+function whIsActive(w) {
+  return Number(w && w.is_active) === 1 || w?.is_active === true;
+}
+
+function sortWarehousesActiveFirst(list) {
+  return [...list].sort((a, b) => {
+    const aa = whIsActive(a) ? 1 : 0;
+    const ba = whIsActive(b) ? 1 : 0;
+    if (aa !== ba) return ba - aa;
+    return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+  });
+}
+
 async function renderWarehouses() {
   const showArchived = !!state.whShowArchived;
   const list = await api('/warehouses?archived=all');
-  const visible = list.filter((w) => (showArchived ? true : w.is_active));
+  const visible = sortWarehousesActiveFirst(
+    (Array.isArray(list) ? list : []).filter((w) => (showArchived ? true : whIsActive(w)))
+  );
   view.innerHTML = formChrome(
     'Склады',
     `
@@ -1413,7 +1396,7 @@ async function renderWarehouses() {
     </div>
     <div class="toolbar">
       <button class="primary" id="wadd" type="button">Создать</button>
-      <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--taxi-muted);font-size:12px">
+      <label class="toolbar-check" for="warch">
         <input type="checkbox" id="warch" ${showArchived ? 'checked' : ''} /> Показать архивные
       </label>
       <span class="muted" id="wmsg"></span>
@@ -1424,21 +1407,27 @@ async function renderWarehouses() {
         ${
           visible.length
             ? visible
-                .map(
-                  (w) => `
-          <tr class="${w.is_active ? '' : 'muted'}">
+                .map((w, i) => {
+                  const active = whIsActive(w);
+                  const prevActive = i > 0 ? whIsActive(visible[i - 1]) : true;
+                  const sep =
+                    showArchived && !active && prevActive
+                      ? `<tr class="wh-arch-sep"><td colspan="4">Архивные</td></tr>`
+                      : '';
+                  return `${sep}
+          <tr class="${active ? '' : 'muted wh-archived'}">
             <td class="mono">${esc(w.code)}</td>
             <td>${esc(w.name)}</td>
-            <td>${w.is_active ? '<span class="badge">Активен</span>' : '<span class="badge draft">Архив</span>'}</td>
+            <td>${active ? '<span class="badge">Активен</span>' : '<span class="badge draft">Архив</span>'}</td>
             <td>
               ${
-                w.is_active
+                active
                   ? `<button type="button" data-archive="${esc(w.id)}" data-name="${esc(w.name)}">В архив</button>`
                   : `<button type="button" data-restore="${esc(w.id)}">Вернуть</button>`
               }
             </td>
-          </tr>`
-                )
+          </tr>`;
+                })
                 .join('')
             : '<tr><td colspan="4" class="muted">Нет складов</td></tr>'
         }
@@ -1774,7 +1763,7 @@ async function renderCounterparties(mode) {
         <div class="grow"></div>
         <div class="find">
           <input id="cq" placeholder="Поиск (Ctrl+F)" value="${esc(q)}" autocomplete="off" />
-          <button type="button" id="csearch">Найти</button>
+          <button type="button" class="find-go" id="csearch">Найти</button>
         </div>`,
     }
   );
@@ -1866,7 +1855,7 @@ async function renderBalances() {
         <div class="grow"></div>
         <div class="find">
           <input id="bq" placeholder="Поиск (Ctrl+F)" value="${esc(q)}" autocomplete="off" />
-          <button type="button" id="bgo">Найти</button>
+          <button type="button" class="find-go" id="bgo">Найти</button>
         </div>`,
     }
   );
@@ -1903,7 +1892,7 @@ async function renderDocs() {
   qs.set('sort', sort);
   qs.set('dir', dir);
   const list = await api('/docs?' + qs.toString());
-  const typeMap = { in: 'Приход', out: 'Расход', transfer: 'Перемещение' };
+  const typeMap = { in: 'Приход', out: 'Расход', transfer: 'Перемещение', return: 'Возврат' };
   const mark = (key) => {
     if (sort !== key) return '';
     return dir === 'asc' ? ' ▲' : ' ▼';
@@ -1913,7 +1902,7 @@ async function renderDocs() {
   view.innerHTML = formChrome(
     'Документы',
     `
-    <p class="muted" style="margin:0 0 8px">Журнал из 1С (приход/расход) и локальные. Клик по строке — открыть документ. Клик по заголовку — сортировка.</p>
+    <p class="muted" style="margin:0 0 8px">Журнал из 1С (приход/расход/возврат) и локальные. Клик по строке — открыть документ. Клик по заголовку — сортировка.</p>
     <table>
       <thead><tr>
         ${th('number', 'Номер')}
@@ -1947,12 +1936,13 @@ async function renderDocs() {
       toolbar: `
         <button class="primary" type="button" id="goto-in">Создать приход</button>
         <button type="button" id="docs-in">Приходные</button>
+        <button type="button" id="docs-return">Возвраты</button>
         <button type="button" id="docs-out">Расходные</button>
         <button type="button" id="docs-all">Все</button>
         <div class="grow"></div>
         <div class="find">
           <input id="docs-q" placeholder="Номер / контрагент" value="${esc(q)}" />
-          <button type="button" id="docs-search">Найти</button>
+          <button type="button" class="find-go" id="docs-search">Найти</button>
         </div>`,
     }
   );
@@ -1960,6 +1950,10 @@ async function renderDocs() {
   document.getElementById('goto-in').onclick = () => openTab('in');
   document.getElementById('docs-in').onclick = () => {
     state.docsType = 'in';
+    renderDocs();
+  };
+  document.getElementById('docs-return').onclick = () => {
+    state.docsType = 'return';
     renderDocs();
   };
   document.getElementById('docs-out').onclick = () => {
@@ -2000,8 +1994,8 @@ async function renderDocs() {
 
 async function renderDocDetail(id) {
   const d = await api('/docs/' + id);
-  const typeMap = { in: 'Приходная накладная', out: 'Расходная накладная', transfer: 'Перемещение' };
-  const typeShort = { in: 'Приход', out: 'Расход', transfer: 'Перемещение' };
+  const typeMap = { in: 'Приходная накладная', out: 'Расходная накладная', transfer: 'Перемещение', return: 'Возврат от покупателя' };
+  const typeShort = { in: 'Приход', out: 'Расход', transfer: 'Перемещение', return: 'Возврат' };
   const title = `${typeShort[d.doc_type] || d.doc_type} ${d.number || ''}`.trim();
   const tabId = 'doc:' + id;
   if (!state.tabs.find((t) => t.id === tabId)) {
@@ -2201,11 +2195,10 @@ async function renderDeals() {
       toolbar: `
         <select id="d-pipe">${pipeOpts}</select>
         <select id="d-status">${statusOpts}</select>
-        <button type="button" id="d-sync">Синк Amo</button>
         <div class="grow"></div>
         <div class="find">
           <input id="d-q" placeholder="Поиск id / название" value="${esc(q)}" />
-          <button type="button" id="d-search">Найти</button>
+          <button type="button" class="find-go" id="d-search">Найти</button>
         </div>`,
     }
   );
@@ -2232,17 +2225,6 @@ async function renderDeals() {
       state.dealsQ = document.getElementById('d-q').value.trim();
       state.dealsPage = 1;
       reload();
-    }
-  };
-  document.getElementById('d-sync').onclick = async () => {
-    try {
-      await api('/crm/deals/sync', {
-        method: 'POST',
-        body: JSON.stringify({ days: 60, limit: 800 }),
-      });
-      reload();
-    } catch (e) {
-      alert(e.message);
     }
   };
   bindPager('dpager', (d) => {
@@ -2311,13 +2293,13 @@ async function renderDealDetail(id) {
       <label>Статус<input value="${esc(d.status_name || '—')}" readonly /></label>
       <label>Отдел / база<input value="${esc(d.department || '—')}" readonly /></label>
       <label>Покупатель<input value="${esc(buyerLabel || '—')}" readonly /></label>
-      <label>В 1С<input value="${esc(d.queued_to_1c ? 'Да · ' + (d.queue_status || '') + (d.queued_by ? ' · ' + d.queued_by : '') : 'Нет')}" readonly /></label>
+      <label>В Учёте<input value="${esc(d.queued_to_1c ? 'Да · ' + (d.queue_status || '') + (d.queued_by ? ' · ' + d.queued_by : '') : 'Нет')}" readonly /></label>
     </div>
     <div class="toolbar">
       ${d.amo_url ? `<a class="primary" href="${esc(d.amo_url)}" target="_blank" rel="noopener">Открыть в Amo</a>` : ''}
       ${d.print_url ? `<a href="${esc(d.print_url)}" target="_blank" rel="noopener">Печать / PDF (виджет)</a>` : ''}
       <button type="button" id="deal-print">Печать в Учёт №1</button>
-      <button class="primary" type="button" id="deal-qr" ${Number(d.price) > 0 ? '' : 'disabled'}>QR оплата</button>
+      <button class="primary" type="button" id="deal-pay-link" ${Number(d.price) > 0 ? '' : 'disabled'} title="Публичная страница оплаты">Ссылка на оплату</button>
       ${
         isLegal
           ? `<button class="primary" type="button" id="deal-invoice" ${items.length ? '' : 'disabled'}>Счёт для юрлица</button>`
@@ -2342,37 +2324,37 @@ async function renderDealDetail(id) {
         ? ''
         : '<p class="muted" style="margin:8px 0">Чтобы создать счёт / заказ-наряд / УПД, в сделке нужны позиции (товары из виджета amo1c).</p>'
     }
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Оплата QR (${payments.length})</h3>
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Оплаты СБП (${payments.length})</h3>
     ${
       payments.length
         ? `<table>
-        <thead><tr><th>Дата</th><th>Сумма</th><th>QR</th><th>Ссылка</th><th></th></tr></thead>
+        <thead><tr><th>Дата</th><th>Сумма</th><th>Статус</th><th>QR</th></tr></thead>
         <tbody>
           ${payments
-            .map(
-              (p) => `
+            .map((p) => {
+              const st = String(p.status || '').toLowerCase();
+              const paid = ['paid', 'confirmed', 'success', 'accepted'].includes(st);
+              const statusLabel = paid
+                ? 'Оплачен'
+                : st === 'notstarted' || st === 'created' || !st
+                  ? 'Ожидает'
+                  : String(p.status || '—');
+              return `
             <tr data-payment="${esc(p.id)}">
-              <td>${esc(String(p.created_at || '').slice(0, 19))}</td>
+              <td>${esc(String(p.created_at || '').slice(0, 16))}</td>
               <td class="mono">${formatMoney(p.amount)}</td>
+              <td>${paid ? '<span class="badge">' + esc(statusLabel) + '</span>' : esc(statusLabel)}</td>
               <td>${
                 p.has_image
-                  ? `<img src="/api/payments/${esc(p.id)}/image.png" alt="QR" width="120" height="120" style="background:#fff;border:1px solid #ddd" />`
+                  ? `<img src="/api/payments/${esc(p.id)}/image.png" alt="QR" width="96" height="96" style="background:#fff;border:1px solid #ddd" />`
                   : esc(p.qrc_id || '—')
               }</td>
-              <td class="mono" style="max-width:280px;word-break:break-all">${
-                p.payload
-                  ? `<a href="${esc(p.payload)}" target="_blank" rel="noopener">${esc(p.payload)}</a>`
-                  : '—'
-              }</td>
-              <td>
-                <button type="button" class="linkish deal-pay-del" data-pay="${esc(p.id)}" data-amount="${esc(formatMoney(p.amount))}" data-qrc="${esc(p.qrc_id || '')}" title="Удалить запись QR">Удалить</button>
-              </td>
-            </tr>`
-            )
+            </tr>`;
+            })
             .join('')}
         </tbody>
       </table>`
-        : '<p class="muted">QR ещё нет — нажмите «QR оплата» (СБП Точка, сумма заказа).</p>'
+        : '<p class="muted">Оплат ещё нет — нажмите «Ссылка на оплату».</p>'
     }
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Чеки АТОЛ (${fiscal.length})</h3>
     ${
@@ -2560,48 +2542,33 @@ async function renderDealDetail(id) {
       alert(e.message);
     }
   };
-  document.getElementById('deal-qr').onclick = async () => {
-    const msg = document.getElementById('deal-msg');
-    msg.textContent = 'Создание QR…';
-    try {
-      const r = await api('/crm/deals/' + encodeURIComponent(id) + '/sbp-qr', {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
-      msg.textContent = 'QR создан: ' + (r.payment?.qrc_id || '');
-      renderDealDetail(id);
-    } catch (e) {
-      msg.textContent = e.message;
-      alert(e.message);
-    }
-  };
-  view.querySelectorAll('.deal-pay-del').forEach((btn) => {
-    btn.onclick = async () => {
-      const payId = btn.dataset.pay;
-      const amount = btn.dataset.amount || '';
-      const qrc = btn.dataset.qrc || '';
-      if (
-        !confirm(
-          'Удалить запись QR ' +
-            (qrc || payId) +
-            (amount ? ' на ' + amount : '') +
-            '?\nСама ссылка в банке не отменяется — только строка в сделке.'
-        )
-      ) {
-        return;
-      }
+  const payLinkBtn = document.getElementById('deal-pay-link');
+  if (payLinkBtn) {
+    payLinkBtn.onclick = async () => {
       const msg = document.getElementById('deal-msg');
-      msg.textContent = 'Удаление QR…';
+      msg.textContent = 'Создание ссылки на оплату…';
       try {
-        await api('/payments/' + encodeURIComponent(payId), { method: 'DELETE' });
-        msg.textContent = 'QR удалён';
+        const r = await api('/crm/deals/' + encodeURIComponent(id) + '/payment-link', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+        const url = r.url || '';
+        if (url && navigator.clipboard && navigator.clipboard.writeText) {
+          try {
+            await navigator.clipboard.writeText(url);
+          } catch {
+            /* ignore */
+          }
+        }
+        if (url) window.open(url, '_blank', 'noopener');
+        msg.textContent = url ? 'Ссылка создана и скопирована' : 'Ссылка создана';
         renderDealDetail(id);
       } catch (e) {
         msg.textContent = e.message;
         alert(e.message);
       }
     };
-  });
+  }
   const makeFiscal = async (kind) => {
     const msg = document.getElementById('deal-msg');
     msg.textContent = kind === 'advance' ? 'Чек предоплаты…' : 'Чек полного расчёта…';
@@ -2674,20 +2641,14 @@ async function renderSalesDocs(docType) {
     </table>`,
     {
       toolbar: `
-        <button type="button" id="sales-goto-deals">Сделки Amo</button>
-        <button type="button" id="sales-refresh">Обновить</button>
-        <button type="button" id="sales-org">Реквизиты организации</button>
         <div class="grow"></div>
         <div class="find">
           <input id="sales-q" placeholder="Номер / покупатель / сделка" value="${esc(q)}" />
-          <button type="button" id="sales-search">Найти</button>
+          <button type="button" class="find-go" id="sales-search">Найти</button>
         </div>`,
     }
   );
   bindFormChrome(() => showSection('sales'));
-  document.getElementById('sales-goto-deals').onclick = () => openTab('deals');
-  document.getElementById('sales-refresh').onclick = () => renderSalesDocs(docType);
-  document.getElementById('sales-org').onclick = () => openTab('org');
   document.getElementById('sales-search').onclick = () => {
     state.salesQ = document.getElementById('sales-q').value.trim();
     renderSalesDocs(docType);
@@ -2773,13 +2734,16 @@ async function renderSalesDocDetail(id) {
         : '<p class="muted">Нет строк</p>'
     }`,
     {
-      toolbar: `
-        <a class="primary" href="/api/sales-docs/${esc(id)}/pdf" target="_blank" rel="noopener">Открыть PDF</a>
-        <a class="primary" href="/api/sales-docs/${esc(id)}/pdf?download=1" rel="noopener">Скачать PDF</a>
-        <a href="/api/sales-docs/${esc(id)}/print" target="_blank" rel="noopener">HTML-бланк</a>
-        ${d.deal_id ? `<button type="button" id="sd-deal">Открыть сделку</button>` : ''}
-        <div class="grow"></div>
-        <span class="muted">PDF формируется на сервере</span>`,
+      /* UI library: .ui-ico-bar + .toolbar-ico (styles.css; в legacy — uiIcoBar/uiIco*) */
+      toolbar: `<div class="ui-ico-bar">
+        <a class="toolbar-ico" href="/api/sales-docs/${esc(id)}/pdf" target="_blank" rel="noopener" data-tip="Открыть PDF" title="Открыть PDF" aria-label="Открыть PDF"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 1.8h6.1L13 5.5v8.7c0 .6-.5 1-1 1H3.2c-.6 0-1-.4-1-1V2.8c0-.6.4-1 1-1z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9.1 1.9V5.4H12.7" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.4 9.2h2.1c.9 0 1.5.5 1.5 1.3S7.4 11.8 6.5 11.8H5.3V13H4.4V9.2zm.9.8v1.1h.9c.4 0 .7-.2.7-.55s-.3-.55-.7-.55H5.3zM8.6 13V9.2h1.5c1.15 0 1.9.7 1.9 1.9S11.25 13 10.1 13H8.6zm.9-.8h.55c.55 0 1-.35 1-1.1s-.45-1.1-1-1.1H9.5V12.2z" fill="currentColor"/></svg></a>
+        <a class="toolbar-ico" href="/api/sales-docs/${esc(id)}/pdf?download=1" rel="noopener" data-tip="Скачать PDF" title="Скачать PDF" aria-label="Скачать PDF"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.2v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 6.8L8 9.6l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 12.2h10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></a>
+        ${
+          d.deal_id
+            ? `<button type="button" class="toolbar-ico" id="sd-deal" data-tip="Открыть заказ покупателя" title="Открыть заказ покупателя" aria-label="Открыть заказ покупателя"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 4.2h10.4v8.2c0 .6-.5 1.1-1.1 1.1H3.9c-.6 0-1.1-.5-1.1-1.1V4.2z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.2 4.2V3.3c0-.5.4-.9.9-.9h3.8c.5 0 .9.4.9.9v.9M5.4 7.6h5.2M5.4 10h3.6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg></button>`
+            : ''
+        }
+      </div>`,
     }
   );
   bindFormChrome(() => openTab(backView));
@@ -2788,7 +2752,7 @@ async function renderSalesDocDetail(id) {
 }
 
 async function renderOrgProfile() {
-  const [org, num] = await Promise.all([api('/org-profile'), api('/doc-numbering')]);
+  const org = await api('/org-profile');
   view.innerHTML = formChrome(
     'Реквизиты организации',
     `
@@ -2813,35 +2777,10 @@ async function renderOrgProfile() {
       <label>К/с<input id="org-ks" class="mono" value="${esc(org.ks || '')}" /></label>
       <label class="span-2">Р/с<input id="org-rs" class="mono" value="${esc(org.rs || '')}" /></label>
     </div>
-    <h3 class="form-section-title">Нумерация документов (продолжить с 1С)</h3>
-    <p class="muted" style="margin:0 0 10px">${esc(num.note || '')}</p>
-    <div class="form-grid">
-      <label>Последний № расход / УПД / СФ / ЗН из 1С
-        <input id="num-last-out" class="mono" value="${esc(num.last_out_1c || '')}" placeholder="00НФ-003845" />
-      </label>
-      <label>Следующий будет
-        <input class="mono" value="${esc(num.next_out || '')}" readonly />
-      </label>
-      <label>Последний № прихода из 1С
-        <input id="num-last-in" class="mono" value="${esc(num.last_in_1c || '')}" placeholder="00НФ-000314" />
-      </label>
-      <label>Следующий приход
-        <input class="mono" value="${esc(num.next_in || '')}" readonly />
-      </label>
-      <label>Последний № счёта из 1С (число)
-        <input id="num-last-inv" class="mono" value="${esc(num.seq_invoice || '')}" placeholder="22640" />
-      </label>
-      <label>Следующий счёт
-        <input class="mono" value="${esc(num.next_invoice || '')}" readonly />
-      </label>
-    </div>
-    <p class="muted" id="org-msg"></p>
-    <p class="muted" id="num-msg" style="margin-top:4px">${num.synced_at ? 'Синк 1С: ' + esc(num.synced_at) : ''}</p>`,
+    <p class="muted" id="org-msg"></p>`,
     {
       toolbar: `
         <button class="primary" type="button" id="org-save">Записать реквизиты</button>
-        <button type="button" id="num-sync">Подтянуть номера из 1С</button>
-        <button type="button" id="num-save">Сохранить нумерацию</button>
         <div class="grow"></div>`,
     }
   );
@@ -2876,48 +2815,6 @@ async function renderOrgProfile() {
       btn.disabled = false;
     } catch (e) {
       msg.textContent = e.message;
-      btn.disabled = false;
-    }
-  };
-  document.getElementById('num-sync').onclick = async () => {
-    const msg = document.getElementById('num-msg');
-    const btn = document.getElementById('num-sync');
-    btn.disabled = true;
-    msg.textContent = 'Запрос в 1С…';
-    try {
-      const r = await api('/doc-numbering/sync-from-1c', { method: 'POST', body: '{}' });
-      msg.textContent =
-        'Из 1С: расход ' +
-        (r.last_out_1c || '—') +
-        ', приход ' +
-        (r.last_in_1c || '—') +
-        '. След. УПД: ' +
-        (r.next_out || '');
-      openTab('org');
-    } catch (e) {
-      msg.textContent = e.message || 'Ошибка синка';
-      btn.disabled = false;
-    }
-  };
-  document.getElementById('num-save').onclick = async () => {
-    const msg = document.getElementById('num-msg');
-    const btn = document.getElementById('num-save');
-    btn.disabled = true;
-    msg.textContent = 'Сохранение нумерации…';
-    try {
-      const r = await api('/doc-numbering', {
-        method: 'PUT',
-        body: JSON.stringify({
-          last_out: document.getElementById('num-last-out').value.trim(),
-          last_in: document.getElementById('num-last-in').value.trim(),
-          last_invoice: document.getElementById('num-last-inv').value.trim(),
-        }),
-      });
-      msg.textContent =
-        'Нумерация сохранена. След.: УПД ' + r.next_out + ', счёт ' + r.next_invoice;
-      openTab('org');
-    } catch (e) {
-      msg.textContent = e.message || 'Ошибка';
       btn.disabled = false;
     }
   };
@@ -3186,8 +3083,7 @@ async function renderPriceTypes() {
           <tr>
             <td>${esc(p.name)}</td>
             <td class="mono">${p.products_count}</td>
-            <td>
-              <button type="button" class="row-action" data-rename="${esc(p.id)}" data-name="${esc(p.name)}">Изменить</button>
+            <td class="col-actions">
               <button type="button" data-del="${esc(p.id)}" data-name="${esc(p.name)}">Удалить</button>
             </td>
           </tr>`
@@ -3202,6 +3098,12 @@ async function renderPriceTypes() {
     }
   );
   bindFormChrome(() => showSection('sales'));
+  mountRowActionButtons(view, list, {
+    label: 'Изменить',
+    nameOf: (p) => String(p.name || ''),
+    rowSelector: '.form-body tbody tr',
+    keepSelectors: '[data-del]',
+  });
   const add = async () => {
     const msg = document.getElementById('pt-msg');
     const name = document.getElementById('pt-name').value.trim();
@@ -3219,7 +3121,8 @@ async function renderPriceTypes() {
   document.getElementById('pt-add').onclick = add;
   document.getElementById('pt-add2').onclick = add;
   view.querySelectorAll('[data-rename]').forEach((btn) => {
-    btn.onclick = async () => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
       const name = prompt('Новое название типа цены', btn.dataset.name);
       if (name == null || !name.trim() || name.trim() === btn.dataset.name) return;
       try {
@@ -3391,6 +3294,7 @@ const ROLE_LABELS = {
   admin: 'Админ',
   manager: 'Менеджер',
   warehouse: 'Склад / СТО',
+  photographer: 'Фотограф',
   sales: 'Продажи',
   readonly: 'Только чтение',
   none: 'Без доступа',
@@ -3404,7 +3308,7 @@ const SECTION_LABELS = {
   warehouse: 'Склад',
   works: 'Работы',
   production: 'Производство',
-  money: 'Деньги',
+  money: 'Точка',
   staff: 'Персонал',
   company: 'Компания',
   settings: 'Настройки',
@@ -3483,7 +3387,7 @@ async function renderStaff() {
     `
     <div class="panel">
       <p class="muted" style="margin:0 0 10px">
-        Amo + 1С. Регистрация на /login по email. Всего: <b>${meta.total ?? items.length}</b>
+        Amo + 1С. Входы выдаёт только админ. Всего: <b>${meta.total ?? items.length}</b>
         · с Amo: ${meta.amo ?? '—'} · с 1С: ${meta.oneC ?? '—'} · вход разрешён: ${meta.withLogin ?? '—'}
         ${meta.lastSync ? ' · синк: ' + esc(String(meta.lastSync).replace('T', ' ').slice(0, 19)) : ''}
       </p>
@@ -3904,9 +3808,14 @@ document.querySelectorAll('.taxi-sections .sec').forEach((btn) => {
   btn.addEventListener('click', () => showSection(btn.dataset.section));
 });
 
-document.getElementById('logout').onclick = async () => {
-  await api('/logout', { method: 'POST' });
-  location.href = '/login';
+document.getElementById('logout').onclick = () => {
+  const go = () => {
+    location.replace('/login');
+  };
+  api('/logout', { method: 'POST' })
+    .catch(() => {})
+    .finally(go);
+  setTimeout(go, 800);
 };
 
 (function bindSideCollapse() {
@@ -3946,25 +3855,6 @@ document.getElementById('logout').onclick = async () => {
       e.preventDefault();
       toggle();
     }
-  });
-})();
-
-(function bindRubtsovAd() {
-  const wrap = document.getElementById('rb-ad');
-  const btn = document.getElementById('rb-ad-toggle');
-  const panel = document.getElementById('rb-ad-panel');
-  if (!wrap || !btn || !panel) return;
-  const setOpen = (open) => {
-    wrap.classList.toggle('open', open);
-    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    panel.hidden = !open;
-  };
-  btn.addEventListener('click', () => setOpen(panel.hidden));
-  document.addEventListener('click', (e) => {
-    if (!wrap.contains(e.target)) setOpen(false);
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') setOpen(false);
   });
 })();
 
