@@ -1,0 +1,12 @@
+name = "openrouter-bridge-uchet1"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+[ai]
+binding = "AI"
+
+# Секрет: wrangler secret put BRIDGE_SECRET
+# VPS:
+#   CF_STS_OCR_URL=https://openrouter-bridge-uchet1.<subdomain>.workers.dev
+#   OPENROUTER_BRIDGE_SECRET=<то же, что BRIDGE_SECRET>

@@ -1,0 +1,43 @@
+# Автодеплой на bank-vps при push в main.
+# Secrets в GitHub → Settings → Secrets → Actions:
+#   DEPLOY_HOST     — например tech35.fvds.ru или IP
+#   DEPLOY_USER     — root
+#   DEPLOY_SSH_KEY  — приватный ключ (без пароля), у которого есть доступ на VPS
+name: Deploy prod
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 25m
+          script: |
+            set -euo pipefail
+            APP=/root/1c_pnevmopodveska1_ru/warehouse
+            cd "$APP"
+            git fetch origin
+            git reset --hard origin/main
+            NODE_ENV= npm ci --prefix api
+            NODE_ENV= npm install --prefix web
+            NODE_ENV= npm run build --prefix api
+            NODE_ENV= npm run build --prefix web
+            npm prune --omit=dev --prefix api
+            systemctl restart warehouse-wms
+            sleep 1
+            curl -sS -o /dev/null -w "health %{http_code}\n" http://127.0.0.1:3101/api/health
+            echo "OK $(git rev-parse --short HEAD)"

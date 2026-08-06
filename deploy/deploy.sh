@@ -10,10 +10,11 @@ REMOTE_APP="/root/1c_pnevmopodveska1_ru/warehouse"
 BRANCH="${WMS_DEPLOY_BRANCH:-main}"
 
 build_and_restart() {
-  npm ci --prefix api
-  npm install --prefix web
-  npm run build --prefix api
-  npm run build --prefix web
+  # На VPS часто NODE_ENV=production — иначе npm ci режет typescript (devDependency)
+  NODE_ENV= npm ci --prefix api
+  NODE_ENV= npm install --prefix web
+  NODE_ENV= npm run build --prefix api
+  NODE_ENV= npm run build --prefix web
   npm prune --omit=dev --prefix api
   systemctl restart warehouse-wms
   sleep 1
@@ -65,14 +66,26 @@ if [[ -n "$(git status --porcelain 2>/dev/null || true)" ]]; then
   exit 1
 fi
 
+# Чистый git: push в GitHub (+ Actions) и/или в bare на VPS (post-receive → прод)
+pushed=0
 if git remote get-url origin >/dev/null 2>&1; then
   echo "→ push origin/${BRANCH}"
   git push -u origin "HEAD:${BRANCH}"
-else
-  echo "Нет git remote origin — деплой через rsync"
+  pushed=1
+fi
+if git remote get-url bank-vps >/dev/null 2>&1; then
+  echo "→ push bank-vps/${BRANCH} (post-receive автодеплой)"
+  git push bank-vps "HEAD:${BRANCH}"
+  pushed=1
+  echo "OK: деплой на VPS через post-receive"
+  exit 0
+fi
+if [[ "$pushed" -eq 0 ]]; then
+  echo "Нет remote origin/bank-vps — деплой через rsync"
   exec "$0" --rsync
 fi
 
+# Fallback: origin есть, bank-vps нет — pull на сервере вручную
 echo "→ pull + build on $REMOTE_HOST"
 ssh "$REMOTE_HOST" bash -s <<EOF
 set -euo pipefail
@@ -81,13 +94,8 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git remote get-url ori
   git fetch origin
   git reset --hard origin/${BRANCH}
 fi
-npm ci --prefix api
-npm install --prefix web
-npm run build --prefix api
-npm run build --prefix web
-npm prune --omit=dev --prefix api
-systemctl restart warehouse-wms
-sleep 1
-curl -sS -o /dev/null -w 'health %{http_code}\n' http://127.0.0.1:3101/api/health
+$(declare -f build_and_restart)
+build_and_restart
 echo OK \$(git rev-parse --short HEAD 2>/dev/null || echo rsync)
 EOF
+
