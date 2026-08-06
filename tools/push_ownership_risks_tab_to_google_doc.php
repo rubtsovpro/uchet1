@@ -12,7 +12,7 @@ $preferredTabId = 't.ii6vwm63m8b1';
 $tabTitleAliases = ['позиция Исполнителя'];
 $credPath = '/Users/a_/Downloads/php/new_serv/bank_pnevmopodveska1_ru/public_html/pnevmopodveska1-677b14845bb0.json';
 $autoload = '/Users/a_/Downloads/php/new_serv/bank_pnevmopodveska1_ru/public_html/vendor/autoload.php';
-$textPath = '/Users/a_/Downloads/php/new_serv/1c_pnevmopodveska1_ru/warehouse/docs/TZ-ocenka-vladenie-riski.md';
+$textPath = '/Users/a_/Downloads/php/uchetn1/docs/TZ-ocenka-vladenie-riski.md';
 $appName = 'Uchet1 Clause7 executor position tab';
 
 require __DIR__ . '/_push_markdown_tab_lib.php';

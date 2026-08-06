@@ -12,7 +12,7 @@ $tabTitle = 'Не учтено в ТЗ';
 $preferredTabId = 't.yk6mbwgvhpmz';
 $credPath = '/Users/a_/Downloads/php/new_serv/bank_pnevmopodveska1_ru/public_html/pnevmopodveska1-677b14845bb0.json';
 $autoload = '/Users/a_/Downloads/php/new_serv/bank_pnevmopodveska1_ru/public_html/vendor/autoload.php';
-$textPath = '/Users/a_/Downloads/php/new_serv/1c_pnevmopodveska1_ru/warehouse/docs/TZ-ne-uchteno.md';
+$textPath = '/Users/a_/Downloads/php/uchetn1/docs/TZ-ne-uchteno.md';
 
 require $autoload;
 

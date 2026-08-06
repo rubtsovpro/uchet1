@@ -557,6 +557,35 @@ if (!$useTab) {
     exit(1);
 }
 
+$currentTitle = (string) ($useTab['tabProperties']['title'] ?? '');
+if ($tabTitle !== '' && $currentTitle !== $tabTitle) {
+    $rename = ghttp(
+        'POST',
+        'https://docs.googleapis.com/v1/documents/' . rawurlencode($docId) . ':batchUpdate',
+        $token,
+        [
+            'requests' => [
+                [
+                    'updateDocumentTabProperties' => [
+                        // tabId lives inside tabProperties (API rejects top-level tabId)
+                        'tabProperties' => [
+                            'tabId' => $targetTabId,
+                            'title' => $tabTitle,
+                        ],
+                        'fields' => 'title',
+                    ],
+                ],
+            ],
+        ]
+    );
+    if ($rename['code'] !== 200) {
+        fwrite(STDERR, "rename tab failed {$rename['code']}\n{$rename['raw']}\n");
+        // non-fatal: content push still proceeds
+    } else {
+        echo "Renamed tab [$targetTabId] \"$currentTitle\" → \"$tabTitle\"\n";
+    }
+}
+
 $endIndex = 1;
 foreach ($useTab['documentTab']['body']['content'] ?? [] as $el) {
     if (isset($el['endIndex'])) {
