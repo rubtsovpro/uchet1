@@ -1,22 +1,115 @@
 # Учёт №1 (WMS)
 
-Склад и продажи для Пневмоподвески: синк с 1С / Amo, документы (счёт, УПД, заказ-наряд), медиа в S3.
+Операционный контур вместо 1С УНФ для **Пневмоподвески**: заказы покупателей, склад, продажи, деньги, СТО и персонал — с живыми интеграциями (AmoCRM, банк, касса, СДЭК, медиа).
 
-Стек: **Hono + SQLite** (`api/`), **React + Vite + TanStack Query** + legacy UI (`web/`).
+| | |
+|--|--|
+| **Прод** | https://1c.pnevmopodveska1.ru · https://uchetn1.ru |
+| **Оплата** | https://pay.pnevmopodveska1.ru |
+| **Стек** | Hono + SQLite (`api/`) · React + Vite + legacy UI (`web/`) |
+| **На сервере** | `/root/1c_pnevmopodveska1_ru/warehouse` · systemd `warehouse-wms` · порт `3101` |
 
-Локальный корень проекта: `/Users/a_/Downloads/php/uchetn1` (раньше: `new_serv/1c_pnevmopodveska1_ru/warehouse`). На сервере путь прежний: `/root/1c_pnevmopodveska1_ru/warehouse`.
+Фронт ходит в бэкенд **только через `/api`**. Node из `api` отдаёт статику `web/dist` (и отдельные HTML-экраны).
 
-## Структура
+---
+
+## Что уже в продукте
+
+### CRM и продажи
+- Заказы покупателей из AmoCRM (воронки, статусы, ответственные, канал / СТО).
+- Пакеты документов по правилам продажи: счёт, заказ-наряд, УПД, договор, счёт-фактура.
+- Подготовка УПД: чеклист, покупатель/ИНН, оплата, PDF (печать / подпись / скачать).
+- Редактирование покупателя с синхронизацией в Amo (в т.ч. принудительное имя).
+- Подсказка «след. шаг» по сценарию заказа (оплата → ЗН → склад → УПД → чеки).
+- Гараж авто контрагента (марка / модель / гос. номер) для заказ-наряда.
+- Организация и юрлицо на заказе; после выписки счёта — блокировка смены.
+
+### Документы и PDF
+- Журналы: счета, заказ-наряды, УПД, СФ, договоры, расходные / приходные.
+- PDF с печатью и подписью организации; договоры — отдельный бланк печати.
+- Нумерация, связи документов, дерево документов заказа, УПД + расходная (списание).
+
+### Склад
+- Остатки, приход / расход, перемещения, задания на сборку.
+- Смены кладовщика (`/pick`), приёмка / скан (`/in/scan`, `/supply`).
+- Оценка склада, маркировка (Data Matrix / КИЗ), штрихкоды, применимость партий.
+- Фото номенклатуры в S3; покрытие медиа по каталогу.
+
+### Деньги и касса
+- Ссылка на оплату (СБП QR Точка + карта / Сплит Яндекс Пэй) — в т.ч. для юрлиц.
+- Публичная страница `/pay/{token}`; баланс оплаты на счёте.
+- Чеки АТОЛ: предоплата и полный расчёт с заказа / документа.
+- Касса, возвраты денег, курсы валют (ЦБ).
+
+### СТО и работы
+- Заказ-наряд: авто, СТС (фото + OCR), работы и материалы.
+- Экраны: подъёмник `/lift`, приёмщик `/reception`, учёт работ слесаря.
+- Тип услуги на карточке заказа (канал Amo / СТО).
+
+### Персонал, чаты, компания
+- Сотрудники, роли и матрица разделов; 2FA админа через Telegram (опционально).
+- Внутренние чаты сотрудников (DM / группы, вложения в private S3).
+- Контуры организаций, юрлица, логотипы и печати; профиль компании.
+- Избранное (закладки экранов), аудит, presence.
+
+### Отчёты и паритет меню
+- Хаб отчётов; волны паритета разделов относительно УНФ (закупки, деньги, настройки).
+- Настройки интеграций из UI (Точка, АТОЛ, СДЭК, DaData, DeepSeek / СТС и др.).
+
+---
+
+## Интеграции
+
+| Система | Назначение |
+|---------|------------|
+| **AmoCRM** (+ amo1c-bin) | Сделки, контрагенты, стадии, webhooks, OAuth, имя покупателя |
+| **1С / OData + HS** | Исторический синк номенклатуры, документов, справочников |
+| **Точка Банк** | СБП QR, статус оплаты, overview (через `bank.*`) |
+| **Яндекс Пэй / Сплит** | Карта и рассрочка на странице оплаты |
+| **АТОЛ Онлайн** | Фискальные чеки (предоплата / полный / возврат) |
+| **СДЭК** | Виджет и native API через widget-мост |
+| **DaData** | ИНН / реквизиты контрагентов |
+| **S3** | Фото каталога, СТС, вложения чатов |
+| **Telegram** | 2FA админа (через worker-шлюз с VPS РФ) |
+| **DeepSeek / CF Workers AI** | OCR СТС (vision); мост OpenRouter при блоке IP |
+| **ЦБ РФ** | Курсы валют |
+
+Секреты на проде — только в `/etc/warehouse-wms.env` (и meta в SQLite из UI Интеграций). Пример переменных: `.env.example`.
+
+---
+
+## Экраны и хосты
+
+| URL / хост | Кто |
+|------------|-----|
+| `/`, `/legacy.html` | Полный WMS (taxi UI) |
+| `/pay`, `pay.pnevmopodveska1.ru` | Оплата по ссылке |
+| `/pick` · `pick.uchetn1.ru` | Кладовщик |
+| `/photo` · `photo.uchetn1.ru` | Фотограф |
+| `/lift` · `lift.uchetn1.ru` | Подъёмник / мастер СТО |
+| `/reception` · `reception.uchetn1.ru` | Приёмщик |
+| `/supply`, `/in/scan` | Приёмка / скан |
+| `swagger.uchetn1.ru` | OpenAPI UI (admin) |
+
+DNS и certbot: `deploy/DNS-uchetn1.md`.
+
+React-маршруты: часть CRM / sales / money / org / chats; основная операционка — legacy (`web/public/legacy.js`).
+
+---
+
+## Структура репозитория
 
 ```
-api/          backend: Hono, SQLite, интеграции → dist/
-web/          frontend: React + legacy static → dist/
-data/         SQLite (WMS_DATA_DIR), вне пакетов
-docs/         ТЗ и стек
-deploy/       systemd, apache, deploy.sh
+api/          backend (Hono, SQLite, интеграции) → dist/
+web/          React + legacy static → dist/
+data/         SQLite (WMS_DATA_DIR), не в git
+docs/         ТЗ, роадмап, журналы, брендбук
+deploy/       systemd, apache, DNS, amo1c-bin, Cloudflare OCR bridge, deploy.sh
+bin/          импорты 1С/PG, S3, утилиты каталога
+tools/        выгрузки в Google Docs / Sheets
 ```
 
-Фронт ходит в бэкенд **только через `/api`**. На переходный период Node из `api` раздаёт статику из `web/dist`.
+---
 
 ## Локально
 
@@ -24,39 +117,59 @@ deploy/       systemd, apache, deploy.sh
 npm ci
 cp .env.example .env
 npm run build          # api + web
-npm start              # api на :3101, отдаёт web/dist
+npm start              # :3101, отдаёт web/dist
 ```
-
-Раздельные билды:
 
 ```bash
 npm run build:api
 npm run build:web
+npm run dev:api        # :3101
+npm run dev:web        # :5173, proxy /api → :3101
 ```
 
-Dev: `npm run dev:api` (:3101) и `npm run dev:web` (:5173, proxy `/api` → :3101).
+---
 
 ## Деплой
 
+Предпочтительно **через git** (чистый `main`):
+
 ```bash
-./deploy/deploy.sh --rsync   # без требования чистого git
-# или ./deploy/deploy.sh     # push + pull на сервере
+./deploy/deploy.sh
+# push → GitHub origin + bare на bank-vps → post-receive: build + restart
 ```
 
-Прод: `1c.pnevmopodveska1.ru`. Секреты только в `/etc/warehouse-wms.env`.
+Hotfix без коммита:
+
+```bash
+./deploy/deploy.sh --rsync
+```
+
+Прод-смоук на VPS: `curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3101/api/health` → `200`.
+
+CI: `.github/workflows/deploy-prod.yml` (SSH на VPS при push в `main`).
 
 ### Swagger / OpenAPI
 
-- Поддомен: `https://swagger.uchetn1.ru` (алиас `api-docs.uchetn1.ru`) → `/api/swagger`
+- https://swagger.uchetn1.ru (алиас `api-docs.uchetn1.ru`) → `/api/swagger`
 - Spec: `/api/openapi.json`
-- Вкл.: `SWAGGER_ENABLED=1` в env
-- Доступ: тот же логин WMS, только `admin` / системный admin (иначе 403; без сессии → `/login?next=`)
-- Опционально: `SWAGGER_BASIC_USER` + `SWAGGER_BASIC_PASS`
+- `SWAGGER_ENABLED=1`; доступ — сессия admin (иначе 403)
+- Опционально Basic: `SWAGGER_BASIC_USER` / `SWAGGER_BASIC_PASS`
 - Try-it-out только для GET
-- DNS: A `swagger` (и при желании `api-docs`) → `155.212.160.31`, затем certbot --expand — см. `deploy/DNS-uchetn1.md`
 
-Классический UI: `/` и `/legacy.html` → redirect. React: `/money/*`, часть CRM/sales/org.
+---
 
-## Bank / СБП
+## Документация
 
-Платежи СБП и overview Точки пока идут через `bank.pnevmopodveska1.ru` (`BANK_SBP_*`, `BANK_TOCHKA_*`). Перенос под `1c.*` — этап B плана split.
+| Файл | О чём |
+|------|--------|
+| `docs/VISION-uchet1.md` | Видение и коммерческий контур |
+| `docs/ROADMAP-uchet1.md` | Роадмап / оценка |
+| `docs/DONE-log-uchet1.md` | Журнал сделанного |
+| `docs/TZ-ne-uchteno.md` + `docs/sections/` | ТЗ по разделам |
+| `docs/PAYMENT-LINK.md` | Ссылки на оплату |
+| `docs/ATOL-CHECKS.md` | Чеки АТОЛ |
+| `docs/BRANDBOOK-uchet1.md` | Бренд |
+| `docs/MAP-1C-UNF-to-uchet1.md` | Соответствие УНФ → Учёт №1 |
+| `deploy/DNS-uchetn1.md` | DNS / HTTPS / ролевые хосты |
+
+Очередь кейсов rubtsov.pro в этом репозитории **не ведётся** (локальная папка `.rubtsov/` в git не хранится).
