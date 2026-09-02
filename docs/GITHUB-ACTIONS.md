@@ -41,6 +41,16 @@ origin = git@github.com:rubtsovpro/uchet1.git
 
 ## Важно
 
-Автодеплой **качает то, что в `origin/main`**. Пока ~месяц локальных правок не закоммичен — Actions выкатит старый код. Сначала sync-коммит рабочего дерева в `main`, потом pipeline станет источником правды.
+**Откат прода запрещён.** Workflow Deploy prod и bare `post-receive` **заблокированы** (не делают `git reset --hard`).
+
+Автодеплой снова включать только после явной команды, когда `origin/main` = живой код на VPS (полный sync).
 
 SSH-ключ для Actions: `~/.ssh/id_ed25519_bank` (secret `DEPLOY_SSH_KEY`).
+
+### Проверка
+
+```bash
+gh workflow list -R rubtsovpro/uchet1
+gh run list -R rubtsovpro/uchet1 -L 5
+gh secret list -R rubtsovpro/uchet1
+```

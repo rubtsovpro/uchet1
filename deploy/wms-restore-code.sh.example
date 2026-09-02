@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Восстановление кода из бэкапа на VPS (если снова снёс reset).
+# На сервере: wms-restore-code.sh [archive.tgz]
+# С Mac: ssh bank-vps /usr/local/sbin/wms-restore-code.sh
+set -euo pipefail
+APP=/root/1c_pnevmopodveska1_ru/warehouse
+DEST=/root/backups/wms-code
+ARCH="${1:-}"
+if [[ -z "$ARCH" ]]; then
+  ARCH=$(ls -1t "$DEST"/wms-*.tgz 2>/dev/null | head -1 || true)
+fi
+if [[ -z "$ARCH" || ! -f "$ARCH" ]]; then
+  echo "Нет архива в $DEST" >&2
+  exit 1
+fi
+echo "→ restore $ARCH → $APP (без data/.env)"
+tar -C "$APP" -xzf "$ARCH"
+chmod -R a+x "$APP/api/node_modules/.bin" "$APP/web/node_modules/.bin" 2>/dev/null || true
+cd "$APP"
+NODE_ENV= npm ci --prefix api || NODE_ENV= npm install --prefix api
+NODE_ENV= npm install --prefix web
+chmod -R a+x api/node_modules/.bin web/node_modules/.bin 2>/dev/null || true
+NODE_ENV= npm run build --prefix api
+NODE_ENV= npm run build --prefix web || node web/node_modules/typescript/bin/tsc -b && node web/node_modules/vite/bin/vite.js build
+rsync -a --exclude 'assets/' web/public/ web/dist/ || true
+systemctl restart warehouse-wms
+sleep 2
+curl -sS -o /dev/null -w "health %{http_code}\n" http://127.0.0.1:3101/api/health
+echo "OK restored from $ARCH"
