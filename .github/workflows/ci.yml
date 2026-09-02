@@ -1,0 +1,77 @@
+# CI — проверка сборки на каждый push/PR
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build api + web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            api/package-lock.json
+            web/package-lock.json
+
+      - name: Install api
+        run: npm ci --prefix api
+
+      - name: Install web
+        run: npm ci --prefix web
+
+      - name: Build api
+        run: npm run build --prefix api
+
+      - name: Build web
+        run: npm run build --prefix web
+
+  notify-failure:
+    name: Telegram · CI failed
+    needs: build
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_NOTIFY_CHAT_ID }}
+          TELEGRAM_WORKER_URL: ${{ secrets.TELEGRAM_WORKER_URL }}
+          TELEGRAM_WORKER_SECRET: ${{ secrets.TELEGRAM_WORKER_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+            echo "Telegram secrets not set — skip"
+            exit 0
+          fi
+          TEXT=$(printf '❌ <b>uchet1 CI failed</b>\n%s\n<a href="%s">%s</a>\n%s' \
+            "${{ github.repository }}" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "run #${{ github.run_number }}" \
+            "${{ github.actor }} · ${{ github.ref_name }} · ${{ github.sha }}")
+          BODY=$(jq -n --arg t "$TELEGRAM_BOT_TOKEN" --arg c "$TELEGRAM_CHAT_ID" --arg x "$TEXT" \
+            '{token:$t, method:"sendMessage", params:{chat_id:$c, text:$x, parse_mode:"HTML", disable_web_page_preview:true}}')
+          if [[ -n "${TELEGRAM_WORKER_URL:-}" ]]; then
+            [[ -n "${TELEGRAM_WORKER_SECRET:-}" ]] && BODY=$(echo "$BODY" | jq --arg s "$TELEGRAM_WORKER_SECRET" '. + {secret:$s}')
+            curl -sS -X POST "${TELEGRAM_WORKER_URL%/}/tg-api" \
+              -H 'Content-Type: application/json' -d "$BODY" | tee /tmp/tg.json
+          else
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${TEXT}" -d parse_mode=HTML \
+              | tee /tmp/tg.json
+          fi
+          grep -q '"ok":true' /tmp/tg.json || grep -q '"ok": true' /tmp/tg.json || echo "warn: telegram response not ok"

@@ -1,12 +1,11 @@
-# Автодеплой на bank-vps при push в main.
-# Secrets в GitHub → Settings → Secrets → Actions:
-#   DEPLOY_HOST     — например tech35.fvds.ru или IP
-#   DEPLOY_USER     — root
-#   DEPLOY_SSH_KEY  — приватный ключ (без пароля), у которого есть доступ на VPS
+# Автодеплой на tech35 (bank-vps) после успешного CI на main.
+# Secrets: см. docs/GITHUB-ACTIONS.md
 name: Deploy prod
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -16,8 +15,14 @@ concurrency:
 
 jobs:
   deploy:
+    name: Pull + build + restart
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -25,7 +30,7 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          command_timeout: 25m
+          command_timeout: 30m
           script: |
             set -euo pipefail
             APP=/root/1c_pnevmopodveska1_ru/warehouse
@@ -36,8 +41,57 @@ jobs:
             NODE_ENV= npm install --prefix web
             NODE_ENV= npm run build --prefix api
             NODE_ENV= npm run build --prefix web
+            if [[ -d web/public && -d web/dist ]]; then
+              rsync -a --exclude 'assets/' web/public/ web/dist/ || true
+            fi
             npm prune --omit=dev --prefix api
             systemctl restart warehouse-wms
-            sleep 1
-            curl -sS -o /dev/null -w "health %{http_code}\n" http://127.0.0.1:3101/api/health
+            sleep 2
+            code=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:3101/api/health || true)
+            echo "health $code"
+            test "$code" = "200"
             echo "OK $(git rev-parse --short HEAD)"
+
+      - name: Telegram · deploy OK
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_NOTIFY_CHAT_ID }}
+          TELEGRAM_WORKER_URL: ${{ secrets.TELEGRAM_WORKER_URL }}
+          TELEGRAM_WORKER_SECRET: ${{ secrets.TELEGRAM_WORKER_SECRET }}
+        run: |
+          set -euo pipefail
+          [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]] && exit 0
+          TEXT=$(printf '✅ <b>uchet1 deploy OK</b>\n<a href="%s">actions</a> · main' \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          BODY=$(jq -n --arg t "$TELEGRAM_BOT_TOKEN" --arg c "$TELEGRAM_CHAT_ID" --arg x "$TEXT" \
+            '{token:$t, method:"sendMessage", params:{chat_id:$c, text:$x, parse_mode:"HTML", disable_web_page_preview:true}}')
+          if [[ -n "${TELEGRAM_WORKER_URL:-}" ]]; then
+            [[ -n "${TELEGRAM_WORKER_SECRET:-}" ]] && BODY=$(echo "$BODY" | jq --arg s "$TELEGRAM_WORKER_SECRET" '. + {secret:$s}')
+            curl -sS -X POST "${TELEGRAM_WORKER_URL%/}/tg-api" -H 'Content-Type: application/json' -d "$BODY" >/dev/null
+          else
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${TEXT}" -d parse_mode=HTML >/dev/null
+          fi
+
+      - name: Telegram · deploy FAILED
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_NOTIFY_CHAT_ID }}
+          TELEGRAM_WORKER_URL: ${{ secrets.TELEGRAM_WORKER_URL }}
+          TELEGRAM_WORKER_SECRET: ${{ secrets.TELEGRAM_WORKER_SECRET }}
+        run: |
+          set -euo pipefail
+          [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]] && exit 0
+          TEXT=$(printf '❌ <b>uchet1 deploy FAILED</b>\n<a href="%s">run</a>\nПроверь сборку / git fetch / warehouse-wms' \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          BODY=$(jq -n --arg t "$TELEGRAM_BOT_TOKEN" --arg c "$TELEGRAM_CHAT_ID" --arg x "$TEXT" \
+            '{token:$t, method:"sendMessage", params:{chat_id:$c, text:$x, parse_mode:"HTML", disable_web_page_preview:true}}')
+          if [[ -n "${TELEGRAM_WORKER_URL:-}" ]]; then
+            [[ -n "${TELEGRAM_WORKER_SECRET:-}" ]] && BODY=$(echo "$BODY" | jq --arg s "$TELEGRAM_WORKER_SECRET" '. + {secret:$s}')
+            curl -sS -X POST "${TELEGRAM_WORKER_URL%/}/tg-api" -H 'Content-Type: application/json' -d "$BODY" >/dev/null || true
+          else
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${TEXT}" -d parse_mode=HTML >/dev/null || true
+          fi
