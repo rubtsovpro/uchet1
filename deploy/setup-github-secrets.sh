@@ -14,12 +14,9 @@ fi
 
 DEPLOY_HOST="${DEPLOY_HOST:-155.212.160.31}"
 DEPLOY_USER="${DEPLOY_USER:-root}"
-SSH_KEY_FILE="${DEPLOY_SSH_KEY_FILE:-$HOME/.ssh/github_actions}"
+SSH_KEY_FILE="${DEPLOY_SSH_KEY_FILE:-$HOME/.ssh/id_ed25519_bank}"
 if [[ ! -f "$SSH_KEY_FILE" ]]; then
-  SSH_KEY_FILE="$HOME/.ssh/id_ed25519_bank"
-fi
-if [[ ! -f "$SSH_KEY_FILE" ]]; then
-  echo "Нет приватного ключа: задайте DEPLOY_SSH_KEY_FILE=..."
+  echo "Нет приватного ключа: задайте DEPLOY_SSH_KEY_FILE=~/.ssh/id_ed25519_bank"
   exit 1
 fi
 

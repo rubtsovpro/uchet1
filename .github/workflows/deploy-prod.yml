@@ -37,6 +37,16 @@ jobs:
             cd "$APP"
             git fetch origin
             git reset --hard origin/main
+            # Убрать хвосты от старых scp (иначе гибрид old tracked + untracked new → tsc падает)
+            git clean -fd \
+              -e data \
+              -e .env \
+              -e '.env.*' \
+              -e api/node_modules \
+              -e web/node_modules \
+              -e api/dist \
+              -e web/dist \
+              -e deploy/ocr-local
             NODE_ENV= npm ci --prefix api
             NODE_ENV= npm install --prefix web
             NODE_ENV= npm run build --prefix api

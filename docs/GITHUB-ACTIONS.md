@@ -39,10 +39,8 @@ origin = git@github.com:rubtsovpro/uchet1.git
 
 Скрипт: `./deploy/setup-vps-github-deploy-key.sh` (запускать с машины с `ssh bank-vps`).
 
-## Проверка
+## Важно
 
-```bash
-gh workflow list -R rubtsovpro/uchet1
-gh run list -R rubtsovpro/uchet1 -L 5
-gh secret list -R rubtsovpro/uchet1
-```
+Автодеплой **качает то, что в `origin/main`**. Пока ~месяц локальных правок не закоммичен — Actions выкатит старый код. Сначала sync-коммит рабочего дерева в `main`, потом pipeline станет источником правды.
+
+SSH-ключ для Actions: `~/.ssh/id_ed25519_bank` (secret `DEPLOY_SSH_KEY`).
