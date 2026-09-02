@@ -1,12 +1,16 @@
-# Автодеплой на tech35 (bank-vps) после успешного CI на main.
-# Secrets: см. docs/GITHUB-ACTIONS.md
+# Автодеплой на tech35 после успешного CI на main.
+# ВАЖНО: пока origin/main не догнал прод (scp-хвост), только workflow_dispatch —
+# иначе reset+clean откатит сервер на старый коммит августа.
+# После sync всего дерева в main — раскомментировать workflow_run ниже.
+# Secrets: docs/GITHUB-ACTIONS.md
 name: Deploy prod
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
+  # Раскомментировать после sync-коммита рабочего дерева в main:
+  # workflow_run:
+  #   workflows: [CI]
+  #   types: [completed]
+  #   branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -16,11 +20,7 @@ concurrency:
 jobs:
   deploy:
     name: Pull + build + restart
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_branch == 'main')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -37,7 +37,7 @@ jobs:
             cd "$APP"
             git fetch origin
             git reset --hard origin/main
-            # Убрать хвосты от старых scp (иначе гибрид old tracked + untracked new → tsc падает)
+            # Убрать хвосты от старых scp (иначе гибрид → tsc падает)
             git clean -fd \
               -e data \
               -e .env \
