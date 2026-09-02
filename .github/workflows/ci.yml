@@ -32,7 +32,8 @@ jobs:
         run: npm ci --prefix api
 
       - name: Install web
-        run: npm ci --prefix web
+        # lock на CI часто отстаёт от package.json — как на VPS deploy.sh
+        run: npm install --prefix web
 
       - name: Build api
         run: npm run build --prefix api
