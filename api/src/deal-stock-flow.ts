@@ -1085,6 +1085,95 @@ function summarizeReturnRequest(req: StockReturnRequest): StockReturnRequest {
   };
 }
 
+function dealOrderProductQty(dealId: string, productId: string): number {
+  const id = String(dealId || '').trim();
+  const pid = String(productId || '').trim();
+  if (!id || !pid) return 0;
+  return (
+    Number(
+      get<{ q: number }>(
+        `SELECT IFNULL(SUM(qty),0) AS q FROM crm_deal_items
+         WHERE deal_id = ? AND product_guid = ?`,
+        [id, pid]
+      )?.q
+    ) || 0
+  );
+}
+
+/** Проведённые TR на СТО / резерв / отложено по сделке. */
+function dealMovedToBufferQty(dealId: string, productId: string): number {
+  const id = String(dealId || '').trim();
+  const pid = String(productId || '').trim();
+  if (!id || !pid) return 0;
+  return (
+    Number(
+      get<{ q: number }>(
+        `SELECT IFNULL(SUM(l.qty),0) AS q
+         FROM stock_doc_lines l
+         INNER JOIN stock_docs d ON d.id = l.doc_id
+         INNER JOIN warehouses wt ON wt.id = d.warehouse_to_id
+         WHERE d.deal_id = ? AND l.product_id = ?
+           AND IFNULL(d.posted,0) = 1 AND d.doc_type = 'transfer'
+           AND (
+             UPPER(IFNULL(wt.code,'')) = 'STO'
+             OR UPPER(IFNULL(wt.code,'')) LIKE 'STO-RSV%'
+             OR UPPER(IFNULL(wt.code,'')) LIKE 'STO-RES%'
+           )`,
+        [id, pid]
+      )?.q
+    ) || 0
+  );
+}
+
+/**
+ * Убрать фантомные возвраты: перемещено ≤ осталось в заказе — возвращать нечего.
+ * null → meta удалена, карточку на /pick не показываем.
+ */
+function prunePhantomStockReturn(req: StockReturnRequest): StockReturnRequest | null {
+  if (req.status !== 'pending') return req;
+  const dealId = String(req.deal_id || '').trim();
+  const lines = [...(req.lines || [])];
+  if (!dealId || !lines.length) {
+    if (dealId) run(`DELETE FROM meta WHERE key = ?`, [RETURN_META(dealId)]);
+    return null;
+  }
+
+  const maxReturn = new Map<string, number>();
+  for (const l of lines) {
+    const pid = String(l.product_id || '').trim();
+    if (!pid || maxReturn.has(pid)) continue;
+    const moved = dealMovedToBufferQty(dealId, pid);
+    const order = dealOrderProductQty(dealId, pid);
+    maxReturn.set(pid, Math.max(0, moved - order));
+  }
+
+  const consumed = new Map<string, number>();
+  const kept: StockReturnLine[] = [];
+  for (const l of lines) {
+    const pid = String(l.product_id || '').trim();
+    const cap = maxReturn.get(pid) ?? 0;
+    const used = consumed.get(pid) ?? 0;
+    const left = Math.max(0, cap - used);
+    const need = Math.max(0, Number(l.qty) || 0);
+    if (left <= 0 || need <= 0) continue;
+    const take = Math.min(left, need);
+    consumed.set(pid, used + take);
+    kept.push({ ...l, qty: take });
+  }
+
+  if (!kept.length) {
+    run(`DELETE FROM meta WHERE key = ?`, [RETURN_META(dealId)]);
+    return null;
+  }
+
+  const orderItemIds = [
+    ...new Set(
+      kept.map((l) => Number(l.order_item_id || 0)).filter((n) => n > 0)
+    ),
+  ];
+  return { ...req, lines: kept, order_item_ids: orderItemIds };
+}
+
 /** Все открытые требования возврата (для /pick). */
 export function listPendingStockReturns(limit = 60): Array<Record<string, unknown>> {
   const rows = all<{ key: string; value: string }>(
@@ -1096,7 +1185,9 @@ export function listPendingStockReturns(limit = 60): Array<Record<string, unknow
     try {
       const raw = JSON.parse(String(row.value || '')) as StockReturnRequest;
       if (!raw || raw.status !== 'pending') continue;
-      const req = summarizeReturnRequest(raw);
+      const pruned = prunePhantomStockReturn(raw);
+      if (!pruned) continue;
+      const req = summarizeReturnRequest(pruned);
       // Подтянуть свежие ячейки/склад в meta (без смены статуса)
       try {
         writeMetaJson(RETURN_META(String(req.deal_id)), req);
