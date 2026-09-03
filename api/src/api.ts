@@ -281,6 +281,7 @@ import {
   salesDocTypeLabel,
   updateSalesDocBuyer,
   updateSalesDocContractTemplate,
+  updateSalesDocHeader,
   renameSalesDocBuyerName,
   updateSalesDocVehicle,
   updateSalesDocStoChecklist,
@@ -389,6 +390,7 @@ import {
   applyDocNumberingPatch,
   getDocNumberingState,
   outNumberFromDeal,
+  peekNextOrdinalUpdNumber,
   syncDocNumberingFrom1c,
 } from './doc-numbering.js';
 import {
@@ -6565,6 +6567,12 @@ api.get('/sales-docs/:id/payment-qr.png', async (c) => {
 });
 
 /** Реестр УПД (позиции) — JSON для экрана /upd. */
+api.get('/sales-docs/upd/next-number', (c) => {
+  const organizationId = (c.req.query('organization_id') || '').trim();
+  return c.json({ next: peekNextOrdinalUpdNumber(organizationId) });
+});
+
+/** Реестр УПД (позиции) — JSON для экрана /upd. */
 api.get('/sales-docs/upd/registry', (c) => {
   const q = (c.req.query('q') || '').trim();
   const companyId = (c.req.query('company_id') || '').trim();
@@ -6669,6 +6677,8 @@ api.post('/sales-docs/from-deal', async (c) => {
     organization_id?: string;
     template_id?: string;
     created_by?: string;
+    number?: string;
+    doc_date?: string;
   };
   const dealId = String(body.deal_id || '').trim();
   const docType = String(body.doc_type || '').trim() as SalesDocType;
@@ -6706,6 +6716,8 @@ api.post('/sales-docs/from-deal', async (c) => {
             comment: body.comment,
             createdBy,
             organizationId: body.organization_id,
+            number: body.number,
+            doc_date: body.doc_date,
           });
     const regenerated = !!(doc as { regenerated?: boolean }).regenerated;
     const docRow = doc as Record<string, unknown>;
@@ -7683,6 +7695,31 @@ api.patch('/sales-docs/:id/counterparty-name', async (c) => {
   }
 });
 
+/** № и дата УПД (ручная правка без перегенерации строк). */
+api.patch('/sales-docs/:id/header', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    number?: string;
+    doc_date?: string;
+  };
+  try {
+    const doc = updateSalesDocHeader(c.req.param('id'), body);
+    auditFromContext(c, {
+      action: 'sales_doc.header',
+      entity: 'sales_doc',
+      entityId: c.req.param('id'),
+      summary: `УПД № ${doc?.number || ''} · дата ${String(doc?.doc_date || '').slice(0, 10)}`,
+      after: { number: doc?.number, doc_date: doc?.doc_date },
+    });
+    return c.json({ ok: true, doc });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'header update failed' }, 400);
+  }
+});
+
 /** Реквизиты покупателя в договоре (в лице, ИНН, КПП, банк…). */
 api.patch('/sales-docs/:id/buyer', async (c) => {
   const actor = actorFromContext(c);
@@ -8020,6 +8057,8 @@ api.post('/sales-docs/upd-and-writeoff-from-deal', async (c) => {
     buyer_inn?: string;
     organization_id?: string;
     warehouse_id?: string;
+    number?: string;
+    doc_date?: string;
   };
   const dealId = String(body.deal_id || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
@@ -8032,6 +8071,8 @@ api.post('/sales-docs/upd-and-writeoff-from-deal', async (c) => {
       createdBy: actor?.login || actor?.name || '',
       organizationId: body.organization_id,
       preferredWarehouseId: body.warehouse_id,
+      number: body.number,
+      doc_date: body.doc_date,
     });
     auditFromContext(c, {
       action: 'sales_doc.create',

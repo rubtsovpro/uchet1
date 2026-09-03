@@ -19761,6 +19761,49 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
     docsHubPrep && action === 'upd' ? 'sto-pack:' + dealId : 'create:' + action;
 
   const existingUpd = (salesDocs || []).find((d) => d && d.doc_type === 'upd' && d.id);
+  const isUpdPrep = action === 'upd' || action === 'upd-ship';
+  let suggestedUpdNumber = String(existingUpd?.number || '').trim();
+  if (isUpdPrep && !suggestedUpdNumber) {
+    try {
+      const orgId = dealSelectedOrgId() || String(deal.organization_id || '').trim();
+      const qs = orgId ? '?organization_id=' + encodeURIComponent(orgId) : '';
+      const peek = await api('/sales-docs/upd/next-number' + qs);
+      suggestedUpdNumber = String(peek.next || '').trim();
+    } catch (_) {}
+  }
+  const prepUpdDate =
+    String(existingUpd?.doc_date || '').slice(0, 10) ||
+    new Date().toISOString().slice(0, 10);
+  const prepUpdHeadHtml = isUpdPrep
+    ? `<div class="doc-prep-form panel" style="margin-top:10px">
+        <h3 class="form-section-title" style="margin-top:0">№ и дата УПД</h3>
+        <p class="muted" style="margin:0 0 8px;font-size:12px">${
+          existingUpd
+            ? 'Перегенерация сохранит эти значения. Можно поправить вручную до создания.'
+            : 'Подсказка — следующий по очереди. Оставьте как есть или укажите свой №.'
+        }</p>
+        <div class="form-grid">
+          <label>№ УПД
+            <input id="prep-upd-number" class="mono" value="${esc(suggestedUpdNumber)}" inputmode="numeric" autocomplete="off" placeholder="255" />
+          </label>
+          <label>Дата
+            <input type="date" id="prep-upd-date" class="mono" value="${esc(prepUpdDate)}" />
+          </label>
+        </div>
+        <div class="form-actions" style="margin-top:8px;padding:0">
+          <button type="button" class="primary" id="prep-upd-run">${
+            existingUpd
+              ? action === 'upd-ship'
+                ? 'Списать со склада'
+                : 'Обновить УПД'
+              : action === 'upd-ship'
+                ? 'Создать УПД и списать'
+                : 'Создать УПД'
+          }</button>
+          <span class="muted" id="prep-upd-run-msg" style="font-size:12px"></span>
+        </div>
+      </div>`
+    : '';
   const isShipPrep = action === 'upd-ship';
   const prepDocBar = existingUpd
     ? salesDocPdfBarHtml({
@@ -19775,11 +19818,11 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
 
   const prepGateReadyHtml = existingUpd
     ? isShipPrep
-      ? `<p class="muted" style="margin:0 0 10px">Данных достаточно — списываем остатки со склада. УПД уже есть — PDF в тулбаре.</p>`
-      : `<p class="muted" style="margin:0 0 10px">УПД готов — скачайте PDF в тулбаре сверху.</p>`
+      ? `<p class="muted" style="margin:0 0 10px">Данных достаточно — укажите №/дату при необходимости и нажмите «Списать со склада». УПД уже есть — PDF в тулбаре.</p>`
+      : `<p class="muted" style="margin:0 0 10px">УПД готов — при перегенерации № не меняется. PDF в тулбаре; правка №/даты — ниже.</p>`
     : isShipPrep
-      ? `<p class="muted" style="margin:0 0 10px">Данных достаточно — списываем остатки со склада.</p>`
-      : `<p class="muted" style="margin:0 0 10px">Данных достаточно — создаём УПД…</p>`;
+      ? `<p class="muted" style="margin:0 0 10px">Данных достаточно — проверьте №/дату УПД и нажмите «Создать УПД и списать».</p>`
+      : `<p class="muted" style="margin:0 0 10px">Данных достаточно — проверьте №/дату и нажмите «Создать УПД».</p>`;
   const prepGateBlockedHtml = isShipPrep
     ? `<p style="margin:0 0 10px">Закройте пункты ниже. Когда всё готово, списание со склада проведётся само. Тип покупателя — в заказе.</p>`
     : isLegal || inn
@@ -19839,6 +19882,7 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
         <span class="muted" id="prep-msg" hidden></span>
       </div>`
       }
+      ${prepUpdHeadHtml}
     </div>`,
     {
       section: 'Заказ покупателя',
@@ -19916,6 +19960,12 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
     const el =
       document.getElementById('prep-toolbar-msg') || document.getElementById('prep-msg');
     if (el) el.textContent = t || '';
+  };
+
+  const readPrepUpdHeader = () => {
+    const num = String(document.getElementById('prep-upd-number')?.value || '').trim();
+    const dt = String(document.getElementById('prep-upd-date')?.value || '').trim().slice(0, 10);
+    return { number: num, doc_date: dt };
   };
 
   const readPrepBuyer = () => {
@@ -20129,6 +20179,34 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
     }
   }
 
+  const runPrepUpdAction = async () => {
+    const tMsg = document.getElementById('prep-toolbar-msg');
+    const runMsg = document.getElementById('prep-upd-run-msg');
+    const btn = document.getElementById('prep-upd-run');
+    setMsg(action === 'upd-ship' ? 'Списание…' : 'Создание…');
+    if (tMsg) tMsg.textContent = action === 'upd-ship' ? 'Списываем со склада…' : 'Создаём УПД…';
+    if (runMsg) runMsg.textContent = '';
+    if (btn) btn.disabled = true;
+    try {
+      const b = readPrepBuyer();
+      if (b.name && !isShipPrep) {
+        await api('/crm/deals/' + encodeURIComponent(dealId) + '/buyer', {
+          method: 'PATCH',
+          body: JSON.stringify(b.payload),
+        });
+      }
+      await createLinkedSalesDoc(dealId, action, '', null, readPrepUpdHeader());
+    } catch (e) {
+      setMsg(e.message || String(e));
+      if (tMsg) tMsg.textContent = e.message || String(e);
+      if (runMsg) runMsg.textContent = e.message || String(e);
+      if (btn) btn.disabled = false;
+      alert(e.message || String(e));
+    }
+  };
+
+  document.getElementById('prep-upd-run')?.addEventListener('click', () => runPrepUpdAction());
+
   if (existingUpd?.id) {
     bindSalesDocPdfBar({
       id: existingUpd.id,
@@ -20136,14 +20214,14 @@ async function renderSalesDocCreatePrep(dealIdRaw, actionRaw) {
       dealId,
       docTabLabel: 'УПД',
     });
-  } else if (check.ready) {
+  } else if (check.ready && !isUpdPrep) {
     const autoKey = 'prep-create:' + dealId + ':' + action;
     if (state._prepAutoKey !== autoKey) {
       state._prepAutoKey = autoKey;
       setTimeout(async () => {
         const tMsg = document.getElementById('prep-toolbar-msg');
         setMsg('Создание…');
-        if (tMsg) tMsg.textContent = action === 'upd-ship' ? 'Списываем со склада…' : 'Создаём УПД…';
+        if (tMsg) tMsg.textContent = 'Создаём…';
         try {
           const b = readPrepBuyer();
           if (b.name) {
@@ -20265,6 +20343,15 @@ async function createLinkedSalesDoc(dealId, action, organizationId, msgEl, opts 
   if (!deal) throw new Error('Нет заказа покупателя');
   const act = String(action || '').trim();
   const embedSto = !!opts.embedInStoPack;
+  const updNumber = String(opts.number || '').trim();
+  const updDate = String(opts.doc_date || '').trim().slice(0, 10);
+  const updExtras =
+    updNumber || updDate
+      ? {
+          ...(updNumber ? { number: updNumber } : {}),
+          ...(updDate ? { doc_date: updDate } : {}),
+        }
+      : {};
   const setMsg = (t) => {
     if (msgEl) msgEl.textContent = t;
   };
@@ -20288,6 +20375,7 @@ async function createLinkedSalesDoc(dealId, action, organizationId, msgEl, opts 
       body: JSON.stringify({
         deal_id: deal,
         organization_id: organizationId || undefined,
+        ...updExtras,
       }),
     });
     const doc = r.upd;
@@ -20315,6 +20403,7 @@ async function createLinkedSalesDoc(dealId, action, organizationId, msgEl, opts 
       deal_id: deal,
       doc_type: docType,
       organization_id: organizationId || undefined,
+      ...(docType === 'upd' || docType === 'sf' ? updExtras : {}),
     }),
   });
   const doc = r.doc;
@@ -29257,7 +29346,36 @@ async function renderSalesDocDetail(id, opts = {}) {
         )}</span>
       </label>
     </div>`
-      : `<div class="form-grid">
+      : isUpd
+        ? `<div class="form-grid" id="sd-upd-header">
+      <label>№ УПД
+        <input id="sd-upd-number" class="mono" value="${esc(docNumber)}" inputmode="numeric" autocomplete="off" />
+      </label>
+      <label>Дата
+        <input type="date" id="sd-upd-date" class="mono" value="${esc(docDateIso)}" />
+      </label>
+      <div class="span-2 form-actions" style="margin:0;padding:0">
+        <button type="button" class="primary" id="sd-upd-header-save">Сохранить № и дату</button>
+        <span class="muted" id="sd-upd-header-msg" style="font-size:12px"></span>
+      </div>
+    </div>
+    <div class="form-grid">
+      <div class="span-2 sd-money-strip" aria-label="Суммы">
+        <div class="sd-money-cell">
+          <span class="sd-money-k">Без НДС</span>
+          <span class="sd-money-v mono">${esc(formatMoney(d.amount))}</span>
+        </div>
+        <div class="sd-money-cell">
+          <span class="sd-money-k">НДС ${esc(d.vat_rate || 0)}%</span>
+          <span class="sd-money-v mono">${esc(formatMoney(d.vat_amount))}</span>
+        </div>
+        <div class="sd-money-cell sd-money-total">
+          <span class="sd-money-k">Всего</span>
+          <span class="sd-money-v mono">${esc(formatMoney(d.total))}</span>
+        </div>
+      </div>
+    </div>`
+        : `<div class="form-grid">
       <div class="span-2 sd-money-strip" aria-label="Суммы">
         <div class="sd-money-cell">
           <span class="sd-money-k">Без НДС</span>
@@ -29394,13 +29512,41 @@ async function renderSalesDocDetail(id, opts = {}) {
           openDealTransferInDocs(dealId);
           return;
         }
-        await createLinkedSalesDoc(dealId, action, d.organization_id || '', msg);
+        const hdr =
+          action === 'upd' || action === 'upd-ship'
+            ? {
+                number: String(document.getElementById('sd-upd-number')?.value || '').trim(),
+                doc_date: String(document.getElementById('sd-upd-date')?.value || '')
+                  .trim()
+                  .slice(0, 10),
+              }
+            : {};
+        await createLinkedSalesDoc(dealId, action, d.organization_id || '', msg, hdr);
       } catch (e) {
         if (msg) msg.textContent = e.message || String(e);
         alert(e.message || String(e));
         if (btn) btn.disabled = false;
       }
     },
+  });
+  document.getElementById('sd-upd-header-save')?.addEventListener('click', async () => {
+    const btn = document.getElementById('sd-upd-header-save');
+    const msg = document.getElementById('sd-upd-header-msg');
+    const number = String(document.getElementById('sd-upd-number')?.value || '').trim();
+    const doc_date = String(document.getElementById('sd-upd-date')?.value || '').trim().slice(0, 10);
+    if (btn) btn.disabled = true;
+    if (msg) msg.textContent = 'Сохраняю…';
+    try {
+      await api('/sales-docs/' + encodeURIComponent(id) + '/header', {
+        method: 'PATCH',
+        body: JSON.stringify({ number, doc_date }),
+      });
+      if (msg) msg.textContent = 'Сохранено';
+      await renderSalesDocDetail(id, opts);
+    } catch (e) {
+      if (msg) msg.textContent = e.message || String(e);
+      if (btn) btn.disabled = false;
+    }
   });
   document.getElementById('sd-pay-copy')?.addEventListener('click', async () => {
     const input = document.getElementById('sd-pay-url');

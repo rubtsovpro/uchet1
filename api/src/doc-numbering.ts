@@ -201,8 +201,7 @@ export function setLastOccupiedUpd(inn: string, lastOccupied: number): void {
   metaSet(updSeqKeyForInn(digits), String(n));
 }
 
-/** Последний занятый порядковый № УПД по ИНН продавца (не привязка к сделке). */
-export function nextOrdinalUpdNumber(organizationId: string): string {
+function ordinalUpdLastForOrg(organizationId: string): { inn: string; last: number } {
   const orgId = String(organizationId || '').trim();
   let inn = '';
   if (orgId) {
@@ -213,11 +212,23 @@ export function nextOrdinalUpdNumber(organizationId: string): string {
   }
   if (!inn) inn = UPD_INN_MSK;
   const key = updSeqKeyForInn(inn);
+  const cur = readSeq(key, updFallbackLast(inn));
+  const maxDoc = maxOrdinalUpdNumberForInn(inn);
+  return { inn, last: Math.max(cur, maxDoc) };
+}
+
+/** Следующий № УПД без резервирования (для подсказки в форме). */
+export function peekNextOrdinalUpdNumber(organizationId: string): string {
+  const { last } = ordinalUpdLastForOrg(organizationId);
+  return String(last + 1);
+}
+
+/** Последний занятый порядковый № УПД по ИНН продавца (не привязка к сделке). */
+export function nextOrdinalUpdNumber(organizationId: string): string {
+  const { inn, last } = ordinalUpdLastForOrg(organizationId);
+  const key = updSeqKeyForInn(inn);
   run('BEGIN');
   try {
-    const cur = readSeq(key, updFallbackLast(inn));
-    const maxDoc = maxOrdinalUpdNumberForInn(inn);
-    const last = Math.max(cur, maxDoc);
     const next = last + 1;
     metaSet(key, String(next));
     run('COMMIT');

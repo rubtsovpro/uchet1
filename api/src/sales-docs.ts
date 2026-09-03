@@ -13,6 +13,7 @@ import {
   nextOutNfNumber,
   salesNumberFromDeal,
   nextOrdinalUpdNumber,
+  peekNextOrdinalUpdNumber,
   workorderPrintNumber,
 } from './doc-numbering.js';
 import { getCompany } from './companies.js';
@@ -1171,12 +1172,66 @@ function nextSalesNumber(
   return nextOutNfNumber();
 }
 
-/** УПД24792021 → порядковый № по ИНН продавца (старый формат привязки к сделке). */
-function fixOrdinalUpdNumberIfLegacy(existingNumber: string, organizationId: string): string {
-  const n = String(existingNumber || '').trim();
-  if (/^\d+$/.test(n)) return n;
-  if (/^УПД/i.test(n)) return nextOrdinalUpdNumber(organizationId);
-  return n;
+function normalizeUpdNumberInput(raw: string): string {
+  return String(raw || '').trim().replace(/\s+/g, '');
+}
+
+/** Проверка уникальности № УПД в рамках юрлица продавца. */
+function assertUpdNumberAvailable(
+  number: string,
+  organizationId: string,
+  excludeDocId?: string
+): void {
+  const n = normalizeUpdNumberInput(number);
+  if (!n) throw new Error('Укажите номер УПД');
+  const orgId = String(organizationId || '').trim();
+  if (!orgId) return;
+  const ex = String(excludeDocId || '').trim();
+  const hit = get<{ id: string; deal_id: string }>(
+    `SELECT id, IFNULL(deal_id,'') AS deal_id FROM sales_docs
+     WHERE doc_type IN ('upd','sf') AND number = ? AND organization_id = ?
+       ${ex ? 'AND id != ?' : ''}
+     LIMIT 1`,
+    ex ? [n, orgId, ex] : [n, orgId]
+  );
+  if (hit?.id) {
+    throw new Error(
+      `УПД № ${n} уже занят` + (hit.deal_id ? ` (заказ ${hit.deal_id})` : '')
+    );
+  }
+}
+
+export function updateSalesDocHeader(
+  docId: string,
+  patch: { number?: string; doc_date?: string }
+): ReturnType<typeof getSalesDoc> {
+  const id = String(docId || '').trim();
+  if (!id) throw new Error('doc_id required');
+  const row = get<{ id: string; doc_type: string; organization_id: string; number: string; doc_date: string }>(
+    `SELECT id, doc_type, IFNULL(organization_id,'') AS organization_id,
+            IFNULL(number,'') AS number, IFNULL(doc_date,'') AS doc_date
+     FROM sales_docs WHERE id = ?`,
+    [id]
+  );
+  if (!row) throw new Error('Документ не найден');
+  if (row.doc_type !== 'upd' && row.doc_type !== 'sf') {
+    throw new Error('Номер и дату можно менять только у УПД');
+  }
+  const nextNumber =
+    patch.number != null ? normalizeUpdNumberInput(patch.number) : String(row.number || '').trim();
+  const nextDate =
+    patch.doc_date != null
+      ? String(patch.doc_date || '').trim().slice(0, 10)
+      : String(row.doc_date || '').slice(0, 10);
+  if (!nextNumber) throw new Error('Укажите номер УПД');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) throw new Error('Некорректная дата УПД');
+  if (nextNumber !== String(row.number || '').trim()) {
+    assertUpdNumberAvailable(nextNumber, row.organization_id, id);
+  }
+  run(`UPDATE sales_docs SET number = ?, doc_date = ? WHERE id = ?`, [nextNumber, nextDate, id]);
+  const saved = getSalesDoc(id);
+  if (!saved) throw new Error('Документ не найден после сохранения');
+  return saved;
 }
 
 export function listSalesDocs(opts: {
@@ -1578,6 +1633,8 @@ export function createUpdAndWriteOffFromDeal(input: {
   createdBy?: string;
   organizationId?: string;
   preferredWarehouseId?: string;
+  number?: string;
+  doc_date?: string;
 }): {
   upd: Row & { lines: Row[]; org: OrgProfile };
   stock_doc_id: string | null;
@@ -1599,6 +1656,8 @@ export function createUpdAndWriteOffFromDeal(input: {
     buyerInn: input.buyerInn,
     createdBy: input.createdBy,
     organizationId: input.organizationId,
+    number: input.number,
+    doc_date: input.doc_date,
   });
   if (!upd) throw new Error('Не удалось создать УПД');
 
@@ -1856,6 +1915,10 @@ export function createSalesDocFromDeal(input: {
   comment?: string;
   createdBy?: string;
   organizationId?: string;
+  /** Явный № УПД (только upd/sf); при перегенерации без override — сохраняется старый. */
+  number?: string;
+  /** Явная дата документа YYYY-MM-DD; при перегенерации без override — сохраняется старая. */
+  doc_date?: string;
 }): Row & { lines: Row[]; org: OrgProfile; regenerated?: boolean } {
   const deal = getDeal(input.dealId) as
     | (Row & { items: Array<Record<string, unknown>>; documents: unknown[] })
@@ -1877,22 +1940,37 @@ export function createSalesDocFromDeal(input: {
   );
   let id = newGuid();
   let number = '';
+  let existingDocDate = '';
   let regenerated = false;
   if (SINGLE_DEAL_DOC_TYPES.includes(input.docType)) {
-    const existing = latestDealSalesDoc(dealIdStr, input.docType);
-    if (existing) {
+    const existing = get<{ id: string; number: string; doc_date: string }>(
+      `SELECT id, IFNULL(number,'') AS number, IFNULL(doc_date,'') AS doc_date
+       FROM sales_docs
+       WHERE deal_id = ? AND doc_type = ?
+       ORDER BY datetime(created_at) DESC, number DESC LIMIT 1`,
+      [dealIdStr, input.docType]
+    );
+    if (existing?.id) {
       id = existing.id;
-      number = String(existing.number || '');
+      number = String(existing.number || '').trim();
+      existingDocDate = String(existing.doc_date || '').slice(0, 10);
       regenerated = true;
-      if (input.docType === 'upd' && organizationId) {
-        number = fixOrdinalUpdNumberIfLegacy(number, organizationId);
-      }
     }
   }
-  if (!number) {
+  const numberOverride = normalizeUpdNumberInput(String(input.number ?? ''));
+  if (numberOverride) {
+    if (input.docType === 'upd' || input.docType === 'sf') {
+      assertUpdNumberAvailable(numberOverride, organizationId, regenerated ? id : undefined);
+    }
+    number = numberOverride;
+  } else if (!number) {
     number = nextSalesNumber(input.docType, dealIdStr, organizationId);
   }
-  const docDate = new Date().toISOString().slice(0, 10);
+  const dateOverride = String(input.doc_date || '').trim().slice(0, 10);
+  const docDate =
+    dateOverride ||
+    (regenerated && existingDocDate ? existingDocDate : '') ||
+    new Date().toISOString().slice(0, 10);
   const buyerResolved = resolveContractBuyerFromDeal(deal as Row, {
     name: (input.buyerName || '').trim(),
     inn: (input.buyerInn || '').trim(),
