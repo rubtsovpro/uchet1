@@ -6809,6 +6809,7 @@ function renderSectionMenu(section) {
               title: 'Склад',
               links: [
                 { label: 'Задачи на сегодня', href: '/pick' },
+                { view: 'wh-transfers', label: 'Перемещения' },
                 { view: 'wh-cells', label: 'Адресные ячейки' },
                 { view: 'in', label: 'Приходные накладные' },
                 { view: 'warehouses', label: 'Склады', whHubTab: 'warehouses' },
