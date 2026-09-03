@@ -6817,6 +6817,15 @@ function renderSectionMenu(section) {
             },
           ],
         ]
+      : state.me && state.me.role === 'purchaser' && section === 'warehouse'
+        ? [
+            [
+              {
+                title: 'Закупки · склад',
+                links: [{ view: 'in', label: 'Приходные накладные' }],
+              },
+            ],
+          ]
       : photoOnly && section === 'warehouse'
         ? [
             [
@@ -6853,16 +6862,15 @@ function renderSectionMenu(section) {
     </div>
     <div class="section-cols">
       ${cols
-        .map(
-          (col) => `
-        <div>
-          ${col
-            .map(
-              (g) => `
+        .map((col) => {
+          const groups = (col || [])
+            .map((g) => {
+              const links = (g.links || []).filter((l) => menuLinkAllowed(l));
+              if (!links.length) return '';
+              return `
             <div class="section-group">
               <h3>${esc(g.title)}</h3>
-              ${g.links
-                .filter((l) => menuLinkAllowed(l))
+              ${links
                 .map((l) => {
                   if (l.href) {
                     return `<a class="section-link" href="${esc(l.href)}">${esc(l.label)}</a>`;
@@ -6898,11 +6906,14 @@ function renderSectionMenu(section) {
                   }"><span class="section-link-label">${esc(l.label)}</span>${badge}</a>`;
                 })
                 .join('')}
-            </div>`
-            )
-            .join('')}
-        </div>`
-        )
+            </div>`;
+            })
+            .filter(Boolean)
+            .join('');
+          if (!groups) return '';
+          return `<div>${groups}</div>`;
+        })
+        .filter(Boolean)
         .join('')}
     </div>`;
   sectionPanel.querySelectorAll('[data-view]').forEach((btn) => {
@@ -39401,6 +39412,28 @@ function menuLinkAllowed(link) {
     link.view === 'settings-channels'
   ) {
     return canAccessSectionMe('integrations') || canAccessSectionMe('settings') || canAccessSectionMe('crm');
+  }
+  // Закупщик: только закупки / помощь — не светим чужие пункты склада и т.п.
+  if (state.me && state.me.role === 'purchaser' && !isAdminMe()) {
+    const view = String(link.view || '');
+    const okViews = {
+      suppliers: 1,
+      in: 1,
+      'in-new': 1,
+      'parity-supplier-orders': 1,
+      'parity-purchase-discrepancy': 1,
+      'parity-purchases-reports': 1,
+      'purchase-price-intake': 1,
+      products: 1,
+      'help-hub': 1,
+      'help-integrations': 1,
+      'help-lifecycle': 1,
+      'help-ui': 1,
+    };
+    if (view) return !!okViews[view];
+    if (href && !href.startsWith('/help') && !href.startsWith('/purchases') && href !== '/in' && !href.startsWith('/in/')) {
+      return false;
+    }
   }
   return true;
 }

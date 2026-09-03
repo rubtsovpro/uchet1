@@ -298,16 +298,7 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
     can_payroll: true,
   }),
   purchaser: withCompanyIds({
-    sections: [
-      'home',
-      'purchases',
-      'warehouse',
-      'crm',
-      'chats',
-      'reports',
-      'company',
-      'help',
-    ],
+    sections: ['home', 'purchases', 'help'],
     can_sync: false,
     can_edit_products: true,
     can_edit_prices: true,
@@ -382,7 +373,7 @@ export const ROLE_META: Record<StaffRole, Omit<RoleMeta, 'id' | 'rights'>> = {
   purchaser: {
     label: 'Закупщик',
     description:
-      'Заказы поставщику (копипаст/Excel), цены, статус «В пути», черновики приходных для склада, анализ заказа. Без синхронизации и налогов.',
+      'Только закупки: заказы поставщику, копипаст/Excel, приходные (черновики для склада), номенклатура в закупках. Без склада/CRM/компании.',
   },
   readonly: {
     label: 'Наблюдатель',
@@ -975,6 +966,7 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
   const needV6 = !ver || Number(ver) < 6;
   const needV7 = !ver || Number(ver) < 7;
   const needV8 = !ver || Number(ver) < 8;
+  const needV9 = !ver || Number(ver) < 9;
 
   for (const row of rows) {
     const role = isStaffRole(row.role) ? row.role : 'none';
@@ -988,7 +980,7 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
       filled += 1;
       continue;
     }
-    if (!needV4 && !needV5 && !needV6 && !needV7 && !needV8) continue;
+    if (!needV4 && !needV5 && !needV6 && !needV7 && !needV8 && !needV9) continue;
     if (role === 'admin' && (needV4 || needV6 || needV7 || needV8)) {
       run('UPDATE staff SET rights_json = ? WHERE id = ?', [
         JSON.stringify(rightsForRole('admin')),
@@ -997,6 +989,16 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
       migrated += 1;
       continue;
     }
+    // v9: закупщик — только home / purchases / help (без склада/CRM/компании)
+    if (needV9 && role === 'purchaser') {
+      run('UPDATE staff SET rights_json = ? WHERE id = ?', [
+        JSON.stringify(rightsForRole('purchaser')),
+        row.id,
+      ]);
+      migrated += 1;
+      continue;
+    }
+    if (!needV4 && !needV5 && !needV6 && !needV7 && !needV8) continue;
     const rights = parseRights(raw, role);
     const roleSecs = new Set(rightsForRole(role).sections);
     const have = new Set(rights.sections);
@@ -1067,7 +1069,7 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
     }
   }
   run(
-    `INSERT INTO meta (key, value) VALUES ('staff_roles_version', '8')
+    `INSERT INTO meta (key, value) VALUES ('staff_roles_version', '9')
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   );
   return { filled, migrated };
