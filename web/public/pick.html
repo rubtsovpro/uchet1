@@ -1371,6 +1371,27 @@
     .handoff-row.prod-card-enter {
       animation: prod-card-enter 0.38s ease-out;
     }
+    .prod-stop-banner {
+      margin: 0 0 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .prod-stop-banner .prod-stop-route {
+      display: block;
+      margin-top: 4px;
+      font-weight: 600;
+      color: #b45309;
+    }
+    .handoff-complete-btn.is-production:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
     @keyframes prod-card-enter {
       from { opacity: 0; transform: translateY(-14px); }
       to { opacity: 1; transform: translateY(0); }
@@ -2816,6 +2837,8 @@
     let prodCardsBound = false;
     /** @type {Map<string, { stamp: string }>} */
     let prodCardsCache = new Map();
+    /** deal_id → pending stock return (СТО → Основной) */
+    let pendingStockReturnByDeal = new Map();
     /** Заказы уже на участке (склад отдал) — иначе пропадают с /production после handed. */
     let prodAtJobs = [];
     let handoffTab = 'active';
@@ -4404,6 +4427,15 @@
     }
 
 
+    function rebuildPendingStockReturnMap() {
+      pendingStockReturnByDeal = new Map();
+      (Array.isArray(stockReturns) ? stockReturns : []).forEach((r) => {
+        const dealId = String(r.deal_id || '').trim();
+        if (!dealId) return;
+        pendingStockReturnByDeal.set(dealId, r);
+      });
+    }
+
     function productionCardHtml(t) {
       const id = String(t.id || '').trim();
       const jobId = String(t.stock_doc_id || '').trim();
@@ -4448,8 +4480,20 @@
           '<button type="button" class="handoff-secondary is-print" data-prod-print="' +
           esc(id) +
           '">Расходная</button></div>';
+      const pendingRet = dealId ? pendingStockReturnByDeal.get(dealId) : null;
+      const stopBanner = pendingRet
+        ? '<div class="prod-stop-banner">⛔ Производство остановлено — по сделке возврат на склад, переделывать не нужно.' +
+          '<span class="prod-stop-route">' +
+          esc(String(pendingRet.route_label || 'СТО → Основной')) +
+          ' · ' +
+          esc(String(pendingRet.reason || 'возврат').slice(0, 120)) +
+          '</span></div>'
+        : '';
+      const prodDoneDisabled = pendingRet ? ' disabled aria-disabled="true" title="Сначала возврат на склад — производство отменено"' : '';
       return (
-        '<article class="handoff-row is-production" data-prod-task="' +
+        '<article class="handoff-row is-production' +
+        (pendingRet ? ' is-prod-stopped' : '') +
+        '" data-prod-task="' +
         esc(id) +
         '" data-prod-job="' +
         esc(jobId) +
@@ -4472,6 +4516,7 @@
         (dealId ? (when ? '<br>' : '') + '<strong class="handoff-meta-deal">' + esc(dealId) + '</strong>' : '') +
         (num ? (when || dealId ? ' · ' : '') + esc(num) : '') +
         '</div></div></div>' +
+        stopBanner +
         sendTitle +
         productionLinesTableHtml(consume) +
         '<hr class="prod-result-hr" />' +
@@ -4481,7 +4526,9 @@
         '<div class="handoff-actionbar-main">' +
         '<button type="button" class="handoff-complete-btn is-production" data-prod-done="' +
         esc(id) +
-        '">Произвели</button>' +
+        '"' +
+        prodDoneDisabled +
+        '>Произвели</button>' +
         '</div></div></article>'
       );
     }
@@ -4847,6 +4894,7 @@
     async function renderProductionCards(allProd) {
       const root = ensureProdCardsRoot();
       if (!root) return;
+      rebuildPendingStockReturnMap();
       const sorted = allProd.slice().sort((a, b) => {
         const ta = Date.parse(String(a.created_at || '')) || 0;
         const tb = Date.parse(String(b.created_at || '')) || 0;
@@ -5098,7 +5146,8 @@
       ]);
       board = data;
       handoffs = [];
-      stockReturns = [];
+      stockReturns = Array.isArray(data.returns) ? data.returns : [];
+      rebuildPendingStockReturnMap();
       prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
       lastRefreshAt = new Date();
       updateAutoLabel();

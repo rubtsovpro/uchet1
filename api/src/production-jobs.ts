@@ -10,7 +10,7 @@ import { auditFromContext } from './audit.js';
 import { createDocument, postDocument } from './stock.js';
 import { insertLinePlacements } from './warehouse-cells.js';
 import { ensureWarehouseByCode } from './supply-chain.js';
-import { getTask, logTask } from './warehouse-tasks.js';
+import { getTask, logTask, setTaskStatus } from './warehouse-tasks.js';
 import { notifyAmoWarehousePacked } from './amo-pick-handoff.js';
 import { getDeal } from './deals.js';
 
@@ -743,6 +743,55 @@ export function cancelProductionJob(jobId: string, actorId?: string) {
   logProductionEvent(jobId, 'cancelled', actorId, {});
   postProductionDealNote(getProductionJob(jobId), 'cancelled');
   return getProductionJob(jobId)!;
+}
+
+/** Возврат со сделки: отменить производство, которое ещё не ушло на участок. */
+export function abortOpenProductionForDeal(
+  dealId: string,
+  reason: string,
+  actorId?: string
+): { cancelled_jobs: string[]; cancelled_tasks: string[] } {
+  const id = String(dealId || '').trim();
+  const why = String(reason || 'Возврат — производство остановлено').trim();
+  const cancelledJobs: string[] = [];
+  const cancelledTasks: string[] = [];
+  if (!id) return { cancelled_jobs: cancelledJobs, cancelled_tasks: cancelledTasks };
+
+  const jobs = all<{ id: string; number: string; status: string }>(
+    `SELECT id, number, status FROM production_jobs
+     WHERE deal_id = ? AND status IN ('draft','await_send')`,
+    [id]
+  );
+  for (const j of jobs) {
+    try {
+      cancelProductionJob(String(j.id), actorId);
+      cancelledJobs.push(String(j.number || j.id));
+    } catch {
+      /* уже закрыто или на участке */
+    }
+  }
+
+  const tasks = all<{ id: string; number: string }>(
+    `SELECT id, number FROM warehouse_tasks
+     WHERE deal_id = ? AND channel IN ('production_send','production_receive')
+       AND status NOT IN ('handed','cancelled')`,
+    [id]
+  );
+  for (const t of tasks) {
+    try {
+      setTaskStatus({
+        id: String(t.id),
+        status: 'cancelled',
+        block_reason: why,
+        actor_id: actorId,
+      });
+      cancelledTasks.push(String(t.number || t.id));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return { cancelled_jobs: cancelledJobs, cancelled_tasks: cancelledTasks };
 }
 
 export function mountProductionJobRoutes(api: Hono): void {

@@ -20,6 +20,7 @@ import { notifyAmoCourierDeliveredOnce, notifyAmoWarehousePacked } from './amo-p
 import { mainWarehouseId, stoWarehouseId, courierWarehouseId } from './supply-chain.js';
 import { mappedSuccessStatus } from './amo-settings.js';
 import { rawStatusId } from './deals.js';
+import { abortOpenProductionForDeal } from './production-jobs.js';
 
 const SUCCESS_NAME_RE = /успешн|реализован/i;
 const FAIL_NAME_RE = /не реализован|закрыто и не/i;
@@ -1248,6 +1249,11 @@ export function requestStockReturn(input: {
     created_at: existing?.status === 'pending' ? String(existing.created_at) : new Date().toISOString(),
   });
   writeMetaJson(RETURN_META(dealId), req);
+  try {
+    abortOpenProductionForDeal(dealId, req.reason || reasonText);
+  } catch (e) {
+    console.warn('[deal-stock-flow] abort production on return failed', e);
+  }
   return req;
 }
 
