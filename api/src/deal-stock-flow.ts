@@ -1131,6 +1131,9 @@ function dealMovedToBufferQty(dealId: string, productId: string): number {
  */
 function prunePhantomStockReturn(req: StockReturnRequest): StockReturnRequest | null {
   if (req.status !== 'pending') return req;
+  const reason = String(req.reason || '').trim();
+  // Полный возврат — вернуть всё с СТО/резерва, даже если позиции ещё в заказе.
+  if (/^полный возврат/i.test(reason)) return req;
   const dealId = String(req.deal_id || '').trim();
   const lines = [...(req.lines || [])];
   if (!dealId || !lines.length) {
@@ -1339,13 +1342,17 @@ export function requestStockReturn(input: {
     order_item_ids: orderItemIds,
     created_at: existing?.status === 'pending' ? String(existing.created_at) : new Date().toISOString(),
   });
-  writeMetaJson(RETURN_META(dealId), req);
+  const pruned = prunePhantomStockReturn(req);
+  if (!pruned) {
+    throw new Error('Нет позиций для возврата на склад');
+  }
+  writeMetaJson(RETURN_META(dealId), pruned);
   try {
-    abortOpenProductionForDeal(dealId, req.reason || reasonText);
+    abortOpenProductionForDeal(dealId, pruned.reason || reasonText);
   } catch (e) {
     console.warn('[deal-stock-flow] abort production on return failed', e);
   }
-  return req;
+  return pruned;
 }
 
 /** Остаток товара на складе (stock_balances). */

@@ -41,6 +41,9 @@ build_and_restart() {
   sleep 1
   curl -sS -o /dev/null -w "health %{http_code}\n" "http://127.0.0.1:3101/api/health"
   curl -sS -o /dev/null -w "ocr %{http_code}\n" "http://127.0.0.1:3105/health" 2>/dev/null || echo "ocr (not installed)"
+  if [[ -x deploy/amo1c-sync.sh ]]; then
+    bash deploy/amo1c-sync.sh || true
+  fi
 }
 
 if [[ "${1:-}" == "--local" ]]; then

@@ -57,6 +57,7 @@ jobs:
             fi
             npm prune --omit=dev --prefix api
             systemctl restart warehouse-wms
+            bash deploy/amo1c-sync.sh
             sleep 2
             code=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:3101/api/health || true)
             echo "health $code"
