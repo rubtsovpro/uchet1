@@ -115,3 +115,9 @@ export function listOnlinePresence(): PresenceRow[] {
     country: r.country || '',
   }));
 }
+
+export function clearPresence(actorId: string): void {
+  const id = String(actorId || '').trim();
+  if (!id) return;
+  run('DELETE FROM user_presence WHERE actor_id = ?', [id]);
+}

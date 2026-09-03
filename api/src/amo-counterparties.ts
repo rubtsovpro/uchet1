@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { all, get, run } from './db.js';
 import { normalizePhoneForStorage } from './phone.js';
+import { sanitizeBuyerInn } from './deal-sale-rules.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -109,7 +110,7 @@ function upsertCompany(row: AmoCpRow): string {
   const amoId = String(row.id || '').trim();
   if (!amoId) return '';
   const name = String(row.name || '').trim() || `Компания Amo #${amoId}`;
-  const inn = String(row.inn || '').replace(/\D/g, '');
+  const inn = sanitizeBuyerInn(row.inn);
   const phone = joinPhones(row.phones, row.phone || '');
   const email = String(row.email || (row.emails && row.emails[0]) || '').trim();
   const amoUrl = String(row.amo_url || '').trim();
@@ -126,11 +127,7 @@ function upsertCompany(row: AmoCpRow): string {
   const id = existing?.id || companyLocalId(amoId);
   const kind = mergeKind(existing?.kind, 'buyer');
   const isPartner = Number(row.is_partner) === 1 || String(row.buyer_kind || '') === 'partner';
-  const partyKind = isPartner
-    ? 'partner'
-    : inn.length === 12
-      ? 'ip'
-      : 'legal';
+  const partyKind = inn.length === 12 ? 'ip' : inn.length === 10 ? 'legal' : 'person';
 
   if (existing) {
     run(
@@ -183,7 +180,7 @@ function upsertContact(row: AmoCpRow): string {
   const amoId = String(row.id || '').trim();
   if (!amoId) return '';
   const name = String(row.name || '').trim() || `Контакт Amo #${amoId}`;
-  const inn = String(row.inn || '').replace(/\D/g, '');
+  const inn = sanitizeBuyerInn(row.inn);
   const phone = joinPhones(row.phones, row.phone || '');
   const email = String(row.email || (row.emails && row.emails[0]) || '').trim();
   const amoUrl = String(row.amo_url || '').trim();

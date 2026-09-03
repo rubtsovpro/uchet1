@@ -1,5 +1,6 @@
 /**
- * Дерево категорий номенклатуры (только база подвески — Фогель не грузим).
+ * Дерево категорий номенклатуры.
+ * Счётчики товаров режутся по source_department (контур).
  * Одноимённые GUID часто = пустая папка + рабочая с товарами; склеиваем в одну строку.
  */
 import { all } from './db.js';
@@ -21,6 +22,38 @@ export type CategoryTreeNode = {
   children: CategoryTreeNode[];
 };
 
+/** Фильтры счётчиков (как в списке /products). */
+export type CategoryTreeFilters = {
+  is_main?: '0' | '1';
+  item_kind?: 'product' | 'service';
+  /** Базы 1С: pnevmopodveska_2025 | fogel_2025 */
+  source_departments?: string[] | null;
+};
+
+function productCountWhere(filters?: CategoryTreeFilters): { sql: string; params: (string | number)[] } {
+  const parts = ['IFNULL(is_active, 1) = 1'];
+  const params: (string | number)[] = [];
+  if (filters?.is_main === '0' || filters?.is_main === '1') {
+    parts.push('IFNULL(is_main, 0) = ?');
+    params.push(Number(filters.is_main));
+  }
+  if (filters?.item_kind === 'service') {
+    parts.push(`IFNULL(item_kind, 'product') = 'service'`);
+  } else if (filters?.item_kind === 'product') {
+    parts.push(`IFNULL(item_kind, 'product') != 'service'`);
+  }
+  const depts = filters?.source_departments;
+  if (depts && depts.length) {
+    if (depts.length === 1 && depts[0] === '__none__') {
+      parts.push('1=0');
+    } else {
+      parts.push(`IFNULL(source_department,'') IN (${depts.map(() => '?').join(',')})`);
+      params.push(...depts);
+    }
+  }
+  return { sql: parts.join(' AND '), params };
+}
+
 function normalizeParent(pid: string | null | undefined): string | null {
   const s = String(pid || '').trim();
   if (!s || s === '00000000-0000-0000-0000-000000000000') return null;
@@ -35,7 +68,8 @@ export function nameKey(name: string): string {
     .replace(/\s+/g, ' ');
 }
 
-export function listCategoriesFlat(): CategoryFlat[] {
+export function listCategoriesFlat(filters?: CategoryTreeFilters): CategoryFlat[] {
+  const { sql: where, params } = productCountWhere(filters);
   return all<{
     id: string;
     name: string;
@@ -48,10 +82,12 @@ export function listCategoriesFlat(): CategoryFlat[] {
      LEFT JOIN (
        SELECT category_id, COUNT(*) AS cnt
        FROM products
-       WHERE category_id IS NOT NULL AND TRIM(category_id) != ''
+       WHERE ${where}
+         AND category_id IS NOT NULL AND TRIM(category_id) != ''
        GROUP BY category_id
      ) pc ON pc.category_id = c.id
-     ORDER BY c.name COLLATE NOCASE`
+     ORDER BY c.name COLLATE NOCASE`,
+    params
   ).map((r) => ({
     id: String(r.id),
     name: String(r.name || ''),
@@ -146,14 +182,14 @@ function resolveParentId(
   return null;
 }
 
-export function buildCategoryTree(): {
+export function buildCategoryTree(filters?: CategoryTreeFilters): {
   roots: CategoryTreeNode[];
   total_categories: number;
   total_products_in_tree: number;
   uncategorized: number;
   raw_categories: number;
 } {
-  const flat = listCategoriesFlat();
+  const flat = listCategoriesFlat(filters);
   const { merged, idToCanon } = mergeByName(flat);
   const canonIds = new Set(merged.map((g) => g.id));
 
@@ -208,10 +244,13 @@ export function buildCategoryTree(): {
   const countNodes = (nodes: CategoryTreeNode[]): number =>
     nodes.reduce((s, n) => s + 1 + countNodes(n.children), 0);
 
+  const { sql: where, params } = productCountWhere(filters);
   const uncategorized =
     all<{ c: number }>(
       `SELECT COUNT(*) AS c FROM products
-       WHERE category_id IS NULL OR TRIM(IFNULL(category_id,'')) = ''`
+       WHERE ${where}
+         AND (category_id IS NULL OR TRIM(IFNULL(category_id,'')) = '')`,
+      params
     )[0]?.c ?? 0;
 
   return {

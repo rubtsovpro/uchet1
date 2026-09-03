@@ -1,10 +1,12 @@
 /**
  * Гараж авто контрагента: несколько машин на одного клиента.
  * На заказе/ЗН по-прежнему снимок car_* — гараж для выбора и повторных визитов.
+ * Фото СТС — на каждое авто: data/sts/vehicles/{id}/.
  */
 import { all, get, run, type Row } from './db.js';
 import { newGuid } from './ids.js';
 import { digitsOnly, normalizePhoneForStorage } from './phone.js';
+import { stsMediaInfoForVehicle } from './sts-media.js';
 
 export type CounterpartyVehicleFields = {
   car_plate?: string;
@@ -21,6 +23,8 @@ export type CounterpartyVehicleFields = {
   car_owner_flat?: string;
   car_sts_date?: string;
   car_sts_number?: string;
+  /** Последний известный пробег (обновляется с заказа при приёмке). */
+  car_mileage?: string;
 };
 
 export type CounterpartyVehicle = CounterpartyVehicleFields & {
@@ -28,6 +32,7 @@ export type CounterpartyVehicle = CounterpartyVehicleFields & {
   counterparty_id: string;
   created_at?: string;
   updated_at?: string;
+  sts_photos?: ReturnType<typeof stsMediaInfoForVehicle>;
 };
 
 function normPlate(v: unknown): string {
@@ -66,6 +71,7 @@ function rowToVehicle(r: Row): CounterpartyVehicle {
     car_owner_flat: String(r.car_owner_flat || ''),
     car_sts_date: String(r.car_sts_date || ''),
     car_sts_number: String(r.car_sts_number || ''),
+    car_mileage: String(r.car_mileage || ''),
     created_at: String(r.created_at || ''),
     updated_at: String(r.updated_at || ''),
   };
@@ -128,6 +134,7 @@ export function upsertCounterpartyVehicle(
     if (byVin) id = String(byVin.id);
   }
 
+  const mil = pick(vehicle.car_mileage);
   const fields = [
     plate,
     vin,
@@ -146,14 +153,16 @@ export function upsertCounterpartyVehicle(
   ];
 
   if (id) {
+    // пробег на авто — последний известный; пустой с заказа не затирает
     run(
       `UPDATE counterparty_vehicles SET
          car_plate=?, car_vin=?, car_year=?, car_brand=?, car_model=?, car_color=?,
          car_category=?, car_pts=?, car_owner=?, car_owner_street=?, car_owner_house=?,
          car_owner_flat=?, car_sts_date=?, car_sts_number=?,
+         car_mileage=CASE WHEN ? = '' THEN car_mileage ELSE ? END,
          updated_at=datetime('now')
        WHERE id=? AND counterparty_id=?`,
-      [...fields, id, cpId]
+      [...fields, mil, mil, id, cpId]
     );
   } else {
     id = newGuid();
@@ -162,9 +171,9 @@ export function upsertCounterpartyVehicle(
          id, counterparty_id,
          car_plate, car_vin, car_year, car_brand, car_model, car_color,
          car_category, car_pts, car_owner, car_owner_street, car_owner_house,
-         car_owner_flat, car_sts_date, car_sts_number
-       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, cpId, ...fields]
+         car_owner_flat, car_sts_date, car_sts_number, car_mileage
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, cpId, ...fields, mil]
     );
   }
   const saved = getCounterpartyVehicle(id);
@@ -182,6 +191,19 @@ export function deleteCounterpartyVehicle(counterpartyId: string, vehicleId: str
 /** Контрагент сделки (id / amo_company_id / ИНН / телефон). */
 export function resolveCounterpartyIdForDeal(deal: Row | null | undefined): string {
   if (!deal) return '';
+  const contactIdsRaw = String(deal.amo_contact_ids || '')
+    .split(/[,;\s]+/)
+    .map((x) => x.replace(/\D/g, ''))
+    .filter(Boolean);
+  const mainContact = String(deal.amo_contact_id || '').replace(/\D/g, '');
+  const contactIds = [...new Set(mainContact ? [mainContact, ...contactIdsRaw] : contactIdsRaw)];
+  for (const amoContactId of contactIds) {
+    const byContact = get(
+      `SELECT id FROM counterparties WHERE amo_contact_id = ? ORDER BY name LIMIT 1`,
+      [amoContactId]
+    );
+    if (byContact) return String(byContact.id);
+  }
   const companyId = String(deal.company_id || '').trim();
   if (companyId) {
     const byId = get('SELECT id FROM counterparties WHERE id = ?', [companyId]);
@@ -234,16 +256,25 @@ export function ensureCounterpartyForDeal(deal: Row | null | undefined): string 
   if (!name) return '';
   const phone = normalizePhoneForStorage(deal.buyer_phone);
   const inn = String(deal.buyer_inn || '').replace(/\D/g, '');
+  const amoContactId = String(deal.amo_contact_id || '').replace(/\D/g, '');
+  const amoContactIds = String(deal.amo_contact_ids || '')
+    .split(/[,;\s]+/)
+    .map((x) => x.replace(/\D/g, ''))
+    .filter(Boolean)
+    .join(',');
   const id = newGuid();
+  const kind = String(deal.buyer_kind || '').toLowerCase();
   const isLegal =
-    Number(deal.is_legal_entity) === 1 ||
-    String(deal.buyer_kind || '').toLowerCase() === 'legal' ||
-    inn.length === 10;
+    kind !== 'person' &&
+    (Number(deal.is_legal_entity) === 1 ||
+      kind === 'legal' ||
+      kind === 'ip' ||
+      inn.length === 10);
   run(
     `INSERT INTO counterparties (
-       id, name, inn, phone, kind, party_kind, is_active, source, created_at
-     ) VALUES (?, ?, ?, ?, 'buyer', ?, 1, 'deal-garage', datetime('now'))`,
-    [id, name, inn, phone, isLegal ? 'legal' : 'person']
+       id, name, inn, phone, kind, party_kind, is_active, source, amo_contact_id, created_at
+     ) VALUES (?, ?, ?, ?, 'buyer', ?, 1, 'deal-garage', ?, datetime('now'))`,
+    [id, name, inn, phone, isLegal ? 'legal' : 'person', amoContactId]
   );
   // привязать сделку к созданному контрагенту
   const dealId = pick(deal.id);
@@ -252,9 +283,11 @@ export function ensureCounterpartyForDeal(deal: Row | null | undefined): string 
       `UPDATE crm_deals
        SET company_id = CASE WHEN IFNULL(company_id,'') = '' THEN ? ELSE company_id END,
            company_name = CASE WHEN IFNULL(company_name,'') = '' THEN ? ELSE company_name END,
+           amo_contact_id = CASE WHEN IFNULL(amo_contact_id,'') = '' AND ? != '' THEN ? ELSE amo_contact_id END,
+           amo_contact_ids = CASE WHEN IFNULL(amo_contact_ids,'') = '' AND ? != '' THEN ? ELSE amo_contact_ids END,
            updated_at = datetime('now')
        WHERE id = ?`,
-      [id, isLegal ? name : '', dealId]
+      [id, isLegal ? name : '', amoContactId, amoContactId, amoContactIds, amoContactIds, dealId]
     );
   }
   return id;
@@ -298,5 +331,11 @@ export function garageForDeal(dealId: string, opts?: { ensure?: boolean }): {
       }
     }
   }
-  return { counterparty_id, vehicles };
+  return {
+    counterparty_id,
+    vehicles: vehicles.map((v) => ({
+      ...v,
+      sts_photos: stsMediaInfoForVehicle(v.id),
+    })),
+  };
 }

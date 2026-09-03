@@ -92,7 +92,7 @@ const SECTIONS = {
           links: [
             { view: 'buyers', label: 'Покупатели' },
             { view: 'deals', label: 'Заказы покупателей (сделки)' },
-            { view: 'docs', label: 'Расходные накладные' },
+            { view: 'docs', label: 'Списания' },
             { view: 'invoices', label: 'Счета на оплату' },
             { view: 'workorders', label: 'Заказ-наряды' },
             { view: 'upd', label: 'УПД' },
@@ -424,9 +424,9 @@ function debounce(fn, ms) {
 }
 
 function formatMoney(n) {
-  const v = Number(n);
+  const v = Math.round(Number(n));
   if (!Number.isFinite(v)) return '—';
-  return v.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
+  return v.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽';
 }
 
 function showForm() {
@@ -738,7 +738,7 @@ async function renderDashboard() {
     const btn = document.getElementById('sync-docs');
     btn.disabled = true;
     msg.textContent =
-      'Загрузка приходных и расходных из 1С… это может занять 30–60 мин, остатки не пересчитываются';
+      'Загрузка приходных и списаний из 1С… это может занять 30–60 мин, остатки не пересчитываются';
     try {
       const r = await api('/sync/docs', {
         method: 'POST',
@@ -934,7 +934,7 @@ async function renderProductDetail(id) {
           .map(
             (x) =>
               `<tr><td>${esc(x.price_type)}</td>
-              <td><input class="mono pe-price" data-type="${esc(x.price_type)}" type="number" step="0.01" value="${esc(x.price)}" style="width:120px" /></td></tr>`
+              <td><input class="mono pe-price" data-type="${esc(x.price_type)}" type="number" step="1" value="${esc(x.price)}" style="width:120px" /></td></tr>`
           )
           .join('')}
       </tbody></table>
@@ -1499,7 +1499,7 @@ function kindLabel(kind) {
 
 function docTypeLabel(t) {
   if (t === 'in') return 'Приходная';
-  if (t === 'out') return 'Расходная';
+  if (t === 'out') return 'Списание';
   if (t === 'transfer') return 'Перемещение';
   return t || '—';
 }
@@ -1937,7 +1937,7 @@ async function renderDocs() {
         <button class="primary" type="button" id="goto-in">Создать приход</button>
         <button type="button" id="docs-in">Приходные</button>
         <button type="button" id="docs-return">Возвраты</button>
-        <button type="button" id="docs-out">Расходные</button>
+        <button type="button" id="docs-out">Списания</button>
         <button type="button" id="docs-all">Все</button>
         <div class="grow"></div>
         <div class="find">
@@ -1994,7 +1994,7 @@ async function renderDocs() {
 
 async function renderDocDetail(id) {
   const d = await api('/docs/' + id);
-  const typeMap = { in: 'Приходная накладная', out: 'Расходная накладная', transfer: 'Перемещение', return: 'Возврат от покупателя' };
+  const typeMap = { in: 'Приходная накладная', out: 'Списание со склада', transfer: 'Перемещение', return: 'Возврат от покупателя' };
   const typeShort = { in: 'Приход', out: 'Расход', transfer: 'Перемещение', return: 'Возврат' };
   const title = `${typeShort[d.doc_type] || d.doc_type} ${d.number || ''}`.trim();
   const tabId = 'doc:' + id;
@@ -2197,7 +2197,7 @@ async function renderDeals() {
         <select id="d-status">${statusOpts}</select>
         <div class="grow"></div>
         <div class="find">
-          <input id="d-q" placeholder="Поиск id / название" value="${esc(q)}" />
+          <input id="d-q" placeholder="id / название / авто / паспорт" value="${esc(q)}" />
           <button type="button" class="find-go" id="d-search">Найти</button>
         </div>`,
     }

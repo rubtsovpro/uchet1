@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0d7377" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <title>Курьер · Учёт №1</title>
+  <!-- courier-ui rev=uchetn1-20260828-courier-registry -->
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <style>
+    :root, [data-theme="light"] {
+      --bg: #e8f0f0;
+      --card: #ffffff;
+      --text: #0f1f1f;
+      --muted: #5a6f6f;
+      --line: #b8cece;
+      --accent: #0d7377;
+      --accent-soft: #c5e8e9;
+      --danger: #b91c1c;
+      --ok: #0f766e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      padding: 12px;
+      padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    }
+    .chrome {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: calc(100dvh - 24px);
+      width: 100%;
+    }
+    header.top {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 8px;
+      min-height: 52px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 6px 10px;
+      box-shadow: 0 2px 10px rgba(13, 50, 50, .08);
+      position: sticky;
+      top: 12px;
+      z-index: 5;
+    }
+    .brand { display: flex; align-items: center; gap: 8px; min-width: 0; flex-shrink: 1; }
+    .brand img { width: 28px; height: 28px; border-radius: 50%; }
+    .brand-text { display: flex; align-items: baseline; gap: 8px; min-width: 0; overflow: hidden; }
+    .brand-text h1 { margin: 0; font-size: 15px; font-weight: 800; color: var(--accent); white-space: nowrap; }
+    .brand-text .sub { color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
+    .toolbar { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .who { font-size: 12px; font-weight: 600; color: var(--muted); max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .auto-live { font-size: 12px; font-weight: 600; color: var(--muted); }
+    .auto-live.is-pulse { color: var(--accent); }
+    .auto-live.is-paused { color: #b45309; }
+    .btn-tool {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 6px 10px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      min-height: 36px;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+    }
+    .btn-tool:active { background: var(--accent-soft); }
+    .tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 6px;
+    }
+    .tab {
+      appearance: none;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tab b {
+      min-width: 1.4em;
+      text-align: center;
+      background: var(--accent-soft);
+      color: var(--ok);
+      border-radius: 999px;
+      padding: 1px 7px;
+      font-size: 12px;
+    }
+    .tab.is-on {
+      background: var(--accent);
+      color: #fff;
+      border-color: transparent;
+    }
+    .tab.is-on b { background: rgba(255,255,255,.22); color: #fff; }
+    .findbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 8px;
+    }
+    .findbar input {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 14px;
+      background: #f7fbfb;
+    }
+    .findbar button {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: var(--accent);
+      color: #fff;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .cr-err { color: var(--danger); padding: 6px 2px; font-size: 14px; font-weight: 600; }
+    .table-wrap {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    table.cr-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+    }
+    .cr-table th, .cr-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+    .cr-table th {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--muted);
+      background: #f4fafa;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .cr-table tr:last-child td { border-bottom: 0; }
+    .cr-table .title { font-weight: 700; font-size: 14px; }
+    .cr-table .route { color: var(--accent); font-weight: 700; }
+    .cr-table .muted { color: var(--muted); font-size: 12px; }
+    .cr-table .pay-bad { color: var(--danger); font-weight: 700; }
+    .cr-table .pay-ok { color: var(--ok); font-weight: 700; }
+    .chip {
+      display: inline-block;
+      background: var(--accent-soft);
+      color: var(--ok);
+      border-radius: 8px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      margin: 0 4px 4px 0;
+    }
+    .chip.is-wait { background: #fef3c7; color: #92400e; }
+    .chip.is-go { background: #d1fae5; color: #065f46; }
+    .row-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .row-actions a, .row-actions button {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+    }
+    .row-actions button.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: transparent;
+    }
+    .row-actions button:disabled { opacity: .55; cursor: default; }
+    .cr-check {
+      width: 36px;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .cr-check input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+    .selbar {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .selbar.is-on { display: flex; }
+    .selbar b { color: var(--text); }
+    .cr-empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 40px 16px;
+      font-weight: 600;
+    }
+    @media (max-width: 720px) {
+      .who { display: none; }
+      table.cr-table { min-width: 0; }
+      .cr-table thead { display: none; }
+      .cr-table, .cr-table tbody, .cr-table tr, .cr-table td { display: block; width: 100%; }
+      .cr-table tr {
+        border-bottom: 1px solid var(--line);
+        padding: 12px;
+      }
+      .cr-table td {
+        border: 0;
+        padding: 4px 0;
+      }
+      .cr-table td::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        margin-bottom: 2px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="chrome">
+    <header class="top">
+      <div class="brand">
+        <img src="/logo-uchet1.svg" width="28" height="28" alt="Учёт №1" />
+        <div class="brand-text">
+          <h1>Курьер</h1>
+          <span class="sub" id="day">—</span>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span class="who" id="who" title="Сотрудник"></span>
+        <span class="auto-live" id="auto-live" title="Очередь обновляется сама">авто · —</span>
+        <button type="button" class="btn-tool" id="btn-print-reg" title="Реестр: все активные или отмеченные галочками">Реестр</button>
+        <a class="btn-tool" href="/login" id="logout">Выйти</a>
+      </div>
+    </header>
+
+    <div class="tabs" id="tabs">
+      <button type="button" class="tab is-on" data-tab="active">Активные<b id="c-active">0</b></button>
+      <button type="button" class="tab" data-tab="closed">Закрытые<b id="c-closed">0</b></button>
+    </div>
+
+    <div class="findbar">
+      <input type="search" id="q" placeholder="Поиск: сделка, СДЭК, клиент, телефон…" autocomplete="off" />
+      <button type="button" id="btn-find">Найти</button>
+    </div>
+    <div class="selbar" id="selbar">
+      <label><input type="checkbox" id="chk-all" /> Выбрать все</label>
+      <span>Отмечено: <b id="sel-n">0</b></span>
+      <button type="button" class="btn-tool" id="btn-print-sel" style="margin-left:auto">Реестр отмеченных</button>
+    </div>
+
+    <div id="cr-msg" class="cr-err" hidden></div>
+    <div class="table-wrap" id="cr-list"><p class="cr-empty">Загрузка…</p></div>
+  </div>
+  <script>
+    let me = null;
+    let tab = 'active';
+    let q = '';
+    let lastRefreshAt = null;
+    let fetching = false;
+    const busyIds = new Set();
+    /** отмеченные id заданий (активные) */
+    const selected = new Set();
+
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function fmtTime(d) {
+      const x = d instanceof Date ? d : new Date(d);
+      if (!Number.isFinite(x.getTime())) return '—';
+      return x.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function isTyping() {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = String(el.tagName || '').toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+    }
+
+    function updateAutoLabel(paused) {
+      const el = document.getElementById('auto-live');
+      if (!el) return;
+      el.classList.toggle('is-paused', !!paused);
+      if (paused) {
+        el.textContent = 'пауза · ввод';
+        return;
+      }
+      if (lastRefreshAt) {
+        el.textContent = 'авто · ' + fmtTime(lastRefreshAt);
+        el.classList.add('is-pulse');
+        setTimeout(() => el.classList.remove('is-pulse'), 500);
+      } else {
+        el.textContent = 'авто · —';
+      }
+    }
+
+    async function api(path, opts) {
+      const r = await fetch('/api' + path, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...(opts || {}),
+      });
+      if (r.status === 401) {
+        location.href = '/login?next=/courier.html';
+        throw new Error('auth');
+      }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || r.statusText);
+      return data;
+    }
+
+    function isHandoffRun(r) {
+      if (r.kind === 'handoff' || r.is_handoff) return true;
+      const t = String(r.title || '') + ' ' + String(r.route_label || '');
+      return /Курьер\s*→/i.test(t) || /Склад курьера/i.test(t);
+    }
+
+    function statusChip(r) {
+      const st = String(r.status || '');
+      if (st === 'delivered') return '<span class="chip is-go">Доставил</span>';
+      if (st === 'cancelled') return '<span class="chip">Отмена</span>';
+      if (isHandoffRun(r)) return '<span class="chip is-wait">К доставке</span>';
+      if (st === 'picked_up') return '<span class="chip is-wait">Забрал</span>';
+      if (st === 'accepted') return '<span class="chip is-wait">Принял</span>';
+      return '<span class="chip is-wait">Новое</span>';
+    }
+
+    function routeLabel(r) {
+      const ship = String(r.shipment_label || r.amo_shipment || '').trim();
+      const fromApi = String(r.route_label || '').trim();
+      if (fromApi) return fromApi;
+      if (isHandoffRun(r)) return ship ? 'Курьер → ' + ship : 'Курьер → отправка';
+      return String(r.title || '—');
+    }
+
+    function actionsHtml(r) {
+      const st = String(r.status || '');
+      const id = esc(r.id);
+      const dis = busyIds.has(r.id) ? ' disabled' : '';
+      if (tab === 'closed') return '<div class="row-actions"></div>';
+      if (isHandoffRun(r)) {
+        if (st === 'delivered' || st === 'cancelled') return '<div class="row-actions"></div>';
+        return `<div class="row-actions"><button type="button" class="primary" data-id="${id}" data-st="delivered"${dis}>Доставил</button></div>`;
+      }
+      if (st === 'new')
+        return `<div class="row-actions"><button type="button" data-id="${id}" data-st="accepted"${dis}>Принял</button></div>`;
+      if (st === 'accepted')
+        return `<div class="row-actions"><button type="button" data-id="${id}" data-st="picked_up"${dis}>Забрал</button></div>`;
+      if (st === 'picked_up')
+        return `<div class="row-actions"><button type="button" class="primary" data-id="${id}" data-st="delivered"${dis}>Выполнил</button></div>`;
+      return '<div class="row-actions"></div>';
+    }
+
+    function syncSelBar(visibleIds) {
+      const bar = document.getElementById('selbar');
+      const show = tab === 'active';
+      bar.classList.toggle('is-on', show);
+      if (!show) return;
+      const visible = new Set(visibleIds || []);
+      [...selected].forEach((id) => {
+        if (visible.size && !visible.has(id)) selected.delete(id);
+      });
+      const n = selected.size;
+      document.getElementById('sel-n').textContent = String(n);
+      const all = document.getElementById('chk-all');
+      const boxes = [...document.querySelectorAll('.cr-run-chk')];
+      all.checked = boxes.length > 0 && boxes.every((b) => b.checked);
+      all.indeterminate = n > 0 && !all.checked;
+    }
+
+    function rowHtml(r) {
+      const dealId = String(r.deal_id || '').trim();
+      const buyer = String(r.buyer_name || '').trim() || '—';
+      const phone = String(r.buyer_phone || '').trim();
+      const pay = String(r.payment_label || (r.is_paid ? 'Оплачено' : 'Не оплачено'));
+      const payCls = r.is_paid ? 'pay-ok' : 'pay-bad';
+      const payType = String(r.amo_payment_type || '').trim();
+      const route = routeLabel(r);
+      const title = dealId ? 'С' + dealId : String(r.title || 'Задание');
+      const ship = String(r.shipment_label || r.amo_shipment || '').trim();
+      const checked = selected.has(r.id) ? ' checked' : '';
+      const checkCell =
+        tab === 'active'
+          ? `<td class="cr-check" data-label=""><input type="checkbox" class="cr-run-chk" data-run-id="${esc(
+              r.id
+            )}"${checked} /></td>`
+          : '';
+      return `<tr data-run="${esc(r.id)}">
+        ${checkCell}
+        <td data-label="Заказ"><div class="title">${esc(title)}</div>
+          <div class="muted">${statusChip(r)}${ship ? `<span class="chip">${esc(ship)}</span>` : ''}</div></td>
+        <td data-label="Маршрут"><div class="route">${esc(route)}</div>
+          <div class="muted">${esc(String(r.ship_doc_number || r.transfer_number || ''))}</div></td>
+        <td data-label="Клиент"><b>${esc(buyer)}</b>
+          ${phone ? `<div class="muted"><a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">${esc(phone)}</a></div>` : ''}</td>
+        <td data-label="Оплата"><span class="${payCls}">${esc(pay)}</span>
+          ${payType ? `<div class="muted">${esc(payType)}</div>` : ''}</td>
+        <td data-label="Действия">${actionsHtml(r)}</td>
+      </tr>`;
+    }
+
+    function renderTable(items) {
+      const box = document.getElementById('cr-list');
+      if (!items.length) {
+        box.innerHTML =
+          '<p class="cr-empty">' +
+          (q
+            ? 'Нет заданий по запросу «' + esc(q) + '»'
+            : tab === 'closed'
+              ? 'Нет закрытых заданий'
+              : 'Нет активных заданий') +
+          '</p>';
+        syncSelBar([]);
+        return;
+      }
+      const headCheck =
+        tab === 'active' ? '<th class="cr-check" title="Выбрать все"></th>' : '';
+      box.innerHTML =
+        `<table class="cr-table"><thead><tr>
+          ${headCheck}<th>Заказ</th><th>Маршрут</th><th>Клиент</th><th>Оплата</th><th></th>
+        </tr></thead><tbody>${items.map(rowHtml).join('')}</tbody></table>`;
+      bindActions(box);
+      syncSelBar(items.map((r) => r.id));
+    }
+
+    function bindActions(root) {
+      root.querySelectorAll('[data-st]').forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.dataset.id;
+          const msg = document.getElementById('cr-msg');
+          try {
+            busyIds.add(id);
+            btn.disabled = true;
+            await api('/courier/runs/' + id + '/status', {
+              method: 'POST',
+              body: JSON.stringify({ status: btn.dataset.st }),
+            });
+            busyIds.delete(id);
+            selected.delete(id);
+            await refresh({ force: true });
+          } catch (e) {
+            busyIds.delete(id);
+            btn.disabled = false;
+            msg.hidden = false;
+            msg.textContent = e.message || 'Ошибка';
+          }
+        };
+      });
+      root.querySelectorAll('.cr-run-chk').forEach((chk) => {
+        chk.onchange = () => {
+          const id = chk.getAttribute('data-run-id');
+          if (!id) return;
+          if (chk.checked) selected.add(id);
+          else selected.delete(id);
+          syncSelBar([...document.querySelectorAll('.cr-run-chk')].map((b) => b.getAttribute('data-run-id')));
+        };
+      });
+    }
+
+    function paintTabs(counts) {
+      document.getElementById('c-active').textContent = String((counts && counts.active) || 0);
+      document.getElementById('c-closed').textContent = String((counts && counts.closed) || 0);
+      document.querySelectorAll('#tabs .tab').forEach((el) => {
+        el.classList.toggle('is-on', el.getAttribute('data-tab') === tab);
+      });
+    }
+
+    async function ensureMe() {
+      if (me) return;
+      me = await api('/me');
+      const who = document.getElementById('who');
+      if (who && me) {
+        who.textContent = (me.name || me.login || '') + (me.role ? ' · ' + me.role : '');
+      }
+      const day = document.getElementById('day');
+      if (day) day.textContent = new Date().toLocaleDateString('sv-SE');
+    }
+
+    async function refresh(opts) {
+      const soft = !!(opts && opts.soft);
+      if (fetching) return;
+      if (soft && isTyping()) {
+        updateAutoLabel(true);
+        return;
+      }
+      fetching = true;
+      const msg = document.getElementById('cr-msg');
+      try {
+        await ensureMe();
+        const qs = new URLSearchParams({
+          scope: tab === 'closed' ? 'closed' : 'active',
+        });
+        if (q) qs.set('q', q);
+        if (tab === 'closed') qs.set('limit', '80');
+        const data = await api('/courier/runs?' + qs.toString());
+        if (soft && isTyping()) {
+          updateAutoLabel(true);
+          return;
+        }
+        lastRefreshAt = new Date();
+        updateAutoLabel(false);
+        paintTabs(data.counts || {});
+        msg.hidden = true;
+        renderTable(data.items || []);
+      } catch (e) {
+        if (e.message === 'auth') return;
+        if (!soft) {
+          msg.hidden = false;
+          msg.textContent = e.message || 'Ошибка';
+        }
+      } finally {
+        fetching = false;
+      }
+    }
+
+    /** Реестр: все активные или только отмеченные (onlySelected). */
+    function openRegistry(onlySelected) {
+      const qs = new URLSearchParams({ autoprint: '1' });
+      const ids = onlySelected ? [...selected] : [];
+      if (ids.length) qs.set('ids', ids.join(','));
+      window.open('/api/courier/runs/print?' + qs.toString(), '_blank', 'noopener');
+    }
+
+    document.getElementById('btn-print-reg').onclick = () => openRegistry(false);
+    document.getElementById('btn-print-sel').onclick = () => {
+      if (!selected.size) {
+        alert('Отметьте заказы галочками или нажмите «Выбрать все»');
+        return;
+      }
+      openRegistry(true);
+    };
+    document.getElementById('chk-all').onchange = (e) => {
+      const on = !!e.target.checked;
+      document.querySelectorAll('.cr-run-chk').forEach((chk) => {
+        chk.checked = on;
+        const id = chk.getAttribute('data-run-id');
+        if (!id) return;
+        if (on) selected.add(id);
+        else selected.delete(id);
+      });
+      syncSelBar([...document.querySelectorAll('.cr-run-chk')].map((b) => b.getAttribute('data-run-id')));
+    };
+    document.getElementById('tabs').onclick = (e) => {
+      const btn = e.target.closest('[data-tab]');
+      if (!btn) return;
+      tab = btn.getAttribute('data-tab') === 'closed' ? 'closed' : 'active';
+      if (tab !== 'active') selected.clear();
+      refresh({ force: true });
+    };
+    document.getElementById('btn-find').onclick = () => {
+      q = String(document.getElementById('q').value || '').trim();
+      refresh({ force: true });
+    };
+    document.getElementById('q').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        q = String(e.target.value || '').trim();
+        refresh({ force: true });
+      }
+    });
+
+    updateAutoLabel(false);
+    refresh({ force: true });
+    setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      if (tab !== 'active') return;
+      refresh({ soft: true }).catch(() => {});
+    }, 8000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') refresh({ soft: true }).catch(() => {});
+    });
+  </script>
+</body>
+</html>

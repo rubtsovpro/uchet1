@@ -758,12 +758,18 @@ function listChatsFor(actor: Actor) {
       type: chat.type,
       title: chatTitleFor(chat, actor.id),
       created_by: chat.created_by,
+      created_by_name: staffName(chat.created_by),
       created_at: chat.created_at,
       updated_at: chat.updated_at,
       my_role: m.role,
       unread: unreadCount(chat.id, actor.id, m.last_read_at || ''),
       peer_ids: peers,
       peer_online: chat.type === 'dm' ? peerOnline : peers.some((id) => online.has(id)),
+      members_count:
+        get<{ c: number }>(
+          'SELECT COUNT(*) AS c FROM chat_members WHERE chat_id = ?',
+          [chat.id]
+        )?.c || 0,
       last_message: lastMessagePreview(chat.id),
     });
   }
@@ -982,13 +988,15 @@ function serializeChat(chat: ChatRow, actor: Actor) {
     'SELECT role, last_read_at FROM chat_members WHERE chat_id = ? AND actor_id = ?',
     [chat.id, actor.id]
   );
-  const members = all<{ actor_id: string; role: string }>(
-    'SELECT actor_id, role FROM chat_members WHERE chat_id = ? ORDER BY joined_at',
+  const members = all<{ actor_id: string; role: string; joined_at: string }>(
+    'SELECT actor_id, role, IFNULL(joined_at,\'\') AS joined_at FROM chat_members WHERE chat_id = ? ORDER BY joined_at',
     [chat.id]
   ).map((m) => ({
     actor_id: m.actor_id,
     name: staffName(m.actor_id),
-    role: m.role,
+    role: m.role === 'admin' ? 'admin' : 'member',
+    is_creator: m.actor_id === chat.created_by,
+    joined_at: m.joined_at || '',
     online: online.has(m.actor_id),
   }));
   return {
@@ -996,12 +1004,14 @@ function serializeChat(chat: ChatRow, actor: Actor) {
     type: chat.type,
     title: chatTitleFor(chat, actor.id),
     created_by: chat.created_by,
+    created_by_name: staffName(chat.created_by),
     created_at: chat.created_at,
     updated_at: chat.updated_at,
     my_role: mem?.role || 'member',
     unread: unreadCount(chat.id, actor.id, mem?.last_read_at || ''),
     peer_ids: peers,
     peer_online: peers.some((id) => online.has(id)),
+    members_count: members.length,
     members,
     last_message: lastMessagePreview(chat.id),
   };
@@ -1220,6 +1230,8 @@ export function mountChatRoutes(api: Hono): void {
           memberReads,
         })
       ),
+      /** Есть более старые сообщения (для подгрузки истории новым участникам). */
+      has_more: !after && rows.length >= limit,
     });
   });
 
@@ -1373,7 +1385,64 @@ export function mountChatRoutes(api: Hono): void {
     if (!isMember(chatId, actor.id)) return c.json({ error: 'Нет доступа к чату' }, 403);
     const chat = get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
     if (!chat) return c.json({ error: 'not found' }, 404);
-    return c.json({ items: serializeChat(chat, actor).members });
+    const full = serializeChat(chat, actor);
+    return c.json({
+      items: full.members,
+      created_by: full.created_by,
+      created_by_name: full.created_by_name,
+      my_role: full.my_role,
+      title: full.title,
+      type: full.type,
+    });
+  });
+
+  /** Назначить / снять админа группы. */
+  api.patch('/chats/:id/members/:actorId', async (c) => {
+    const actor = requireChatActor(c);
+    if (!isActor(actor)) return actor;
+    const chatId = c.req.param('id');
+    const targetId = String(c.req.param('actorId') || '').trim();
+    const chat = get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
+    if (!chat) return c.json({ error: 'not found' }, 404);
+    if (chat.type !== 'group') return c.json({ error: 'Роли только в группе' }, 400);
+    if (!isChatAdmin(chatId, actor)) return c.json({ error: 'Только админ чата' }, 403);
+    if (!isMember(chatId, targetId)) return c.json({ error: 'Участник не в группе' }, 404);
+    const body = await c.req
+      .json<{ role?: string }>()
+      .catch(() => ({}) as { role?: string });
+    const role = String(body.role || '').trim() === 'admin' ? 'admin' : 'member';
+    if (role === 'member') {
+      const admins = all<{ actor_id: string }>(
+        `SELECT actor_id FROM chat_members WHERE chat_id = ? AND role = 'admin'`,
+        [chatId]
+      );
+      if (admins.length === 1 && admins[0]!.actor_id === targetId) {
+        return c.json({ error: 'Нельзя снять последнего админа группы' }, 400);
+      }
+      // Создателя может понизить только он сам или системный admin
+      if (
+        targetId === chat.created_by &&
+        actor.id !== chat.created_by &&
+        !actor.isSystemAdmin &&
+        actor.role !== 'admin'
+      ) {
+        return c.json({ error: 'Нельзя снять создателя группы с админов' }, 403);
+      }
+    }
+    run(`UPDATE chat_members SET role = ? WHERE chat_id = ? AND actor_id = ?`, [
+      role,
+      chatId,
+      targetId,
+    ]);
+    touchChat(chatId);
+    auditFromContext(c, {
+      action: 'chat.member_role',
+      entity: 'chat',
+      entityId: chatId,
+      summary: `${staffName(targetId)} → ${role === 'admin' ? 'админ' : 'участник'}`,
+      after: { actor_id: targetId, role },
+    });
+    return c.json(serializeChat(get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId])!, actor));
   });
 
   api.post('/chats/:id/members', async (c) => {

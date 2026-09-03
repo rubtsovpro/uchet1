@@ -1,7 +1,7 @@
 /**
- * Контур бизнеса (Пневмоподвеска / Фогель): свои юрлица и склады.
- * Общие на все контуры: номенклатура, типы цен, категории, ед.изм.
- * Юрлица = таблица organizations с company_id.
+ * Контур бизнеса (Пневмоподвеска / Фогель / Стрела): свои юрлица, склады и номенклатура 1С.
+ * Категории в таблице общие, но список/дерево режутся по source_department товаров контура.
+ * Общие на все контуры: типы цен, ед.изм.
  */
 import { all, get, run } from './db.js';
 import { newGuid } from './ids.js';
@@ -55,6 +55,19 @@ export function ensureCompaniesSchema(): void {
   }
   if (whCols.length && !whCols.includes('updated_at')) {
     run(`ALTER TABLE warehouses ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`);
+  }
+  if (whCols.length && !whCols.includes('show_in_widget')) {
+    run(`ALTER TABLE warehouses ADD COLUMN show_in_widget INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (whCols.length && !whCols.includes('allow_inbound')) {
+    run(`ALTER TABLE warehouses ADD COLUMN allow_inbound INTEGER NOT NULL DEFAULT 0`);
+    run(
+      `UPDATE warehouses SET allow_inbound = 1
+       WHERE IFNULL(code,'') = 'НФ-000032'
+          OR IFNULL(code,'') LIKE 'STO-RES-%'
+          OR lower(IFNULL(name,'')) LIKE 'филиал%москва%'
+          OR lower(IFNULL(name,'')) LIKE 'отложено%под%сто%'`
+    );
   }
   run(`CREATE INDEX IF NOT EXISTS idx_warehouses_company ON warehouses(company_id)`);
   // Бэкап «кто/когда» из audit_log для старых складов
@@ -301,6 +314,10 @@ export function listCompanyLegalEntities(companyId: string) {
     short_name: string;
     inn: string;
     kpp: string;
+    phone?: string;
+    email?: string;
+    site_address?: string;
+    work_hours?: string;
     is_default: number;
     is_active: number;
     source: string;
@@ -318,6 +335,10 @@ export function listCompanyLegalEntities(companyId: string) {
       short_name: r.short_name,
       inn: r.inn,
       kpp: r.kpp,
+      phone: r.phone || '',
+      email: r.email || '',
+      site_address: r.site_address || '',
+      work_hours: r.work_hours || '',
       is_default: !!r.is_default,
       is_active: !!r.is_active,
       source: r.source,
@@ -380,4 +401,114 @@ export function resolveCompanyId(companyId?: string | null): string {
     if (row && row.is_active) return row.id;
   }
   return getDefaultCompanyId();
+}
+
+/**
+ * Непустой company_id должен существовать в companies.
+ * Иначе клиент раньше молча получал всю базу (фильтр отключался).
+ * `all` / `*` — явная выгрузка по всем контурам (id='').
+ */
+export function parseRequestedCompanyId(
+  companyId?: string | null
+): { ok: true; id: string } | { ok: false; error: string } {
+  const id = String(companyId || '').trim();
+  if (!id) return { ok: true, id: '' };
+  if (id === 'all' || id === '*') return { ok: true, id: '' };
+  ensureCompaniesSchema();
+  if (!getCompany(id)) {
+    return { ok: false, error: `Неизвестный company_id: ${id}` };
+  }
+  return { ok: true, id };
+}
+
+/**
+ * Для запросов по API-ключу (без сессии UI) пустой company_id опасен:
+ * молча отдаётся вся база. Требуем UUID или явное company_id=all.
+ */
+export function machineCompanyIdRequiredError(
+  companyIdRaw: string | null | undefined
+): string | null {
+  const raw = String(companyIdRaw || '').trim();
+  if (raw) return null;
+  return (
+    'company_id обязателен для API-ключа. Возьмите id из GET /api/companies ' +
+    'или передайте company_id=all для всей базы'
+  );
+}
+
+/** Короткий список контуров для интеграторов (без тяжёлой статистики). */
+export function companiesPublicListPayload() {
+  ensureCompaniesSchema();
+  const items = listCompanies({ activeOnly: true }).map((c) => ({
+    id: c.id,
+    name: c.name,
+    code: c.code,
+    is_default: !!c.is_default,
+    is_active: !!c.is_active,
+  }));
+  return {
+    items,
+    default_id: getDefaultCompanyId(),
+    note: 'Контуры (юрлица). Передавайте id как company_id в /api/products и /api/balances.',
+  };
+}
+
+/**
+ * Базы 1С (products.source_department) для выбранного контура.
+ * Пустой companyId → без фильтра (все базы).
+ * PNEVMO → pnevmopodveska_2025; Фогель/Стрела → fogel_2025.
+ * Неизвестный UUID → пустая выборка (__none__), не «вся база».
+ */
+export function sourceDepartmentsForCompany(companyId?: string | null): string[] | null {
+  const id = String(companyId || '').trim();
+  if (!id) return null;
+  ensureCompaniesSchema();
+  const row = getCompany(id);
+  if (!row) return ['__none__'];
+  const code = String(row.code || '')
+    .trim()
+    .toUpperCase()
+    .replace(/Ё/g, 'Е');
+  const name = String(row.name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е');
+  if (
+    code === 'PNEVMO' ||
+    code === 'ПНЕВМО' ||
+    id === DEFAULT_COMPANY_ID ||
+    name.includes('пневмо') ||
+    name.includes('москва')
+  ) {
+    return ['pnevmopodveska_2025'];
+  }
+  if (
+    code === 'ФОГЕЛЬ' ||
+    code === 'FOGEL' ||
+    code === 'STRELA' ||
+    code === 'СТРЕЛА' ||
+    name.includes('фогель') ||
+    name.includes('стрела') ||
+    name.includes('фадеев')
+  ) {
+    return ['fogel_2025'];
+  }
+  // известный, но несмапленный контур — не смешиваем с чужой базой
+  return ['__none__'];
+}
+
+/** SQL-фрагмент: AND IFNULL(alias.source_department,'') IN (…) */
+export function sqlSourceDepartmentIn(
+  alias: string,
+  departments: string[] | null | undefined
+): { sql: string; params: string[] } {
+  if (!departments || !departments.length) return { sql: '', params: [] };
+  const col = `${alias ? alias + '.' : ''}source_department`;
+  if (departments.length === 1 && departments[0] === '__none__') {
+    return { sql: ` AND 1=0`, params: [] };
+  }
+  return {
+    sql: ` AND IFNULL(${col},'') IN (${departments.map(() => '?').join(',')})`,
+    params: departments,
+  };
 }

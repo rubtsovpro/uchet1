@@ -1,0 +1,24 @@
+[Unit]
+Description=Учёт №1 local OCR (СТС on-prem)
+After=network.target
+Wants=warehouse-wms.service
+# не сдаваться после серии падений (раньше 203/EXEC из‑за -x на uvicorn)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/1c_pnevmopodveska1_ru/warehouse/deploy/ocr-local
+Environment=OCR_LOCAL_HOST=127.0.0.1
+Environment=OCR_LOCAL_PORT=3105
+Environment=PYTHONUNBUFFERED=1
+# python -m uvicorn — не зависит от +x на скрипте .venv/bin/uvicorn
+ExecStartPre=/bin/chmod -R a+rx /root/1c_pnevmopodveska1_ru/warehouse/deploy/ocr-local/.venv/bin
+ExecStart=/root/1c_pnevmopodveska1_ru/warehouse/deploy/ocr-local/.venv/bin/python3 -m uvicorn app:app --host 127.0.0.1 --port 3105 --workers 1
+Restart=always
+RestartSec=3
+# не отдавать наружу
+MemoryMax=1500M
+
+[Install]
+WantedBy=multi-user.target

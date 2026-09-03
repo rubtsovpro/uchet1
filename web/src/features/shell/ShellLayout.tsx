@@ -1,11 +1,13 @@
+import { useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/shared/api/client';
 import type { StaffMe } from '@/shared/api/types';
 import { NAV_SECTIONS_NOW, SECTION_LINKS } from './nav';
 import { NavIcon } from './NavIcon';
-import { ChatFab } from '@/features/chats/ChatFab';
 import { useSideCollapsed } from './useSideCollapsed';
+import { ProfileModal } from './ProfileModal';
+import { NotifBell } from './NotifBell';
 
 function canAccessSection(me: StaffMe | undefined, sectionId: string): boolean {
   if (!me) return true;
@@ -16,12 +18,22 @@ function canAccessSection(me: StaffMe | undefined, sectionId: string): boolean {
 }
 
 export function ShellLayout() {
-  const { collapsed, toggle } = useSideCollapsed();
+  const { collapsed, toggle, flyoutOpen, closeFlyout } = useSideCollapsed();
   const location = useLocation();
   const navigate = useNavigate();
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [phoneUi, setPhoneUi] = useState(
+    () => typeof document !== 'undefined' && document.documentElement.classList.contains('ui-phone'),
+  );
   const me = useQuery({
     queryKey: ['me'],
-    queryFn: () => api<StaffMe>('/me'),
+    queryFn: () =>
+      api<
+        StaffMe & {
+          phone?: string;
+          avatar_url?: string;
+        }
+      >('/me'),
   });
 
   const chatsBadge = useQuery({
@@ -57,6 +69,8 @@ export function ShellLayout() {
     window.setTimeout(go, 800);
   };
 
+  const displayName = me.data?.name || me.data?.login || '…';
+
   return (
     <div className="taxi">
       <header className="taxi-top">
@@ -64,43 +78,107 @@ export function ShellLayout() {
         <button
           type="button"
           className="taxi-burger"
-          title={collapsed ? 'Показать меню' : 'Скрыть меню'}
-          aria-expanded={!collapsed}
+          title={flyoutOpen ? 'Свернуть меню' : collapsed ? 'Показать меню' : 'Скрыть меню'}
+          aria-expanded={flyoutOpen || !collapsed}
           aria-controls="taxi-side"
           onClick={toggle}
         >
           <span /><span /><span />
+        </button>
+        <button
+          type="button"
+          className="taxi-phone-toggle"
+          title={phoneUi ? 'Обычный (десктоп) вид' : 'Мобильный вид'}
+          aria-label="Мобильный вид"
+          aria-pressed={phoneUi}
+          onClick={() => {
+            const next = !phoneUi;
+            document.documentElement.classList.toggle('ui-phone', next);
+            try {
+              localStorage.setItem('uchet1_ui_phone', next ? '1' : '0');
+            } catch {
+              /* ignore */
+            }
+            if (!next) closeFlyout();
+            setPhoneUi(next);
+          }}
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <rect x="7" y="2.5" width="10" height="19" rx="2" fill="none" stroke="currentColor" strokeWidth="1.7" />
+            <circle cx="12" cy="18.2" r="0.9" fill="currentColor" />
+          </svg>
         </button>
         <div className="taxi-title">
           <span className="taxi-product">Учёт №1</span>
           <span className="taxi-org">Пневмоподвеска</span>
         </div>
         <div className="taxi-top-actions">
-          <span className="taxi-user" title={me.data?.role || ''}>
-            {me.data?.name || me.data?.login || '…'}
-          </span>
-          <button type="button" className="taxi-ico taxi-logout" onClick={() => void logout()}>
-            Выйти
+          <NotifBell />
+          <div className="taxi-user-wrap">
+            <button
+              type="button"
+              className="taxi-user"
+              title={me.data?.role ? `Профиль · ${me.data.role}` : 'Профиль'}
+              onClick={() => setProfileOpen(true)}
+            >
+              <span className="taxi-user-name">{displayName}</span>
+            </button>
+          </div>
+          <button
+            type="button"
+            className="taxi-ico taxi-logout"
+            title="Выйти"
+            aria-label="Выйти"
+            onClick={() => void logout()}
+          >
+            <svg className="taxi-logout-ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden>
+              <path
+                d="M10 7V5.5A1.5 1.5 0 0 1 11.5 4h7A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 10 18.5V17"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+              />
+              <path
+                d="M13 12H4m0 0 2.5-2.5M4 12l2.5 2.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="taxi-logout-label">Выйти</span>
           </button>
         </div>
       </header>
 
       <div className="taxi-body-row">
-        <aside className="taxi-side" id="taxi-side">
-          <div className="taxi-side-head">
-            <span className="taxi-side-label">Разделы</span>
-            <button
-              type="button"
-              className="taxi-side-collapse"
-              title={collapsed ? 'Показать меню' : 'Скрыть меню'}
-              aria-label={collapsed ? 'Показать меню' : 'Скрыть меню'}
-              onClick={toggle}
-            >
-              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                <path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-          </div>
+        <button
+          type="button"
+          className="taxi-side-scrim"
+          id="taxi-side-scrim"
+          aria-label="Закрыть меню"
+          tabIndex={-1}
+          onClick={closeFlyout}
+        />
+        <aside
+          className="taxi-side"
+          id="taxi-side"
+          onClick={(e) => {
+            if (
+              typeof window === 'undefined' ||
+              !(
+                document.documentElement.classList.contains('ui-phone') ||
+                window.matchMedia('(max-width: 1024px)').matches
+              )
+            ) {
+              return;
+            }
+            const t = e.target as HTMLElement | null;
+            if (t?.closest?.('a.sec')) closeFlyout();
+          }}
+        >
           <nav className="taxi-sections">
             {visibleSections.map((sec) => {
               const to = sec.href || (sec.id === 'home' ? '/' : `/${sec.id}`);
@@ -149,6 +227,19 @@ export function ShellLayout() {
               );
             })}
           </nav>
+          <div className="taxi-side-foot">
+            <button
+              type="button"
+              className="taxi-side-collapse"
+              title={collapsed ? 'Показать меню' : 'Скрыть меню'}
+              aria-label={collapsed ? 'Показать меню' : 'Скрыть меню'}
+              onClick={toggle}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                <path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          </div>
         </aside>
 
         <main className="taxi-main app">
@@ -207,7 +298,7 @@ export function ShellLayout() {
         </main>
       </div>
 
-      {location.pathname.startsWith('/chats') ? null : <ChatFab me={me.data} />}
+      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
     </div>
   );
 }

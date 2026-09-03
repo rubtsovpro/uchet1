@@ -2,7 +2,8 @@
  * Классификация номенклатуры: товар | услуга.
  * Источник истины после прогона — products.item_kind.
  */
-import { all, get, run } from './db.js';
+import { all, db, get, run } from './db.js';
+import { newGuid } from './ids.js';
 
 /**
  * Явные признаки услуги в названии (без ложных «болт регулировки»).
@@ -29,6 +30,12 @@ export function looksLikeServiceName(name: string): boolean {
   ) {
     return true;
   }
+  // Работы СТО: «Замена подшипника», «… разобрать/собрать» — не складской товар.
+  if (/^замен[аы]\s/i.test(n)) return true;
+  if (/^заменить\s/i.test(n)) return true;
+  if (/разобрать\s*[\/\\]\s*собрать/i.test(n)) return true;
+  if (/^доставка$/i.test(n)) return true;
+  if (/^залог$/i.test(n)) return true;
   return false;
 }
 
@@ -38,6 +45,39 @@ export function looksLikeServiceUnit(unitShort: string): boolean {
     .replace(/\./g, '')
     .trim();
   return u === 'усл' || u === 'услуга' || u === 'услуг';
+}
+
+/** Единица «услуга» в справочнике (создаём при отсутствии). */
+export function ensureServiceUnitId(): string {
+  const hit = get<{ id: string }>(
+    `SELECT id FROM units
+     WHERE lower(trim(short_name)) IN ('услуга', 'усл')
+        OR lower(trim(name)) IN ('услуга', 'услуги')
+     LIMIT 1`
+  );
+  if (hit?.id) return hit.id;
+  const id = newGuid();
+  run(`INSERT INTO units (id, name, short_name) VALUES (?, 'Услуга', 'услуга')`, [id]);
+  return id;
+}
+
+/** Всем услугам — единица «услуга» (не «шт»). */
+export function assignServiceUnits(): number {
+  const unitId = ensureServiceUnitId();
+  const before =
+    get<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM products
+       WHERE IFNULL(item_kind,'product') = 'service' AND IFNULL(unit_id,'') != ?`,
+      [unitId]
+    )?.c ?? 0;
+  if (before > 0) {
+    run(
+      `UPDATE products SET unit_id = ?
+       WHERE IFNULL(item_kind,'product') = 'service' AND IFNULL(unit_id,'') != ?`,
+      [unitId, unitId]
+    );
+  }
+  return before;
 }
 
 export function looksLikeServiceCategoryName(name: string): boolean {
@@ -158,7 +198,105 @@ export function reclassifyAllProductKinds(): {
       changed += 1;
     }
   }
+  assignServiceUnits();
   return { total: rows.length, service, product, changed };
+}
+
+/** Корни и потомки категорий-услуг (Услуги СТО и т.п.) — для SQL-фильтров остатков. */
+export function sqlServiceCategoryTreeCte(): string {
+  return `WITH RECURSIVE svc_cat(id) AS (
+    SELECT id FROM categories
+    WHERE lower(replace(trim(IFNULL(name,'')), '  ', ' ')) LIKE '%услуг%'
+       OR lower(replace(trim(IFNULL(name,'')), '  ', ' ')) LIKE '%виды%работ%'
+       OR lower(replace(trim(IFNULL(name,'')), '  ', ' ')) LIKE '%ремонтн%работ%'
+       OR lower(replace(trim(IFNULL(name,'')), '  ', ' ')) LIKE '%работ%сто%'
+       OR (
+         lower(replace(trim(IFNULL(name,'')), '  ', ' ')) LIKE 'работы%'
+         AND lower(replace(trim(IFNULL(name,'')), '  ', ' ')) LIKE '%сто%'
+       )
+    UNION ALL
+    SELECT c.id FROM categories c
+    INNER JOIN svc_cat s ON c.parent_id = s.id
+  )`;
+}
+
+/**
+ * SQL-фильтр: не услуга (item_kind + категории-услуги + типовые названия работ СТО).
+ * Для списков остатков на складе — услуги только в виджете/заказе, не на складе.
+ */
+export function sqlExcludeServices(productAlias = 'p', unitAlias = 'u'): string {
+  const p = productAlias;
+  const u = unitAlias;
+  return `(
+    IFNULL(${p}.item_kind,'product') != 'service'
+    AND NOT EXISTS (
+      ${sqlServiceCategoryTreeCte()}
+      SELECT 1 FROM svc_cat WHERE svc_cat.id = ${p}.category_id
+    )
+    AND NOT (
+      ${p}.name LIKE '%снять/установить%' COLLATE NOCASE
+      OR ${p}.name LIKE '%снять\\установить%' COLLATE NOCASE
+      OR ${p}.name LIKE '%снятие/установка%' COLLATE NOCASE
+      OR ${p}.name LIKE '%проверить/исправить%' COLLATE NOCASE
+      OR ${p}.name LIKE '%Слить/Залить%' COLLATE NOCASE
+      OR ${p}.name LIKE '%Оклейка%' COLLATE NOCASE
+      OR ${p}.name LIKE '%услуг%' COLLATE NOCASE
+      OR ${p}.name LIKE 'Диагностик%' COLLATE NOCASE
+      OR ${p}.name LIKE 'Ремонт %' COLLATE NOCASE
+      OR ${p}.name LIKE 'Осмотр%' COLLATE NOCASE
+      OR ${p}.name LIKE 'Замена %' COLLATE NOCASE
+      OR ${p}.name LIKE 'ЗАМЕНА %' COLLATE NOCASE
+      OR ${p}.name LIKE 'Заменить %' COLLATE NOCASE
+      OR ${p}.name LIKE '%разобрать/собрать%' COLLATE NOCASE
+      OR ${p}.name LIKE '%разобрать\\собрать%' COLLATE NOCASE
+      OR lower(trim(${p}.name)) IN ('доставка','залог')
+      OR lower(trim(IFNULL(${u}.short_name,''))) IN ('усл','услуга','услуг')
+    )
+  )`;
+}
+
+/**
+ * Не показывать чужой контур 1С на складе компании (общие GUID складов).
+ * coAlias — companies, привязанная к warehouses.company_id.
+ */
+export function sqlExcludeCrossContourProducts(productAlias = 'p', companyAlias = 'co'): string {
+  const p = productAlias;
+  const co = companyAlias;
+  return `NOT (
+    (upper(IFNULL(${co}.code,'')) = 'PNEVMO'
+      AND (
+        IFNULL(${p}.source_department,'') = 'fogel_2025'
+        OR IFNULL(${p}.sku,'') LIKE '%@fogel%' ESCAPE '\\'
+        OR IFNULL(${p}.code,'') LIKE '%@fogel%' ESCAPE '\\'
+      ))
+    OR
+    (upper(IFNULL(${co}.code,'')) IN ('ФОГЕЛЬ','FOGEL')
+      AND (
+        IFNULL(${p}.source_department,'') = 'pnevmopodveska_2025'
+        OR IFNULL(${p}.sku,'') LIKE '%@podveska%' ESCAPE '\\'
+        OR IFNULL(${p}.code,'') LIKE '%@podveska%' ESCAPE '\\'
+      ))
+    OR
+    (upper(IFNULL(${co}.code,'')) = 'STRELA'
+      AND (
+        IFNULL(${p}.source_department,'') IN ('pnevmopodveska_2025','fogel_2025')
+        OR IFNULL(${p}.sku,'') LIKE '%@podveska%' ESCAPE '\\'
+        OR IFNULL(${p}.sku,'') LIKE '%@fogel%' ESCAPE '\\'
+        OR IFNULL(${p}.code,'') LIKE '%@podveska%' ESCAPE '\\'
+        OR IFNULL(${p}.code,'') LIKE '%@fogel%' ESCAPE '\\'
+      ))
+  )`;
+}
+
+/** Оставить активными только общие услуги se-* (23 шт.). Остальное — legacy из 1С. */
+export function deactivateLegacyServices(): number {
+  const r = db.prepare(
+    `UPDATE products SET is_active = 0
+     WHERE IFNULL(item_kind,'product') = 'service'
+       AND lower(IFNULL(sku,'')) NOT LIKE 'se-%'
+       AND lower(IFNULL(code,'')) NOT LIKE 'se-%'`
+  ).run();
+  return Number(r.changes) || 0;
 }
 
 /** Быстрая проверка по id (с учётом актуального item_kind и эвристик). */

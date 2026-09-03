@@ -1,0 +1,26 @@
+# Сборки и зависимости — иначе IDE постоянно переиндексирует после deploy/build
+node_modules/
+**/node_modules/
+api/dist/
+web/dist/
+dist/
+public/assets/
+**/*.tsbuildinfo
+
+# Данные и временные дампы
+data/
+.tmp/
+tmp-*/
+tmp-*.mjs
+tmp-*.json
+tmp-*.csv
+tmp-*.txt
+*.sqlite
+*.sqlite-*
+*.log
+
+# Старые копии legacy и экспорт
+public/legacy.v*.js
+services-export.*
+.rubtsov/
+.wrangler/

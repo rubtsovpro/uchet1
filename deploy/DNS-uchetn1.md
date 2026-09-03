@@ -16,6 +16,9 @@ VPS: `155.212.160.31` (bank-vps / tech35.fvds.ru).
 | `in.uchetn1.ru` | ❌ нет A | ❌ | `/reception` (алиас) | ✅ | ✅ reception |
 | `swagger.uchetn1.ru` | ❌ нет A | ❌ | `/api/swagger` | ✅ (шаблон) | ✅ swagger |
 | `api-docs.uchetn1.ru` | ❌ нет A | ❌ | `/api/swagger` (алиас) | ✅ (шаблон) | ✅ swagger |
+| `pdn.uchetn1.ru` | ✅ | ✅ (в общем LE uchetn1.ru) | SMS-подпись ПДн (fallback) | nginx → :3101 | публичный `/` + `/{token}` |
+| `pdn.fogel.com.ru` | ❌ добавить A | после DNS | ПДн Фогель/Стрела | apache :8443 via haproxy | `PDN_FOGEL_URL` |
+| `pdn.pnevmopodveska1.ru` | ❌ добавить A | после DNS | ПДн Пневмоподвеска | apache :8443 via haproxy | `PDN_PNEVMO_URL` |
 
 **Блокер:** в DNS нет A-записей для ролевых поддоменов и swagger. Apache + Node готовы; certbot `--expand` — сразу после появления A.
 
@@ -34,6 +37,7 @@ Staff / полный WMS остаётся на `uchetn1.ru` (и live `1c.pnevmop
 | `in` | `/reception` (короткий алиас) |
 | `swagger` | `/api/swagger` OpenAPI (только admin) |
 | `api-docs` | то же (опциональный алиас) |
+| `pdn` | публичная SMS-подпись согласия ПДн (`/{token}`) |
 
 Уже есть: `@` и `www` → `155.212.160.31`.
 
@@ -86,7 +90,8 @@ Env: `PAY_PUBLIC_URL=https://pay.pnevmopodveska1.ru` в `/etc/warehouse-wms.env`
 Цепочка: **HAProxy :443 (TCP/SNI) → nginx :4443 → (apache) → node :3101**.  
 Без PROXY protocol nginx видит только `127.0.0.1`.
 
-- HAProxy: `server nginx_ssl 127.0.0.1:4443 send-proxy-v2` (см. `deploy/haproxy-uchetn1-snippet.cfg`)
+- HAProxy: `server nginx_ssl 127.0.0.1:4443 send-proxy-v2` (см. `deploy/haproxy-sni-443.cfg`)
+- Обход для мобильного интернета, если `https://uchetn1.ru` таймаутит на :443: **`https://uchetn1.ru:9443/`** (тот же HAProxy/SNI)
 - nginx: `listen … proxy_protocol` + `real_ip_header proxy_protocol` (`deploy/nginx-uchetn1-ssl-mtu.conf`)
 - API: `clientIpFromHeaders` берёт первый публичный IP из `X-Real-IP` / `X-Forwarded-For`
 
@@ -115,9 +120,35 @@ certbot --apache --expand --non-interactive --agree-tos \
   -d uchetn1.ru -d www.uchetn1.ru \
   -d pick.uchetn1.ru -d photo.uchetn1.ru \
   -d lift.uchetn1.ru -d in.uchetn1.ru -d reception.uchetn1.ru \
-  -d swagger.uchetn1.ru -d api-docs.uchetn1.ru
+  -d swagger.uchetn1.ru -d api-docs.uchetn1.ru \
+  -d pdn.uchetn1.ru -d www.pdn.uchetn1.ru
 apache2ctl configtest && systemctl reload apache2
 ```
+
+### pdn — SMS-подпись согласия ПДн (брендовые домены)
+
+| Хост | Орг | DNS A → VPS | Apache | Env |
+|------|-----|-------------|--------|-----|
+| `pdn.fogel.com.ru` | Фогель / Стрела (М.П.) | нужно | `deploy/apache-pdn-fogel.conf` | `PDN_FOGEL_URL=https://pdn.fogel.com.ru` |
+| `pdn.pnevmopodveska1.ru` | Пневмоподвеска (Р.П.) | нужно | `deploy/apache-pdn-pnevmo.conf` | `PDN_PNEVMO_URL=https://pdn.pnevmopodveska1.ru` |
+| `pdn.uchetn1.ru` | запасной / старые ссылки | ✅ | `deploy/apache-pdn-uchetn1.conf` | `PDN_PUBLIC_URL=…` |
+
+1. DNS A `pdn` на зонах **fogel.com.ru** и **pnevmopodveska1.ru** → `155.212.160.31`
+2. На VPS: скопировать conf → `sites-available`, `a2ensite`, reload apache
+3. Certbot:
+   ```bash
+   certbot --apache -d pdn.fogel.com.ru
+   certbot --apache -d pdn.pnevmopodveska1.ru
+   ```
+4. Env в `/etc/warehouse-wms.env`:
+   - `TARGETSMS_USER` / `TARGETSMS_PASSWORD`
+   - `PDN_FOGEL_URL=https://pdn.fogel.com.ru`
+   - `PDN_PNEVMO_URL=https://pdn.pnevmopodveska1.ru`
+   - `PDN_PUBLIC_URL=https://pdn.uchetn1.ru` (fallback)
+5. `systemctl restart warehouse-wms`
+
+Отправители TargetSMS (регистр важен): **Fogel** (Фогель / Стрела / М.П.), **Pnevmo1** (подвеска / Р.П.).
+SMS-ссылка строится по ИНН/отправителю организации сделки.
 
 После успешного expand — расширить HTTP→HTTPS rewrite в `uchetn1.conf` на все имена из сертификата (сейчас редирект только для apex/www — пока нет LE на поддоменах).
 

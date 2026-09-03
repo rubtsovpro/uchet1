@@ -119,6 +119,17 @@ function collectIds(obj: unknown, out: string[], depth = 0): void {
   for (const v of Object.values(rec)) collectIds(v, out, depth + 1);
 }
 
+/** Amo шлёт form-urlencoded: `leads[update][0][id]=25660175`. */
+function collectIdsFromFlatForm(rec: Record<string, unknown>, out: string[]): void {
+  for (const [key, raw] of Object.entries(rec)) {
+    if (!/^(leads|contacts)(\[update\]|\[status\]|\[add\])\[\d+\]\[id\]$/i.test(key)) {
+      continue;
+    }
+    const id = String(raw ?? '').replace(/\D/g, '');
+    if (id && !out.includes(id)) out.push(id);
+  }
+}
+
 /** Разбор тела Amo (form / json) → сущности и id. */
 export function parseAmoWebhookPayload(
   body: unknown,
@@ -135,6 +146,7 @@ export function parseAmoWebhookPayload(
 
   if (body && typeof body === 'object' && !Array.isArray(body)) {
     const rec = body as Record<string, unknown>;
+    collectIdsFromFlatForm(rec, ids);
     for (const [k, v] of Object.entries(rec)) {
       if (!raw_keys.includes(k)) raw_keys.push(k);
       const ent = classifyKey(k);

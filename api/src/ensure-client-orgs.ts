@@ -1,11 +1,12 @@
 /**
- * Контуры и юрлица по файлу «Реквизиты 3шт»:
- * Фогель + Стрела — ИП Безматерных М.П. (один ИНН, разные р/с);
- * Пневмоподвеска — ИП Безматерных Р.П.
+ * Контуры и юрлица:
+ * — Фогель + Стрела → ИП Безматерных Михаил Павлович (Краснодар, один ИНН, разные р/с);
+ * — Пневмоподвеска (Москва) → ИП Безматерных Роман Павлович.
  */
 import { all, get } from './db.js';
 import { upsertCompany, type CompanyRow } from './companies.js';
 import { upsertOrganization, type OrganizationRow } from './organizations.js';
+import { STO_SITES } from './sto-sites.js';
 
 const ADDR_MP =
   '350075, Краснодарский край, г. Краснодар, ул. им. Селезнева, 84, кв. 73';
@@ -43,15 +44,24 @@ export function ensureClientOrgContours(): {
   companies: CompanyRow[];
   organizations: OrganizationRow[];
 } {
-  const pnevmo =
+  let pnevmo =
     companyByCode('PNEVMO') ||
     upsertCompany({
       id: '00000000-0000-4000-8000-000000000001',
-      name: 'Пневмоподвеска',
+      name: 'Пневмоподвеска · Москва',
       code: 'PNEVMO',
       is_default: true,
       is_active: true,
     });
+  if (String(pnevmo.name || '').trim() === 'Пневмоподвеска') {
+    pnevmo = upsertCompany({
+      id: pnevmo.id,
+      name: 'Пневмоподвеска · Москва',
+      code: pnevmo.code || 'PNEVMO',
+      is_default: true,
+      is_active: true,
+    });
+  }
 
   const fogel =
     companyByCode('ФОГЕЛЬ') ||
@@ -89,7 +99,10 @@ export function ensureClientOrgContours(): {
     kpp: '',
     ogrnip: '321237500020104',
     address: ADDR_MP,
-    phone: '',
+    site_address: STO_SITES.fogel.address,
+    work_hours: STO_SITES.fogel.hours,
+    phone: STO_SITES.fogel.phone,
+    email: STO_SITES.fogel.email,
     bank: BANK,
     bik: BIK,
     rs: '40802810420000909020',
@@ -118,7 +131,10 @@ export function ensureClientOrgContours(): {
     kpp: '',
     ogrnip: '321237500020104',
     address: ADDR_MP,
-    phone: '',
+    site_address: STO_SITES.strela.address,
+    work_hours: STO_SITES.strela.hours,
+    phone: STO_SITES.strela.phone,
+    email: STO_SITES.strela.email,
     bank: BANK,
     bik: BIK,
     rs: '40802810720000909005',
@@ -147,14 +163,17 @@ export function ensureClientOrgContours(): {
     kpp: '',
     ogrnip: '322237500133521',
     address: ADDR_MP,
-    phone: '',
+    site_address: STO_SITES.mozhayka.address,
+    work_hours: STO_SITES.mozhayka.hours,
+    phone: STO_SITES.mozhayka.phone,
+    email: STO_SITES.mozhayka.email,
     bank: BANK,
     bik: BIK,
     rs: '40802810109500030587',
     ks: KS,
     director: 'Безматерных Р.П.',
     accountant: '',
-    master_title: 'Мастер-приемщик Пневмоподвеска №1',
+    master_title: 'Мастер-приемщик · Москва / Пневмоподвеска',
     vat_rate: 5,
     is_default: true,
     is_active: true,

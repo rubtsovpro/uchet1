@@ -4,6 +4,7 @@
  * Не себестоимость 1С; нет привязки партии к конкретной УПД/расходной.
  */
 import { all, get } from './db.js';
+import { sqlExcludeCrossContourProducts, sqlExcludeServices } from './product-kind.js';
 
 export const VALUATION_METHOD = 'fifo_inbound' as const;
 
@@ -53,8 +54,14 @@ export type FifoCoverResult = {
   last_purchase_value: number;
 };
 
+/** Суммы / цены — целые рубли. */
 function roundMoney(n: number): number {
-  return Math.round(n * 100) / 100;
+  return Math.round(Number(n) || 0);
+}
+
+/** Кол-во на складе — до тысячных. */
+function roundQty(n: number): number {
+  return Math.round((Number(n) || 0) * 1000) / 1000;
 }
 
 /** Краткий FIFO (дашборд / суммы складов) — тяжёлый проход по остаткам+приходам; кэш 45с. */
@@ -129,8 +136,8 @@ export function fifoCover(needQty: number, inboundNewestFirst: InboundLayerRow[]
   }
 
   value = roundMoney(value);
-  const qtyPriced = roundMoney(need - Math.max(0, remaining));
-  const qtyUnpriced = roundMoney(Math.max(0, remaining));
+  const qtyPriced = roundQty(need - Math.max(0, remaining));
+  const qtyUnpriced = roundQty(Math.max(0, remaining));
   const unitCost = qtyPriced > 0 ? roundMoney(value / qtyPriced) : null;
 
   return {
@@ -461,9 +468,13 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
   }
   if (opts.q?.trim()) {
     const like = `%${opts.q.trim()}%`;
-    where.push('(p.name LIKE ? OR p.sku LIKE ?)');
-    params.push(like, like);
+    where.push(
+      `(p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.warehouse_sku,'') LIKE ? OR IFNULL(p.array_sku,'') LIKE ?)`
+    );
+    params.push(like, like, like, like);
   }
+  where.push(sqlExcludeServices('p', 'u'));
+  where.push(sqlExcludeCrossContourProducts('p', 'co'));
   const whereSql = `WHERE ${where.join(' AND ')}`;
 
   const balanceRows = all<{
@@ -471,6 +482,7 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
     warehouse: string;
     product_id: string;
     sku: string;
+    warehouse_sku: string;
     name: string;
     qty: number;
   }>(
@@ -479,11 +491,14 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
        w.name AS warehouse,
        b.product_id,
        p.sku,
+       IFNULL(p.warehouse_sku,'') AS warehouse_sku,
        p.name,
        b.qty
      FROM stock_balances b
      JOIN products p ON p.id = b.product_id
      JOIN warehouses w ON w.id = b.warehouse_id
+     LEFT JOIN companies co ON co.id = w.company_id
+     LEFT JOIN units u ON u.id = p.unit_id
      ${whereSql}
      ORDER BY p.name, w.name`,
     params
@@ -510,6 +525,7 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
     warehouse: string;
     product_id: string;
     sku: string;
+    warehouse_sku: string;
     name: string;
     qty: number;
     unit_cost: number | null;
@@ -536,6 +552,7 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
         warehouse: row.warehouse,
         product_id: row.product_id,
         sku: row.sku,
+        warehouse_sku: row.warehouse_sku || '',
         name: row.name,
         qty,
         unit_cost: null,
@@ -558,13 +575,14 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
     const share = productTotal > 0 ? qty / productTotal : 0;
     const lineValue = roundMoney(cover.value * share);
     const lastPurchaseLine = roundMoney(cover.last_purchase_value * share);
-    const qtyUnpriced = roundMoney(cover.qty_unpriced * share);
+    const qtyUnpriced = roundQty(cover.qty_unpriced * share);
 
     valued.push({
       warehouse_id: row.warehouse_id,
       warehouse: row.warehouse,
       product_id: row.product_id,
       sku: row.sku,
+      warehouse_sku: row.warehouse_sku || '',
       name: row.name,
       qty,
       unit_cost: cover.unit_cost,
@@ -590,7 +608,7 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
   const linesCount = valued.length;
   const linesWithPrice = valued.filter((r) => r.has_price).length;
   const linesWithoutPrice = valued.filter((r) => !r.has_price).length;
-  const qtyUnpricedTotal = roundMoney(valued.reduce((s, r) => s + r.qty_unpriced, 0));
+  const qtyUnpricedTotal = roundQty(valued.reduce((s, r) => s + r.qty_unpriced, 0));
 
   const whMap = new Map<
     string,
@@ -642,6 +660,7 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
     warehouse: string;
     product_id: string;
     sku: string;
+    warehouse_sku: string;
     name: string;
     qty: number;
     unit_cost: number | null;
@@ -662,6 +681,7 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
       warehouse: r.warehouse,
       product_id: r.product_id,
       sku: r.sku,
+      warehouse_sku: r.warehouse_sku || '',
       name: r.name,
       qty: r.qty,
       unit_cost: r.unit_cost,
@@ -699,7 +719,7 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
         qty: 0,
       };
       cur.value = roundMoney(cur.value + layer.amount);
-      cur.qty = roundMoney(cur.qty + layer.qty);
+      cur.qty = roundQty(cur.qty + layer.qty);
       purchaseAgg.set(layer.doc_id, cur);
     }
   }

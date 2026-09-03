@@ -172,7 +172,7 @@ export function createMoneyRefundFromReturn(opts: {
 }): { id: string; number: string } | null {
   const stockDocId = String(opts.stockDocId || '').trim();
   const taskId = String(opts.warehouseTaskId || '').trim();
-  const amount = Math.round((Number(opts.amount) || 0) * 100) / 100;
+  const amount = Math.round(Number(opts.amount) || 0);
   if (!(amount > 0)) return null;
   if (!stockDocId && !taskId && !String(opts.dealId || '').trim()) return null;
 
@@ -245,4 +245,129 @@ export function createMoneyRefundFromReturn(opts: {
   }
 
   return { id: String(row.id), number: String(row.number || '') };
+}
+
+function closeMoneyRefundRequestsForDeal(dealId: string) {
+  const id = String(dealId || '').trim();
+  if (!id) return 0;
+  const rows = all<{ id: string; payload_json: string; status: string }>(
+    `SELECT id, IFNULL(payload_json,'') AS payload_json, IFNULL(status,'') AS status
+     FROM thin_journal_docs
+     WHERE journal_key = 'money_refund_requests'
+       AND IFNULL(status,'') IN ('', 'draft', 'open', 'new')
+       AND IFNULL(payload_json,'') LIKE ?`,
+    [`%"deal_id":"${id.replace(/"/g, '')}"%`]
+  );
+  let n = 0;
+  for (const r of rows) {
+    try {
+      const payload = r.payload_json ? (JSON.parse(r.payload_json) as { deal_id?: string }) : {};
+      if (String(payload.deal_id || '').trim() !== id) continue;
+    } catch {
+      continue;
+    }
+    run(
+      `UPDATE thin_journal_docs
+       SET status = 'done', updated_at = datetime('now'),
+           comment = CASE
+             WHEN IFNULL(comment,'') = '' THEN 'деньги возвращены'
+             WHEN instr(lower(comment), 'деньги возвращены') > 0 THEN comment
+             ELSE comment || ' · деньги возвращены'
+           END
+       WHERE id = ?`,
+      [r.id]
+    );
+    n += 1;
+  }
+  return n;
+}
+
+/** Отметка на заказе: деньги покупателю уже вернули (Точка/банк вручную). */
+export function markDealMoneyRefunded(
+  dealId: string,
+  actor?: { id?: string; name?: string } | null
+): {
+  deal_id: string;
+  money_refunded_at: string;
+  money_refunded_by: string;
+  money_refunded_by_name: string;
+  closed_tvd: number;
+} {
+  const id = String(dealId || '').trim();
+  if (!id) throw new Error('Нет заказа');
+  const deal = get<{ id: string }>('SELECT id FROM crm_deals WHERE id = ?', [id]);
+  if (!deal) throw new Error('Заказ не найден');
+
+  const existing = get<{ money_refunded_at: string }>(
+    `SELECT IFNULL(money_refunded_at,'') AS money_refunded_at FROM crm_deals WHERE id = ?`,
+    [id]
+  );
+  if (String(existing?.money_refunded_at || '').trim()) {
+    const row = get<{
+      money_refunded_at: string;
+      money_refunded_by: string;
+      money_refunded_by_name: string;
+    }>(
+      `SELECT IFNULL(money_refunded_at,'') AS money_refunded_at,
+              IFNULL(money_refunded_by,'') AS money_refunded_by,
+              IFNULL(money_refunded_by_name,'') AS money_refunded_by_name
+       FROM crm_deals WHERE id = ?`,
+      [id]
+    );
+    return {
+      deal_id: id,
+      money_refunded_at: String(row?.money_refunded_at || ''),
+      money_refunded_by: String(row?.money_refunded_by || ''),
+      money_refunded_by_name: String(row?.money_refunded_by_name || ''),
+      closed_tvd: 0,
+    };
+  }
+
+  const by = String(actor?.id || '').trim();
+  const byName = String(actor?.name || '').trim();
+  run(
+    `UPDATE crm_deals SET
+       money_refunded_at = datetime('now'),
+       money_refunded_by = ?,
+       money_refunded_by_name = ?,
+       updated_at = datetime('now')
+     WHERE id = ?`,
+    [by, byName, id]
+  );
+  const closed = closeMoneyRefundRequestsForDeal(id);
+  const row = get<{
+    money_refunded_at: string;
+    money_refunded_by: string;
+    money_refunded_by_name: string;
+  }>(
+    `SELECT IFNULL(money_refunded_at,'') AS money_refunded_at,
+            IFNULL(money_refunded_by,'') AS money_refunded_by,
+            IFNULL(money_refunded_by_name,'') AS money_refunded_by_name
+     FROM crm_deals WHERE id = ?`,
+    [id]
+  );
+  return {
+    deal_id: id,
+    money_refunded_at: String(row?.money_refunded_at || ''),
+    money_refunded_by: String(row?.money_refunded_by || ''),
+    money_refunded_by_name: String(row?.money_refunded_by_name || ''),
+    closed_tvd: closed,
+  };
+}
+
+export function clearDealMoneyRefunded(dealId: string): { deal_id: string; ok: boolean } {
+  const id = String(dealId || '').trim();
+  if (!id) throw new Error('Нет заказа');
+  const deal = get<{ id: string }>('SELECT id FROM crm_deals WHERE id = ?', [id]);
+  if (!deal) throw new Error('Заказ не найден');
+  run(
+    `UPDATE crm_deals SET
+       money_refunded_at = '',
+       money_refunded_by = '',
+       money_refunded_by_name = '',
+       updated_at = datetime('now')
+     WHERE id = ?`,
+    [id]
+  );
+  return { deal_id: id, ok: true };
 }

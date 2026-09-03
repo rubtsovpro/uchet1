@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-type FacsimileFlags = { stamp: boolean; sign: boolean };
+export type FacsimileFlags = { stamp: boolean; sign: boolean };
 
 const facsimileStore = new AsyncLocalStorage<FacsimileFlags>();
 
@@ -218,26 +218,81 @@ export function orgSignPublicUrl(inn?: string | null): string | null {
 
 export function orgStampHtml(
   inn?: string | null,
-  opts?: { size?: number; className?: string }
+  opts?: { size?: number; sizeMm?: number; className?: string }
 ): string {
   if (!orgStampEnabled()) return '';
   const url = orgStampPublicUrl(inn);
   if (!url) return '';
-  const size = Math.max(48, Number(opts?.size) || 96);
   const cls = opts?.className ? ` class="${opts.className}"` : ' class="org-stamp"';
+  // Физический размер печати ИП ≈ 38–40 мм; в px — запасной вариант для экрана.
+  const mm = Number(opts?.sizeMm);
+  if (Number.isFinite(mm) && mm > 0) {
+    const m = Math.min(48, Math.max(28, mm));
+    return `<img${cls} src="${url}" alt="М.П." style="width:${m}mm;height:${m}mm;object-fit:contain" />`;
+  }
+  const size = Math.max(48, Number(opts?.size) || 120);
   return `<img${cls} src="${url}" alt="М.П." width="${size}" height="${size}" style="width:${size}px;height:${size}px;object-fit:contain" />`;
 }
 
 export function orgSignHtml(
   inn?: string | null,
-  opts?: { height?: number; className?: string }
+  opts?: { height?: number; heightMm?: number; className?: string }
 ): string {
   if (!orgSignEnabled()) return '';
   const url = orgSignPublicUrl(inn);
   if (!url) return '';
-  const h = Math.max(28, Number(opts?.height) || 48);
   const cls = opts?.className ? ` class="${opts.className}"` : ' class="org-sign"';
+  const mm = Number(opts?.heightMm);
+  if (Number.isFinite(mm) && mm > 0) {
+    const h = Math.min(22, Math.max(8, mm));
+    return `<img${cls} src="${url}" alt="Подпись" style="height:${h}mm;width:auto;max-width:55mm;object-fit:contain" />`;
+  }
+  const h = Math.max(28, Number(opts?.height) || 48);
   return `<img${cls} src="${url}" alt="Подпись" height="${h}" style="height:${h}px;width:auto;max-width:180px;object-fit:contain" />`;
+}
+
+/** CSS для блока «подпись на линии + печать у М.П.» (договоры / бланки). */
+export function orgFacsimileCss(): string {
+  return `
+    .org-facsimile { position: relative; margin-top: 8px; min-height: 36mm; padding: 2mm 0 4mm; page-break-inside: avoid; }
+    .org-facsimile-line { position: relative; min-height: 14mm; padding-top: 10mm; padding-left: 2mm; font-size: 11pt; }
+    .org-facsimile-line .org-sign {
+      position: absolute; left: 2mm; bottom: 3mm; height: 12mm; width: auto; max-width: 48mm;
+      object-fit: contain; pointer-events: none; opacity: 0.95; z-index: 2;
+    }
+    .org-facsimile-mp { position: relative; margin-top: 4mm; min-height: 24mm; padding-left: 2mm; font-size: 10pt; color: #333; }
+    .org-facsimile-mp .org-stamp {
+      position: absolute; left: 55mm; top: -18mm; width: 38mm; height: 38mm;
+      object-fit: contain; pointer-events: none; opacity: 0.88; z-index: 1;
+    }
+  `;
+}
+
+/** Подпись на линии + печать у «М.П.» (исполнитель). */
+export function orgFacsimileSignBlockHtml(
+  inn: string | null | undefined,
+  opts?: { name?: string; mpLabel?: string }
+): string {
+  const name = String(opts?.name || '').trim() || '________________';
+  const mp = String(opts?.mpLabel || 'М.П.').trim();
+  return `<div class="org-facsimile">
+  <div class="org-facsimile-line">
+    ${orgSignHtml(inn, { heightMm: 12 })}
+    _______________ / ${escAttr(name)} /
+  </div>
+  <div class="org-facsimile-mp">
+    ${orgStampHtml(inn, { sizeMm: 38 })}
+    ${escAttr(mp)}
+  </div>
+</div>`;
+}
+
+function escAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 export function drawOrgStampPdf(
@@ -248,10 +303,11 @@ export function drawOrgStampPdf(
   if (!orgStampEnabled()) return false;
   const p = resolveOrgStampPngPath(inn);
   if (!p) return false;
-  const size = opts?.size ?? 78;
+  // ~38 мм на A4 при 72 pt/inch ≈ 108 pt
+  const size = opts?.size ?? 108;
   const x = opts?.x ?? doc.x;
   const y = opts?.y ?? doc.y;
-  const opacity = opts?.opacity ?? 0.92;
+  const opacity = opts?.opacity ?? 0.9;
   try {
     doc.save();
     if (opacity < 1) doc.opacity(opacity);

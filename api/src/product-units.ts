@@ -222,6 +222,54 @@ export function findUnitBySerial(serial: string): ProductUnit | undefined {
   return enrichUnitApps(row);
 }
 
+/** Токен скана штрихкода в заказе (товар без экземпляров / марок). */
+export function isBarcodePickToken(serial: string): boolean {
+  return /^bc:/i.test(String(serial || '').trim());
+}
+
+export function filterRealSerials(serials: string[]): string[] {
+  return normalizeSerials(serials).filter((s) => !isBarcodePickToken(s));
+}
+
+/** Следующий свободный экземпляр товара на остатке (FIFO по дате прихода). */
+export function findNextInStockUnitForProduct(
+  productId: string,
+  opts?: { warehouseId?: string; excludeSerials?: string[] }
+): ProductUnit | undefined {
+  const pid = String(productId || '').trim();
+  if (!pid) return undefined;
+  const exclude = new Set(
+    (opts?.excludeSerials || []).map((s) => String(s || '').trim().toLowerCase()).filter(Boolean)
+  );
+  const wh = String(opts?.warehouseId || '').trim();
+  const params: Array<string | number> = [pid];
+  let whSql = '';
+  if (wh) {
+    whSql = ' AND u.warehouse_id = ?';
+    params.push(wh);
+  }
+  const rows = all<ProductUnit>(
+    `SELECT u.*, p.sku AS sku, p.name AS product_name, w.name AS warehouse_name
+     FROM product_units u
+     LEFT JOIN products p ON p.id = u.product_id
+     LEFT JOIN warehouses w ON w.id = u.warehouse_id
+     WHERE u.product_id = ? AND u.status = 'in_stock'${whSql}
+     ORDER BY IFNULL(u.created_at,''), u.serial
+     LIMIT 40`,
+    params
+  );
+  for (const row of rows) {
+    const ser = String(row.serial || '').trim().toLowerCase();
+    if (ser && exclude.has(ser)) continue;
+    return enrichUnitApps(row);
+  }
+  if (wh) {
+    // На указанном складе пусто — любой другой склад
+    return findNextInStockUnitForProduct(pid, { excludeSerials: opts?.excludeSerials });
+  }
+  return undefined;
+}
+
 /** Приход / возврат: создать экземпляры на складе. */
 export function receiveUnits(input: {
   productId: string;

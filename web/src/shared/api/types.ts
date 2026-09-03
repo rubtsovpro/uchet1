@@ -5,6 +5,12 @@ export type StaffMe = {
   email?: string;
   role?: string;
   isSystemAdmin?: boolean;
+  phone?: string;
+  avatar_url?: string;
+  has_password?: boolean;
+  has_pin?: boolean;
+  can_change_password?: boolean;
+  can_set_pin?: boolean;
   rights?: {
     sections?: string[];
     can_sync?: boolean;

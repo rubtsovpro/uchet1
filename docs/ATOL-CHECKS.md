@@ -12,9 +12,12 @@
 | 1 · предоплата | `advance` | `sell` | После оплаты по СБП/карте |
 | 2 · полный | `full` | `sell` | При выдаче / полном расчёте |
 | Возврат | `refund` / `refund_advance` | **`sell_refund`** | Возврат покупателю |
+| Коррекция | `correction_income` / `correction_expense` | **`sell_correction` / `buy_correction`** | Расчёт без ККТ / по предписанию ФНС |
 
 API: `POST /api/crm/deals/{id}/fiscal/{kind}`  
 Тело: `{ "send": true, "parent_receipt_id": "…" }` — `parent_receipt_id` опционален (для возврата по конкретному чеку).
+
+**Панель коррекции (разово):** [`/fiscal/correction`](/fiscal/correction) · API `POST /api/fiscal/correction`
 
 ## Возврат — что делает система
 

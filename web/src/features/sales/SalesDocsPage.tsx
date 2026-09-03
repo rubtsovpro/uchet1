@@ -51,7 +51,7 @@ export function SalesDocsPage({ type }: Props) {
                 <td className="mono">{d.number}</td>
                 <td>{String(d.doc_date || '').slice(0, 10)}</td>
                 <td>{d.counterparty_name || '—'}</td>
-                <td className="mono">{d.total != null ? Number(d.total).toFixed(2) : '—'}</td>
+                <td className="mono">{d.total != null ? Math.round(Number(d.total)).toLocaleString('ru-RU') : '—'}</td>
                 <td>
                   <a href={`/api/sales-docs/${encodeURIComponent(d.id)}/pdf`} target="_blank" rel="noopener noreferrer">
                     открыть

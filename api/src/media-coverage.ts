@@ -1,8 +1,10 @@
 /**
  * Покрытие фотографиями номенклатуры: по категориям + поиск sku/code.
  * Очередь фотографа: остаток > 0 и нет image в product_media.
+ * Фильтр source_department — как у /products (контур в шапке).
  */
 import { all, get } from './db.js';
+import { sqlSourceDepartmentIn } from './companies.js';
 
 export type MediaCoverageCategory = {
   category_id: string | null;
@@ -26,6 +28,33 @@ const HAS_IMAGE_SQL = `EXISTS (
   SELECT 1 FROM product_media m WHERE m.product_id = p.id AND m.kind = 'image'
 )`;
 
+/** Один раз агрегируем остатки — иначе coverage на 20k товаров вешает event loop. */
+const STOCK_AGG_JOIN = `LEFT JOIN (
+  SELECT x.product_id AS product_id, SUM(x.qty) AS qty
+  FROM (
+    SELECT b.product_id AS product_id, b.qty AS qty
+    FROM stock_balances b
+    WHERE b.qty != 0
+    UNION ALL
+    SELECT r.product_id, r.qty
+    FROM product_store_rests r
+    WHERE r.qty != 0
+      AND NOT EXISTS (
+        SELECT 1 FROM stock_balances b2
+        WHERE b2.product_id = r.product_id
+          AND b2.warehouse_id = r.warehouse_id
+          AND b2.qty != 0
+      )
+  ) x
+  GROUP BY x.product_id
+) st ON st.product_id = p.id`;
+
+const HAS_IMAGE_JOIN = `LEFT JOIN (
+  SELECT DISTINCT product_id AS product_id
+  FROM product_media
+  WHERE kind = 'image'
+) img ON img.product_id = p.id`;
+
 const STOCK_WAREHOUSES_SQL = `CASE
   WHEN EXISTS (SELECT 1 FROM stock_balances b WHERE b.product_id = p.id AND b.qty != 0)
   THEN (
@@ -42,7 +71,9 @@ const STOCK_WAREHOUSES_SQL = `CASE
   )
 END`;
 
-export function mediaCoverageByCategory(): {
+export function mediaCoverageByCategory(opts?: {
+  source_departments?: string[] | null;
+}): {
   categories: MediaCoverageCategory[];
   totals: {
     products: number;
@@ -53,6 +84,7 @@ export function mediaCoverageByCategory(): {
     images: number;
   };
 } {
+  const dept = sqlSourceDepartmentIn('p', opts?.source_departments);
   const rows = all<{
     category_id: string | null;
     category_name: string;
@@ -64,16 +96,19 @@ export function mediaCoverageByCategory(): {
        p.category_id AS category_id,
        IFNULL(NULLIF(TRIM(c.name), ''), '— Без категории —') AS category_name,
        COUNT(*) AS products,
-       SUM(CASE WHEN ${HAS_IMAGE_SQL} THEN 1 ELSE 0 END) AS with_photo,
+       SUM(CASE WHEN img.product_id IS NOT NULL THEN 1 ELSE 0 END) AS with_photo,
        SUM(CASE
-         WHEN (${STOCK_QTY_SQL}) > 0 AND NOT ${HAS_IMAGE_SQL} THEN 1
+         WHEN IFNULL(st.qty, 0) > 0 AND img.product_id IS NULL THEN 1
          ELSE 0
        END) AS stock_without_photo
      FROM products p
      LEFT JOIN categories c ON c.id = p.category_id
-     WHERE p.is_active = 1
+     ${STOCK_AGG_JOIN}
+     ${HAS_IMAGE_JOIN}
+     WHERE p.is_active = 1${dept.sql}
      GROUP BY p.category_id, category_name
-     ORDER BY stock_without_photo DESC, products DESC, category_name COLLATE NOCASE`
+     ORDER BY stock_without_photo DESC, products DESC, category_name COLLATE NOCASE`,
+    dept.params
   );
 
   const categories: MediaCoverageCategory[] = rows.map((r) => {
@@ -96,13 +131,23 @@ export function mediaCoverageByCategory(): {
   const withPhoto = categories.reduce((s, c) => s + c.with_photo, 0);
   const without = products - withPhoto;
   const images =
-    get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_media WHERE kind = 'image'`)?.c ?? 0;
+    get<{ c: number }>(
+      `SELECT COUNT(*) AS c
+       FROM product_media m
+       JOIN products p ON p.id = m.product_id AND p.is_active = 1
+       WHERE m.kind = 'image'${dept.sql}`,
+      dept.params
+    )?.c ?? 0;
   const stockWithout =
     get<{ c: number }>(
-      `SELECT COUNT(*) AS c FROM products p
+      `SELECT COUNT(*) AS c
+       FROM products p
+       ${STOCK_AGG_JOIN}
+       ${HAS_IMAGE_JOIN}
        WHERE p.is_active = 1
-         AND (${STOCK_QTY_SQL}) > 0
-         AND NOT ${HAS_IMAGE_SQL}`
+         AND IFNULL(st.qty, 0) > 0
+         AND img.product_id IS NULL${dept.sql}`,
+      dept.params
     )?.c ?? 0;
 
   return {
@@ -124,13 +169,24 @@ export function listMediaProducts(opts: {
   status?: 'all' | 'with' | 'without' | 'stock_without';
   page?: number;
   limit?: number;
+  sort?: string;
+  dir?: string;
+  source_departments?: string[] | null;
 }) {
   const page = Math.max(1, opts.page || 1);
   const limit = Math.min(100, Math.max(1, opts.limit || 50));
   const offset = (page - 1) * limit;
   const status = opts.status || 'all';
+  const sort = String(opts.sort || '').trim().toLowerCase();
+  const dir = String(opts.dir || '').trim().toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const imagesCountSql = `(SELECT COUNT(*) FROM product_media m WHERE m.product_id = p.id AND m.kind = 'image')`;
   const where: string[] = ['p.is_active = 1'];
   const params: Array<string | number> = [];
+  const dept = sqlSourceDepartmentIn('p', opts.source_departments);
+  if (dept.sql) {
+    where.push(dept.sql.replace(/^\s*AND\s+/i, '').trim());
+    params.push(...dept.params);
+  }
 
   const q = (opts.q || '').trim();
   if (q) {
@@ -149,26 +205,40 @@ export function listMediaProducts(opts: {
     params.push(cat);
   }
 
-  if (status === 'with') where.push(HAS_IMAGE_SQL);
-  if (status === 'without') where.push(`NOT ${HAS_IMAGE_SQL}`);
+  if (status === 'with') where.push('img.product_id IS NOT NULL');
+  if (status === 'without') where.push('img.product_id IS NULL');
   // Как у /photo: остаток > 0 и нет фото
   if (status === 'stock_without') {
-    where.push(`(${STOCK_QTY_SQL}) > 0`);
-    where.push(`NOT ${HAS_IMAGE_SQL}`);
+    where.push('IFNULL(st.qty, 0) > 0');
+    where.push('img.product_id IS NULL');
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const orderSql =
-    status === 'stock_without'
-      ? `ORDER BY (${STOCK_QTY_SQL}) DESC, c.name COLLATE NOCASE, p.sku`
-      : `ORDER BY
-       CASE WHEN (${HAS_IMAGE_SQL}) THEN 1 ELSE 0 END,
+  const fromSql = `FROM products p
+     LEFT JOIN categories c ON c.id = p.category_id
+     ${STOCK_AGG_JOIN}
+     ${HAS_IMAGE_JOIN}`;
+  let orderSql: string;
+  if (sort === 'photos' || sort === 'images_count') {
+    orderSql = `ORDER BY ${imagesCountSql} ${dir}, IFNULL(st.qty, 0) DESC, p.sku`;
+  } else if (sort === 'stock') {
+    orderSql = `ORDER BY IFNULL(st.qty, 0) ${dir}, p.sku`;
+  } else if (sort === 'sku') {
+    orderSql = `ORDER BY p.sku COLLATE NOCASE ${dir}`;
+  } else if (sort === 'name') {
+    orderSql = `ORDER BY p.name COLLATE NOCASE ${dir}`;
+  } else if (status === 'stock_without') {
+    orderSql = `ORDER BY IFNULL(st.qty, 0) DESC, c.name COLLATE NOCASE, p.sku`;
+  } else {
+    orderSql = `ORDER BY
+       CASE WHEN img.product_id IS NOT NULL THEN 1 ELSE 0 END,
        c.name COLLATE NOCASE,
        p.sku`;
+  }
 
   const total =
     get<{ c: number }>(
-      `SELECT COUNT(*) AS c FROM products p ${whereSql}`,
+      `SELECT COUNT(*) AS c ${fromSql} ${whereSql}`,
       params
     )?.c ?? 0;
 
@@ -177,14 +247,13 @@ export function listMediaProducts(opts: {
        p.id, p.sku, p.code, p.name, p.brand, p.barcode,
        IFNULL(c.name, '') AS category,
        p.category_id,
-       (${STOCK_QTY_SQL}) AS stock_qty,
+       IFNULL(st.qty, 0) AS stock_qty,
        (${STOCK_WAREHOUSES_SQL}) AS stock_warehouses,
-       (SELECT COUNT(*) FROM product_media m WHERE m.product_id = p.id AND m.kind = 'image') AS images_count,
+       ${imagesCountSql} AS images_count,
        (SELECT m.url FROM product_media m
          WHERE m.product_id = p.id AND m.kind = 'image'
          ORDER BY m.sort_order, m.synced_at LIMIT 1) AS thumb_url
-     FROM products p
-     LEFT JOIN categories c ON c.id = p.category_id
+     ${fromSql}
      ${whereSql}
      ${orderSql}
      LIMIT ? OFFSET ?`,
@@ -197,6 +266,8 @@ export function listMediaProducts(opts: {
     page,
     pages: Math.max(1, Math.ceil((Number(total) || 0) / limit)),
     limit,
+    sort: sort || '',
+    dir: dir.toLowerCase(),
   };
 }
 
@@ -207,6 +278,7 @@ export function listPhotographerQueue(opts: {
   category_id?: string;
   offset?: number;
   limit?: number;
+  source_departments?: string[] | null;
 }) {
   const limit = Math.min(50, Math.max(1, opts.limit || 1));
   const offset = Math.max(0, opts.offset || 0);
@@ -216,6 +288,11 @@ export function listPhotographerQueue(opts: {
     `NOT ${HAS_IMAGE_SQL}`,
   ];
   const params: Array<string | number> = [];
+  const dept = sqlSourceDepartmentIn('p', opts.source_departments);
+  if (dept.sql) {
+    where.push(dept.sql.replace(/^\s*AND\s+/i, '').trim());
+    params.push(...dept.params);
+  }
 
   const q = (opts.q || '').trim();
   if (q) {

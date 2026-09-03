@@ -23,8 +23,8 @@
 
   function money(n) {
     if (L() && L().formatMoney) return L().formatMoney(n);
-    const x = Number(n) || 0;
-    return x.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽';
+    const x = Math.round(Number(n) || 0);
+    return x.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽';
   }
 
   /** @type {Array<{id:string,key:string,title:string,section:string,path:string}>} */

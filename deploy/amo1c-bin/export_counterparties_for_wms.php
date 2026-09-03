@@ -17,6 +17,7 @@ if (PHP_SAPI !== 'cli') {
 
 require_once dirname(__DIR__) . '/config.php';
 require_once dirname(__DIR__) . '/amo/access.php';
+require_once __DIR__ . '/wms_inn.php';
 
 $limit = 5000;
 $pages = 40;
@@ -137,13 +138,9 @@ function amo_cp_map_entity(array $row, string $entity, string $subdomain): array
 {
     $id = (int) ($row['id'] ?? 0);
     $innRaw = amo_cp_cf_value($row['custom_fields_values'] ?? [], AMO_INN_FIELD_ID);
-    $inn = preg_replace('/\D/', '', $innRaw) ?: '';
+    $inn = wms_sanitize_buyer_inn($innRaw);
     $partnerRaw = amo_cp_cf_value($row['custom_fields_values'] ?? [], AMO_PARTNER_FIELD_ID);
-    $isPartner = $entity === 'companies' && (
-        $partnerRaw === '1'
-        || strcasecmp($partnerRaw, 'true') === 0
-        || strcasecmp($partnerRaw, 'да') === 0
-    );
+    $isPartner = $entity === 'companies' && wms_cf_is_checked($partnerRaw);
     $phones = amo_cp_cf_by_code($row['custom_fields_values'] ?? [], 'PHONE');
     $emails = amo_cp_cf_by_code($row['custom_fields_values'] ?? [], 'EMAIL');
     $linked = [];
@@ -153,14 +150,7 @@ function amo_cp_map_entity(array $row, string $entity, string $subdomain): array
             $linked[] = (string) (int) $rel['id'];
         }
     }
-    $kind = 'person';
-    if ($isPartner) {
-        $kind = 'partner';
-    } elseif (strlen($inn) === 10 || $entity === 'companies') {
-        $kind = 'legal';
-    } elseif (strlen($inn) === 12) {
-        $kind = 'ip';
-    }
+    $kind = wms_buyer_kind_from_inn($inn);
     $path = $entity === 'companies' ? 'companies/detail/' : 'contacts/detail/';
     return [
         'id' => (string) $id,
@@ -171,7 +161,7 @@ function amo_cp_map_entity(array $row, string $entity, string $subdomain): array
         'email' => $emails[0] ?? '',
         'emails' => $emails,
         'buyer_kind' => $kind,
-        'is_legal_entity' => in_array($kind, ['legal', 'ip', 'partner'], true) ? 1 : 0,
+        'is_legal_entity' => in_array($kind, ['legal', 'ip'], true) ? 1 : 0,
         'is_partner' => $isPartner ? 1 : 0,
         'responsible_user_id' => (string) ($row['responsible_user_id'] ?? ''),
         'created_at' => !empty($row['created_at']) ? date('c', (int) $row['created_at']) : null,

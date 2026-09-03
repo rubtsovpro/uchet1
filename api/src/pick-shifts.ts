@@ -176,8 +176,8 @@ export function normalizePin(raw: string): string {
 
 export function validatePinFormat(pin: string): void {
   const p = normalizePin(pin);
-  if (p.length < 4 || p.length > 6) {
-    throw new Error('PIN — от 4 до 6 цифр');
+  if (p.length < 1 || p.length > 6) {
+    throw new Error('PIN — от 1 до 6 цифр');
   }
 }
 

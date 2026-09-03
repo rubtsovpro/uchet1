@@ -2,9 +2,107 @@
  * Native СДЭК через виджет (widget.pnevmopodveska1.ru) — OAuth client_id/secret
  * живут только на виджете; Учёт №1 ходит по machine API с X-Wms-Key.
  */
+import { createHmac } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { get, run } from './db.js';
 import { getCdekBridgeSettings } from './integration-settings.js';
 import { cdekWidgetUrl } from './ops.js';
+
+/** Публичный URL PDF ярлыка СДЭК (barcode.php на виджете). */
+export function cdekPublicBaseUrl(): string {
+  const wms = getCdekBridgeSettings().wms_url;
+  try {
+    const u = new URL(wms);
+    return `${u.origin}${u.pathname.replace(/\/wms_api\.php$/i, '')}`;
+  } catch {
+    return 'https://widget.pnevmopodveska1.ru/cdek';
+  }
+}
+
+export function cdekBarcodePublicUrl(leadId: string, track: string): string {
+  const id = String(leadId || '').trim();
+  const num = String(track || '').trim();
+  if (!id || !num) return '';
+  const sign = createHmac('sha256', 'pnevmo-cdek-barcode-v1')
+    .update(`${id}|${num}`)
+    .digest('hex')
+    .slice(0, 20);
+  const qs = new URLSearchParams({ l: id, n: num, s: sign });
+  return `${cdekPublicBaseUrl()}/barcode.php?${qs.toString()}`;
+}
+
+function resolveCdekBarcodeUrl(leadId: string, track: string, explicit?: string): string {
+  const url = String(explicit || '').trim();
+  if (url) return url;
+  return cdekBarcodePublicUrl(leadId, track);
+}
+
+const WIDGET_DEALS_DIRS = (): string[] =>
+  [
+    process.env.CDEK_WIDGET_DEALS_DIR,
+    '/root/widget_pnevmopodveska1_ru/public_html/cdek/data/deals',
+  ].filter((v): v is string => !!String(v || '').trim());
+
+/** Локальный кэш виджета (data/deals/*.json) на том же VPS. */
+export function loadCdekDealFromWidgetCache(leadId: string): CdekShipment | null {
+  const id = String(leadId || '').trim();
+  if (!id) return null;
+  for (const dir of WIDGET_DEALS_DIRS()) {
+    try {
+      const path = join(dir, `${id}.json`);
+      if (!existsSync(path)) continue;
+      const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      const num = String(raw.cdek_number || '').trim();
+      if (!num) continue;
+      const barcode = resolveCdekBarcodeUrl(id, num, String(raw.cdek_barcode_url || ''));
+      return {
+        ok: true,
+        lead_id: Number(id) || 0,
+        cdek_number: num,
+        cdek_uuid: String(raw.cdek_uuid || ''),
+        cdek_barcode_url: barcode,
+        cdek_status_code: String(raw.cdek_last_status_code || ''),
+        cdek_status_name: String(raw.cdek_last_status_name || raw.cdek_status_text || ''),
+        delivery_cost: (raw.delivery_cost as number | null | undefined) ?? null,
+        delivery_city: String(raw.delivery_city || ''),
+        delivery_point: String(raw.delivery_point || ''),
+        delivery_address: String(raw.delivery_address || ''),
+        recipient_name: String(raw.recipient_name || ''),
+        recipient_phone: String(raw.recipient_phone || ''),
+        shipment_method_title: String(raw.shipment_method_title || ''),
+        tariff_code: (raw.tariff_code as number | null | undefined) ?? null,
+        has_order: true,
+        widget_url: cdekWidgetUrl(id),
+        native_api: false,
+        updated_at: String(raw.updated_at || ''),
+      };
+    } catch {
+      /* next dir */
+    }
+  }
+  return null;
+}
+
+function mergeWidgetCache(leadId: string, base: CdekShipment): CdekShipment {
+  if (base.cdek_number && base.cdek_barcode_url) return base;
+  const cached = loadCdekDealFromWidgetCache(leadId);
+  if (!cached) return base;
+  const num = String(base.cdek_number || cached.cdek_number || '').trim();
+  const barcode =
+    String(base.cdek_barcode_url || cached.cdek_barcode_url || '').trim() ||
+    (num ? cdekBarcodePublicUrl(leadId, num) : '');
+  return {
+    ...base,
+    ok: true,
+    cdek_number: num,
+    cdek_barcode_url: barcode,
+    cdek_uuid: String(base.cdek_uuid || cached.cdek_uuid || ''),
+    has_order: base.has_order || cached.has_order,
+    cdek_status_code: String(base.cdek_status_code || cached.cdek_status_code || ''),
+    cdek_status_name: String(base.cdek_status_name || cached.cdek_status_name || ''),
+  };
+}
 
 export type CdekShipment = {
   ok: boolean;
@@ -131,7 +229,10 @@ type WmsAction =
   | 'check_api'
   | 'refresh_pvz_cache'
   | 'load_category_defaults'
-  | 'save_category_defaults';
+  | 'save_category_defaults'
+  | 'pick_pack'
+  | 'pick_pack_save'
+  | 'pick_regenerate';
 
 async function callCdekWmsRaw(
   action: WmsAction,
@@ -210,12 +311,13 @@ function emptyShipment(leadId: string, error?: string): CdekShipment {
 }
 
 function asShipment(data: Record<string, unknown>, leadId: string): CdekShipment {
+  const cdekNum = String(data.cdek_number || '');
   if (data.ok === false) {
     return {
       ...emptyShipment(leadId, String(data.error || 'ошибка')),
-      cdek_number: String(data.cdek_number || ''),
+      cdek_number: cdekNum,
       cdek_uuid: String(data.cdek_uuid || ''),
-      cdek_barcode_url: String(data.cdek_barcode_url || ''),
+      cdek_barcode_url: resolveCdekBarcodeUrl(leadId, cdekNum, String(data.cdek_barcode_url || '')),
       cdek_status_code: String(data.cdek_status_code || ''),
       cdek_status_name: String(data.cdek_status_name || ''),
       has_order: Boolean(data.has_order),
@@ -228,9 +330,9 @@ function asShipment(data: Record<string, unknown>, leadId: string): CdekShipment
     lead_id: Number(data.lead_id || leadId) || 0,
     account_id: String(data.account_id || ''),
     account_title: String(data.account_title || ''),
-    cdek_number: String(data.cdek_number || ''),
+    cdek_number: cdekNum,
     cdek_uuid: String(data.cdek_uuid || ''),
-    cdek_barcode_url: String(data.cdek_barcode_url || ''),
+    cdek_barcode_url: resolveCdekBarcodeUrl(leadId, cdekNum, String(data.cdek_barcode_url || '')),
     cdek_status_code: String(data.cdek_status_code || ''),
     cdek_status_name: String(data.cdek_status_name || ''),
     delivery_cost: (data.delivery_cost as number | null | undefined) ?? null,
@@ -262,7 +364,12 @@ async function callCdekWms(
 }
 
 export async function fetchCdekShipment(leadId: string): Promise<CdekShipment> {
-  return callCdekWms('shipment', leadId);
+  const id = String(leadId || '').trim();
+  if (!cdekWmsKey()) {
+    return mergeWidgetCache(id, emptyShipment(id, 'Не задан ключ СДЭК (Настройки → Интеграции → СДЭК)'));
+  }
+  const ship = mergeWidgetCache(id, await callCdekWms('shipment', id));
+  return ship;
 }
 
 export async function refreshCdekShipment(leadId: string): Promise<CdekShipment> {
@@ -328,10 +435,39 @@ export async function callCdekWidgetAction(
     'check_api',
     'refresh_pvz_cache',
     'save_category_defaults',
+    'pick_pack_save',
+    'pick_regenerate',
   ]);
   return callCdekWmsRaw(action, {
     method: postish.has(action) ? 'POST' : 'GET',
     body,
+    leadId: String(body.lead_id || body.deal_id || ''),
+  });
+}
+
+export async function fetchCdekPickPack(leadId: string): Promise<Record<string, unknown>> {
+  return callCdekWmsRaw('pick_pack' as WmsAction, { leadId });
+}
+
+export async function saveCdekPickPack(
+  leadId: string,
+  body: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  return callCdekWmsRaw('pick_pack_save' as WmsAction, {
+    leadId,
+    method: 'POST',
+    body: { lead_id: leadId, ...body },
+  });
+}
+
+export async function regenerateCdekPickShipment(
+  leadId: string,
+  body: Record<string, unknown> = {}
+): Promise<Record<string, unknown>> {
+  return callCdekWmsRaw('pick_regenerate' as WmsAction, {
+    leadId,
+    method: 'POST',
+    body: { lead_id: leadId, ...body },
   });
 }
 

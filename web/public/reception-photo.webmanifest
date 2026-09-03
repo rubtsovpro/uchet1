@@ -1,0 +1,20 @@
+{
+  "name": "Фото авто · приёмка · Учёт №1",
+  "short_name": "Фото авто",
+  "description": "Задачи на фото авто при приёме на СТО · Учёт №1",
+  "start_url": "/reception-photo",
+  "scope": "/reception-photo",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#e8f0f0",
+  "theme_color": "#0f766e",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "/logo-uchet1.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

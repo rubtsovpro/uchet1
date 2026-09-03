@@ -1,18 +1,38 @@
 /**
- * Промежуточная ссылка на оплату: СБП QR + карта + таймер + резерв на «Ожидание оплаты».
+ * Промежуточная ссылка на оплату: СБП QR + карта + таймер.
+ * Резерв на «Ожидание оплаты» больше не делаем.
  */
+import { resolveAmoBranchForDeal } from './amo-deal-branch.js';
 import { writeAudit } from './audit.js';
 import { randomBytes } from 'node:crypto';
 import { all, get, run } from './db.js';
 import { newGuid } from './ids.js';
-import { deleteDealItem, getDeal, updateDealItem } from './deals.js';
+import { deleteDealItem, getDeal, updateDealItem, dealShipFieldsReady, organizationIdForDealRecord } from './deals.js';
+import { cashAcceptedOnSite } from './deal-sale-rules.js';
 import { createCrmEvent, createCrmTask } from './menu-parity.js';
 import { createDocument } from './stock.js';
+import { getDealPaymentSplit } from './deal-payment-split.js';
 import { createDealSbpQr, markDealPaymentPaid, pollPendingSbpPayments } from './payments.js';
-import { getUiSettings, saveUiSettings } from './phone.js';
-import { resolveOrganizationId } from './organizations.js';
+import { digitsOnly, getUiSettings, saveUiSettings } from './phone.js';
+import { resolveOrganizationId, getOrganization } from './organizations.js';
 import { telegramSendMessage } from './telegram.js';
+import { notifyDealResponsible } from './staff-notifications.js';
 import { pollYandexPayForLink, yandexPayAvailableForOrganization } from './yandex-pay.js';
+import { sendTargetSms, smsSenderForOrg, targetsmsConfigured } from './targetsms.js';
+import { INN_BMP } from './sto-sites.js';
+
+export {
+  dealNeedsCodStockReserve,
+  dealNeedsStoStockReserve,
+  dealNeedsClientStockReserve,
+  ensureDealClientStockReserve,
+  markDealStockReservesSold,
+  releaseDealStockReserves,
+  reserveStockForCodDeal,
+  reserveStockForStoDeal,
+  reserveStockForDeal,
+  reserveStockForInvoice,
+} from './stock-reserve.js';
 
 export const WAIT_PAY_CODE = 'WAIT-PAY';
 export const WAIT_PAY_NAME = 'Ожидание оплаты';
@@ -36,7 +56,8 @@ export function getPaymentLinkSettings(): PaymentLinkSettings {
       Number.isFinite(mins) && mins > 0
         ? Math.min(Math.floor(mins), MAX_PAYMENT_LINK_TIMER_MINUTES)
         : DEFAULT_PAYMENT_LINK_TIMER_MINUTES,
-    payment_link_reserve_enabled: s.payment_link_reserve_enabled !== false,
+    // Резерв WAIT-PAY отключён: товар при ссылке / счёте не бронируем.
+    payment_link_reserve_enabled: false,
     payment_link_default_warehouse_id: String(s.payment_link_default_warehouse_id || ''),
     payment_link_default_organization_id: String(s.payment_link_default_organization_id || ''),
   };
@@ -51,9 +72,8 @@ export function savePaymentLinkSettings(patch: Partial<PaymentLinkSettings>): Pa
       next.payment_link_timer_minutes = Math.min(m, MAX_PAYMENT_LINK_TIMER_MINUTES);
     }
   }
-  if (patch.payment_link_reserve_enabled != null) {
-    next.payment_link_reserve_enabled = Boolean(patch.payment_link_reserve_enabled);
-  }
+  // Игнорируем включение: WAIT-PAY больше не используем.
+  next.payment_link_reserve_enabled = false;
   if (patch.payment_link_default_warehouse_id != null) {
     next.payment_link_default_warehouse_id = String(patch.payment_link_default_warehouse_id || '');
   }
@@ -110,8 +130,21 @@ function resolveProductId(item: Record<string, unknown>): string | null {
   return null;
 }
 
+/** Первое фото товара из product_media (публичный URL S3). */
+function productThumbUrl(productId: string | null): string {
+  if (!productId) return '';
+  const row = get<{ url: string }>(
+    `SELECT url FROM product_media
+     WHERE product_id = ? AND kind = 'image' AND IFNULL(url,'') != ''
+     ORDER BY sort_order ASC, synced_at ASC
+     LIMIT 1`,
+    [productId]
+  );
+  return String(row?.url || '').trim();
+}
+
 /** Склад-источник с достаточным остатком (кроме WAIT-PAY). */
-function pickSourceWarehouse(
+export function pickSourceWarehouse(
   productId: string,
   qty: number,
   preferredId: string,
@@ -186,17 +219,76 @@ export function planDealStockNeeds(
 
 /** Нельзя выставлять счёт / ссылку, если товара нет на складе. */
 export function assertDealStockAvailable(dealId: string, preferredWh?: string): void {
+  const st = getDealInvoiceStockStatus(dealId, preferredWh);
+  if (!st.ok) {
+    throw new Error(
+      `Нет на складе — счёт / оплату выставить нельзя: ${st.missing.slice(0, 5).join('; ')}`
+    );
+  }
+}
+
+/** Активный резерв по сделке (ссылка оплаты или счёт юрлица). */
+export function dealActiveReserveQtyByProduct(dealId: string): Map<string, number> {
+  const rows = all<{ product_id: string; qty: number }>(
+    `SELECT product_id, qty FROM stock_reserves
+     WHERE deal_id = ? AND status = 'active'`,
+    [dealId]
+  );
+  const m = new Map<string, number>();
+  for (const r of rows) {
+    const pid = String(r.product_id || '');
+    if (!pid) continue;
+    m.set(pid, (m.get(pid) || 0) + (Number(r.qty) || 0));
+  }
+  return m;
+}
+
+/**
+ * Готовность к счёту: есть свободный остаток (резерв WAIT-PAY больше не требуется).
+ */
+export function getDealInvoiceStockStatus(
+  dealId: string,
+  preferredWh?: string
+): {
+  ok: boolean;
+  reserved: boolean;
+  missing: string[];
+  needs_count: number;
+  reserves: Array<Record<string, unknown>>;
+} {
   const deal = getDeal(dealId) as Record<string, unknown> | null;
-  if (!deal) throw new Error('Сделка не найдена');
+  if (!deal) {
+    return { ok: false, reserved: false, missing: ['Сделка не найдена'], needs_count: 0, reserves: [] };
+  }
   const settings = getPaymentLinkSettings();
   const preferred =
     preferredWh || settings.payment_link_default_warehouse_id || '';
-  const { missing } = planDealStockNeeds(deal, preferred);
-  if (missing.length) {
-    throw new Error(
-      `Нет на складе — счёт / оплату выставить нельзя: ${missing.slice(0, 5).join('; ')}`
-    );
+  const waitWh = ensureWaitingPaymentWarehouse();
+  const { needs } = planDealStockNeeds(deal, preferred);
+  const reservedMap = dealActiveReserveQtyByProduct(dealId);
+  const missing: string[] = [];
+  let fullyReserved = needs.length > 0;
+  for (const n of needs) {
+    const have = reservedMap.get(n.productId) || 0;
+    if (have + 0.0001 >= n.qty) continue;
+    fullyReserved = false;
+    const still = Math.round((n.qty - have) * 1000) / 1000;
+    const wh = pickSourceWarehouse(n.productId, still, preferred, waitWh.id);
+    if (!wh) missing.push(`${n.name} × ${still}`);
   }
+  if (!needs.length) fullyReserved = false;
+  const reserves = all(
+    `SELECT * FROM stock_reserves WHERE deal_id = ? AND status = 'active'
+     ORDER BY datetime(created_at) DESC`,
+    [dealId]
+  ) as Array<Record<string, unknown>>;
+  return {
+    ok: missing.length === 0,
+    reserved: fullyReserved && missing.length === 0,
+    missing,
+    needs_count: needs.length,
+    reserves,
+  };
 }
 
 function publicBaseUrl(): string {
@@ -210,6 +302,194 @@ function publicBaseUrl(): string {
 
 export function paymentLinkPublicUrl(token: string): string {
   return `${publicBaseUrl()}/pay/${encodeURIComponent(token)}`;
+}
+
+/**
+ * Та же публичная оплата, что виджет Amo: pay…/?l={leadId}
+ * (QR / карта / рассрочка на PHP-форме, не /pay/{token} Учёта).
+ */
+export function amoWidgetPayUrl(opts: {
+  dealId: string;
+  inn?: string | null;
+  companyCode?: string | null;
+  companyName?: string | null;
+  organizationId?: string | null;
+}): string {
+  const dealId = String(opts.dealId || '').trim();
+  if (!dealId) return '';
+  let brand: 'fogel' | 'pnevmo' = 'pnevmo';
+  const orgId = String(opts.organizationId || '').trim();
+  if (orgId) {
+    const org = getOrganization(orgId);
+    if (org) {
+      const inn = String(org.inn || '').replace(/\D/g, '');
+      const code = String(org.code || org.name || org.short_name || '')
+        .toLowerCase()
+        .replace(/ё/g, 'е');
+      if (inn === INN_BMP || /fogel|фогел|strela|стрел/.test(code)) brand = 'fogel';
+    }
+  } else {
+    const inn = String(opts.inn || '').replace(/\D/g, '');
+    const code = String(opts.companyCode || opts.companyName || '')
+      .toLowerCase()
+      .replace(/ё/g, 'е');
+    if (inn === INN_BMP || /fogel|фогел|strela|стрел/.test(code)) brand = 'fogel';
+  }
+  const tpl =
+    brand === 'fogel'
+      ? String(process.env.PAY_FOGEL_WIDGET_URL || 'https://pay.fogel.com.ru/?l={deal_id}').trim()
+      : String(
+          process.env.PAY_PNEVMO_WIDGET_URL ||
+            process.env.PAY_WIDGET_URL ||
+            'https://pay.pnevmopodveska1.ru/?l={deal_id}'
+        ).trim();
+  return tpl
+    .replace(/\{deal_id\}/gi, encodeURIComponent(dealId))
+    .replace(/\{lead_id\}/gi, encodeURIComponent(dealId));
+}
+
+/** Фогель / Краснодар: ссылка на оплату без резерва на WAIT-PAY (самовывоз / СТО). */
+export function isFogelBranchDeal(deal: Record<string, unknown> | null | undefined): boolean {
+  if (!deal) return false;
+  const branch = resolveAmoBranchForDeal(deal).toLowerCase().replace(/ё/g, 'е');
+  if (/фогель|fogel/.test(branch)) return true;
+  const sto = String(deal.amo_sto || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е');
+  if (/фогель|fogel/.test(sto)) return true;
+  const orgId = String(deal.org_company_id || '').trim();
+  if (orgId) {
+    const org = getOrganization(orgId);
+    if (org) {
+      const inn = String(org.inn || '').replace(/\D/g, '');
+      const code = String(org.code || org.name || org.short_name || '')
+        .toLowerCase()
+        .replace(/ё/g, 'е');
+      if (inn === INN_BMP && /фогель|fogel|стрел|strela|краснодар/.test(code)) return true;
+    }
+  }
+  return false;
+}
+
+function phoneForPaymentSms(raw: unknown): string {
+  const d = digitsOnly(raw);
+  if (d.length === 11 && d.startsWith('7')) return d;
+  if (d.length === 11 && d.startsWith('8')) return `7${d.slice(1)}`;
+  if (d.length === 10) return `7${d}`;
+  throw new Error('Укажите мобильный телефон заказчика (+7…)');
+}
+
+function maskPhoneSms(phone: string): string {
+  const d = digitsOnly(phone);
+  if (d.length < 10) return '***';
+  return `+${d.slice(0, 1)} (${d.slice(1, 4)}) ***-**-${d.slice(-2)}`;
+}
+
+/**
+ * Создать/взять активную ссылку на оплату и отправить клиенту SMS (TargetSMS).
+ * Отправитель: Fogel / Pnevmo1 по организации сделки.
+ */
+export async function sendPaymentLinkSms(input: {
+  dealId: string;
+  organizationId?: string;
+}): Promise<{
+  ok: true;
+  url: string;
+  sms_id: string;
+  phone_masked: string;
+  sender: string;
+  created: boolean;
+  link: Record<string, unknown> | null;
+  source: 'wms' | 'amo_widget';
+}> {
+  if (!targetsmsConfigured()) {
+    throw new Error('SMS временно недоступна (TargetSMS не настроен)');
+  }
+  const dealId = String(input.dealId || '').trim();
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  if (!deal) throw new Error('Сделка не найдена');
+
+  const before = get(
+    `SELECT id FROM payment_links
+     WHERE deal_id = ? AND status = 'pending'
+       AND datetime(expires_at) > datetime('now')
+     ORDER BY datetime(created_at) DESC LIMIT 1`,
+    [dealId]
+  ) as { id?: string } | undefined;
+
+  let url = '';
+  let createdFlag = false;
+  let link: Record<string, unknown> | null = null;
+  let source: 'wms' | 'amo_widget' = 'amo_widget';
+  let orgId = String(input.organizationId || '').trim();
+
+  try {
+    const created = await createPaymentLinkFromDeal({
+      dealId,
+      organizationId: input.organizationId,
+    });
+    url = String(created.url || '').trim();
+    link = created.link;
+    createdFlag = !before?.id;
+    source = 'wms';
+    orgId = String(created.link.organization_id || orgId || '').trim();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/ПДн|заказ-наряд|госномер|распечата|ЗН\b|юрлицо|ИП — оплата|Сумма заказа|уже оплачен/i.test(msg)) {
+      throw e instanceof Error ? e : new Error(msg);
+    }
+    /* технический сбой Учёта → та же ссылка, что виджет Amo */
+    url = amoWidgetPayUrl({
+      dealId,
+      organizationId: orgId || undefined,
+    });
+    source = 'amo_widget';
+  }
+  if (!url) {
+    url = amoWidgetPayUrl({ dealId, organizationId: orgId || undefined });
+    source = 'amo_widget';
+  }
+  if (!url) throw new Error('Не удалось получить ссылку на оплату');
+
+  const phone = phoneForPaymentSms(deal.buyer_phone);
+  const org = orgId ? getOrganization(orgId) : undefined;
+  const sender = smsSenderForOrg({
+    inn: org?.inn,
+    companyCode: org?.code,
+    companyName: org?.name || org?.short_name,
+  });
+  const amount = Number(link?.amount) || Number(deal.price) || 0;
+  const amountLabel =
+    amount > 0
+      ? ` ${Math.round(amount).toLocaleString('ru-RU')} ₽`
+      : '';
+  const smsText = `Оплата заказа${amountLabel}: ${url}`;
+  const sent = await sendTargetSms({
+    phone,
+    text: smsText,
+    sender,
+    nameDelivery: `pay-link-${dealId.slice(0, 24)}`,
+  });
+  if (!sent.ok) throw new Error(sent.error);
+
+  writeAudit({
+    action: 'deal.payment_link_sms',
+    entity: 'crm_deal',
+    entityId: dealId,
+    summary: `SMS ссылка на оплату → ${maskPhoneSms(phone)} (${sender}, ${source})`,
+    after: { url, sms_id: sent.sms_id, sender, source },
+  });
+
+  return {
+    ok: true,
+    url,
+    sms_id: sent.sms_id,
+    phone_masked: maskPhoneSms(phone),
+    sender,
+    created: createdFlag,
+    link,
+    source,
+  };
 }
 
 function bankAcquiringUrl(): string {
@@ -229,7 +509,8 @@ export async function tryCreateAcquiringLink(input: {
   amount: number;
   purpose?: string;
   returnUrl?: string;
-}): Promise<{ ok: boolean; url?: string; error?: string }> {
+  customerCode?: string;
+}): Promise<{ ok: boolean; url?: string; operation_id?: string; error?: string }> {
   const key = bankSbpKey();
   if (!key) {
     return { ok: false, error: 'эквайринг не подключён (нет BANK_SBP_KEY)' };
@@ -246,11 +527,20 @@ export async function tryCreateAcquiringLink(input: {
         amount: input.amount,
         purpose: input.purpose || `Оплата заказа ${input.dealId}`,
         return_url: input.returnUrl || '',
+        ...(String(input.customerCode || '').trim()
+          ? { customer_code: String(input.customerCode).trim() }
+          : {}),
       }),
       signal: AbortSignal.timeout(45_000),
     });
     const raw = await res.text();
-    let data: { ok?: boolean; url?: string; payment_url?: string; error?: string } = {};
+    let data: {
+      ok?: boolean;
+      url?: string;
+      payment_url?: string;
+      operation_id?: string;
+      error?: string;
+    } = {};
     try {
       data = JSON.parse(raw) as typeof data;
     } catch {
@@ -260,8 +550,9 @@ export async function tryCreateAcquiringLink(input: {
       };
     }
     const url = String(data.url || data.payment_url || '').trim();
+    const operationId = String(data.operation_id || '').trim();
     if (res.ok && data.ok && url) {
-      return { ok: true, url };
+      return { ok: true, url, operation_id: operationId || undefined };
     }
     return {
       ok: false,
@@ -276,6 +567,37 @@ export async function tryCreateAcquiringLink(input: {
           : 'эквайринг не подключён',
     };
   }
+}
+
+function mergePaymentLinkMeta(linkId: string, patch: Record<string, unknown>) {
+  const row = get<{ meta_json: string }>(
+    `SELECT IFNULL(meta_json,'') AS meta_json FROM payment_links WHERE id = ?`,
+    [linkId]
+  );
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = row?.meta_json ? (JSON.parse(row.meta_json) as Record<string, unknown>) : {};
+  } catch {
+    meta = {};
+  }
+  run(`UPDATE payment_links SET meta_json = ? WHERE id = ?`, [
+    JSON.stringify({ ...meta, ...patch }),
+    linkId,
+  ]);
+}
+
+/** Снять все pending-ссылки, когда заказ уже оплачен (не создавать повторно QR). */
+export function expirePendingPaymentLinksForDeal(dealId: string, reason = 'already_paid') {
+  const id = String(dealId || '').trim();
+  if (!id) return { expired: 0 };
+  const pending = all<{ id: string }>(
+    `SELECT id FROM payment_links WHERE deal_id = ? AND status = 'pending'`,
+    [id]
+  );
+  for (const row of pending) {
+    expirePaymentLink(String(row.id), reason);
+  }
+  return { expired: pending.length };
 }
 
 export function createPaymentLinkFromDeal(input: {
@@ -303,22 +625,46 @@ async function createPaymentLinkFromDealInner(input: {
 }) {
   const deal = getDeal(input.dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
-  // Юрлицо / ИП тоже могут платить картой / СБП по ссылке (альтернатива переводу по счёту).
+  const splitGuard = getDealPaymentSplit(input.dealId);
+  if (
+    splitGuard.fully_paid ||
+    Number(deal.paid) === 1 ||
+    String(deal.payment_status || '').toLowerCase() === 'paid'
+  ) {
+    expirePendingPaymentLinksForDeal(input.dealId, 'already_paid');
+    throw new Error('Заказ уже оплачен — ссылка не нужна');
+  }
+  // Компания в Amo / юр / ИП / партнёр ≠ блокер: ссылка (QR · карта · Сплит) доступна всем.
+  // Безнал по счёту — отдельно в документах, не вместо ссылки.
+  const shipReady = dealShipFieldsReady(deal);
+  if (!shipReady.ok) {
+    throw new Error(
+      'При канале «Отправка» сначала укажите: ' + shipReady.missing.join(' и ')
+    );
+  }
 
+  // Резерв на «Ожидание оплаты» отключён — ссылка только на оплату.
   const settings = getPaymentLinkSettings();
-  const organizationId = resolveOrganizationId(
+  const organizationId = organizationIdForDealRecord(
+    deal,
     input.organizationId || settings.payment_link_default_organization_id
   );
+  const payOrg = getOrganization(organizationId);
+  const customerCode = String(payOrg?.code || '').trim();
   const timerMinutes =
     input.timerMinutes != null && Number(input.timerMinutes) > 0
       ? Math.min(Math.floor(Number(input.timerMinutes)), 24 * 60)
       : settings.payment_link_timer_minutes;
-  const doReserve =
-    input.reserve != null ? Boolean(input.reserve) : settings.payment_link_reserve_enabled;
 
-  const amount = Number(deal.price) || 0;
-  if (!(amount > 0)) {
-    throw new Error('Сумма заказа 0 — укажите сумму или добавьте позиции');
+  const split = getDealPaymentSplit(input.dealId);
+  const due = Number(split?.due_total) || 0;
+  const amount = due > 0.009 ? due : Number(deal.price) || 0;
+  if (!(amount > 0.009)) {
+    throw new Error(
+      due <= 0.009 && Number(deal.price) > 0
+        ? 'Заказ уже оплачен — ссылка не нужна'
+        : 'Сумма заказа 0 — укажите сумму или добавьте позиции'
+    );
   }
 
   // активная pending-ссылка → вернуть её
@@ -348,41 +694,14 @@ async function createPaymentLinkFromDealInner(input: {
     };
   }
 
-  const waitWh = ensureWaitingPaymentWarehouse();
-  const preferredWh =
-    String(input.sourceWarehouseId || settings.payment_link_default_warehouse_id || '').trim();
-
-  type LineAgg = { productId: string; qty: number; sourceWh: string; name: string };
-  const reservePlan: LineAgg[] = [];
-  if (doReserve) {
-    const items = (deal.items as Array<Record<string, unknown>>) || [];
-    const missing: string[] = [];
-    for (const it of items) {
-      const productId = resolveProductId(it);
-      const qty = Number(it.qty || it.quantity || 0) || 0;
-      if (!(qty > 0)) continue;
-      if (!productId) continue;
-      const sourceWh = pickSourceWarehouse(productId, qty, preferredWh, waitWh.id);
-      if (!sourceWh) {
-        missing.push(`${String(it.name || it.sku || productId)} × ${qty}`);
-        continue;
-      }
-      reservePlan.push({
-        productId,
-        qty,
-        sourceWh,
-        name: String(it.name || ''),
-      });
-    }
-    if (missing.length) {
-      throw new Error(`Нет остатка для резерва: ${missing.slice(0, 3).join('; ')}`);
-    }
-  }
+  // ЗН / форма покупателя (физ·юр) не блокируют ссылку. Резерв WAIT-PAY не делаем.
 
   const payment = await createDealSbpQr({
     dealId: input.dealId,
     amount,
     ttlSec: timerMinutes * 60,
+    organizationId,
+    customerCode: customerCode || undefined,
   });
 
   const id = newGuid();
@@ -397,6 +716,7 @@ async function createPaymentLinkFromDealInner(input: {
     amount,
     purpose: `Оплата заказа ${input.dealId}`,
     returnUrl,
+    customerCode: customerCode || undefined,
   });
 
   const originalQtys: Record<string, number> = {};
@@ -422,59 +742,22 @@ async function createPaymentLinkFromDealInner(input: {
       acquiring.ok ? String(acquiring.url || '') : '',
       acquiring.ok ? '' : String(acquiring.error || 'эквайринг не подключён'),
       JSON.stringify({
-        wait_warehouse_id: waitWh.id,
         original_qtys: originalQtys,
+        reserve_disabled: true,
+        ...(acquiring.ok && acquiring.operation_id
+          ? { acquiring_operation_id: acquiring.operation_id }
+          : {}),
       }),
       organizationId,
     ]
   );
-
-  const reserves: Array<Record<string, unknown>> = [];
-  if (reservePlan.length) {
-    const bySource = new Map<string, LineAgg[]>();
-    for (const a of reservePlan) {
-      const list = bySource.get(a.sourceWh) || [];
-      list.push(a);
-      bySource.set(a.sourceWh, list);
-    }
-
-    for (const [sourceWh, lines] of bySource) {
-      const merged = new Map<string, number>();
-      for (const l of lines) {
-        merged.set(l.productId, (merged.get(l.productId) || 0) + l.qty);
-      }
-      const docLines = [...merged.entries()].map(([product_id, qty]) => ({ product_id, qty }));
-      const docId = createDocument({
-        doc_type: 'transfer',
-        warehouse_id: sourceWh,
-        warehouse_to_id: waitWh.id,
-        comment: `Резерв оплаты · сделка ${input.dealId} · ссылка ${id}`,
-        organization_id: organizationId,
-        lines: docLines,
-        post: true,
-      });
-      for (const [productId, qty] of merged) {
-        const rid = newGuid();
-        run(
-          `INSERT INTO stock_reserves (
-             id, payment_link_id, deal_id, product_id, qty,
-             source_warehouse_id, reserve_warehouse_id, status, stock_doc_id
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
-          [rid, id, input.dealId, productId, qty, sourceWh, waitWh.id, docId]
-        );
-        reserves.push(
-          get('SELECT * FROM stock_reserves WHERE id = ?', [rid]) as Record<string, unknown>
-        );
-      }
-    }
-  }
 
   const link = get('SELECT * FROM payment_links WHERE id = ?', [id]) as Record<string, unknown>;
   return {
     link,
     url: paymentLinkPublicUrl(token),
     payment: payment as Record<string, unknown> | null,
-    reserves,
+    reserves: [] as Array<Record<string, unknown>>,
     acquiring,
   };
 }
@@ -505,6 +788,7 @@ function secondsLeft(expiresAt: string): number {
 const SHIP_CHANNEL_LABELS: Record<string, string> = {
   cdek_prepaid: 'Доставка СДЭК',
   cdek_cod: 'СДЭК · наложенный платёж',
+  avito_cod: 'Авито доставка · оплата при получении',
   pickup: 'Самовывоз / установка в сервисе',
   bus: 'Отправка автобусом',
   own_courier: 'Доставка курьером',
@@ -589,6 +873,7 @@ export function getPublicPaymentLinkView(token: string) {
   const items = dealItems.map((it) => {
     const id = String(it.id || '');
     const qty = Number(it.qty || it.quantity || 0) || 0;
+    const productId = resolveProductId(it);
     const stock = isStockLine(it);
     const maxQty = Math.max(qty, Number(originalQtys[id]) || qty);
     return {
@@ -602,6 +887,7 @@ export function getPublicPaymentLinkView(token: string) {
       unit: String(it.unit || ''),
       item_kind: stock ? 'product' : String(it.item_kind || 'service'),
       editable: editable && stock && Boolean(id),
+      image_url: productThumbUrl(productId),
     };
   });
 
@@ -644,7 +930,7 @@ export function getPublicPaymentLinkView(token: string) {
       name: managerName || String(manager?.name || '').trim() || null,
       email: managerEmail || null,
     },
-    can_edit_items: editable && items.some((x) => x.editable),
+    can_edit_items: false,
     items,
     sbp: payment
       ? {
@@ -675,6 +961,19 @@ export function getPublicPaymentLinkView(token: string) {
       message: String(link.yandex_pay_error || '').trim() || null,
       configured: yandexPayAvailableForOrganization(String(link.organization_id || '')),
     },
+    /** Т‑Банк Forma · публичная форма рассрочки (new_serv / rassrochka). */
+    tbank_installment: (() => {
+      const tpl = String(process.env.TBANK_INSTALLMENT_URL || '').trim() ||
+        'https://rassrochka.pnevmopodveska1.ru/?l={deal_id}';
+      const url = tpl
+        .replace(/\{deal_id\}/gi, encodeURIComponent(dealId))
+        .replace(/\{lead_id\}/gi, encodeURIComponent(dealId));
+      return {
+        available: Boolean(dealId) && status === 'pending',
+        url: dealId ? url : null,
+        label: 'Т‑Банк · рассрочка',
+      };
+    })(),
     paid_at: link.paid_at || null,
     expired_at: link.expired_at || null,
   };
@@ -810,14 +1109,14 @@ export async function updatePublicPaymentLinkItems(
     const price = Number(it.price || 0) || 0;
     const lineAmt = Number(it.amount);
     if (ch) {
-      newAmount += Math.round(price * qty * 100) / 100;
+      newAmount += Math.round(price * qty);
     } else if (Number.isFinite(lineAmt) && lineAmt > 0) {
       newAmount += lineAmt;
     } else {
-      newAmount += Math.round(price * qty * 100) / 100;
+      newAmount += Math.round(price * qty);
     }
   }
-  newAmount = Math.round(newAmount * 100) / 100;
+  newAmount = Math.round(newAmount);
   if (!(newAmount > 0)) {
     return {
       ok: false,
@@ -892,6 +1191,11 @@ export async function updatePublicPaymentLinkItems(
       String(link.id),
     ]
   );
+  if (acquiring.ok && acquiring.operation_id) {
+    mergePaymentLinkMeta(String(link.id), {
+      acquiring_operation_id: acquiring.operation_id,
+    });
+  }
 
   writeAudit({
     action: 'pay.items_edit',
@@ -1010,10 +1314,32 @@ export function expirePaymentLink(linkId: string, reason = 'timer') {
     `UPDATE payment_links SET status = 'expired', expired_at = datetime('now') WHERE id = ?`,
     [linkId]
   );
+
+  // Резерв WAIT-PAY отключён: уведомление «Снят с резерва» только если реально
+  // снимали active stock_reserves (старые ссылки). Истёкшая ссылка без резерва — тихо.
+  const dealId = String(link.deal_id || '').trim();
+  if (dealId && reserves.length > 0 && (reason === 'timer' || reason === 'expired')) {
+    const deal = get<{ name?: string }>('SELECT name FROM crm_deals WHERE id = ?', [dealId]);
+    const mins = Number(link.timer_minutes) || DEFAULT_PAYMENT_LINK_TIMER_MINUTES;
+    const dealLabel = String(deal?.name || '').trim() || dealId;
+    try {
+      notifyDealResponsible({
+        deal_id: dealId,
+        kind: 'reserve_released',
+        title: 'Снят с резерва · нет оплаты',
+        body: `Заказ ${dealLabel}: резерв WAIT-PAY снят по таймеру (${mins} мин) — оплата не поступила.`,
+        href: `/deals/${encodeURIComponent(dealId)}`,
+        meta: { payment_link_id: linkId, reason, timer_minutes: mins },
+      });
+    } catch (e) {
+      console.warn('[payment-links] notify on expire failed', e);
+    }
+  }
+
   return get('SELECT * FROM payment_links WHERE id = ?', [linkId]);
 }
 
-/** Cron: истекшие pending → возврат резерва. */
+/** Cron: истекшие pending-ссылки → expired; возврат со склада WAIT-PAY только если ещё был active-резерв (новые ссылки резерв не держат). */
 export function expireDuePaymentLinks(limit = 50): {
   ok: boolean;
   expired: number;
@@ -1178,22 +1504,6 @@ export async function pollPublicPaymentLink(token: string) {
       } catch {
         /* ignore poll errors for public */
       }
-      // markDealPaymentPaid hook inside poll → markPaymentLinkPaid
-      const refreshed = getPaymentLinkByToken(token);
-      if (refreshed && String(refreshed.status) === 'pending') {
-        const deal = get<{ paid?: number; payment_status?: string }>(
-          `SELECT paid, payment_status FROM crm_deals WHERE id = ?`,
-          [String(link.deal_id)]
-        );
-        if (
-          Number(deal?.paid) === 1 ||
-          ['paid', 'оплачен', 'оплачено'].includes(
-            String(deal?.payment_status || '').toLowerCase()
-          )
-        ) {
-          markPaymentLinkPaidForDeal(String(link.deal_id), 'deal_paid');
-        }
-      }
       try {
         await pollYandexPayForLink(token);
       } catch {
@@ -1228,6 +1538,11 @@ export async function ensureAcquiringForPublicToken(token: string) {
       `UPDATE payment_links SET acquiring_url = ?, acquiring_error = '' WHERE id = ?`,
       [r.url, String(link.id)]
     );
+    if (r.operation_id) {
+      mergePaymentLinkMeta(String(link.id), {
+        acquiring_operation_id: r.operation_id,
+      });
+    }
     return { ok: true, url: r.url };
   }
   const err = r.error || 'эквайринг не подключён';
@@ -1245,6 +1560,84 @@ export function reservedQtyByProductWarehouse(): Map<string, number> {
   const map = new Map<string, number>();
   for (const r of rows) {
     map.set(`${r.reserve_warehouse_id}:${r.product_id}`, Number(r.qty) || 0);
+  }
+  return map;
+}
+
+export type ActiveReserveOrder = {
+  deal_id: string;
+  deal_name: string;
+  qty: number;
+  created_at: string;
+  sales_doc_id: string;
+  payment_link_id: string;
+};
+
+/**
+ * Активные резервы WAIT-PAY по парам товар+склад — для ссылок на заказы покупателей.
+ */
+export function activeReserveOrdersForPairs(
+  pairs: Array<{ product_id: string; warehouse_id: string }>
+): Map<string, ActiveReserveOrder[]> {
+  const map = new Map<string, ActiveReserveOrder[]>();
+  const uniq = new Map<string, { product_id: string; warehouse_id: string }>();
+  for (const p of pairs) {
+    const productId = String(p.product_id || '').trim();
+    const warehouseId = String(p.warehouse_id || '').trim();
+    if (!productId || !warehouseId) continue;
+    uniq.set(`${warehouseId}\0${productId}`, { product_id: productId, warehouse_id: warehouseId });
+  }
+  if (!uniq.size) return map;
+
+  // Один запрос по всем активным резервам нужных пар (страница остатков небольшая).
+  const rows = all<{
+    product_id: string;
+    reserve_warehouse_id: string;
+    deal_id: string;
+    deal_name: string;
+    qty: number;
+    created_at: string;
+    sales_doc_id: string;
+    payment_link_id: string;
+  }>(
+    `SELECT sr.product_id, sr.reserve_warehouse_id, sr.deal_id,
+            IFNULL(d.name, '') AS deal_name,
+            sr.qty, IFNULL(sr.created_at, '') AS created_at,
+            IFNULL(sr.sales_doc_id, '') AS sales_doc_id,
+            IFNULL(sr.payment_link_id, '') AS payment_link_id
+     FROM stock_reserves sr
+     LEFT JOIN crm_deals d ON d.id = sr.deal_id
+     WHERE sr.status = 'active'
+     ORDER BY datetime(sr.created_at) ASC`
+  );
+  const want = uniq;
+  for (const r of rows) {
+    const key = `${r.reserve_warehouse_id}\0${r.product_id}`;
+    if (!want.has(key)) continue;
+    const dealId = String(r.deal_id || '').trim();
+    if (!dealId) continue;
+    const list = map.get(key) || [];
+    const existing = list.find((x) => x.deal_id === dealId);
+    if (existing) {
+      existing.qty = Math.round((existing.qty + (Number(r.qty) || 0)) * 1000) / 1000;
+      if (r.created_at && (!existing.created_at || r.created_at < existing.created_at)) {
+        existing.created_at = r.created_at;
+      }
+      if (!existing.sales_doc_id && r.sales_doc_id) existing.sales_doc_id = r.sales_doc_id;
+      if (!existing.payment_link_id && r.payment_link_id) {
+        existing.payment_link_id = r.payment_link_id;
+      }
+    } else {
+      list.push({
+        deal_id: dealId,
+        deal_name: String(r.deal_name || '').trim(),
+        qty: Number(r.qty) || 0,
+        created_at: String(r.created_at || '').trim(),
+        sales_doc_id: String(r.sales_doc_id || '').trim(),
+        payment_link_id: String(r.payment_link_id || '').trim(),
+      });
+    }
+    map.set(key, list);
   }
   return map;
 }

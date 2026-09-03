@@ -15,6 +15,7 @@ if (PHP_SAPI !== 'cli') {
 
 require_once dirname(__DIR__) . '/config.php';
 require_once dirname(__DIR__) . '/Classes/DbHelper.php';
+require_once __DIR__ . '/wms_inn.php';
 
 $days = 60;
 $limit = 1500;
@@ -150,6 +151,7 @@ if ($leadIds) {
 
 // Enrich from Amo API v4
 require_once dirname(__DIR__) . '/amo/access.php';
+require_once dirname(__DIR__) . '/amo/rate_limit.php';
 
 if (!function_exists('amo1c_map_lead_v4_to_v2')) {
     function amo1c_map_lead_v4_to_v2(array $lead): array
@@ -217,93 +219,21 @@ function amo1c_fetch_leads_by_ids(array $ids, array $headers, string $subdomain)
         foreach ($chunk as $id) {
             $qs[] = 'filter[id][]=' . $id;
         }
-        $url = 'https://' . $subdomain . '.amocrm.ru/api/v4/leads?' . implode('&', $qs) . '&with=contacts,companies&limit=50';
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_USERAGENT => 'amoCRM-API-client/1.0',
-            CURLOPT_URL => $url,
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_HEADER => false,
-            CURLOPT_SSL_VERIFYPEER => 1,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_TIMEOUT => 40,
-        ]);
-        $body = curl_exec($curl);
-        $code = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
-        curl_close($curl);
-        if ($code !== 200 || !is_string($body)) {
+        $path = '/api/v4/leads?' . implode('&', $qs) . '&with=contacts,companies&limit=50';
+        $res = amo_api_http_request($subdomain, $headers, 'GET', $path, null, [], 'wms_export_leads');
+        if (!$res['ok'] || !is_array($res['body'])) {
             continue;
         }
-        $json = json_decode($body, true);
-        foreach ($json['_embedded']['leads'] ?? [] as $lead) {
+        foreach ($res['body']['_embedded']['leads'] ?? [] as $lead) {
             if (!empty($lead['id'])) {
                 $out[(int) $lead['id']] = amo1c_map_lead_v4_to_v2($lead);
             }
         }
-        usleep(200000);
     }
     return $out;
 }
 
 $amoLeads = amo1c_fetch_leads_by_ids($leadIds, $headers, (string) $subdomain);
-
-
-/** Канал / отправка / оплата / СТО (поля сделки Amo). */
-const AMO_CF_CHANNEL = '858983';
-const AMO_CF_SHIPMENT = '860492';
-const AMO_CF_PAYMENT_TYPE = '860300'; // Тип оплаты: Предоплата | Постоплата
-const AMO_CF_PAY_METHOD = '816975'; // Способ оплаты: Отсрочка, Карта…
-const AMO_CF_STO = '853005'; // СТО
-const AMO_CF_INN = '820517';
-const AMO_CF_PARTNER = '862897'; // checkbox Партнёр на компании
-
-function amo1c_cf_value_from_lead_cfs(array $customFields, string $fieldId): string
-{
-    foreach ($customFields as $field) {
-        if (!is_array($field)) {
-            continue;
-        }
-        if ((string) ($field['id'] ?? '') !== $fieldId) {
-            continue;
-        }
-        foreach ($field['values'] ?? [] as $value) {
-            if (!is_array($value)) {
-                continue;
-            }
-            $v = trim((string) ($value['value'] ?? ''));
-            if ($v !== '') {
-                return $v;
-            }
-        }
-    }
-    return '';
-}
-
-function amo1c_map_ship_channel(string $amoChannel, string $amoShipment): string
-{
-    $channel = mb_strtolower(trim($amoChannel));
-    $shipment = mb_strtolower(trim($amoShipment));
-    if ($channel !== '' && (str_contains($channel, 'самовывоз') || str_contains($channel, 'автосервис'))) {
-        return 'pickup';
-    }
-    if ($shipment !== '' && str_contains($shipment, 'налож')) {
-        return 'cdek_cod';
-    }
-    if ($shipment !== '' && str_contains($shipment, 'автобус')) {
-        return 'bus';
-    }
-    if ($shipment !== '' && str_contains($shipment, 'курьер')) {
-        return 'own_courier';
-    }
-    if ($shipment !== '' && (str_contains($shipment, 'сдэк') || str_contains($shipment, 'cdek'))) {
-        return 'cdek_prepaid';
-    }
-    if ($channel !== '' && str_contains($channel, 'отправ')) {
-        return str_contains($shipment, 'налож') ? 'cdek_cod' : 'cdek_prepaid';
-    }
-    return 'cdek_prepaid';
-}
 
 /** ИНН покупателя: CF 820517 у компании или контакта. */
 function amo1c_cf_value_by_id(array $customFieldsValues, string $fieldId): string
@@ -340,32 +270,17 @@ function amo1c_fetch_entities_by_ids(string $entity, array $ids, array $headers,
         foreach ($chunk as $id) {
             $qs[] = 'filter[id][]=' . $id;
         }
-        $url = 'https://' . $subdomain . '.amocrm.ru/api/v4/' . $entity . '?' . implode('&', $qs) . '&limit=50';
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_USERAGENT => 'amoCRM-API-client/1.0',
-            CURLOPT_URL => $url,
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_HEADER => false,
-            CURLOPT_SSL_VERIFYPEER => 1,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_TIMEOUT => 40,
-        ]);
-        $body = curl_exec($curl);
-        $code = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
-        curl_close($curl);
-        if ($code !== 200 || !is_string($body)) {
+        $path = '/api/v4/' . $entity . '?' . implode('&', $qs) . '&limit=50';
+        $res = amo_api_http_request($subdomain, $headers, 'GET', $path, null, [], 'wms_export_' . $entity);
+        if (!$res['ok'] || !is_array($res['body'])) {
             continue;
         }
-        $json = json_decode($body, true);
         $key = $entity === 'companies' ? 'companies' : 'contacts';
-        foreach ($json['_embedded'][$key] ?? [] as $row) {
+        foreach ($res['body']['_embedded'][$key] ?? [] as $row) {
             if (!empty($row['id'])) {
                 $out[(int) $row['id']] = $row;
             }
         }
-        usleep(150000);
     }
     return $out;
 }
@@ -404,6 +319,7 @@ foreach ($leadIds as $lid) {
     $buyerInn = '';
     $buyerPhone = '';
     $buyerName = '';
+    $isPartner = 0;
     if ($companyId > 0 && isset($companiesById[$companyId])) {
         $comp = $companiesById[$companyId];
         if ($companyName === '') {
@@ -411,6 +327,10 @@ foreach ($leadIds as $lid) {
         }
         $buyerInn = amo1c_cf_value_by_id($comp['custom_fields_values'] ?? [], '820517');
         $buyerName = $companyName;
+        $partnerRaw = amo1c_cf_value_by_id($comp['custom_fields_values'] ?? [], '862897');
+        if (wms_cf_is_checked($partnerRaw)) {
+            $isPartner = 1;
+        }
     }
     $mainContactId = (int) (($amo['contacts']['id'][0] ?? 0));
     if ($mainContactId > 0 && isset($contactsById[$mainContactId])) {
@@ -435,27 +355,28 @@ foreach ($leadIds as $lid) {
             }
         }
     }
-    $buyerInnDigits = preg_replace('/\D/', '', $buyerInn) ?: '';
-    $partnerCf = '';
-    if ($companyId > 0 && isset($companiesById[$companyId])) {
-        $partnerCf = amo1c_cf_value_by_id($companiesById[$companyId]['custom_fields_values'] ?? [], AMO_CF_PARTNER);
-    }
-    $isPartner = ($partnerCf === '1' || strcasecmp($partnerCf, 'true') === 0 || strcasecmp($partnerCf, 'да') === 0);
-    $buyerKind = 'person';
-    if ($isPartner) {
-        $buyerKind = 'partner';
-    } elseif (strlen($buyerInnDigits) === 10 || $companyId > 0) {
-        $buyerKind = 'legal';
-    } elseif (strlen($buyerInnDigits) === 12) {
-        $buyerKind = 'ip';
-    }
+    $buyerInnDigits = wms_sanitize_buyer_inn($buyerInn);
+    $buyerKind = wms_buyer_kind_from_inn($buyerInnDigits);
 
-    $amoChannel = amo1c_cf_value_from_lead_cfs($amo['custom_fields'] ?? [], AMO_CF_CHANNEL);
-    $amoShipment = amo1c_cf_value_from_lead_cfs($amo['custom_fields'] ?? [], AMO_CF_SHIPMENT);
-    $amoPaymentType = amo1c_cf_value_from_lead_cfs($amo['custom_fields'] ?? [], AMO_CF_PAYMENT_TYPE);
-    $amoPayMethod = amo1c_cf_value_from_lead_cfs($amo['custom_fields'] ?? [], AMO_CF_PAY_METHOD);
-    $amoSto = amo1c_cf_value_from_lead_cfs($amo['custom_fields'] ?? [], AMO_CF_STO);
-    $shipChannel = amo1c_map_ship_channel($amoChannel, $amoShipment);
+    // CF 816977 «Жалоба клиента» → ЗН п. 3.3
+    $clientComplaint = '';
+    foreach ($amo['custom_fields'] ?? [] as $field) {
+        if (!is_array($field)) {
+            continue;
+        }
+        if ((string) ($field['id'] ?? '') !== '816977') {
+            continue;
+        }
+        $parts = [];
+        foreach ($field['values'] ?? [] as $value) {
+            $v = trim((string) ($value['value'] ?? ''));
+            if ($v !== '') {
+                $parts[] = $v;
+            }
+        }
+        $clientComplaint = implode(', ', $parts);
+        break;
+    }
 
     $dealsOut[] = [
         'id' => (string) $lid,
@@ -485,14 +406,9 @@ foreach ($leadIds as $lid) {
         'buyer_inn' => $buyerInnDigits,
         'buyer_phone' => $buyerPhone,
         'buyer_kind' => $buyerKind,
-        'is_legal_entity' => in_array($buyerKind, ['legal', 'ip', 'partner'], true) ? 1 : 0,
-        'is_partner' => $isPartner ? 1 : 0,
-        'amo_channel' => $amoChannel,
-        'amo_shipment' => $amoShipment,
-        'amo_payment_type' => $amoPaymentType,
-        'amo_pay_method' => $amoPayMethod,
-        'amo_sto' => $amoSto,
-        'ship_channel' => $shipChannel,
+        'is_legal_entity' => ($buyerKind === 'legal' || $buyerKind === 'ip') ? 1 : 0,
+        'is_partner' => $isPartner,
+        'amo_client_complaint' => $clientComplaint,
     ];
 }
 

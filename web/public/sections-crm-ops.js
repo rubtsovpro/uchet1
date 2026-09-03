@@ -282,7 +282,7 @@
           <label>Клиент<input id="wo-customer" /></label>
           <label>Авто / VIN<input id="wo-vehicle" /></label>
           <label>Статус<select id="wo-status">${stOpts}</select></label>
-          <label>Сумма<input id="wo-total" type="number" step="0.01" value="0" /></label>
+          <label>Сумма<input id="wo-total" type="number" step="1" value="0" /></label>
           <label style="grid-column:1/-1">Комментарий<input id="wo-comment" placeholder="работы / приёмка в ремонт" /></label>
         </div>
         <div class="toolbar">
@@ -490,7 +490,7 @@
             ? `<div class="form-grid" style="margin-top:10px">
           <label>№ заказа<input id="mp-num" class="mono" /></label>
           <label>External ID<input id="mp-ext" class="mono" /></label>
-          <label>Сумма<input id="mp-amt" type="number" step="0.01" value="0" /></label>
+          <label>Сумма<input id="mp-amt" type="number" step="1" value="0" /></label>
           <label>Статус<input id="mp-st" value="new" /></label>
           <label style="grid-column:1/-1">Комментарий<input id="mp-cmt" placeholder="ручной ввод — не live sync" /></label>
         </div>

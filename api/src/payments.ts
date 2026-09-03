@@ -4,8 +4,8 @@
 import { all, get, run } from './db.js';
 import { newGuid } from './ids.js';
 import { ensureWarehouseTaskAfterPaid } from './sales-pipeline.js';
-import { dealIsLegalEntity, getDeal } from './deals.js';
-import { getOrgProfile } from './sales-docs.js';
+import { getDeal } from './deals.js';
+import { getOrgProfile, getOrganization } from './organizations.js';
 import { getTochkaBridgeSettings } from './integration-settings.js';
 import { ensureOrderDocChain } from './order-doc-tree.js';
 import { createCashDoc } from './menu-parity.js';
@@ -95,15 +95,13 @@ export async function createDealSbpQr(input: {
   amount?: number;
   purpose?: string;
   account?: string;
+  customerCode?: string;
+  organizationId?: string;
   ttlSec?: number;
 }) {
   const deal = getDeal(input.dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
-  if (dealIsLegalEntity(deal)) {
-    throw new Error(
-      'У сделки указана компания (юрлицо) — оплата только по счёту, QR СБП недоступен'
-    );
-  }
+  // Юрлицо / компания в карточке — не блокер QR: партнёры часто платят как физлица по ссылке.
 
   const amount =
     input.amount != null && Number(input.amount) > 0
@@ -113,11 +111,14 @@ export async function createDealSbpQr(input: {
     throw new Error('Сумма заказа 0 — укажите сумму или добавьте позиции');
   }
 
-  const org = getOrgProfile();
+  const orgId = String(input.organizationId || '').trim();
+  const org = getOrgProfile(orgId || undefined);
+  const orgRow = orgId ? getOrganization(orgId) : undefined;
   const account =
     (input.account || '').replace(/\D/g, '') ||
     String(org.rs || '').replace(/\D/g, '') ||
     '40802810109500030587';
+  const customerCode = String(input.customerCode || orgRow?.code || '').trim();
 
   const purpose = sanitizeSbpPurpose(
     (input.purpose || '').trim() ||
@@ -141,6 +142,7 @@ export async function createDealSbpQr(input: {
       amount,
       purpose,
       account,
+      ...(customerCode ? { customer_code: customerCode } : {}),
       ttl_sec: input.ttlSec ?? 86400,
     }),
   });
@@ -202,12 +204,28 @@ export function markDealPaymentPaid(input: {
   if (!dealId && !payment) throw new Error('Платёж / сделка не найдены');
 
   if (payment) {
-    run(`UPDATE deal_payments SET status = 'paid' WHERE id = ?`, [
-      String((payment as { id: string }).id),
-    ]);
-  }
-
-  if (dealId) {
+    const paymentId = String((payment as { id: string }).id);
+    run(`UPDATE deal_payments SET status = 'paid' WHERE id = ?`, [paymentId]);
+    try {
+      const link = get<{ id: string }>(
+        `SELECT id FROM payment_links WHERE payment_id = ? AND status = 'pending' LIMIT 1`,
+        [paymentId]
+      );
+      if (link?.id) {
+        run(
+          `UPDATE payment_links SET status = 'paid', paid_at = datetime('now') WHERE id = ?`,
+          [link.id]
+        );
+        run(
+          `UPDATE stock_reserves SET status = 'sold', released_at = datetime('now')
+           WHERE payment_link_id = ? AND status = 'active'`,
+          [link.id]
+        );
+      }
+    } catch {
+      /* payment_links / stock_reserves */
+    }
+  } else if (dealId) {
     try {
       run(
         `UPDATE payment_links SET status = 'paid', paid_at = datetime('now')
@@ -266,6 +284,7 @@ export function acceptDealCashPayment(input: {
   amount?: number;
   covers?: PaymentCovers | string;
   actorName?: string;
+  actorId?: string;
   cash_register_id?: string;
   skip_cash_doc?: boolean;
 }) {
@@ -273,6 +292,7 @@ export function acceptDealCashPayment(input: {
   if (!dealId) throw new Error('deal_id обязателен');
   const deal = getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
+  // ЗН не блокирует приём наличных (физ / юр / самовывоз / СТО).
 
   const coversRaw = String(input.covers || 'all').toLowerCase();
   const covers: PaymentCovers =
@@ -287,11 +307,16 @@ export function acceptDealCashPayment(input: {
     throw new Error('Заказ уже полностью оплачен');
   }
 
+  const maxForCover =
+    covers === 'goods'
+      ? split.due_goods
+      : covers === 'services'
+        ? split.due_services
+        : split.due_total;
+
   let amount = Number(input.amount);
   if (!(amount > 0)) {
-    if (covers === 'goods') amount = split.due_goods;
-    else if (covers === 'services') amount = split.due_services;
-    else amount = split.due_total;
+    amount = maxForCover;
   }
   amount = roundDealMoney(amount);
   if (!(amount > 0)) {
@@ -299,41 +324,46 @@ export function acceptDealCashPayment(input: {
       covers === 'goods'
         ? 'По товарам доплачивать нечего'
         : covers === 'services'
-          ? 'По услугам доплачивать нечего'
+          ? 'По работам / услугам доплачивать нечего'
           : 'Доплачивать нечего'
+    );
+  }
+  if (amount > roundDealMoney(maxForCover) + 0.009) {
+    throw new Error(
+      `Сумма больше остатка (${Math.round(maxForCover).toLocaleString('ru-RU')} ₽) по выбранному`
     );
   }
 
   const coversLabel =
-    covers === 'goods' ? 'товар' : covers === 'services' ? 'услуги' : 'всё';
+    covers === 'goods' ? 'товар' : covers === 'services' ? 'работы / услуги' : 'всё';
   const id = newGuid();
   const actor = String(input.actorName || '').trim();
+  const actorId = String(input.actorId || '').trim();
   const purpose =
     `Наличные · ${coversLabel} · заказ ${dealId}` +
-    (deal.name ? ` · ${String(deal.name).slice(0, 60)}` : '');
+    (deal.name ? ` · ${String(deal.name).slice(0, 60)}` : '') +
+    (actor ? ` · принял ${actor}` : '');
+
+  const meta = {
+    source: 'cash_accept',
+    covers,
+    accepted_at: new Date().toISOString(),
+    accepted_by: actor || null,
+    accepted_by_id: actorId || null,
+    sto: Number(deal.is_sto) === 1 || Boolean(deal.amo_sto),
+  };
 
   run(
     `INSERT INTO deal_payments (
        id, deal_id, kind, amount, status, qrc_id, payload, image_png_base64, account, purpose, meta_json
      ) VALUES (?, ?, 'cash', ?, 'paid', '', '', '', '', ?, ?)`,
-    [
-      id,
-      dealId,
-      amount,
-      purpose,
-      JSON.stringify({
-        source: 'cash_accept',
-        covers,
-        accepted_at: new Date().toISOString(),
-        accepted_by: actor || null,
-        sto: Number(deal.is_sto) === 1 || Boolean(deal.amo_sto),
-      }),
-    ]
+    [id, dealId, amount, purpose, JSON.stringify(meta)]
   );
 
   const synced = syncDealPaidStatus(dealId);
   let warehouseTask: { created: boolean; task: Record<string, unknown> | null; reason?: string } | null =
     null;
+  let orderChain: { created: string[] } | null = null;
   if (synced.paid) {
     try {
       run(
@@ -355,9 +385,9 @@ export function acceptDealCashPayment(input: {
       warehouseTask = null;
     }
     try {
-      ensureOrderDocChain(dealId);
+      orderChain = ensureOrderDocChain(dealId);
     } catch {
-      /* ignore */
+      orderChain = null;
     }
   }
 
@@ -373,16 +403,12 @@ export function acceptDealCashPayment(input: {
         amount,
         counterparty_id: cpId || undefined,
         cash_register_id: input.cash_register_id,
-        comment: `Нал · ${coversLabel} · сделка ${dealId}${actor ? ' · ' + actor : ''}`,
+        comment: `Наличные · ${coversLabel} · сделка ${dealId}${actor ? ' · принял ' + actor : ''}`,
       }) as Record<string, unknown>;
       if (cashDoc?.id) {
         run(`UPDATE deal_payments SET meta_json = ? WHERE id = ?`, [
           JSON.stringify({
-            source: 'cash_accept',
-            covers,
-            accepted_at: new Date().toISOString(),
-            accepted_by: actor || null,
-            sto: Number(deal.is_sto) === 1 || Boolean(deal.amo_sto),
+            ...meta,
             cash_doc_id: String(cashDoc.id),
           }),
           id,
@@ -393,12 +419,20 @@ export function acceptDealCashPayment(input: {
     }
   }
 
+  const payment = getDealPayment(id) as Record<string, unknown> | null;
+  if (payment) {
+    payment.accepted_by = actor || null;
+    payment.covers = covers;
+  }
+
   return {
     ok: true,
     deal_id: dealId,
-    payment: getDealPayment(id),
+    payment,
     source: 'cash',
+    accepted_by: actor || null,
     warehouse_task: warehouseTask,
+    order_chain: orderChain,
     cash_doc: cashDoc,
     cash_doc_error: cashDocError,
     cash_received: true,
@@ -406,6 +440,9 @@ export function acceptDealCashPayment(input: {
     payment_split: synced.split,
     fully_paid: synced.paid,
     payment_status: synced.payment_status,
+    next_hint: synced.paid
+      ? 'Выбейте чек АТОЛ.'
+      : 'Часть принята наличными — остаток можно картой / QR / снова наличными, затем чек.',
   };
 }
 
@@ -447,6 +484,8 @@ type BankStatusItem = {
   qrc_id?: string;
   status?: string;
   paid?: boolean;
+  trx_id?: string;
+  raw?: Record<string, unknown> | null;
 };
 
 /**
@@ -537,6 +576,38 @@ export async function pollPendingSbpPayments(opts?: {
     const paid = Boolean(st?.paid) || bankStatus.toLowerCase() === 'accepted';
     let didMark = false;
     if (paid) {
+      const trxId = String(
+        st?.trx_id ||
+          (st?.raw &&
+            (st.raw.trxId ||
+              st.raw.trx_id ||
+              st.raw.transactionId ||
+              st.raw.refTransactionId)) ||
+          ''
+      ).trim();
+      if (trxId) {
+        try {
+          const cur = get<{ meta_json: string }>(
+            `SELECT IFNULL(meta_json,'') AS meta_json FROM deal_payments WHERE id = ?`,
+            [p.id]
+          );
+          let meta: Record<string, unknown> = {};
+          try {
+            meta = cur?.meta_json
+              ? (JSON.parse(cur.meta_json) as Record<string, unknown>)
+              : {};
+          } catch {
+            meta = {};
+          }
+          meta.trx_id = trxId;
+          run(`UPDATE deal_payments SET meta_json = ? WHERE id = ?`, [
+            JSON.stringify(meta),
+            p.id,
+          ]);
+        } catch {
+          /* ignore */
+        }
+      }
       const mr = markDealPaymentPaid({ paymentId: p.id, qrcId: p.qrc_id, source: 'tochka_poll' });
       lastWarehouseTask = mr.warehouse_task || lastWarehouseTask;
       didMark = true;

@@ -13,7 +13,8 @@ type DealRow = {
   id: string;
   name?: string;
   price?: number;
-  pipeline_name?: string;
+  org_company_id?: string;
+  org_company_name?: string;
   status_name?: string;
   updated_at?: string;
   queued_to_1c?: number;
@@ -82,7 +83,7 @@ export function DealsPage() {
             <tr>
               <th>ID</th>
               <th>Название</th>
-              <th>Воронка</th>
+              <th>Филиал</th>
               <th>Этап</th>
               <th>Сумма</th>
               <th>Учёт</th>
@@ -102,7 +103,7 @@ export function DealsPage() {
                 >
                   <td className="mono">#{d.id}</td>
                   <td>{d.name || d.id}</td>
-                  <td>{d.pipeline_name || '—'}</td>
+                  <td>{d.org_company_name || '—'}</td>
                   <td>{d.status_name || '—'}</td>
                   <td className="mono">
                     {d.price != null ? Number(d.price).toLocaleString('ru-RU') : '—'}

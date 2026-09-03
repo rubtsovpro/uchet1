@@ -1,0 +1,161 @@
+{
+    "mode": "by_owner",
+    "folder_id": "1jjmTeuMnTxH5V9I-WPSR97m43nMFBsY1",
+    "folder_url": "https://drive.google.com/drive/folders/1jjmTeuMnTxH5V9I-WPSR97m43nMFBsY1",
+    "folder_name": "Шаблоны документов СТО",
+    "note": "Имена файлов — нормальные русские названия (01–09). У Романа 02 — договор Москва.",
+    "updated_at": "2026-08-16T13:10:00+00:00",
+    "owners": {
+        "roman": {
+            "label": "Роман · ИП Безматерных Р.П. (Москва)",
+            "inn": "231215603728",
+            "folder_id": "1956qDpuVuSBGskaSm1ba8PyTcgcLq9tZ",
+            "folder_url": "https://drive.google.com/drive/folders/1956qDpuVuSBGskaSm1ba8PyTcgcLq9tZ"
+        },
+        "mikhail": {
+            "label": "Михаил · ИП Безматерных М.П. (Краснодар)",
+            "inn": "231295963240",
+            "folder_id": "1GgeU06gG571JnIVAB0E5vJIKAtj1BCEA",
+            "folder_url": "https://drive.google.com/drive/folders/1GgeU06gG571JnIVAB0E5vJIKAtj1BCEA"
+        },
+        "common": {
+            "label": "ОБЩИЕ · бланки без привязки к ИП",
+            "folder_id": "1Lv5Zuh5MyEun700BWrIAk8Seh2IheVNp",
+            "folder_url": "https://drive.google.com/drive/folders/1Lv5Zuh5MyEun700BWrIAk8Seh2IheVNp"
+        }
+    },
+    "default_owner": "roman",
+    "workflow": {
+        "edit_in": "owner_root",
+        "done_moves_to": "owner_root",
+        "rule": "Готовые бланки правятся в корне папки Романа/Михаила. Папки «В работе» сняты.",
+        "legal_still_in_work": [],
+        "done_in_owner_root": [
+            "sto-contract-person",
+            "sto-contract-legal",
+            "sto-order",
+            "sto-reception-reglament"
+        ],
+        "done_in_common": [
+            "sto-pdn-consent",
+            "sto-workorder-person",
+            "sto-workorder-legal",
+            "sto-no-show",
+            "sto-checklist"
+        ],
+        "still_in_work": []
+    },
+    "docs": {
+        "sto-contract-person": {
+            "title": "01. Договор-оферта для физлица",
+            "tpl": "tpl-sto-contract-person",
+            "sto_template_id": "sto-contract-person",
+            "mime": "docx",
+            "google_doc_id": "1yQgUCnt8I7BP2u1ctPkVIO37YrrVy4tT",
+            "by_owner": {
+                "roman": "1yQgUCnt8I7BP2u1ctPkVIO37YrrVy4tT",
+                "mikhail": "1U9tAoLZB8J3D9DE6mSLbT-Zu25CWzFdM"
+            }
+        },
+        "sto-contract-legal": {
+            "title": "02. Договор для юрлица и ИП",
+            "tpl": "tpl-sto-contract-legal",
+            "sto_template_id": "sto-contract-legal",
+            "mime": "docx",
+            "note": "У Романа — договор МСК (прил. 1 гарантия / 2 заявка / 3 акт). У Михаила — рамочный СТО; рейки в §7.",
+            "google_doc_id": "1PZxBcuZ-NJHjz1xWTMX36oE1aRYh74bQ",
+            "by_owner": {
+                "roman": "1PZxBcuZ-NJHjz1xWTMX36oE1aRYh74bQ",
+                "mikhail": "1xOaXI5MN-ai441AxPglLEKr6cu_AHRQs"
+            }
+        },
+        "sto-workorder-person": {
+            "title": "03. Заказ-наряд для физлица",
+            "tpl": "tpl-sto-workorder-person",
+            "sto_template_id": "sto-workorder-person",
+            "mime": "docx",
+            "google_doc_id": "1Pc8Bj9D3uNfclRbpO4gaezVDSOLi-4eB",
+            "by_owner": {
+                "roman": "1Pc8Bj9D3uNfclRbpO4gaezVDSOLi-4eB",
+                "mikhail": "1Pc8Bj9D3uNfclRbpO4gaezVDSOLi-4eB"
+            },
+            "note": "Общий бланк · папка ОБЩИЕ (не в ИП Ромы/Миши)",
+            "folder": "ОБЩИЕ",
+            "folder_id": "1Lv5Zuh5MyEun700BWrIAk8Seh2IheVNp"
+        },
+        "sto-workorder-legal": {
+            "title": "04. Заказ-наряд для юрлица и ИП",
+            "tpl": "tpl-sto-workorder-legal",
+            "sto_template_id": "sto-workorder-legal",
+            "mime": "gdoc",
+            "note": "Общий бланк · папка ОБЩИЕ (один файл для Ромы и Миши; приложение к рамочному договору)",
+            "folder": "ОБЩИЕ",
+            "folder_id": "1Lv5Zuh5MyEun700BWrIAk8Seh2IheVNp",
+            "google_doc_id": "1DMBXgEadOuuV4rDD4YSYjbK9ulwiaPIZDCeSAUTVo04",
+            "by_owner": {
+                "roman": "1DMBXgEadOuuV4rDD4YSYjbK9ulwiaPIZDCeSAUTVo04",
+                "mikhail": "1DMBXgEadOuuV4rDD4YSYjbK9ulwiaPIZDCeSAUTVo04"
+            }
+        },
+        "sto-no-show": {
+            "title": "05. Акт о неявке заказчика",
+            "sto_template_id": "sto-no-show",
+            "mime": "docx",
+            "note": "Общий бланк · папка ОБЩИЕ (один файл для Ромы и Миши)",
+            "folder": "ОБЩИЕ",
+            "folder_id": "1Lv5Zuh5MyEun700BWrIAk8Seh2IheVNp",
+            "google_doc_id": "1kwXPiFY72biVsJ2C7J1Wv5-lMb0Ff_NZ",
+            "by_owner": {
+                "roman": "1kwXPiFY72biVsJ2C7J1Wv5-lMb0Ff_NZ",
+                "mikhail": "1kwXPiFY72biVsJ2C7J1Wv5-lMb0Ff_NZ"
+            }
+        },
+        "sto-pdn-consent": {
+            "title": "06. Согласие на обработку персональных данных",
+            "tpl": "tpl-sto-pdn-consent",
+            "sto_template_id": "sto-pdn-consent",
+            "mime": "docx",
+            "note": "Общий бланк · папка ОБЩИЕ (не в ИП Ромы/Миши)",
+            "folder": "ОБЩИЕ",
+            "folder_id": "1Lv5Zuh5MyEun700BWrIAk8Seh2IheVNp",
+            "google_doc_id": "19Omk7tLJMpN4rFmwFHxlWHxgTn_fo3t8",
+            "by_owner": {
+                "roman": "19Omk7tLJMpN4rFmwFHxlWHxgTn_fo3t8",
+                "mikhail": "19Omk7tLJMpN4rFmwFHxlWHxgTn_fo3t8"
+            }
+        },
+        "sto-order": {
+            "title": "07. Приказ об утверждении форм документов",
+            "sto_template_id": "sto-order",
+            "mime": "docx",
+            "google_doc_id": "1O7LeTvDQN3eet402UZ1GtIwxJ9ZiTu-j",
+            "by_owner": {
+                "roman": "1O7LeTvDQN3eet402UZ1GtIwxJ9ZiTu-j",
+                "mikhail": "1bgbJj_TDujF4yLqKvmsoW_iqi7opatTm"
+            }
+        },
+        "sto-reception-reglament": {
+            "title": "08. Регламент мастера-приёмщика",
+            "sto_template_id": "sto-reception-reglament",
+            "mime": "docx",
+            "google_doc_id": "1CDYZ5EiuKcIaUABahjZL1MERtA8q_LRG",
+            "by_owner": {
+                "roman": "1CDYZ5EiuKcIaUABahjZL1MERtA8q_LRG",
+                "mikhail": "1w5SxX10r7l4iH7iCYvki-vwgA8r_WnOs"
+            }
+        },
+        "sto-checklist": {
+            "title": "09. Чек-лист приёма и выдачи автомобиля",
+            "sto_template_id": "sto-checklist",
+            "mime": "gdoc",
+            "note": "Общий бланк · папка ОБЩИЕ (один файл для Ромы и Миши)",
+            "folder": "ОБЩИЕ",
+            "folder_id": "1Lv5Zuh5MyEun700BWrIAk8Seh2IheVNp",
+            "google_doc_id": "1wOauE5GfZG14-vU9GdvFmPNX8Af8kUatjZP9vhFLd8g",
+            "by_owner": {
+                "roman": "1wOauE5GfZG14-vU9GdvFmPNX8Af8kUatjZP9vhFLd8g",
+                "mikhail": "1wOauE5GfZG14-vU9GdvFmPNX8Af8kUatjZP9vhFLd8g"
+            }
+        }
+    }
+}

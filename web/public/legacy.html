@@ -5,7 +5,37 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Учёт №1</title>
   <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/styles.css?v=528" />
+  <script>document.documentElement.classList.add('me-nav-pending');</script>
+  <script>
+    /* Телефонный превью: ?mobile=1 / localStorage / webview IDE без хрома окна */
+    (function () {
+      try {
+        var KEY = 'uchet1_ui_phone';
+        var q = new URLSearchParams(location.search);
+        var v = q.get('mobile') || q.get('phone');
+        if (v === '0' || v === 'desktop') localStorage.setItem(KEY, '0');
+        else if (v === '1') localStorage.setItem(KEY, '1');
+        var stored = localStorage.getItem(KEY);
+        var on = stored === '1';
+        if (stored === null) {
+          var chromeH = (window.outerHeight || 0) - (window.innerHeight || 0);
+          var chromeW = (window.outerWidth || 0) - (window.innerWidth || 0);
+          var w = window.innerWidth || 0;
+          on = chromeH < 70 && chromeW < 30 && w >= 360 && w < 1600;
+        }
+        if (on) {
+          document.documentElement.classList.add('ui-phone');
+          document.addEventListener('DOMContentLoaded', function () {
+            var side = document.getElementById('taxi-side');
+            if (side && !document.body.classList.contains('side-flyout-open')) {
+              side.hidden = true;
+            }
+          });
+        }
+      } catch (e) { /* ignore */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css?v=1142" />
 </head>
 <body class="taxi-body">
   <div class="taxi">
@@ -15,27 +45,42 @@
       <button type="button" class="taxi-burger" id="btn-burger" title="Показать / скрыть меню" aria-label="Показать или скрыть меню" aria-controls="taxi-side" aria-expanded="true">
         <span></span><span></span><span></span>
       </button>
+      <button type="button" class="taxi-phone-toggle" id="btn-phone-ui" title="Мобильный вид" aria-label="Мобильный вид" aria-pressed="false">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="18.2" r="0.9" fill="currentColor"/></svg>
+      </button>
       <div class="taxi-title" id="top-title">
         <span class="taxi-product">Учёт №1</span>
-        <label class="taxi-org-wrap" title="Контур организации">
-          <span class="sr-only">Организация</span>
-          <select id="header-company" class="taxi-org-select" aria-label="Организация (контур)">
-            <option value="">Все организации</option>
+        <label class="taxi-org-wrap" title="Филиал (контур)">
+          <span class="sr-only">Филиал</span>
+          <select id="header-company" class="taxi-org-select" aria-label="Филиал">
+            <option value="">Все филиалы</option>
           </select>
         </label>
       </div>
 
       <div class="taxi-top-actions">
         <div class="header-rates" id="header-rates" hidden title="Курсы ЦБ РФ"></div>
+        <div class="notif-wrap" id="notif-wrap">
+          <button type="button" class="taxi-ico taxi-notif" id="notif-btn" title="Уведомления" aria-label="Уведомления" aria-expanded="false">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 22a2.2 2.2 0 0 0 2.2-2.2h-4.4A2.2 2.2 0 0 0 12 22Zm7-5.2V11a7 7 0 1 0-14 0v5.8L3 18.5V20h18v-1.5l-2-1.7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <span class="notif-badge" id="notif-badge" hidden>0</span>
+          </button>
+          <div class="notif-panel" id="notif-panel" hidden></div>
+        </div>
         <div class="presence-wrap" id="presence-wrap">
           <button type="button" class="taxi-presence" id="presence-btn" hidden title="Кто в системе">
             <span class="presence-dot" aria-hidden="true"></span>
-            <span id="presence-count">0</span> онлайн
+            <span id="presence-count">0</span><span class="presence-online-label"> онлайн</span>
           </button>
           <div class="presence-panel" id="presence-panel" hidden></div>
         </div>
-        <span class="taxi-user" id="taxi-user">…</span>
-        <button type="button" class="taxi-ico taxi-logout" id="logout" title="Выйти">Выйти</button>
+        <div class="taxi-user-wrap" id="taxi-user-wrap">
+          <button type="button" class="taxi-user" id="taxi-user" title="Профиль"><span class="taxi-user-name">…</span></button>
+        </div>
+        <button type="button" class="taxi-ico taxi-logout" id="logout" title="Выйти" aria-label="Выйти">
+          <svg class="taxi-logout-ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M10 7V5.5A1.5 1.5 0 0 1 11.5 4h7A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 10 18.5V17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M13 12H4m0 0 2.5-2.5M4 12l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="taxi-logout-label">Выйти</span>
+        </button>
       </div>
     </header>
 
@@ -44,13 +89,8 @@
     <div class="taxi-tabs" id="tabs" aria-label="Открытые вкладки"></div>
 
     <div class="taxi-body-row">
+      <button type="button" class="taxi-side-scrim" id="taxi-side-scrim" aria-label="Закрыть меню" tabindex="-1"></button>
       <aside class="taxi-side" id="taxi-side">
-        <div class="taxi-side-head">
-          <span class="taxi-side-label">Разделы</span>
-          <button type="button" class="taxi-side-collapse" id="btn-side-collapse" title="Скрыть меню" aria-label="Скрыть меню">
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-        </div>
         <nav class="taxi-sections" id="sections">
           <a class="sec active" href="/" data-section="home" title="Главное">
             <svg class="sec-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3 8.5L9 3l6 5.5V15H11v-4H7v4H3z" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
@@ -88,6 +128,14 @@
             <svg class="sec-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9 5v8M7 7.5c.5-1 4-1 4 1s-3.5 1.5-4 2.5c-.4.8 2.5 1.5 4 .8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
             <span class="sec-label">Деньги</span>
           </a>
+          <a class="sec" href="/tax" data-section="tax" title="Налоги и зарплата">
+            <svg class="sec-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M4 14V4h3v10H4zm7 0V8h3v6h-3z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3 15h12" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+            <span class="sec-label">Налоги</span>
+          </a>
+          <a class="sec" href="/kassa" data-section="kassa" title="Касса">
+            <svg class="sec-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3.5 6.5h11v8.5h-11zM5.5 6.5V4.8h7v1.7M6.5 9.5h5M6.5 12h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 3.2h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+            <span class="sec-label">Касса</span>
+          </a>
           <a class="sec" href="/staff" data-section="staff" title="Персонал">
             <svg class="sec-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="7" cy="6" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3 14c.5-2.5 7-2.5 7.5 0M12 7.5a1.8 1.8 0 110-3.5M13.5 14c.3-1.5 3-1.8 3.5 0" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
             <span class="sec-label">Персонал</span>
@@ -108,15 +156,49 @@
             <svg class="sec-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M9 2.5a4 4 0 014 4c0 1.6-.8 2.6-1.6 3.5-.5.5-.9 1.1-1 1.8H7.6c-.1-.7-.5-1.3-1-1.8C5.8 9.1 5 8.1 5 6.5a4 4 0 014-4zM7.5 13.5h3M7.8 15h2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
             <span class="sec-label">Идеи и ошибки</span>
           </a>
-          <a class="sec" href="/kassa" data-section="kassa" title="Касса">
-            <svg class="sec-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3.5 6.5h11v8.5h-11zM5.5 6.5V4.8h7v1.7M6.5 9.5h5M6.5 12h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 3.2h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-            <span class="sec-label">Касса</span>
-          </a>
           <a class="sec" href="/help" data-section="help" title="Помощь">
             <svg class="sec-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 7a2 2 0 013.5 1.2c0 1.3-1.5 1.5-1.5 2.8M9 13h.01" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
             <span class="sec-label">Помощь</span>
           </a>
         </nav>
+        <script>
+          (function () {
+            var NAV = ['home','sales','documents','purchases','warehouse','money','kassa','tax','staff','company','settings','help'];
+            function applyShell(secs, whPick) {
+              var allow = {};
+              for (var i = 0; i < secs.length; i++) allow[secs[i]] = true;
+              document.querySelectorAll('.taxi-sections .sec').forEach(function (btn) {
+                var sec = btn.getAttribute('data-section') || '';
+                var ok = !!allow[sec] && NAV.indexOf(sec) >= 0;
+                btn.hidden = !ok;
+                btn.setAttribute('aria-hidden', ok ? 'false' : 'true');
+              });
+              if (whPick) {
+                document.documentElement.dataset.meWhPick = '1';
+                ['presence-wrap', 'notif-wrap', 'header-rates', 'chat-fab-root'].forEach(function (id) {
+                  var el = document.getElementById(id);
+                  if (el) el.hidden = true;
+                });
+              }
+              document.documentElement.classList.add('me-shell-primed');
+            }
+            try {
+              var raw = sessionStorage.getItem('uchet1-me-shell');
+              if (raw) {
+                var m = JSON.parse(raw);
+                if (m.sections && m.sections.length) {
+                  applyShell(m.sections, m.picker_only && m.role === 'warehouse');
+                  return;
+                }
+              }
+            } catch (e) {}
+          })();
+        </script>
+        <div class="taxi-side-foot">
+          <button type="button" class="taxi-side-collapse" id="btn-side-collapse" title="Скрыть меню" aria-label="Скрыть меню">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
       </aside>
 
       <main class="taxi-main app">
@@ -127,35 +209,21 @@
 
   </div>
 
-  <div id="chat-fab-root" class="chat-fab-root" hidden>
-    <div id="chat-pop" class="chat-pop hidden" role="dialog" aria-label="Чаты">
-      <div class="chat-pop-head">
-        <strong>Чаты</strong>
-        <span class="chat-pop-unread muted" id="chat-pop-unread"></span>
-        <div class="grow"></div>
-        <a class="chat-pop-link" href="/chats" id="chat-pop-full">Открыть</a>
-        <button type="button" class="chat-pop-x" id="chat-pop-close" title="Закрыть" aria-label="Закрыть">✕</button>
-      </div>
-      <div id="chat-pop-body" class="chat-pop-body">
-        <p class="muted" style="margin:12px">Загрузка…</p>
-      </div>
-    </div>
-    <button type="button" class="chat-fab" id="chat-fab" title="Чаты" aria-label="Чаты">
-      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 5.5h16v11H9.5L6 20v-3.5H4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 10h8M8 13h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-      <span class="chat-fab-badge" id="chat-fab-badge" hidden>0</span>
-    </button>
-  </div>
-
   <script>
     // Надёжная загрузка скрипта: у части встроенных webview defer на крупный файл срывается.
     (function () {
-      var LEGACY_SRC = '/legacy.js?v=635';
+      var LEGACY_UI_BUILD = 1186;
+      var LEGACY_SRC = '/legacy.js?v=' + LEGACY_UI_BUILD;
       var EXTRAS = [
-        '/sections-parity-a.js?v=59',
+        '/sections-parity-a.js?v=60',
         '/sections-crm-ops.js?v=1',
-        '/sections-parity-money.js?v=489',
+        '/sections-parity-money.js?v=491',
         '/sections-parity-wave-b.js?v=8',
         '/sections-cdek.js?v=4',
+        '/sections-purchase-intake.js?v=12',
+        '/sections-sto-parts.js?v=9',
+        '/sections-production.js?v=1',
+        '/sections-tax.js?v=4',
       ];
       var view = document.getElementById('view');
       function showErr(msg) {
@@ -172,8 +240,11 @@
           document.head.appendChild(s);
         });
       }
-      function loadTextFallback(src) {
-        return fetch(src, { credentials: 'same-origin', cache: 'no-cache' }).then(function (r) {
+      function loadTextFallback(src, cacheMode) {
+        return fetch(src, {
+          credentials: 'same-origin',
+          cache: cacheMode || 'no-cache',
+        }).then(function (r) {
           if (!r.ok) throw new Error(src + ' HTTP ' + r.status);
           return r.text();
         }).then(function (code) {
@@ -183,10 +254,13 @@
         });
       }
       function loadOne(src) {
+        // legacy.js: ?v= в URL; без Date.now() — иначе каждый экран тянет ~1.7MB и вешает Node.
         return loadSrc(src).catch(function () {
           return loadTextFallback(src);
         });
       }
+      // Не авто-reload: рассинхрон HTML/API (683≠684) давал бесконечную перезагрузку окна.
+      // Новую сборку пользователь подхватит обычным F5.
       if (view && !view.innerHTML) {
         view.innerHTML = '<p class="muted" style="padding:16px">Загрузка…</p>';
       }

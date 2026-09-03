@@ -12,8 +12,10 @@ if ! flock -n 9; then
 fi
 
 set -a
+WMS_ENV_SAFE=/tmp/wms-media-sync.env
+grep -E '^(HS_|S3_|WMS_DATA|MEDIA_)' /etc/warehouse-wms.env >"$WMS_ENV_SAFE" 2>/dev/null || true
 # shellcheck disable=SC1091
-source /etc/warehouse-wms.env
+source "$WMS_ENV_SAFE"
 set +a
 
 LOG=logs/media-full-sync.log

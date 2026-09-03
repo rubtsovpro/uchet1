@@ -5,12 +5,15 @@
  */
 import { all, get, run, type Row } from './db.js';
 import { newGuid } from './ids.js';
-import { dealInvoiceOrganizationId, dealSalesDocPackTypes, getDeal } from './deals.js';
+import { dealIsLegalEntity, dealSalesDocPackTypes, getDeal, organizationIdForDealRecord } from './deals.js';
+import { dealCarPhotosFirstAt } from './deal-car-photos.js';
 import {
   nextContractNumber,
   nextInvoiceNumber,
   nextOutNfNumber,
   salesNumberFromDeal,
+  nextOrdinalUpdNumber,
+  workorderPrintNumber,
 } from './doc-numbering.js';
 import { getCompany } from './companies.js';
 import {
@@ -25,13 +28,47 @@ import {
   type OrgProfile,
 } from './organizations.js';
 import { assertDealStockAvailable, planDealStockNeeds } from './payment-links.js';
-import { customerOrderLineDisplayName } from './product-display-name.js';
+import { catalogArticleOf, mergeSalesDocLines, salesDocLineDisplayName } from './product-display-name.js';
 import { orgSignHtml, orgStampHtml } from './org-stamp.js';
-import { renderSaleContractHtml, type ContractBuyer } from './sale-contract.js';
+import { orgLogoHtml } from './org-logo.js';
+import {
+  isWeakBuyerDocName,
+  looksLikeAmoNameCityLabel,
+  looksLikePersonFio,
+  resolvePersonDocFio,
+} from './person-fio.js';
+import { getLatestPdnSignForDeal } from './pdn-sms-sign.js';
+import { warrantyObligationsHtml } from './warranty-settings.js';
+import {
+  CONTRACT_TEMPLATE_ID,
+  renderSaleContractHtml,
+  type ContractBuyer,
+} from './sale-contract.js';
+import {
+  getStoDocTemplate,
+  isSaleContractTemplateId,
+  isStoContractTemplateId,
+  isStoWorkorderTemplateId,
+  renderStoTemplateHtml,
+  suggestContractTemplateId,
+  suggestStoContractTemplateId,
+  suggestStoWorkorderTemplateId,
+  splitStoWorkPartLines,
+  STO_CONTRACT_PERSON,
+  isStoLegalContractTemplateId,
+  STO_WORKORDER_LEGAL,
+  STO_WORKORDER_PERSON,
+  paymentFieldsFromDeal,
+  contactFieldsFromDeal,
+  staffFieldsFromDeal,
+  handoverFieldsFromDeal,
+} from './sto-doc-templates.js';
+import { parseStoChecklistJson } from './sto-intake-checklist.js';
 import { createDocument, isServiceProduct } from './stock.js';
 import { linkOutToOrderChain } from './order-doc-tree.js';
 import { buildInvoicePaymentPurpose } from './payment-qr.js';
-import { stsMediaInfo } from './sts-media.js';
+import { garageForDeal } from './counterparty-vehicles.js';
+import { stsMediaInfo, stsMediaInfoForVehicle } from './sts-media.js';
 
 export type SalesDocType = 'invoice' | 'upd' | 'sf' | 'workorder' | 'contract';
 
@@ -50,6 +87,22 @@ const TYPE_LABEL: Record<SalesDocType, string> = {
   workorder: 'Заказ-наряд',
   contract: 'Договор',
 };
+
+/** На одну сделку — один счёт, один УПД, один договор; повтор = перегенерация. */
+const SINGLE_DEAL_DOC_TYPES: SalesDocType[] = ['invoice', 'upd', 'contract'];
+
+function latestDealSalesDoc(
+  dealId: string,
+  docType: SalesDocType
+): { id: string; number: string } | null {
+  const row = get<{ id: string; number: string }>(
+    `SELECT id, number FROM sales_docs
+     WHERE deal_id = ? AND doc_type = ?
+     ORDER BY datetime(created_at) DESC, number DESC LIMIT 1`,
+    [dealId, docType]
+  );
+  return row?.id ? row : null;
+}
 
 const WORK_RE =
   /(снять\/установить|проверить\/исправить|осмотр|диагностик|ремонт|регулир|замен[аы].*работ|н\/ч|нормочас)/i;
@@ -89,14 +142,18 @@ export function findDealOutStockNumber(dealId: string | null | undefined): strin
 
 /**
  * Заголовок блока товаров в ЗН:
- * «Расходная накладная № Р… к заказ-наряду № ЗН… от … г.»
+ * «Списание № Р… к заказ-наряду № {сделка} от … г.»
  */
 export function formatWorkorderOutHeading(
   doc: Record<string, unknown> | null | undefined,
   dateShort: string
 ): string {
   const d = doc || {};
-  const wo = String(d.number || '').trim() || '—';
+  const dealId = String(d.deal_id || '').trim();
+  const wo =
+    workorderPrintNumber(dealId, String(d.number || '').trim()) ||
+    String(d.number || '').trim() ||
+    '—';
   const out =
     findDealOutStockNumber(String(d.deal_id || '')) ||
     // если расходная ещё не создана — ожидаемый номер Р{сделка}
@@ -106,11 +163,75 @@ export function formatWorkorderOutHeading(
     })();
   const datePart = String(dateShort || '').trim();
   if (out) {
-    return `Расходная накладная № ${out} к заказ-наряду № ${wo}${
+    return `Списание № ${out} к заказ-наряду № ${wo}${
       datePart ? ` от ${datePart} г.` : ''
     }`;
   }
-  return `Расходная накладная к заказ-наряду № ${wo}${datePart ? ` от ${datePart} г.` : ''}`;
+  return `Списание к заказ-наряду № ${wo}${datePart ? ` от ${datePart} г.` : ''}`;
+}
+
+export function updateSalesDocStoChecklist(
+  docId: string,
+  patch: {
+    checks?: Record<string, boolean>;
+    master_name?: string;
+    admin_name?: string;
+  }
+): ReturnType<typeof getSalesDoc> {
+  const id = String(docId || '').trim();
+  if (!id) throw new Error('doc_id required');
+  const row = get<{ id: string; doc_type: string; checklist_json?: string }>(
+    `SELECT id, doc_type, IFNULL(checklist_json,'') AS checklist_json FROM sales_docs WHERE id = ?`,
+    [id]
+  );
+  if (!row) throw new Error('Документ не найден');
+  if (String(row.doc_type) !== 'workorder') {
+    throw new Error('Чек-лист СТО хранится на заказ-наряде');
+  }
+  const prev = parseStoChecklistJson(row.checklist_json);
+  const nextChecks = { ...prev.checks };
+  if (patch.checks && typeof patch.checks === 'object') {
+    for (const [k, v] of Object.entries(patch.checks)) {
+      if (!k) continue;
+      if (v) nextChecks[k] = true;
+      else delete nextChecks[k];
+    }
+  }
+  const state = {
+    checks: nextChecks,
+    master_name:
+      patch.master_name !== undefined
+        ? String(patch.master_name || '').trim()
+        : prev.master_name,
+    admin_name:
+      patch.admin_name !== undefined
+        ? String(patch.admin_name || '').trim()
+        : prev.admin_name,
+    updated_at: new Date().toISOString(),
+  };
+  run(`UPDATE sales_docs SET checklist_json = ? WHERE id = ?`, [
+    JSON.stringify(state),
+    id,
+  ]);
+  return getSalesDoc(id);
+}
+
+/** Последний заказ-наряд сделки (для чек-листа приёма/выдачи). */
+export function findDealWorkorderForChecklist(
+  dealId: string
+): { id: string; number: string; checklist_json: string } | null {
+  const id = String(dealId || '').trim();
+  if (!id) return null;
+  return (
+    get<{ id: string; number: string; checklist_json: string }>(
+      `SELECT id, IFNULL(number,'') AS number, IFNULL(checklist_json,'') AS checklist_json
+       FROM sales_docs
+       WHERE deal_id = ? AND doc_type = 'workorder'
+       ORDER BY datetime(IFNULL(NULLIF(doc_date,''), created_at)) DESC, id DESC
+       LIMIT 1`,
+      [id]
+    ) || null
+  );
 }
 
 export function updateSalesDocVehicle(
@@ -165,6 +286,95 @@ export function updateSalesDocVehicle(
   );
 }
 
+/** Госномер/СТС со сделки → все заказ-наряды этой сделки (после OCR / вкладки Документы). */
+export function syncDealVehicleOntoWorkorders(dealId: string): number {
+  const id = String(dealId || '').trim();
+  if (!id) return 0;
+  const deal = getDeal(id) as Record<string, unknown> | null;
+  if (!deal) return 0;
+  const plate = String(deal.car_plate || '')
+    .trim()
+    .toUpperCase();
+  const vin = String(deal.car_vin || '')
+    .trim()
+    .toUpperCase();
+  run(
+    `UPDATE sales_docs
+     SET car_plate = ?, car_vin = ?, car_year = ?, car_mileage = ?,
+         car_brand = ?, car_model = ?, car_color = ?, car_category = ?, car_pts = ?,
+         car_owner = ?, car_owner_street = ?, car_owner_house = ?, car_owner_flat = ?,
+         car_sts_date = ?, car_sts_number = ?
+     WHERE deal_id = ? AND doc_type = 'workorder'`,
+    [
+      plate,
+      vin,
+      String(deal.car_year || '').trim(),
+      String(deal.car_mileage || '').trim(),
+      String(deal.car_brand || '').trim(),
+      String(deal.car_model || '').trim(),
+      String(deal.car_color || '').trim(),
+      String(deal.car_category || '').trim(),
+      String(deal.car_pts || '').trim(),
+      String(deal.car_owner || '').trim(),
+      String(deal.car_owner_street || '').trim(),
+      String(deal.car_owner_house || '').trim(),
+      String(deal.car_owner_flat || '').trim(),
+      String(deal.car_sts_date || '').trim(),
+      String(deal.car_sts_number || '').trim(),
+      id,
+    ]
+  );
+  const n = get(
+    `SELECT COUNT(*) AS n FROM sales_docs WHERE deal_id = ? AND doc_type = 'workorder'`,
+    [id]
+  ) as { n?: number } | null;
+  return Number(n?.n || 0);
+}
+
+/**
+ * Перед PDF ЗН: если на документе нет госномера, подтянуть со сделки.
+ * @returns true если госномер есть (на ЗН или после sync со сделки)
+ */
+export function ensureWorkorderCarPlate(docId: string): boolean {
+  const doc = getSalesDoc(docId) as Record<string, unknown> | null;
+  if (!doc) return false;
+  if (String(doc.doc_type || '') !== 'workorder') return true;
+  if (String(doc.car_plate || '').trim()) return true;
+  const dealId = String(doc.deal_id || '').trim();
+  if (!dealId) return false;
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  if (!String(deal?.car_plate || '').trim()) return false;
+  syncDealVehicleOntoWorkorders(dealId);
+  const again = getSalesDoc(docId) as Record<string, unknown> | null;
+  return Boolean(String(again?.car_plate || '').trim());
+}
+
+/**
+ * Подогнать template_id ЗН под тип покупателя (03ф / 03ю).
+ * Если заказ стал юр, а ЗН ещё со старым физ-бланком — печатаем уже 03ю.
+ */
+export function ensureWorkorderTemplateId(docId: string): string {
+  const id = String(docId || '').trim();
+  if (!id) return '';
+  const row = get<{ doc_type?: string; template_id?: string; deal_id?: string }>(
+    `SELECT doc_type, IFNULL(template_id,'') AS template_id, IFNULL(deal_id,'') AS deal_id
+     FROM sales_docs WHERE id = ?`,
+    [id]
+  );
+  if (!row || String(row.doc_type || '') !== 'workorder') {
+    return String(row?.template_id || '').trim();
+  }
+  const dealId = String(row.deal_id || '').trim();
+  const deal = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+  const want = suggestStoWorkorderTemplateId(deal);
+  const cur = String(row.template_id || '').trim();
+  if (want && want !== cur) {
+    run(`UPDATE sales_docs SET template_id = ? WHERE id = ?`, [want, id]);
+    return want;
+  }
+  return cur || want || STO_WORKORDER_PERSON;
+}
+
 export type ContractBuyerFields = {
   name?: string;
   inn?: string;
@@ -173,12 +383,51 @@ export type ContractBuyerFields = {
   address?: string;
   phone?: string;
   email?: string;
+  passport?: string;
   director?: string;
   bank?: string;
   bik?: string;
   rs?: string;
   ks?: string;
 };
+
+function contractTemplateOpts(
+  deal: Record<string, unknown> | null | undefined,
+  buyer: ContractBuyerFields,
+  organizationId?: string
+) {
+  const cp = findCounterpartyForDeal(deal as Row | null);
+  const inn = String(buyer.inn || '').replace(/\D/g, '');
+  let partyKind = String((cp as { party_kind?: string } | null)?.party_kind || '').toLowerCase();
+  if (partyKind !== 'ip' && partyKind !== 'legal') {
+    if (inn.length === 10) partyKind = 'legal';
+    else if (inn.length === 12) partyKind = 'ip';
+    else partyKind = '';
+  }
+  const companyId = String(deal?.company_id || deal?.amo_company_id || '').trim();
+  return {
+    organizationId,
+    buyerInn: inn,
+    ...(partyKind ? { partyKind } : {}),
+    ...(companyId ? { companyId } : {}),
+  };
+}
+
+function findCounterpartyByInn(inn: string): Row | null {
+  const digits = String(inn || '').replace(/\D/g, '');
+  if (digits.length !== 10 && digits.length !== 12) return null;
+  return (
+    get(
+      `SELECT * FROM counterparties
+       WHERE replace(replace(replace(IFNULL(inn,''),' ',''),'-',''), char(9), '') = ?
+       ORDER BY CASE WHEN IFNULL(ogrn,'') != '' THEN 0 ELSE 1 END,
+                CASE WHEN kind = 'buyer' THEN 0 ELSE 1 END,
+                length(IFNULL(name,'')) DESC
+       LIMIT 1`,
+      [digits]
+    ) || null
+  );
+}
 
 function findCounterpartyForDeal(deal: Row | null | undefined): Row | null {
   if (!deal) return null;
@@ -194,15 +443,7 @@ function findCounterpartyForDeal(deal: Row | null | undefined): Row | null {
   }
   const inn = String(deal.buyer_inn || '').replace(/\D/g, '');
   if (inn.length === 10 || inn.length === 12) {
-    return (
-      get(
-        `SELECT * FROM counterparties
-         WHERE replace(IFNULL(inn,''),' ','') = ?
-         ORDER BY CASE WHEN kind = 'buyer' THEN 0 ELSE 1 END, name
-         LIMIT 1`,
-        [inn]
-      ) || null
-    );
+    return findCounterpartyByInn(inn);
   }
   return null;
 }
@@ -212,42 +453,90 @@ export function resolveContractBuyerFromDeal(
   deal: Row | null | undefined,
   overrides: ContractBuyerFields = {}
 ): ContractBuyerFields {
-  const cp = findCounterpartyForDeal(deal);
+  let cp = findCounterpartyForDeal(deal);
+  const overrideInn = String(overrides.inn || '').replace(/\D/g, '');
+  if (!cp && (overrideInn.length === 10 || overrideInn.length === 12)) {
+    cp = findCounterpartyByInn(overrideInn);
+  } else if (cp && !String(cp.ogrn || '').trim() && (overrideInn.length === 10 || overrideInn.length === 12)) {
+    const richer = findCounterpartyByInn(overrideInn);
+    if (richer && String(richer.ogrn || '').trim()) cp = richer;
+  }
   const companyName = String(deal?.company_name || '').trim();
   const contactName = String(deal?.buyer_name || '').trim();
-  const isLegal =
-    Number(deal?.is_legal_entity) === 1 ||
-    String(deal?.buyer_kind || '').toLowerCase() === 'legal' ||
-    Boolean(companyName) ||
-    String(deal?.buyer_inn || '').replace(/\D/g, '').length === 10;
+  const isLegal = dealIsLegalEntity(deal as Record<string, unknown> | null | undefined);
   const nameFromCp = String(cp?.name_full || cp?.name || '').trim();
-  const name =
-    String(overrides.name || '').trim() ||
-    nameFromCp ||
-    (isLegal ? companyName || contactName : contactName || companyName) ||
-    '';
+  // Физлицо: не подставлять ярлык Amo «Имя Город» — ФИО из поля / ПДн.
+  const dealId = String(deal?.id || '').trim();
+  let pdnFio = '';
+  if (!isLegal && dealId) {
+    try {
+      const s = getLatestPdnSignForDeal(dealId);
+      const a = String(s?.identity?.fio || '').trim();
+      const b = String(s?.buyer_name || '').trim();
+      if (looksLikePersonFio(a)) pdnFio = a;
+      else if (looksLikePersonFio(b)) pdnFio = b;
+    } catch {
+      /* ignore */
+    }
+  }
+  const personFio = !isLegal
+    ? resolvePersonDocFio(deal as Record<string, unknown> | null | undefined) ||
+      pdnFio ||
+      (looksLikePersonFio(nameFromCp) && !looksLikeAmoNameCityLabel(nameFromCp) ? nameFromCp : '')
+    : '';
   const inn =
     String(overrides.inn || '').replace(/\D/g, '') ||
     String(cp?.inn || '').replace(/\D/g, '') ||
     String(deal?.buyer_inn || '').replace(/\D/g, '');
+  const officialBuyerName = nameFromCp && !isWeakBuyerDocName(nameFromCp) ? nameFromCp : '';
+  const overrideName = String(overrides.name || '').trim();
+  const legalDealName = (raw: string) => {
+    const v = String(raw || '').trim();
+    return v && !isWeakBuyerDocName(v) ? v : '';
+  };
+  const name =
+    (!isWeakBuyerDocName(overrideName) ? overrideName : '') ||
+    ((inn.length === 10 || inn.length === 12) && officialBuyerName ? officialBuyerName : '') ||
+    (isLegal
+      ? officialBuyerName || legalDealName(companyName) || legalDealName(contactName)
+      : personFio) ||
+    officialBuyerName ||
+    '';
   const phone =
     String(overrides.phone || '').trim() ||
     String(cp?.phone || '').trim() ||
     String(deal?.buyer_phone || '').trim();
   const email =
-    String(overrides.email || '').trim() || String(cp?.email || '').trim();
+    String(overrides.email || '').trim() ||
+    String(deal?.buyer_email || '').trim() ||
+    String(cp?.email || '').trim();
   const address =
-    String(overrides.address || '').trim() || String(cp?.address || '').trim();
+    String(overrides.address || '').trim() ||
+    String(cp?.address || '').trim() ||
+    String(deal?.buyer_address || '').trim();
+  const passport =
+    String(overrides.passport || '').trim() ||
+    String(deal?.buyer_passport || '').trim();
   const kpp =
     String(overrides.kpp || '').replace(/\D/g, '') ||
+    String((deal as { buyer_kpp?: string } | null | undefined)?.buyer_kpp || '').replace(/\D/g, '') ||
     String(cp?.kpp || '').replace(/\D/g, '');
   const ogrn =
     String(overrides.ogrn || '').replace(/\D/g, '') ||
+    String((deal as { buyer_ogrn?: string } | null | undefined)?.buyer_ogrn || '').replace(/\D/g, '') ||
     String(cp?.ogrn || '').replace(/\D/g, '');
-  let director = String(overrides.director || '').trim() || String(cp?.director || '').trim();
-  if (!director && inn.length === 12) {
-    // ИП: в лице самого ИП
-    director = name || contactName || 'индивидуального предпринимателя';
+  let director =
+    String(overrides.director || '').trim() ||
+    String((deal as { buyer_director?: string } | null | undefined)?.buyer_director || '').trim() ||
+    String(cp?.director || '').trim();
+  const partyKind = String(
+    (cp as { party_kind?: string } | null)?.party_kind ||
+      (inn.length === 12 ? 'ip' : inn.length === 10 ? 'legal' : '')
+  ).toLowerCase();
+  if (partyKind === 'ip' || inn.length === 12) {
+    director = '';
+  } else if (!director && inn.length === 12) {
+    director = name || contactName || '';
   }
   return {
     name,
@@ -255,13 +544,29 @@ export function resolveContractBuyerFromDeal(
     kpp,
     ogrn,
     address,
+    passport,
     phone,
     email,
     director,
-    bank: String(overrides.bank || '').trim() || String(cp?.bank || '').trim(),
-    bik: String(overrides.bik || '').replace(/\D/g, '') || String(cp?.bik || '').replace(/\D/g, ''),
-    rs: String(overrides.rs || '').replace(/\D/g, '') || String(cp?.rs || '').replace(/\D/g, ''),
-    ks: String(overrides.ks || '').replace(/\D/g, '') || String(cp?.ks || '').replace(/\D/g, ''),
+    bank:
+      String(overrides.bank || '').trim() ||
+      String((deal as { buyer_bank?: string } | null | undefined)?.buyer_bank || '').trim() ||
+      String(cp?.bank || '').trim(),
+    bik:
+      String(overrides.bik || '').replace(/\D/g, '') ||
+      String((deal as { buyer_bik?: string } | null | undefined)?.buyer_bik || '').replace(
+        /\D/g,
+        ''
+      ) ||
+      String(cp?.bik || '').replace(/\D/g, ''),
+    rs:
+      String(overrides.rs || '').replace(/\D/g, '') ||
+      String((deal as { buyer_rs?: string } | null | undefined)?.buyer_rs || '').replace(/\D/g, '') ||
+      String(cp?.rs || '').replace(/\D/g, ''),
+    ks:
+      String(overrides.ks || '').replace(/\D/g, '') ||
+      String((deal as { buyer_ks?: string } | null | undefined)?.buyer_ks || '').replace(/\D/g, '') ||
+      String(cp?.ks || '').replace(/\D/g, ''),
   };
 }
 
@@ -303,11 +608,7 @@ export function renameSalesDocBuyerName(
   if (dealId) {
     const deal = getDeal(dealId) as Row | null;
     if (deal) {
-      const isLegal =
-        Number(deal.is_legal_entity) === 1 ||
-        String(deal.buyer_kind || '').toLowerCase() === 'legal' ||
-        String(deal.buyer_inn || '').replace(/\D/g, '').length === 10 ||
-        Boolean(String(deal.company_name || '').trim());
+      const isLegal = dealIsLegalEntity(deal as Record<string, unknown>);
       if (isLegal) {
         run(
           `UPDATE crm_deals
@@ -338,14 +639,24 @@ export function renameSalesDocBuyerName(
   return { name, deal_id: dealId, counterparty_id: counterpartyId, docs_updated: docsUpdated };
 }
 
-export function updateSalesDocBuyer(docId: string, buyer: ContractBuyerFields): void {
+function mergeSalesDocBuyerName(cur: unknown, next: string | undefined): string {
+  const stored = String(cur || '').trim();
+  const resolved = String(next || '').trim();
+  if (!resolved) return stored;
+  if (!stored || isWeakBuyerDocName(stored)) return resolved;
+  return stored;
+}
+
+function pickSalesDocBuyerField(cur: unknown, next: string | undefined): string {
+  const stored = String(cur || '').trim();
+  return stored || String(next || '').trim();
+}
+
+/** Записать реквизиты покупателя в sales_docs (любой тип). */
+function writeSalesDocBuyerFields(docId: string, buyer: ContractBuyerFields): void {
   const id = String(docId || '').trim();
   if (!id) throw new Error('doc_id required');
-  const row = get<{ doc_type?: string }>('SELECT id, doc_type FROM sales_docs WHERE id = ?', [id]);
-  if (!row) throw new Error('Документ не найден');
-  if (String(row.doc_type) !== 'contract') {
-    throw new Error('Реквизиты покупателя правятся в договоре');
-  }
+  const passport = String(buyer.passport ?? '').trim();
   run(
     `UPDATE sales_docs SET
        counterparty_name = ?,
@@ -353,6 +664,7 @@ export function updateSalesDocBuyer(docId: string, buyer: ContractBuyerFields): 
        buyer_address = ?,
        buyer_phone = ?,
        buyer_email = ?,
+       buyer_passport = ?,
        buyer_kpp = ?,
        buyer_ogrn = ?,
        buyer_director = ?,
@@ -367,6 +679,7 @@ export function updateSalesDocBuyer(docId: string, buyer: ContractBuyerFields): 
       String(buyer.address ?? '').trim(),
       String(buyer.phone ?? '').trim(),
       String(buyer.email ?? '').trim(),
+      passport,
       String(buyer.kpp ?? '').replace(/\D/g, ''),
       String(buyer.ogrn ?? '').replace(/\D/g, ''),
       String(buyer.director ?? '').trim(),
@@ -376,6 +689,83 @@ export function updateSalesDocBuyer(docId: string, buyer: ContractBuyerFields): 
       String(buyer.ks ?? '').replace(/\D/g, ''),
       id,
     ]
+  );
+}
+
+export function updateSalesDocBuyer(docId: string, buyer: ContractBuyerFields): void {
+  const id = String(docId || '').trim();
+  if (!id) throw new Error('doc_id required');
+  const row = get<{ doc_type?: string; template_id?: string; deal_id?: string }>(
+    'SELECT id, doc_type, IFNULL(template_id,\'\') AS template_id, IFNULL(deal_id,\'\') AS deal_id FROM sales_docs WHERE id = ?',
+    [id]
+  );
+  if (!row) throw new Error('Документ не найден');
+  if (String(row.doc_type) !== 'contract') {
+    throw new Error('Реквизиты покупателя правятся в договоре');
+  }
+  writeSalesDocBuyerFields(id, buyer);
+  const passport = String(buyer.passport ?? '').trim();
+  const dealId = String(row.deal_id || '').trim();
+  if (dealId) {
+    run(
+      `UPDATE crm_deals SET
+         buyer_email = ?, buyer_address = ?, buyer_passport = ?,
+         updated_at = datetime('now')
+       WHERE id = ?`,
+      [
+        String(buyer.email ?? '').trim(),
+        String(buyer.address ?? '').trim(),
+        passport,
+        dealId,
+      ]
+    );
+  }
+  // подобрать шаблон по ИНН покупателя / каналу сделки
+  const curTpl = String(row.template_id || '').trim();
+  const inn = String(buyer.inn ?? '').replace(/\D/g, '');
+  const dealRow = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+  const orgId = String(
+    (get<{ organization_id?: string }>(
+      `SELECT IFNULL(organization_id,'') AS organization_id FROM sales_docs WHERE id = ?`,
+      [id]
+    )?.organization_id || '')
+  );
+  const next = suggestContractTemplateId(
+    dealRow || { buyer_inn: inn },
+    contractTemplateOpts(dealRow, { inn }, orgId)
+  );
+  if (curTpl !== next) {
+    updateSalesDocContractTemplate(id, next);
+  }
+}
+
+/** Сменить шаблон договора (01 физ / 02 юр·ИП). */
+export function updateSalesDocContractTemplate(docId: string, templateId: string): void {
+  const id = String(docId || '').trim();
+  const tpl = String(templateId || '').trim();
+  if (!id) throw new Error('doc_id required');
+  if (!isSaleContractTemplateId(tpl)) {
+    throw new Error('Тип договора: физлицо (01), юрлицо СТО (02) или рамочный БМП');
+  }
+  const row = get<{ doc_type?: string }>('SELECT id, doc_type FROM sales_docs WHERE id = ?', [id]);
+  if (!row) throw new Error('Документ не найден');
+  if (String(row.doc_type) !== 'contract') {
+    throw new Error('Тип меняется только у договора');
+  }
+  const meta = getStoDocTemplate(tpl);
+  const tplTitle =
+    meta?.title ||
+    (tpl === CONTRACT_TEMPLATE_ID ? 'Договор поставки и услуг (БМП)' : tpl);
+  run(
+    `UPDATE sales_docs SET template_id = ?, comment = CASE
+       WHEN IFNULL(comment,'') = '' OR comment LIKE 'Шаблон договора БМП%'
+         OR comment LIKE 'Договор купли-продажи%'
+         OR comment LIKE 'Договор ТО%'
+         OR comment LIKE 'Договор поставки%'
+       THEN ?
+       ELSE comment
+     END WHERE id = ?`,
+    [tpl, tplTitle, id]
   );
 }
 
@@ -393,6 +783,7 @@ export function fillContractBuyerFromDeal(docId: string): ReturnType<typeof getS
     address: String(doc.buyer_address || ''),
     phone: String(doc.buyer_phone || ''),
     email: String(doc.buyer_email || ''),
+    passport: String(doc.buyer_passport || ''),
     kpp: String(doc.buyer_kpp || ''),
     ogrn: String(doc.buyer_ogrn || ''),
     director: String(doc.buyer_director || ''),
@@ -401,24 +792,21 @@ export function fillContractBuyerFromDeal(docId: string): ReturnType<typeof getS
     rs: String(doc.buyer_rs || ''),
     ks: String(doc.buyer_ks || ''),
   });
-  // Не затираем уже заполненное вручную — только пустые
-  const pick = (cur: unknown, next: string | undefined) => {
-    const c = String(cur || '').trim();
-    return c || String(next || '').trim();
-  };
+  // Не затираем уже заполненное вручную — только пустые / заглушки Amo
   const merged: ContractBuyerFields = {
-    name: pick(doc.counterparty_name, resolved.name),
-    inn: pick(doc.counterparty_inn, resolved.inn),
-    address: pick(doc.buyer_address, resolved.address),
-    phone: pick(doc.buyer_phone, resolved.phone),
-    email: pick(doc.buyer_email, resolved.email),
-    kpp: pick(doc.buyer_kpp, resolved.kpp),
-    ogrn: pick(doc.buyer_ogrn, resolved.ogrn),
-    director: pick(doc.buyer_director, resolved.director),
-    bank: pick(doc.buyer_bank, resolved.bank),
-    bik: pick(doc.buyer_bik, resolved.bik),
-    rs: pick(doc.buyer_rs, resolved.rs),
-    ks: pick(doc.buyer_ks, resolved.ks),
+    name: mergeSalesDocBuyerName(doc.counterparty_name, resolved.name),
+    inn: pickSalesDocBuyerField(doc.counterparty_inn, resolved.inn),
+    address: pickSalesDocBuyerField(doc.buyer_address, resolved.address),
+    phone: pickSalesDocBuyerField(doc.buyer_phone, resolved.phone),
+    email: pickSalesDocBuyerField(doc.buyer_email, resolved.email),
+    passport: pickSalesDocBuyerField(doc.buyer_passport, resolved.passport),
+    kpp: pickSalesDocBuyerField(doc.buyer_kpp, resolved.kpp),
+    ogrn: pickSalesDocBuyerField(doc.buyer_ogrn, resolved.ogrn),
+    director: pickSalesDocBuyerField(doc.buyer_director, resolved.director),
+    bank: pickSalesDocBuyerField(doc.buyer_bank, resolved.bank),
+    bik: pickSalesDocBuyerField(doc.buyer_bik, resolved.bik),
+    rs: pickSalesDocBuyerField(doc.buyer_rs, resolved.rs),
+    ks: pickSalesDocBuyerField(doc.buyer_ks, resolved.ks),
   };
   const changed =
     merged.name !== String(doc.counterparty_name || '') ||
@@ -426,6 +814,7 @@ export function fillContractBuyerFromDeal(docId: string): ReturnType<typeof getS
     merged.address !== String(doc.buyer_address || '') ||
     merged.phone !== String(doc.buyer_phone || '') ||
     merged.email !== String(doc.buyer_email || '') ||
+    merged.passport !== String(doc.buyer_passport || '') ||
     merged.kpp !== String(doc.buyer_kpp || '') ||
     merged.ogrn !== String(doc.buyer_ogrn || '') ||
     merged.director !== String(doc.buyer_director || '') ||
@@ -434,17 +823,73 @@ export function fillContractBuyerFromDeal(docId: string): ReturnType<typeof getS
     merged.rs !== String(doc.buyer_rs || '') ||
     merged.ks !== String(doc.buyer_ks || '');
   if (changed) updateSalesDocBuyer(id, merged);
+  const curTpl = String(doc.template_id || '').trim();
+  const wantTpl = suggestContractTemplateId(
+    deal as Record<string, unknown>,
+    contractTemplateOpts(deal as Record<string, unknown>, merged, String(doc.organization_id || ''))
+  );
+  if (curTpl !== wantTpl) {
+    updateSalesDocContractTemplate(id, wantTpl);
+  }
   return getSalesDoc(id);
 }
 
-function money(n: number): string {
-  return (Math.round(n * 100) / 100).toFixed(2);
+/** Дозаполнить покупателя в счёте / УПД / СФ из карточки контрагента (виджет «Документы»). */
+export function fillSalesDocBuyerFromDeal(docId: string): ReturnType<typeof getSalesDoc> {
+  const id = String(docId || '').trim();
+  const doc = get('SELECT * FROM sales_docs WHERE id = ?', [id]) as Row | undefined;
+  if (!doc) return getSalesDoc(id);
+  const type = String(doc.doc_type || '');
+  if (!['invoice', 'upd', 'sf'].includes(type)) return getSalesDoc(id);
+  const dealId = String(doc.deal_id || '').trim();
+  if (!dealId) return getSalesDoc(id);
+  const deal = getDeal(dealId) as Row | null;
+  const resolved = resolveContractBuyerFromDeal(deal, {
+    name: String(doc.counterparty_name || ''),
+    inn: String(doc.counterparty_inn || ''),
+    address: String(doc.buyer_address || ''),
+    phone: String(doc.buyer_phone || ''),
+    email: String(doc.buyer_email || ''),
+  });
+  const merged: ContractBuyerFields = {
+    name: mergeSalesDocBuyerName(doc.counterparty_name, resolved.name),
+    inn: pickSalesDocBuyerField(doc.counterparty_inn, resolved.inn),
+    address: pickSalesDocBuyerField(doc.buyer_address, resolved.address),
+    phone: pickSalesDocBuyerField(doc.buyer_phone, resolved.phone),
+    email: pickSalesDocBuyerField(doc.buyer_email, resolved.email),
+    passport: '',
+    kpp: '',
+    ogrn: '',
+    director: '',
+    bank: '',
+    bik: '',
+    rs: '',
+    ks: '',
+  };
+  const changed =
+    merged.name !== String(doc.counterparty_name || '') ||
+    merged.inn !== String(doc.counterparty_inn || '') ||
+    merged.address !== String(doc.buyer_address || '') ||
+    merged.phone !== String(doc.buyer_phone || '') ||
+    merged.email !== String(doc.buyer_email || '');
+  if (changed) writeSalesDocBuyerFields(id, merged);
+  return getSalesDoc(id);
 }
 
-/** 87900.5 → «87 900,50» */
+function salesDocConsigneeLine(doc: Row): string {
+  const name = String(doc.counterparty_name || '—').trim();
+  const addr = String(doc.buyer_address || '').trim();
+  return addr ? `${name}, ${addr}` : name;
+}
+
+function money(n: number): string {
+  return String(Math.round(Number(n) || 0));
+}
+
+/** 87900 → «87 900» (целые рубли) */
 export function formatRuMoney(n: number): string {
-  const [r, k] = money(n).split('.');
-  return `${r.replace(/\B(?=(\d{3})+(?!\d))/g, ' ')},${k}`;
+  const r = money(n);
+  return r.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 }
 
 function splitVat(totalIncl: number, vatRate: number): { amount: number; vat: number; total: number } {
@@ -618,13 +1063,29 @@ function formatDocDateShort(iso: string): string {
   return `${d}.${m}.${y}`;
 }
 
-function nextSalesNumber(docType: SalesDocType, dealId?: string): string {
+function nextSalesNumber(
+  docType: SalesDocType,
+  dealId?: string,
+  organizationId?: string
+): string {
   const deal = String(dealId || '').trim();
+  if (docType === 'upd') {
+    const orgId = String(organizationId || '').trim();
+    if (orgId) return nextOrdinalUpdNumber(orgId);
+  }
   if (deal) return salesNumberFromDeal(docType, deal);
   if (docType === 'invoice') return nextInvoiceNumber();
   if (docType === 'contract') return nextContractNumber();
   // Без сделки — серия 1С 00НФ-
   return nextOutNfNumber();
+}
+
+/** УПД24792021 → порядковый № по ИНН продавца (старый формат привязки к сделке). */
+function fixOrdinalUpdNumberIfLegacy(existingNumber: string, organizationId: string): string {
+  const n = String(existingNumber || '').trim();
+  if (/^\d+$/.test(n)) return n;
+  if (/^УПД/i.test(n)) return nextOrdinalUpdNumber(organizationId);
+  return n;
 }
 
 export function listSalesDocs(opts: {
@@ -649,8 +1110,12 @@ export function listSalesDocs(opts: {
   const where: string[] = [];
   const params: Array<string | number> = [];
   if (type) {
-    where.push('s.doc_type = ?');
-    params.push(type);
+    if (type === 'upd') {
+      where.push(`s.doc_type IN ('upd', 'sf')`);
+    } else {
+      where.push('s.doc_type = ?');
+      params.push(type);
+    }
   }
   if (dealId) {
     where.push('s.deal_id = ?');
@@ -665,17 +1130,20 @@ export function listSalesDocs(opts: {
   }
   if (q) {
     where.push(
-      `(s.number LIKE ? OR s.counterparty_name LIKE ? OR s.deal_id LIKE ? OR s.comment LIKE ?
+      `(s.number LIKE ? OR s.counterparty_name LIKE ? OR IFNULL(s.counterparty_inn,'') LIKE ? OR s.deal_id LIKE ? OR s.comment LIKE ?
         OR IFNULL(o.name,'') LIKE ? OR IFNULL(o.short_name,'') LIKE ? OR IFNULL(o.inn,'') LIKE ?
         OR IFNULL(co.name,'') LIKE ? OR IFNULL(d.name,'') LIKE ?)`
     );
     const like = `%${q}%`;
-    params.push(like, like, like, like, like, like, like, like, like);
+    params.push(like, like, like, like, like, like, like, like, like, like);
   }
   const sqlWhere = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const orderBy = type
-    ? `ORDER BY datetime(s.doc_date) DESC, s.number DESC`
-    : `ORDER BY CASE s.doc_type
+  const orderBy =
+    type === 'upd' || type === 'sf'
+      ? `ORDER BY CAST(s.number AS INTEGER) DESC, datetime(s.doc_date) DESC`
+      : type
+        ? `ORDER BY datetime(s.doc_date) DESC, s.number DESC`
+        : `ORDER BY CASE s.doc_type
          WHEN 'invoice' THEN 1
          WHEN 'workorder' THEN 2
          WHEN 'upd' THEN 3
@@ -702,7 +1170,8 @@ export function listSalesDocs(opts: {
             IFNULL(NULLIF(TRIM(o.short_name), ''), o.name) AS organization_short,
             IFNULL(o.name,'') AS organization_name,
             IFNULL(o.inn,'') AS organization_inn,
-            IFNULL(d.name,'') AS deal_name
+            IFNULL(d.name,'') AS deal_name,
+            ${DEAL_PAYMENT_LABEL_SQL} AS payment_label
      ${fromJoins}
      ${sqlWhere}
      ${orderBy}
@@ -718,6 +1187,260 @@ export function listSalesDocs(opts: {
   };
 }
 
+export type UpdRegistryRow = {
+  doc_id: string;
+  number: string;
+  doc_date: string;
+  deal_id: string;
+  counterparty_name: string;
+  counterparty_inn: string;
+  line_no: number;
+  name: string;
+  sku: string;
+  qty: number;
+  amount: number;
+  organization_id: string;
+  organization_short: string;
+  organization_name: string;
+  organization_inn: string;
+  company_name: string;
+};
+
+/** Статус оплаты заказа для реестра УПД / списка документов. */
+const DEAL_PAYMENT_LABEL_SQL = `CASE
+  WHEN IFNULL(TRIM(s.deal_id), '') = '' THEN ''
+  WHEN EXISTS (
+    SELECT 1 FROM deal_payments dp
+    WHERE dp.deal_id = s.deal_id
+      AND dp.status IN ('paid','confirmed','success','active')
+  ) OR IFNULL(d.paid, 0) = 1
+    OR LOWER(IFNULL(d.payment_status, '')) IN ('paid','оплачен','оплачено','success')
+  THEN 'Оплачено'
+  ELSE 'Не оплачено'
+END`;
+
+function buildUpdRegistryWhere(opts: {
+  q?: string;
+  companyId?: string;
+  companyIds?: string[];
+}): { sqlWhere: string; params: Array<string | number> } {
+  const q = (opts.q || '').trim();
+  const companyId = (opts.companyId || '').trim();
+  const companyIds = Array.isArray(opts.companyIds)
+    ? [...new Set(opts.companyIds.map((x) => String(x || '').trim()).filter(Boolean))]
+    : [];
+  const where: string[] = [`s.doc_type IN ('upd', 'sf')`];
+  const params: Array<string | number> = [];
+  if (companyId) {
+    where.push(`IFNULL(o.company_id,'') = ?`);
+    params.push(companyId);
+  } else if (companyIds.length) {
+    where.push(`IFNULL(o.company_id,'') IN (${companyIds.map(() => '?').join(',')})`);
+    params.push(...companyIds);
+  }
+  if (q) {
+    where.push(
+      `(s.number LIKE ? OR s.counterparty_name LIKE ? OR IFNULL(s.counterparty_inn,'') LIKE ? OR s.deal_id LIKE ? OR s.comment LIKE ?
+        OR IFNULL(o.name,'') LIKE ? OR IFNULL(o.short_name,'') LIKE ? OR IFNULL(o.inn,'') LIKE ?
+        OR IFNULL(co.name,'') LIKE ? OR IFNULL(d.name,'') LIKE ?)`
+    );
+    const like = `%${q}%`;
+    params.push(like, like, like, like, like, like, like, like, like, like);
+  }
+  return { sqlWhere: `WHERE ${where.join(' AND ')}`, params };
+}
+
+/** Строки реестра УПД (все позиции) для PDF — без пагинации списка. */
+export function listUpdRegistryRows(opts: {
+  q?: string;
+  companyId?: string;
+  companyIds?: string[];
+  limit?: number;
+}): { rows: UpdRegistryRow[]; truncated: boolean } {
+  const limit = Math.min(10000, Math.max(1, opts.limit ?? 10000));
+  const { sqlWhere, params } = buildUpdRegistryWhere(opts);
+  const fromJoins = `FROM sales_docs s
+       JOIN sales_doc_lines l ON l.doc_id = s.id
+       LEFT JOIN organizations o ON o.id = s.organization_id
+       LEFT JOIN companies co ON co.id = o.company_id
+       LEFT JOIN crm_deals d ON d.id = s.deal_id`;
+  const total =
+    get<{ c: number }>(
+      `SELECT COUNT(*) AS c
+       ${fromJoins}
+       ${sqlWhere}`,
+      params
+    )?.c ?? 0;
+  const rows = all(
+    `SELECT s.id AS doc_id, s.number, s.doc_date, IFNULL(s.deal_id,'') AS deal_id,
+            IFNULL(s.counterparty_name,'') AS counterparty_name,
+            IFNULL(s.counterparty_inn,'') AS counterparty_inn,
+            l.line_no, IFNULL(l.name,'') AS name, IFNULL(l.sku,'') AS sku,
+            IFNULL(l.qty,0) AS qty, IFNULL(l.amount,0) AS amount,
+            IFNULL(s.organization_id,'') AS organization_id,
+            IFNULL(co.name,'') AS company_name,
+            IFNULL(NULLIF(TRIM(o.short_name), ''), o.name) AS organization_short,
+            IFNULL(o.name,'') AS organization_name,
+            IFNULL(o.inn,'') AS organization_inn
+     ${fromJoins}
+     ${sqlWhere}
+     ORDER BY IFNULL(co.name,''), IFNULL(o.inn,''), IFNULL(o.name,''),
+              datetime(s.doc_date) DESC, CAST(s.number AS INTEGER) DESC, l.line_no
+     LIMIT ?`,
+    [...params, limit + 1]
+  ) as UpdRegistryRow[];
+  const truncated = total > limit || rows.length > limit;
+  return { rows: rows.slice(0, limit), truncated };
+}
+
+/** Документы УПД (1 строка = 1 УПД) для PDF бухгалтеру: дата / покупатель / ИНН / сумма. */
+export type UpdRegistryDoc = {
+  doc_id: string;
+  number: string;
+  doc_date: string;
+  deal_id: string;
+  counterparty_name: string;
+  counterparty_inn: string;
+  amount: number;
+  payment_label: string;
+  organization_id: string;
+  organization_short: string;
+  organization_name: string;
+  organization_inn: string;
+  company_name: string;
+  /** Строка пропуска в PDF-реестре (номер не использовался). */
+  registry_gap?: boolean;
+  registry_gap_note?: string;
+};
+
+function updRegistryOrdinal(number: string): number {
+  return parseInt(String(number || '').replace(/\D/g, ''), 10) || 0;
+}
+
+function inferUpdGapDocDate(gapNum: number, docs: UpdRegistryDoc[]): string {
+  let bestNum = -1;
+  let bestDate = '';
+  for (const d of docs) {
+    const n = updRegistryOrdinal(d.number);
+    if (n > 0 && n < gapNum && n > bestNum) {
+      bestNum = n;
+      bestDate = String(d.doc_date || '').slice(0, 10);
+    }
+  }
+  if (bestDate) return bestDate;
+  for (const d of docs) {
+    const n = updRegistryOrdinal(d.number);
+    if (n > gapNum) return String(d.doc_date || '').slice(0, 10);
+  }
+  return String(docs[0]?.doc_date || '').slice(0, 10);
+}
+
+function buildUpdRegistryGapNote(gapNum: number, docs: UpdRegistryDoc[]): string {
+  let refNum = 0;
+  let refDate = '';
+  for (const d of docs) {
+    if (d.registry_gap) continue;
+    const n = updRegistryOrdinal(d.number);
+    if (n > 0 && n < gapNum && n > refNum) {
+      refNum = n;
+      refDate = String(d.doc_date || '').slice(0, 10);
+    }
+  }
+  const refDateRu = refDate
+    ? `${refDate.slice(8, 10)}.${refDate.slice(5, 7)}.${refDate.slice(0, 4)}`
+    : '';
+  if (refNum > 0) {
+    return `Номер не использовался: технический пропуск при пересоздании УПД №${refNum}${refDateRu ? ` от ${refDateRu}` : ''}. Первичный документ не формировался, контрагенту не передавался.`;
+  }
+  return 'Номер не использовался: технический пропуск. Первичный документ не формировался, контрагенту не передавался.';
+}
+
+/** Добавить в реестр строки пропущенных номеров (дыры в серии внутри min…max). */
+export function injectUpdRegistryGaps(docs: UpdRegistryDoc[]): UpdRegistryDoc[] {
+  const real = docs.filter((d) => !d.registry_gap);
+  if (!real.length) return docs;
+  const ordinals = real.map((d) => updRegistryOrdinal(d.number)).filter((n) => n > 0);
+  if (!ordinals.length) return docs;
+  const min = Math.min(...ordinals);
+  const max = Math.max(...ordinals);
+  const existing = new Set(ordinals);
+  const template = real[0];
+  const gaps: UpdRegistryDoc[] = [];
+  for (let n = min; n <= max; n++) {
+    if (existing.has(n)) continue;
+    const note = buildUpdRegistryGapNote(n, real);
+    gaps.push({
+      doc_id: `registry-gap:${template.organization_id}:${n}`,
+      number: String(n),
+      doc_date: inferUpdGapDocDate(n, real),
+      deal_id: '',
+      counterparty_name: note,
+      counterparty_inn: '',
+      amount: 0,
+      payment_label: '—',
+      organization_id: template.organization_id,
+      organization_short: template.organization_short,
+      organization_name: template.organization_name,
+      organization_inn: template.organization_inn,
+      company_name: template.company_name,
+      registry_gap: true,
+      registry_gap_note: note,
+    });
+  }
+  if (!gaps.length) return docs;
+  return sortUpdRegistryDocsByNumber([...real, ...gaps]);
+}
+
+function sortUpdRegistryDocsByNumber(docs: UpdRegistryDoc[]): UpdRegistryDoc[] {
+  return [...docs].sort((a, b) => {
+    const na = parseInt(String(a.number || '').replace(/\D/g, ''), 10) || 0;
+    const nb = parseInt(String(b.number || '').replace(/\D/g, ''), 10) || 0;
+    if (nb !== na) return nb - na;
+    return String(b.doc_date || '').localeCompare(String(a.doc_date || ''));
+  });
+}
+
+export function listUpdRegistryDocs(opts: {
+  q?: string;
+  companyId?: string;
+  companyIds?: string[];
+  limit?: number;
+}): { docs: UpdRegistryDoc[]; truncated: boolean } {
+  const limit = Math.min(10000, Math.max(1, opts.limit ?? 10000));
+  const { sqlWhere, params } = buildUpdRegistryWhere(opts);
+  const fromJoins = `FROM sales_docs s
+       LEFT JOIN organizations o ON o.id = s.organization_id
+       LEFT JOIN companies co ON co.id = o.company_id
+       LEFT JOIN crm_deals d ON d.id = s.deal_id`;
+  const total =
+    get<{ c: number }>(
+      `SELECT COUNT(*) AS c
+       ${fromJoins}
+       ${sqlWhere}`,
+      params
+    )?.c ?? 0;
+  const docs = all(
+    `SELECT s.id AS doc_id, s.number, s.doc_date, IFNULL(s.deal_id,'') AS deal_id,
+            IFNULL(s.counterparty_name,'') AS counterparty_name,
+            IFNULL(s.counterparty_inn,'') AS counterparty_inn,
+            IFNULL(NULLIF(s.total, 0), IFNULL(s.amount, 0)) AS amount,
+            ${DEAL_PAYMENT_LABEL_SQL} AS payment_label,
+            IFNULL(s.organization_id,'') AS organization_id,
+            IFNULL(co.name,'') AS company_name,
+            IFNULL(NULLIF(TRIM(o.short_name), ''), o.name) AS organization_short,
+            IFNULL(o.name,'') AS organization_name,
+            IFNULL(o.inn,'') AS organization_inn
+     ${fromJoins}
+     ${sqlWhere}
+     ORDER BY IFNULL(co.name,''), IFNULL(o.inn,''), IFNULL(o.name,''),
+              CAST(s.number AS INTEGER) DESC, datetime(s.doc_date) DESC
+     LIMIT ?`,
+    [...params, limit + 1]
+  ) as UpdRegistryDoc[];
+  const truncated = total > limit || docs.length > limit;
+  return { docs: sortUpdRegistryDocsByNumber(docs.slice(0, limit)), truncated };
+}
+
 /** Создать пакет: счёт + заказ-наряд + УПД (и опционально СФ). */
 export function createSalesDocPackFromDeal(input: {
   dealId: string;
@@ -725,13 +1448,14 @@ export function createSalesDocPackFromDeal(input: {
   vatRate?: number;
   buyerName?: string;
   buyerInn?: string;
+  buyerAddress?: string;
   createdBy?: string;
   organizationId?: string;
 }) {
   const deal = getDeal(input.dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
-  const types = input.types?.length
-    ? input.types
+  let types = input.types?.length
+    ? [...input.types]
     : (dealSalesDocPackTypes(deal) as SalesDocType[]);
   if (!types.length) throw new Error('Нет документов для этого типа заказа');
   const docs = [];
@@ -743,6 +1467,7 @@ export function createSalesDocPackFromDeal(input: {
         vatRate: input.vatRate,
         buyerName: input.buyerName,
         buyerInn: input.buyerInn,
+        buyerAddress: input.buyerAddress,
         createdBy: input.createdBy,
         organizationId: input.organizationId,
       })
@@ -803,7 +1528,7 @@ export function createUpdAndWriteOffFromDeal(input: {
       stock_doc_number: null,
       stock_note:
         skippedServices === items.length
-          ? 'УПД создан. В заказе только услуги — расходная/списание не нужны.'
+          ? 'УПД создан. В заказе только услуги — списание не нужно.'
           : 'УПД создан. Товаров для списания нет.',
       skipped_services: skippedServices,
     };
@@ -834,12 +1559,25 @@ export function createUpdAndWriteOffFromDeal(input: {
       String(fromPlan?.sourceWh || '').trim();
     if (!wh) continue;
     const list = byWh.get(wh) || [];
-    // Если на строке есть марки — одна строка расхода на эту позицию (qty = числу марок или qty)
-    if (serials.length) {
+    // bc:… — скан штрихкода без экземпляра; в расходную как qty без серийников
+    const realSerials = serials.filter((s) => !/^bc:/i.test(s));
+    const barcodePicks = serials.length - realSerials.length;
+    if (realSerials.length) {
       list.push({
         product_id: productId,
-        qty: serials.length,
-        serials,
+        qty: realSerials.length,
+        serials: realSerials,
+      });
+      if (barcodePicks > 0) {
+        const existing = list.find((r) => r.product_id === productId && !r.serials.length);
+        if (existing) existing.qty += barcodePicks;
+        else list.push({ product_id: productId, qty: barcodePicks, serials: [] });
+      }
+    } else if (barcodePicks > 0) {
+      list.push({
+        product_id: productId,
+        qty: barcodePicks,
+        serials: [],
       });
     } else {
       const existing = list.find((r) => r.product_id === productId && !r.serials.length);
@@ -887,7 +1625,7 @@ export function createUpdAndWriteOffFromDeal(input: {
     upd,
     stock_doc_id: stockDocId,
     stock_doc_number: stockDoc?.number || null,
-    stock_note: `Расходная ${stockDoc?.number || ''} проведена — списание со склада`,
+    stock_note: `Списание ${stockDoc?.number || ''} проведено`,
     skipped_services: skippedServices,
   };
 }
@@ -906,15 +1644,74 @@ export function getSalesDoc(
   const doc = get('SELECT * FROM sales_docs WHERE id = ?', [id]);
   if (!doc) return null;
   const lines = all(
-    `SELECT * FROM sales_doc_lines WHERE doc_id = ? ORDER BY line_no, name`,
+    `SELECT l.*,
+            IFNULL(p.code,'') AS product_code,
+            IFNULL(p.barcode,'') AS product_barcode,
+            IFNULL(p.array_sku,'') AS product_array_sku,
+            IFNULL(p.sku,'') AS product_sku
+     FROM sales_doc_lines l
+     LEFT JOIN products p ON p.id = NULLIF(TRIM(IFNULL(l.product_guid,'')), '')
+     WHERE l.doc_id = ?
+     ORDER BY l.line_no, l.name`,
     [id]
-  );
+  ).map((raw) => {
+    const row = raw as Row;
+    const lineSku = String(row.sku || '').trim();
+    const art = catalogArticleOf({
+      sku: String(row.product_sku || lineSku || ''),
+      code: String(row.product_code || ''),
+      barcode: String(row.product_barcode || ''),
+      array_sku: String(row.product_array_sku || ''),
+    });
+    // В строке продажи sku часто уже каталожный (из заказа); не затираем его НФ-кодом.
+    const article =
+      lineSku && !/^(00)?НФ-|УСЛ-/i.test(lineSku) ? lineSku : art.article || lineSku;
+    const code = art.code || String(row.product_code || '').trim();
+    const {
+      product_code: _pc,
+      product_barcode: _pb,
+      product_array_sku: _pa,
+      product_sku: _ps,
+      ...rest
+    } = row as Row & Record<string, unknown>;
+    return {
+      ...rest,
+      article,
+      code: code || undefined,
+      name: salesDocLineDisplayName({
+        ...(rest as Record<string, unknown>),
+        name: String(row.name || ''),
+        product_guid: String(row.product_guid || ''),
+      }),
+    };
+  });
   const orgId = String((doc as { organization_id?: string }).organization_id || '');
   const orgRow = (orgId ? getOrganization(orgId) : undefined) || getDefaultOrganization();
   const org = orgToProfile(orgRow);
   const companyId = String(orgRow?.company_id || '');
   const companyName = companyId ? String(getCompany(companyId)?.name || '').trim() : '';
   const dealId = String((doc as { deal_id?: string }).deal_id || '').trim();
+  let sts_photos = dealId ? stsMediaInfo(dealId) : undefined;
+  // предпочитаем СТС выбранного авто гаража (не общие фото сделки)
+  if (dealId) {
+    const plateN = String((doc as { car_plate?: string }).car_plate || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '');
+    if (plateN) {
+      const match = garageForDeal(dealId).vehicles.find(
+        (v) =>
+          String(v.car_plate || '')
+            .trim()
+            .toUpperCase()
+            .replace(/\s+/g, '') === plateN
+      );
+      if (match) {
+        const vp = stsMediaInfoForVehicle(match.id);
+        if (vp.front || vp.back) sts_photos = vp;
+      }
+    }
+  }
   return {
     ...doc,
     lines,
@@ -923,8 +1720,38 @@ export function getSalesDoc(
     company_name: companyName,
     organization_name: org.name,
     organization_short: org.short_name || org.name,
-    sts_photos: dealId ? stsMediaInfo(dealId) : undefined,
+    sts_photos,
   };
+}
+
+/**
+ * НДС для счёта / УПД / СФ: явный input → ответ по юр/ИП на заказе → ставка организации.
+ * buyer_vat: '' | no | yes; buyer_vat_rate — % при yes.
+ */
+export function resolveVatRateForDeal(
+  deal: Record<string, unknown> | null | undefined,
+  orgVatRate: number,
+  explicit?: number
+): number {
+  if (explicit != null && Number.isFinite(Number(explicit))) {
+    return Math.max(0, Number(explicit));
+  }
+  const kind = String(deal?.buyer_kind || '').toLowerCase();
+  const isLegalish =
+    kind === 'legal' ||
+    kind === 'ip' ||
+    Number(deal?.is_legal_entity) === 1;
+  if (isLegalish) {
+    const mode = String(deal?.buyer_vat || '')
+      .trim()
+      .toLowerCase();
+    if (mode === 'no' || mode === 'none' || mode === '0') return 0;
+    if (mode === 'yes' || mode === '1') {
+      const r = Number(deal?.buyer_vat_rate);
+      if (Number.isFinite(r) && r >= 0) return r;
+    }
+  }
+  return Number(orgVatRate) || 0;
 }
 
 export function createSalesDocFromDeal(input: {
@@ -933,11 +1760,12 @@ export function createSalesDocFromDeal(input: {
   vatRate?: number;
   buyerName?: string;
   buyerInn?: string;
+  buyerAddress?: string;
   buyerPhone?: string;
   comment?: string;
   createdBy?: string;
   organizationId?: string;
-}) {
+}): Row & { lines: Row[]; org: OrgProfile; regenerated?: boolean } {
   const deal = getDeal(input.dealId) as
     | (Row & { items: Array<Record<string, unknown>>; documents: unknown[] })
     | null;
@@ -948,23 +1776,43 @@ export function createSalesDocFromDeal(input: {
   }
 
   const dealIdStr = String(deal.id || input.dealId);
-  // После первого счёта юрлицо заказа фиксируется
-  const lockedOrg = dealInvoiceOrganizationId(dealIdStr);
-  const organizationId = resolveOrganizationId(lockedOrg || input.organizationId);
+  // После первого счёта юрлицо заказа фиксируется; иначе — контур из филиала Amo.
+  const organizationId = organizationIdForDealRecord(deal as Record<string, unknown>, input.organizationId);
   const org = getOrgProfile(organizationId);
-  const vatRate = input.vatRate ?? (Number(org.vat_rate) || 5);
-  const id = newGuid();
-  const number = nextSalesNumber(input.docType, dealIdStr);
+  const vatRate = resolveVatRateForDeal(
+    deal as Record<string, unknown>,
+    Number(org.vat_rate) || 0,
+    input.vatRate
+  );
+  let id = newGuid();
+  let number = '';
+  let regenerated = false;
+  if (SINGLE_DEAL_DOC_TYPES.includes(input.docType)) {
+    const existing = latestDealSalesDoc(dealIdStr, input.docType);
+    if (existing) {
+      id = existing.id;
+      number = String(existing.number || '');
+      regenerated = true;
+      if (input.docType === 'upd' && organizationId) {
+        number = fixOrdinalUpdNumberIfLegacy(number, organizationId);
+      }
+    }
+  }
+  if (!number) {
+    number = nextSalesNumber(input.docType, dealIdStr, organizationId);
+  }
   const docDate = new Date().toISOString().slice(0, 10);
+  const buyerResolved = resolveContractBuyerFromDeal(deal as Row, {
+    name: (input.buyerName || '').trim(),
+    inn: (input.buyerInn || '').trim(),
+    address: (input.buyerAddress || '').trim(),
+    phone: (input.buyerPhone || '').trim(),
+  });
   const companyName = String(deal.company_name || '').trim();
   const contactName = String(deal.buyer_name || '').trim();
-  const isLegalDeal =
-    Number(deal.is_legal_entity) === 1 ||
-    String(deal.buyer_kind || '').toLowerCase() === 'legal' ||
-    Boolean(companyName) ||
-    String(deal.buyer_inn || '').replace(/\D/g, '').length === 10;
-  // Юрлицо: компания; физик: ФИО контакта (не название сделки с городом/артикулом)
+  const isLegalDeal = dealIsLegalEntity(deal as Record<string, unknown>);
   const buyerName =
+    buyerResolved.name ||
     (input.buyerName || '').trim() ||
     (isLegalDeal ? companyName || contactName : contactName || companyName) ||
     String(deal.name || '')
@@ -972,9 +1820,23 @@ export function createSalesDocFromDeal(input: {
       .trim() ||
     `Покупатель (заказ ${dealIdStr})`;
   const buyerInn =
-    (input.buyerInn || '').trim() || String(deal.buyer_inn || '').trim();
+    buyerResolved.inn ||
+    (input.buyerInn || '').trim() ||
+    String(deal.buyer_inn || '').trim();
   const buyerPhone =
-    (input.buyerPhone || '').trim() || String(deal.buyer_phone || '').trim();
+    buyerResolved.phone ||
+    (input.buyerPhone || '').trim() ||
+    String(deal.buyer_phone || '').trim();
+  const buyerEmail = buyerResolved.email || String(deal.buyer_email || '').trim();
+  const buyerPassport = String(deal.buyer_passport || '').trim();
+  const buyerAddress = buyerResolved.address || String(deal.buyer_address || '').trim();
+  const buyerKpp = buyerResolved.kpp || String(deal.buyer_kpp || '').replace(/\D/g, '');
+  const buyerOgrn = buyerResolved.ogrn || String(deal.buyer_ogrn || '').replace(/\D/g, '');
+  const buyerDirector = buyerResolved.director || String(deal.buyer_director || '').trim();
+  const buyerBank = buyerResolved.bank || String(deal.buyer_bank || '').trim();
+  const buyerBik = buyerResolved.bik || String(deal.buyer_bik || '').replace(/\D/g, '');
+  const buyerRs = buyerResolved.rs || String(deal.buyer_rs || '').replace(/\D/g, '');
+  const buyerKs = buyerResolved.ks || String(deal.buyer_ks || '').replace(/\D/g, '');
 
   if (
     (input.docType === 'upd' || input.docType === 'sf') &&
@@ -1004,21 +1866,9 @@ export function createSalesDocFromDeal(input: {
     const price = Number(it.price) || 0;
     const lineTotal = Number(it.amount) || qty * price;
     const split = splitVat(lineTotal, vatRate);
-    sumTotal += split.total;
     const sku = String(it.sku || it.code || '');
     const productGuid = String(it.product_guid || '');
-    const name1c = String(it.name_1c || it.product_name_1c || it.name || 'Товар');
-    // УПД / счёт / ЗН — фрактал как в заказе покупателя (виджет)
-    const disp = customerOrderLineDisplayName({
-      product_guid: productGuid,
-      name: name1c,
-      product_name: name1c,
-      mark: String(it.mark || ''),
-      model: String(it.model || ''),
-      generation: String(it.generation || ''),
-      category: String(it.category_name || ''),
-    });
-    const name = String(it.display_name || disp.display_name || name1c);
+    const name = salesDocLineDisplayName(it);
     lines.push({
       id: newGuid(),
       product_guid: productGuid,
@@ -1030,12 +1880,13 @@ export function createSalesDocFromDeal(input: {
       amount: split.amount,
       vat_amount: split.vat,
       line_no: idx + 1,
-      line_kind: guessLineKind(sku, name1c, productGuid),
+      line_kind: guessLineKind(sku, name, productGuid),
     });
   });
 
+  const mergedLines = mergeSalesDocLines(lines);
+  sumTotal = mergedLines.reduce((s, l) => s + l.amount + l.vat_amount, 0);
   const head = splitVat(sumTotal, vatRate);
-  const buyerAddress = buyerPhone ? `тел.: ${buyerPhone}` : '';
 
   const carPlate = String(deal.car_plate || '').trim().toUpperCase();
   const carVin = String(deal.car_vin || '').trim().toUpperCase();
@@ -1054,53 +1905,95 @@ export function createSalesDocFromDeal(input: {
   const carStsNumber = String(deal.car_sts_number || '').trim();
 
   // ЗН можно создать без гос. номера — сначала заполняют авто на карточке, потом PDF.
+  const workorderTemplateId =
+    input.docType === 'workorder'
+      ? suggestStoWorkorderTemplateId(deal as Record<string, unknown>)
+      : '';
 
   run('BEGIN');
   try {
-    run(
-      `INSERT INTO sales_docs (
-         id, doc_type, number, doc_date, deal_id,
-         counterparty_name, counterparty_inn, buyer_address,
-         amount, vat_rate, vat_amount, total, status, comment, created_by, organization_id,
-         car_plate, car_vin, car_year, car_mileage,
-         car_brand, car_model, car_color, car_category, car_pts,
-         car_owner, car_owner_street, car_owner_house, car_owner_flat,
-         car_sts_date, car_sts_number
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        input.docType,
-        number,
-        docDate,
-        dealIdStr,
-        buyerName,
-        buyerInn,
-        buyerAddress,
-        head.amount,
-        vatRate,
-        head.vat,
-        head.total,
-        (input.comment || '').trim() || `Из заказа покупателя №${dealIdStr}`,
-        input.createdBy || '',
-        organizationId,
-        carPlate,
-        carVin,
-        carYear,
-        carMileage,
-        carBrand,
-        carModel,
-        carColor,
-        carCategory,
-        carPts,
-        carOwner,
-        carOwnerStreet,
-        carOwnerHouse,
-        carOwnerFlat,
-        carStsDate,
-        carStsNumber,
-      ]
-    );
-    for (const line of lines) {
+    const comment = (input.comment || '').trim() || `Из заказа покупателя №${dealIdStr}`;
+    const headParams = [
+      number,
+      docDate,
+      dealIdStr,
+      buyerName,
+      buyerInn,
+      buyerAddress,
+      buyerPhone,
+      buyerEmail,
+      buyerPassport,
+      buyerKpp,
+      buyerOgrn,
+      buyerDirector,
+      buyerBank,
+      buyerBik,
+      buyerRs,
+      buyerKs,
+      head.amount,
+      vatRate,
+      head.vat,
+      head.total,
+      comment,
+      input.createdBy || '',
+      organizationId,
+      carPlate,
+      carVin,
+      carYear,
+      carMileage,
+      carBrand,
+      carModel,
+      carColor,
+      carCategory,
+      carPts,
+      carOwner,
+      carOwnerStreet,
+      carOwnerHouse,
+      carOwnerFlat,
+      carStsDate,
+      carStsNumber,
+      workorderTemplateId,
+    ];
+    if (regenerated) {
+      run(
+        `UPDATE sales_docs SET
+           number = ?, doc_date = ?, deal_id = ?,
+           counterparty_name = ?, counterparty_inn = ?, buyer_address = ?,
+           buyer_phone = ?, buyer_email = ?, buyer_passport = ?,
+           buyer_kpp = ?, buyer_ogrn = ?, buyer_director = ?,
+           buyer_bank = ?, buyer_bik = ?, buyer_rs = ?, buyer_ks = ?,
+           amount = ?, vat_rate = ?, vat_amount = ?, total = ?, status = 'issued', comment = ?,
+           created_by = ?, organization_id = ?,
+           car_plate = ?, car_vin = ?, car_year = ?, car_mileage = ?,
+           car_brand = ?, car_model = ?, car_color = ?, car_category = ?, car_pts = ?,
+           car_owner = ?, car_owner_street = ?, car_owner_house = ?, car_owner_flat = ?,
+           car_sts_date = ?, car_sts_number = ?, template_id = ?
+         WHERE id = ?`,
+        [...headParams, id]
+      );
+      run(`DELETE FROM sales_doc_lines WHERE doc_id = ?`, [id]);
+    } else {
+      run(
+        `INSERT INTO sales_docs (
+           id, doc_type, number, doc_date, deal_id,
+           counterparty_name, counterparty_inn, buyer_address,
+           buyer_phone, buyer_email, buyer_passport,
+           buyer_kpp, buyer_ogrn, buyer_director,
+           buyer_bank, buyer_bik, buyer_rs, buyer_ks,
+           amount, vat_rate, vat_amount, total, status, comment, created_by, organization_id,
+           car_plate, car_vin, car_year, car_mileage,
+           car_brand, car_model, car_color, car_category, car_pts,
+           car_owner, car_owner_street, car_owner_house, car_owner_flat,
+           car_sts_date, car_sts_number, template_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          input.docType,
+          ...headParams,
+        ]
+      );
+    }
+    for (const line of mergedLines) {
       run(
         `INSERT INTO sales_doc_lines (
            id, doc_id, line_no, product_guid, sku, name, unit, qty, price, amount, vat_amount, line_kind
@@ -1131,7 +2024,26 @@ export function createSalesDocFromDeal(input: {
     throw e;
   }
 
-  return getSalesDoc(id);
+  const saved = getSalesDoc(id);
+  if (!saved) throw new Error('Документ не найден после сохранения');
+  if (SINGLE_DEAL_DOC_TYPES.includes(input.docType)) {
+    purgeDuplicateDealSalesDocs(dealIdStr, input.docType, id);
+  }
+  return Object.assign(saved, { regenerated });
+}
+
+function purgeDuplicateDealSalesDocs(dealId: string, docType: SalesDocType, keepId: string): void {
+  const dupes = all<{ id: string }>(
+    `SELECT id FROM sales_docs WHERE deal_id = ? AND doc_type = ? AND id != ?`,
+    [dealId, docType, keepId]
+  );
+  if (!dupes.length) return;
+  for (const row of dupes) {
+    const did = String(row.id || '').trim();
+    if (!did) continue;
+    run(`DELETE FROM sales_doc_lines WHERE doc_id = ?`, [did]);
+    run(`DELETE FROM sales_docs WHERE id = ?`, [did]);
+  }
 }
 
 function escHtml(s: unknown): string {
@@ -1142,7 +2054,7 @@ function escHtml(s: unknown): string {
     .replace(/"/g, '&quot;');
 }
 
-function printShell(title: string, body: string): string {
+function printShell(title: string, body: string, orgInn?: string): string {
   return `<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -1160,7 +2072,7 @@ function printShell(title: string, body: string): string {
     table.grid th { font-weight: 700; text-align: center; background: #f7f7f7; }
     .c { text-align: center; }
     .r { text-align: right; white-space: nowrap; }
-    .l { text-align: left; }
+    .l { text-align: left; word-wrap: break-word; overflow-wrap: break-word; }
     .bank { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
     .bank td { border: 1px solid #000; padding: 4px 6px; vertical-align: top; }
     .party { margin: 4px 0; line-height: 1.35; }
@@ -1179,9 +2091,9 @@ function printShell(title: string, body: string): string {
     .doc-logo img { height: 28px; width: auto; max-width: 220px; display: block; }
     .org-stamp { display: block; margin-top: 4px; opacity: 0.92; }
     .org-sign { display: block; margin: 2px 0; opacity: 0.95; }
-    .sign-with-stamp { position: relative; min-height: 100px; }
-    .sign-with-stamp .org-stamp { position: absolute; left: 36px; top: -6px; pointer-events: none; }
-    .sign-with-stamp .org-sign { position: absolute; left: 8px; top: 8px; pointer-events: none; }
+    .sign-with-stamp { position: relative; min-height: 42mm; }
+    .sign-with-stamp .org-sign { position: absolute; left: 2mm; top: 6mm; height: 12mm; width: auto; max-width: 50mm; pointer-events: none; }
+    .sign-with-stamp .org-stamp { position: absolute; left: 14mm; top: 10mm; width: 38mm; height: 38mm; pointer-events: none; opacity: 0.9; }
     .pay-note { margin: 8px 0; font-size: 10px; line-height: 1.4; color: #333; }
     .pay-qr { display: flex; gap: 14px; align-items: flex-start; margin: 10px 0 4px; }
     .pay-qr img { width: 120px; height: 120px; border: 1px solid #ccc; }
@@ -1191,7 +2103,7 @@ function printShell(title: string, body: string): string {
 </head>
 <body>
   <div class="toolbar"><button type="button" onclick="window.print()">Печать / сохранить PDF</button></div>
-  <div class="doc-logo"><img src="/logo-pnevmopodveska.svg" alt="" height="28" /></div>
+  ${orgLogoHtml({ height: 28, orgInn })}
   ${body}
 </body>
 </html>`;
@@ -1301,8 +2213,8 @@ function renderInvoiceHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string
       Предприниматель
       <div class="line"></div>
       <div class="muted">подпись</div>
-      ${orgSignHtml(org.inn, { height: 44 })}
-      ${orgStampHtml(org.inn, { size: 92 })}
+      ${orgSignHtml(org.inn, { heightMm: 12 })}
+      ${orgStampHtml(org.inn, { sizeMm: 38 })}
     </div>
     <div>
       <div style="margin-top:22px">${escHtml(org.short_name || org.director)}</div>
@@ -1310,7 +2222,7 @@ function renderInvoiceHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string
       <div style="margin-top:8px">М.П.</div>
     </div>
   </div>`;
-  return printShell(`Счет на оплату № ${doc.number}`, body);
+  return printShell(`Счет на оплату № ${doc.number}`, body, org.inn);
 }
 
 function renderUpdHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
@@ -1361,7 +2273,7 @@ function renderUpdHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
   <div class="party"><b>Адрес:</b> ${escHtml(org.address)} (2а)</div>
   <div class="party"><b>ИНН/КПП продавца:</b> ${escHtml(org.inn)}${org.kpp ? ` / ${escHtml(org.kpp)}` : ''} (2б)</div>
   <div class="party"><b>Грузоотправитель и его адрес:</b> он же (3)</div>
-  <div class="party"><b>Грузополучатель и его адрес:</b> ${escHtml(doc.counterparty_name || '—')} (4)</div>
+  <div class="party"><b>Грузополучатель и его адрес:</b> ${escHtml(salesDocConsigneeLine(doc))} (4)</div>
   <div class="party"><b>Покупатель:</b> ${escHtml(doc.counterparty_name || '—')} (6)
     ${doc.counterparty_inn ? `<br/><b>ИНН/КПП покупателя:</b> ${escHtml(doc.counterparty_inn)} (6б)` : ''}
   </div>
@@ -1409,9 +2321,10 @@ function renderUpdHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
   <div class="party"><b>Основание передачи:</b> Заказ покупателя № ${escHtml(doc.deal_id)}</div>
   <div class="party">Дата отгрузки, передачи (сдачи) « ${escHtml(formatDocDateShort(String(doc.doc_date)).slice(0, 2))} » ${escHtml(formatDocDateRu(String(doc.doc_date)).replace(/^\d+\s/, ''))} [11]</div>
   <div class="sign">
-    <div>
+    <div class="sign-with-stamp">
       Товар (груз) передал / услуги сдал
       <div class="line"></div>
+      ${orgSignHtml(org.inn, { height: 40 })}
       ${escHtml(org.short_name || org.director)}
     </div>
     <div>
@@ -1422,21 +2335,79 @@ function renderUpdHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
   </div>
   <div class="sign">
     <div class="sign-with-stamp">М.П.<br/><span class="muted">${escHtml(org.name)}, ИНН ${escHtml(org.inn)}</span>
-      ${orgStampHtml(org.inn, { size: 88 })}
+      ${orgStampHtml(org.inn, { sizeMm: 38 })}
     </div>
     <div>М.П.<br/><span class="muted">${escHtml(doc.counterparty_name || '')}</span></div>
   </div>`;
-  return printShell(`УПД № ${doc.number}`, body);
+  return printShell(`УПД № ${doc.number}`, body, org.inn);
 }
 
-function renderWorkorderHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
+function renderWorkorderHtml(
+  doc: Row & { lines: Row[]; org: OrgProfile },
+  opts?: { staffName?: string }
+): string {
+  const templateId = String((doc as { template_id?: string }).template_id || '').trim();
+  if (isStoWorkorderTemplateId(templateId)) {
+    const allLines = (doc.lines || []) as Array<Record<string, unknown>>;
+    const { workLines, partLines } = splitStoWorkPartLines(
+      allLines.map((l) => ({
+        ...l,
+        item_kind: String(l.line_kind) === 'work' ? 'service' : 'product',
+        line_kind: l.line_kind,
+      }))
+    );
+    const dealId = String((doc as { deal_id?: string }).deal_id || '').trim();
+    const dealRow = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+    const issuer =
+      String(opts?.staffName || '').trim() ||
+      String((doc as { created_by?: string }).created_by || '').trim();
+    const html = renderStoTemplateHtml(templateId, {
+      number: String(doc.number || ''),
+      docDate: String(doc.doc_date || new Date().toISOString().slice(0, 10)),
+      org: doc.org,
+      buyerName: String(doc.counterparty_name || ''),
+      buyerInn: String(doc.counterparty_inn || ''),
+      buyerAddress: String(doc.buyer_address || ''),
+      buyerPhone: String(doc.buyer_phone || ''),
+      buyerEmail: String(doc.buyer_email || ''),
+      buyerPassport: String((doc as { buyer_passport?: string }).buyer_passport || ''),
+      buyerKpp: String(doc.buyer_kpp || ''),
+      buyerOgrn: String(doc.buyer_ogrn || ''),
+      buyerDirector: String(doc.buyer_director || ''),
+      carBrand: String((doc as { car_brand?: string }).car_brand || ''),
+      carModel: String((doc as { car_model?: string }).car_model || ''),
+      carPlate: String((doc as { car_plate?: string }).car_plate || ''),
+      carVin: String((doc as { car_vin?: string }).car_vin || ''),
+      carYear: String((doc as { car_year?: string }).car_year || ''),
+      carColor: String((doc as { car_color?: string }).car_color || ''),
+      carMileage: String((doc as { car_mileage?: string }).car_mileage || ''),
+      carStsNumber: String((doc as { car_sts_number?: string }).car_sts_number || ''),
+      intakeAt: dealId ? dealCarPhotosFirstAt(dealId) || undefined : undefined,
+      city:
+        String(doc.org?.inn || '').replace(/\D/g, '') === '231215603728' ? 'Москва' : 'Краснодар',
+      workLines,
+      partLines,
+      ...paymentFieldsFromDeal(dealRow),
+      ...contactFieldsFromDeal(dealRow, {
+        docDate: String(doc.doc_date || new Date().toISOString().slice(0, 10)),
+      }),
+      ...staffFieldsFromDeal(dealRow, {
+        staffName: issuer,
+        actorOnly: true,
+      }),
+      ...handoverFieldsFromDeal(dealRow, {
+        workorderId: String(doc.id || ''),
+      }),
+    });
+    if (html) return html;
+  }
   const org = doc.org;
   const allLines = doc.lines || [];
   const works = allLines.filter((l) => String(l.line_kind) === 'work');
+  // Только товары. Нельзя подставлять allLines в «Списание» — услуга туда не входит.
   const goods = allLines.filter((l) => String(l.line_kind) !== 'work');
-  // если классификация не сработала — всё в товары
-  const workLines = works.length ? works : [];
-  const goodsLines = goods.length ? goods : allLines;
+  const workLines = works.length ? works : goods.length ? [] : allLines;
+  const goodsLines = works.length || goods.length ? goods : [];
   const vatRate = Number(doc.vat_rate) || 0;
   const dateRu = formatDocDateRu(String(doc.doc_date));
   const dateShort = formatDocDateShort(String(doc.doc_date));
@@ -1519,6 +2490,9 @@ function renderWorkorderHtml(doc: Row & { lines: Row[]; org: OrgProfile }): stri
       : ''
   }
 
+  ${
+    goodsLines.length
+      ? `
   <h2>${escHtml(formatWorkorderOutHeading(doc, dateShort))}</h2>
   <table class="grid">
     <thead>
@@ -1526,14 +2500,16 @@ function renderWorkorderHtml(doc: Row & { lines: Row[]; org: OrgProfile }): stri
         <th>№</th><th>Наименование, характеристика, артикул товаров</th><th>Кол-во</th><th>Ед.изм.</th><th>Цена</th><th>Сумма</th>
       </tr>
     </thead>
-    <tbody>${goodsRows || '<tr><td colspan="6">Нет товаров</td></tr>'}</tbody>
+    <tbody>${goodsRows}</tbody>
   </table>
   <div class="totals">
-    Итого: <b>${formatRuMoney(goodsTotal)}</b><br/>
+    Итого товаров: <b>${formatRuMoney(goodsTotal)}</b><br/>
     В том числе НДС${vatRate ? ` ${vatRate}%` : ''}: <b>${formatRuMoney(goodsVat)}</b>
   </div>
   <div>Всего деталей ${goodsLines.length}, на сумму ${formatRuMoney(goodsTotal)} RUB</div>
-  <div class="words">${escHtml(amountInWordsRu(goodsTotal))}</div>
+  <div class="words">${escHtml(amountInWordsRu(goodsTotal))}</div>`
+      : ''
+  }
 
   <div class="totals" style="margin-top:12px;font-size:12px">
     <b>Итого по заказ-наряду : ${formatRuMoney(Number(doc.total) || 0)}</b><br/>
@@ -1541,22 +2517,13 @@ function renderWorkorderHtml(doc: Row & { lines: Row[]; org: OrgProfile }): stri
   </div>
   <div class="words">Всего по заказ-наряду: ${escHtml(amountInWordsRu(Number(doc.total) || 0))} в т.ч. НДС ${formatRuMoney(Number(doc.vat_amount) || 0)} RUB</div>
 
-  <div class="party" style="margin-top:14px">
+  <div class="party" style="margin-top:14px;position:relative;min-height:14mm">
     Мастер _____________________ /${escHtml(org.master_title || 'Мастер-приемщик')}/
+    ${orgSignHtml(org.inn, { heightMm: 12 })}
   </div>
 
   <div class="warranty">
-    <b>Гарантийные обязательства сторон:</b>
-    <ol>
-      <li>Гарантийный ремонт проводится при предъявлении гарантийного талона MRAER</li>
-      <li>Доставка оборудования, подлежащего гарантийному ремонту, в сервисную службу осуществляется клиентом самостоятельно и за свой счет, если иное не оговорено</li>
-      <li>Гарантийные обязательства не распространяются на материалы и детали, считающиеся расходуемыми в процессе эксплуатации.</li>
-      <li>Исполнитель при наступлении гарантийного случая в срок не более 5-ти рабочих дней устраняет неисправности.</li>
-      <li>Гарантийный срок на пневмоэлемент составляет 24 месяца, амортизатор 12 месяцев.</li>
-      <li>Гарантийный срок на компрессор составляет 12 месяцев.</li>
-      <li>Гарантийный срок на рулевую рейку составляет 12 месяцев.</li>
-      <li>Гарантийный срок на электрическую рулевую рейку составляет 6 месяцев. Гарантия распространяется исключительно на проделанные работы.</li>
-    </ol>
+    ${warrantyObligationsHtml(escHtml, org.inn)}
     <b>Условия прерывания гарантийных обязательств:</b>
     <ol>
       <li>Несоответствие серийного номера предъявляемого на гарантийное обслуживание оборудования серийному номеру, указанному в товарном счете или других письменных соглашениях.</li>
@@ -1571,16 +2538,29 @@ function renderWorkorderHtml(doc: Row & { lines: Row[]; org: OrgProfile }): stri
     </ol>
   </div>
   <div class="sign">
-    <div>
+    <div class="sign-with-stamp">
       Принят: ${escHtml(dateShort)}<br/>
-      Заказчик ______________________ /${escHtml(doc.counterparty_name || '')}/
+      Исполнитель ______________________ /${escHtml(org.short_name || org.director || '')}/
+      ${orgSignHtml(org.inn, { heightMm: 12 })}
+      ${orgStampHtml(org.inn, { sizeMm: 38 })}
+      <div class="muted" style="margin-top:4px">М.П. (при наличии)</div>
     </div>
     <div>
       Дата: ${escHtml(dateShort)} г.<br/>
+      Заказчик ______________________ /${escHtml(doc.counterparty_name || '')}/<br/>
       Заказ-наряд № ${escHtml(doc.number)} от ${escHtml(dateShort)} г.
+      ${
+        isStoWorkorderTemplateId(String((doc as { template_id?: string }).template_id || ''))
+          ? `<div class="muted" style="margin-top:8px">Форма: ${
+              String((doc as { template_id?: string }).template_id) === STO_WORKORDER_LEGAL
+                ? 'заказ-наряд для юрлица / ИП'
+                : 'заказ-наряд для физлица'
+            }. Полный бланк — Документы → Шаблоны СТО.</div>`
+          : ''
+      }
     </div>
   </div>`;
-  return printShell(`Заказ-наряд № ${doc.number}`, body);
+  return printShell(`Заказ-наряд № ${doc.number}`, body, org.inn);
 }
 
 function renderSfHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
@@ -1672,20 +2652,35 @@ function renderSfHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
     <div>Главный бухгалтер<br/><div class="line"></div>${escHtml(org.accountant || org.director || org.short_name)}</div>
     <div class="sign-with-stamp">ИП / уполномоченное лицо<br/><div class="line"></div>${escHtml(org.short_name || org.director)}
       ${org.ogrnip ? `<br/><span class="muted">ОГРНИП ${escHtml(org.ogrnip)}</span>` : ''}
-      ${orgStampHtml(org.inn, { size: 88 })}
+      ${orgStampHtml(org.inn, { sizeMm: 38 })}
     </div>
   </div>`;
-  return printShell(`Счёт-фактура № ${doc.number}`, body);
+  return printShell(`Счёт-фактура № ${doc.number}`, body, org.inn);
 }
 
 /** HTML-бланк для печати / «Сохранить как PDF». */
-export function renderSalesDocPrintHtml(id: string): string | null {
-  const doc = getSalesDoc(id);
+export function renderSalesDocPrintHtml(
+  id: string,
+  opts?: { staffName?: string }
+): string | null {
+  const typePeek = get<{ doc_type?: string }>(
+    `SELECT doc_type FROM sales_docs WHERE id = ?`,
+    [id]
+  );
+  if (String(typePeek?.doc_type || '') === 'workorder') {
+    ensureWorkorderTemplateId(id);
+  }
+  let doc = getSalesDoc(id);
   if (!doc) return null;
   const type = String(doc.doc_type) as SalesDocType;
+  if (type === 'contract') {
+    doc = fillContractBuyerFromDeal(id) || doc;
+  } else if (['invoice', 'upd', 'sf'].includes(type)) {
+    doc = fillSalesDocBuyerFromDeal(id) || doc;
+  }
   if (type === 'contract') return renderContractDocHtml(doc);
   if (type === 'invoice') return renderInvoiceHtml(doc);
-  if (type === 'workorder') return renderWorkorderHtml(doc);
+  if (type === 'workorder') return renderWorkorderHtml(doc, opts);
   if (type === 'sf') return renderSfHtml(doc);
   return renderUpdHtml(doc);
 }
@@ -1700,26 +2695,73 @@ function contractBuyerFromDoc(doc: Row): ContractBuyer {
       : addrRaw.toLowerCase().startsWith('тел')
         ? ''
         : addrRaw;
+  const dealId = String(doc.deal_id || '').trim();
+  const deal = dealId ? (getDeal(dealId) as Row | null) : null;
+  const innFromDoc = String(doc.counterparty_inn || '').replace(/\D/g, '');
+  const cp = findCounterpartyForDeal(deal) || findCounterpartyByInn(innFromDoc);
+  const inn = innFromDoc || String(cp?.inn || '').replace(/\D/g, '');
+  let partyKind = String((cp as { party_kind?: string } | null)?.party_kind || '').toLowerCase();
+  if (!partyKind && inn.length === 12) partyKind = 'ip';
+  if (!partyKind && inn.length === 10) partyKind = 'legal';
+  const name = String(doc.counterparty_name || cp?.name || cp?.name_full || '').trim();
+  let director = String(doc.buyer_director || cp?.director || '').trim();
+  if (partyKind === 'ip') {
+    director = '';
+  }
   return {
-    name: String(doc.counterparty_name || ''),
-    inn: String(doc.counterparty_inn || ''),
-    kpp: String(doc.buyer_kpp || ''),
-    ogrn: String(doc.buyer_ogrn || ''),
-    address,
-    phone: phoneStored || phoneFromAddr || undefined,
-    email: String(doc.buyer_email || '') || undefined,
-    director: String(doc.buyer_director || '') || undefined,
-    bank: String(doc.buyer_bank || '') || undefined,
-    bik: String(doc.buyer_bik || '') || undefined,
-    rs: String(doc.buyer_rs || '') || undefined,
-    ks: String(doc.buyer_ks || '') || undefined,
+    name,
+    inn,
+    kpp: String(doc.buyer_kpp || cp?.kpp || ''),
+    ogrn: String(doc.buyer_ogrn || cp?.ogrn || ''),
+    address: address || String(cp?.address || '').trim(),
+    phone: phoneStored || phoneFromAddr || String(cp?.phone || '').trim() || undefined,
+    email: String(doc.buyer_email || cp?.email || '') || undefined,
+    director: director || undefined,
+    sign_basis: String(doc.buyer_passport || cp?.sign_basis || '').trim() || undefined,
+    party_kind: partyKind || undefined,
+    bank: String(doc.buyer_bank || cp?.bank || '') || undefined,
+    bik: String(doc.buyer_bik || cp?.bik || '') || undefined,
+    rs: String(doc.buyer_rs || cp?.rs || '') || undefined,
+    ks: String(doc.buyer_ks || cp?.ks || '') || undefined,
   };
 }
 
 function renderContractDocHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
+  const templateId = String((doc as { template_id?: string }).template_id || '').trim() || CONTRACT_TEMPLATE_ID;
+  const number = String(doc.number || '');
+  const docDate = String(doc.doc_date || new Date().toISOString().slice(0, 10));
+  if (isStoContractTemplateId(templateId)) {
+    const buyer = contractBuyerFromDoc(doc);
+    const html = renderStoTemplateHtml(templateId, {
+      number,
+      docDate,
+      org: doc.org,
+      buyerName: buyer.name,
+      buyerInn: buyer.inn,
+      buyerAddress: buyer.address,
+      buyerPhone: buyer.phone,
+      buyerEmail: buyer.email,
+      buyerKpp: buyer.kpp,
+      buyerOgrn: buyer.ogrn,
+      buyerDirector: buyer.director,
+      buyerBank: buyer.bank,
+      buyerBik: buyer.bik,
+      buyerRs: buyer.rs,
+      buyerKs: buyer.ks,
+      carBrand: String((doc as { car_brand?: string }).car_brand || ''),
+      carModel: String((doc as { car_model?: string }).car_model || ''),
+      carPlate: String((doc as { car_plate?: string }).car_plate || ''),
+      carVin: String((doc as { car_vin?: string }).car_vin || ''),
+      carYear: String((doc as { car_year?: string }).car_year || ''),
+      carColor: String((doc as { car_color?: string }).car_color || ''),
+      carMileage: String((doc as { car_mileage?: string }).car_mileage || ''),
+      city: templateId === 'sto-contract-legal-msk' ? 'Москва' : 'Краснодар',
+    });
+    if (html) return html;
+  }
   return renderSaleContractHtml({
-    number: String(doc.number || ''),
-    docDate: String(doc.doc_date || new Date().toISOString().slice(0, 10)),
+    number,
+    docDate,
     org: doc.org,
     buyer: contractBuyerFromDoc(doc),
     city: 'Краснодар',
@@ -1730,6 +2772,7 @@ function renderContractDocHtml(doc: Row & { lines: Row[]; org: OrgProfile }): st
 export function createContractDoc(input: {
   dealId?: string;
   organizationId?: string;
+  templateId?: string;
   buyerName?: string;
   buyerInn?: string;
   buyerAddress?: string;
@@ -1746,18 +2789,36 @@ export function createContractDoc(input: {
   createdBy?: string;
 }) {
   const dealIdStr = String(input.dealId || '').trim();
-  const lockedOrg = dealIdStr ? dealInvoiceOrganizationId(dealIdStr) : '';
-  const organizationId = resolveOrganizationId(lockedOrg || input.organizationId);
+  let dealRow: Row | null = null;
+  if (dealIdStr) {
+    dealRow = getDeal(dealIdStr) as Row | null;
+    if (!dealRow) throw new Error('Сделка не найдена');
+  }
+  const organizationId = dealRow
+    ? organizationIdForDealRecord(dealRow as Record<string, unknown>, input.organizationId)
+    : resolveOrganizationId(input.organizationId);
   const org = getOrgProfile(organizationId);
-  const id = newGuid();
-  const number = dealIdStr
+  let id = newGuid();
+  let number = dealIdStr
     ? salesNumberFromDeal('contract', dealIdStr)
     : nextContractNumber();
+  let regenerated = false;
+  if (dealIdStr) {
+    const existing = latestDealSalesDoc(dealIdStr, 'contract');
+    if (existing) {
+      id = existing.id;
+      number = String(existing.number || number);
+      regenerated = true;
+    }
+  }
   const docDate = new Date().toISOString().slice(0, 10);
   let carPlate = '';
   let carVin = '';
   let carYear = '';
   let carMileage = '';
+  let carBrand = '';
+  let carModel = '';
+  let carColor = '';
   let buyer: ContractBuyerFields = {
     name: (input.buyerName || '').trim(),
     inn: (input.buyerInn || '').trim(),
@@ -1773,54 +2834,105 @@ export function createContractDoc(input: {
     ks: (input.buyerKs || '').trim(),
   };
 
-  if (dealIdStr) {
-    const deal = getDeal(dealIdStr) as Row | null;
-    if (!deal) throw new Error('Сделка не найдена');
-    buyer = resolveContractBuyerFromDeal(deal, buyer);
-    carPlate = String(deal.car_plate || '').trim().toUpperCase();
-    carVin = String(deal.car_vin || '').trim().toUpperCase();
-    carYear = String(deal.car_year || '').trim();
-    carMileage = String(deal.car_mileage || '').trim();
+  let templateId = String(input.templateId || '').trim();
+  if (dealIdStr && dealRow) {
+    buyer = resolveContractBuyerFromDeal(dealRow, buyer);
+    carPlate = String(dealRow.car_plate || '').trim().toUpperCase();
+    carVin = String(dealRow.car_vin || '').trim().toUpperCase();
+    carYear = String(dealRow.car_year || '').trim();
+    carMileage = String(dealRow.car_mileage || '').trim();
+    carBrand = String(dealRow.car_brand || '').trim();
+    carModel = String(dealRow.car_model || '').trim();
+    carColor = String(dealRow.car_color || '').trim();
+    if (!templateId) {
+      templateId = suggestContractTemplateId(
+        dealRow as Record<string, unknown>,
+        contractTemplateOpts(dealRow as Record<string, unknown>, buyer, organizationId)
+      );
+    }
+  }
+  if (!templateId) {
+    templateId = suggestContractTemplateId(
+      null,
+      contractTemplateOpts(dealRow as Record<string, unknown> | null, buyer, organizationId)
+    );
+  }
+  if (!isSaleContractTemplateId(templateId)) {
+    throw new Error('Неизвестный шаблон договора');
+  }
+  const stoMeta = getStoDocTemplate(templateId);
+
+  if (!buyer.name) {
+    buyer.name =
+      isStoLegalContractTemplateId(templateId) ? 'ООО «____________________»' : '____________________';
   }
 
-  if (!buyer.name) buyer.name = 'ООО «____________________»';
+  const defaultComment = stoMeta
+    ? `${stoMeta.title}${dealIdStr ? ` · заказ ${dealIdStr}` : ''}`
+    : templateId === CONTRACT_TEMPLATE_ID
+      ? `Договор поставки и услуг${dealIdStr ? ` · заказ ${dealIdStr}` : ''}`
+      : dealIdStr
+        ? `Договор по заказу покупателя №${dealIdStr}`
+        : 'Договор ТО и ремонт';
 
-  run(
-    `INSERT INTO sales_docs (
-       id, doc_type, number, doc_date, deal_id,
-       counterparty_name, counterparty_inn, buyer_address,
-       buyer_phone, buyer_email, buyer_kpp, buyer_ogrn, buyer_director,
-       buyer_bank, buyer_bik, buyer_rs, buyer_ks,
-       amount, vat_rate, vat_amount, total, status, comment, created_by, organization_id,
-       car_plate, car_vin, car_year, car_mileage
-     ) VALUES (?, 'contract', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, 'issued', ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      number,
-      docDate,
-      dealIdStr || null,
-      buyer.name,
-      buyer.inn || '',
-      buyer.address || '',
-      buyer.phone || '',
-      buyer.email || '',
-      buyer.kpp || '',
-      buyer.ogrn || '',
-      buyer.director || '',
-      buyer.bank || '',
-      buyer.bik || '',
-      buyer.rs || '',
-      buyer.ks || '',
-      Number(org.vat_rate) || 5,
-      (input.comment || '').trim() ||
-        (dealIdStr ? `Договор по заказу покупателя №${dealIdStr}` : 'Шаблон договора БМП'),
-      input.createdBy || '',
-      organizationId,
-      carPlate,
-      carVin,
-      carYear,
-      carMileage,
-    ]
-  );
-  return getSalesDoc(id);
+  const contractParams = [
+    number,
+    docDate,
+    dealIdStr || null,
+    buyer.name,
+    buyer.inn || '',
+    buyer.address || '',
+    buyer.phone || '',
+    buyer.email || '',
+    buyer.kpp || '',
+    buyer.ogrn || '',
+    buyer.director || '',
+    buyer.bank || '',
+    buyer.bik || '',
+    buyer.rs || '',
+    buyer.ks || '',
+    Number(org.vat_rate) || 5,
+    (input.comment || '').trim() || defaultComment,
+    input.createdBy || '',
+    organizationId,
+    carPlate,
+    carVin,
+    carYear,
+    carMileage,
+    carBrand,
+    carModel,
+    carColor,
+    templateId,
+  ];
+
+  if (regenerated) {
+    run(
+      `UPDATE sales_docs SET
+         number = ?, doc_date = ?, deal_id = ?,
+         counterparty_name = ?, counterparty_inn = ?, buyer_address = ?,
+         buyer_phone = ?, buyer_email = ?, buyer_kpp = ?, buyer_ogrn = ?, buyer_director = ?,
+         buyer_bank = ?, buyer_bik = ?, buyer_rs = ?, buyer_ks = ?,
+         amount = 0, vat_rate = ?, vat_amount = 0, total = 0, status = 'issued', comment = ?,
+         created_by = ?, organization_id = ?,
+         car_plate = ?, car_vin = ?, car_year = ?, car_mileage = ?,
+         car_brand = ?, car_model = ?, car_color = ?, template_id = ?
+       WHERE id = ?`,
+      [...contractParams, id]
+    );
+  } else {
+    run(
+      `INSERT INTO sales_docs (
+         id, doc_type, number, doc_date, deal_id,
+         counterparty_name, counterparty_inn, buyer_address,
+         buyer_phone, buyer_email, buyer_kpp, buyer_ogrn, buyer_director,
+         buyer_bank, buyer_bik, buyer_rs, buyer_ks,
+         amount, vat_rate, vat_amount, total, status, comment, created_by, organization_id,
+         car_plate, car_vin, car_year, car_mileage, car_brand, car_model, car_color, template_id
+       ) VALUES (?, 'contract', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, 'issued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, ...contractParams]
+    );
+  }
+  const saved = getSalesDoc(id);
+  if (!saved) throw new Error('Документ не найден после сохранения');
+  return Object.assign(saved, { regenerated });
 }

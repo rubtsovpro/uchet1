@@ -1,7 +1,9 @@
 import type { Hono } from 'hono';
 import type { Actor } from './auth.js';
-import { all, get, run } from './db.js';
+import { all, db, get, run } from './db.js';
 import { newGuid, nextCode } from './ids.js';
+import { DEFAULT_COMPANY_ID } from './companies.js';
+import { nextDealDocNumber, nextTransferNumber, logStoTransferEvent, listStoTransferEvents } from './deal-doc-numbers.js';
 import {
   createInTransitUnits,
   findUnitBySerial,
@@ -147,6 +149,83 @@ export function stoWarehouseId(): string {
 
 export function transitWarehouseId(): string {
   return warehouseByCode('IN-TRANSIT', 'В пути');
+}
+
+/** Создать склад по коду, если нет (Курьер / СДЭК / Автобус). */
+export function ensureWarehouseByCode(code: string, name: string): string {
+  const c = String(code || '').trim();
+  const n = String(name || '').trim() || c;
+  if (!c) throw new Error('Код склада пуст');
+  const existing = get<{ id: string }>(
+    `SELECT id FROM warehouses WHERE code = ? OR name = ? LIMIT 1`,
+    [c, n]
+  );
+  if (existing?.id) {
+    // Виртуальные СТО-склады могли увести в архив / переименовать — поднимаем и канонизируем имя
+    if (
+      /^STO-RES-/i.test(c) ||
+      /^STO-RSV-/i.test(c) ||
+      c.toUpperCase() === 'STO' ||
+      c.toUpperCase() === 'COURIER'
+    ) {
+      run(
+        `UPDATE warehouses SET is_active = 1, name = ?, updated_at = datetime('now') WHERE id = ?`,
+        [n, existing.id]
+      );
+    }
+    if (/^STO-RSV-MSK$/i.test(c) || /^STO-RES-MSK$/i.test(c) || c.toUpperCase() === 'STO') {
+      run(
+        `UPDATE warehouses SET company_id = ? WHERE id = ? AND IFNULL(company_id,'') = ''`,
+        [DEFAULT_COMPANY_ID, existing.id]
+      );
+    }
+    return existing.id;
+  }
+  const id = newGuid();
+  const companyId =
+    /^STO-RSV-MSK$/i.test(c) || /^STO-RES-MSK$/i.test(c) || c.toUpperCase() === 'STO' || c.toUpperCase() === 'COURIER'
+      ? DEFAULT_COMPANY_ID
+      : '';
+  if (companyId) {
+    run(
+      `INSERT INTO warehouses (id, name, code, is_active, company_id, created_at, updated_at)
+       VALUES (?, ?, ?, 1, ?, datetime('now'), datetime('now'))`,
+      [id, n, c, companyId]
+    );
+  } else {
+    run(
+      `INSERT INTO warehouses (id, name, code, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))`,
+      [id, n, c]
+    );
+  }
+  return id;
+}
+
+export function courierWarehouseId(): string {
+  return ensureWarehouseByCode('COURIER', 'Курьер');
+}
+
+export function cdekWarehouseId(): string {
+  return ensureWarehouseByCode('CDEK', 'Склад СДЭК');
+}
+
+export function busWarehouseId(): string {
+  return ensureWarehouseByCode('BUS', 'Автобус');
+}
+
+/** Склады BUS/CDEK больше не используем — отправка только через «Склад курьера». */
+export function archiveObsoleteLogisticsWarehouses(): number {
+  let n = 0;
+  const upd = db.prepare(
+    `UPDATE warehouses SET is_active = 0, updated_at = datetime('now')
+     WHERE UPPER(IFNULL(code,'')) = ? AND IFNULL(is_active,1) != 0`
+  );
+  for (const code of ['CDEK', 'BUS']) {
+    const r = upd.run(code.toUpperCase());
+    n += Number(r.changes) || 0;
+  }
+  return n;
 }
 
 function refreshOrderStatus(orderId: string): void {
@@ -1813,7 +1892,9 @@ export function createStoTransferRequest(input: {
   const lines = (input.lines || []).filter((l) => l.product_id);
   if (!lines.length) throw new Error('Нет строк заявки');
   const id = newGuid();
-  const number = nextCode('СТО', 5);
+  const dealId = String(input.deal_id || '').trim();
+  const number =
+    nextTransferNumber(dealId) || nextCode('СТО', 5);
   const now = new Date().toISOString();
   run(
     `INSERT INTO sto_transfer_requests
@@ -1822,7 +1903,7 @@ export function createStoTransferRequest(input: {
     [
       id,
       number,
-      String(input.deal_id || ''),
+      dealId,
       String(input.warehouse_task_id || ''),
       String(input.comment || ''),
       String(input.created_by || ''),
@@ -1843,6 +1924,13 @@ export function createStoTransferRequest(input: {
       ]
     );
   }
+  logStoTransferEvent({
+    request_id: id,
+    event: 'created',
+    summary: `${number} · создано`,
+    actor_name: String(input.created_by || ''),
+    payload: { number, deal_id: dealId, lines: lines.length },
+  });
   return getStoTransferRequest(id);
 }
 
@@ -1856,15 +1944,20 @@ export function getStoTransferRequest(id: string) {
      WHERE l.request_id = ?`,
     [id]
   );
-  return { ...req, lines };
+  const history = listStoTransferEvents(String((req as { id: string }).id), 40);
+  return { ...req, lines, history };
 }
 
-export function listStoTransferRequests(opts?: { status?: string; limit?: number }) {
+export function listStoTransferRequests(opts?: { status?: string; deal_id?: string; limit?: number }) {
   const where: string[] = ['1=1'];
   const params: Array<string | number> = [];
   if (opts?.status) {
     where.push('status = ?');
     params.push(opts.status);
+  }
+  if (opts?.deal_id) {
+    where.push('deal_id = ?');
+    params.push(String(opts.deal_id).trim());
   }
   const limit = Math.min(100, Math.max(1, Number(opts?.limit) || 40));
   return all(
@@ -2482,7 +2575,13 @@ export function mountSupplyChainRoutes(api: Hono): void {
   });
 
   api.get('/supply/sto-requests', (c) => {
-    return c.json({ items: listStoTransferRequests({ status: c.req.query('status') || undefined }) });
+    return c.json({
+      items: listStoTransferRequests({
+        status: c.req.query('status') || undefined,
+        deal_id: c.req.query('deal_id') || undefined,
+        limit: Number(c.req.query('limit') || 40) || 40,
+      }),
+    });
   });
 
   api.get('/supply/sto-requests/:id', (c) => {
@@ -2497,13 +2596,158 @@ export function mountSupplyChainRoutes(api: Hono): void {
         deal_id?: string;
         warehouse_task_id?: string;
         comment?: string;
-        lines: Array<{ product_id: string; qty?: number; serial?: string }>;
+        source?: 'warehouse' | 'market' | 'courier' | 'nonpneumo' | 'pneumo';
+        needs_rebrand?: boolean;
+        amount?: number;
+        lines: Array<{ product_id: string; qty?: number; serial?: string; name?: string; sku?: string }>;
       }>();
-      const row = createStoTransferRequest({
-        ...body,
+      const { createStoPartsAssignment } = await import('./sto-parts-flow.js');
+      const actor = (c as { get: (k: string) => unknown }).get('actor') as
+        | { id?: string; name?: string }
+        | undefined;
+      const row = await createStoPartsAssignment({
+        deal_id: body.deal_id,
+        comment: body.comment,
+        source: body.source,
+        needs_rebrand: body.needs_rebrand,
+        amount: body.amount,
+        lines: body.lines || [],
         created_by: actorName(c as { get: (k: string) => unknown }),
+        actor_id: actor?.id,
       });
       return c.json(row, 201);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+    }
+  });
+
+  api.get('/supply/sto-parts/board', (c) => {
+    return import('./sto-parts-flow.js').then(({ getStoPartsBoard }) => c.json(getStoPartsBoard()));
+  });
+
+  api.post('/supply/sto-parts/market-cash', async (c) => {
+    try {
+      const body = await c.req.json<{
+        amount: number;
+        comment?: string;
+        deal_id?: string;
+        cash_register_id?: string;
+        lines: Array<{ product_id: string; qty?: number; price?: number; name?: string; sku?: string }>;
+      }>();
+      const { createMarketCashPurchase } = await import('./sto-parts-flow.js');
+      const actor = (c as { get: (k: string) => unknown }).get('actor') as { id?: string } | undefined;
+      const row = await createMarketCashPurchase({
+        ...body,
+        created_by: actorName(c as { get: (k: string) => unknown }),
+        actor_id: actor?.id,
+      });
+      return c.json(row, 201);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+    }
+  });
+
+  api.get('/courier/runs', (c) => {
+    const actor = (c as { get: (k: string) => unknown }).get('actor') as { id?: string } | undefined;
+    const scopeRaw = String(c.req.query('scope') || 'active').trim().toLowerCase();
+    const scope =
+      scopeRaw === 'closed' || scopeRaw === 'all' ? scopeRaw : 'active';
+    return import('./sto-parts-flow.js').then(({ listCourierRuns }) => {
+      const data = listCourierRuns({
+        status: c.req.query('status') || undefined,
+        scope: c.req.query('status') ? 'all' : (scope as 'active' | 'closed' | 'all'),
+        q: c.req.query('q') || undefined,
+        courier_staff_id: actor?.id,
+        limit: Number(c.req.query('limit') || 0) || undefined,
+      });
+      return c.json(data);
+    });
+  });
+
+  api.get('/courier/runs/print', async (c) => {
+    const { renderCourierRunsRegistryHtml } = await import('./sto-parts-flow.js');
+    const actor = (c as { get: (k: string) => unknown }).get('actor') as
+      | { name?: string; login?: string }
+      | undefined;
+    const idsRaw = String(c.req.query('ids') || c.req.query('run_ids') || '').trim();
+    const run_ids = idsRaw
+      ? idsRaw
+          .split(/[,;\s]+/)
+          .map((x) => x.trim())
+          .filter(Boolean)
+      : undefined;
+    const html = renderCourierRunsRegistryHtml({
+      actor_name: String(actor?.name || actor?.login || '').trim(),
+      autoprint: c.req.query('autoprint') === '1',
+      run_ids,
+    });
+    return c.html(html);
+  });
+
+  api.post('/courier/runs/:id/status', async (c) => {
+    try {
+      const body = await c.req.json<{ status: 'accepted' | 'picked_up' | 'delivered' | 'cancelled' }>();
+      const { setCourierRunStatus } = await import('./sto-parts-flow.js');
+      const actor = (c as { get: (k: string) => unknown }).get('actor') as
+        | { id?: string; name?: string }
+        | undefined;
+      const row = setCourierRunStatus({
+        id: c.req.param('id'),
+        status: body.status,
+        courier_staff_id: actor?.id,
+        actor_name: actorName(c as { get: (k: string) => unknown }),
+      });
+      return c.json(row);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+    }
+  });
+
+  api.post('/supply/sto-parts/:id/approve', async (c) => {
+    try {
+      const body = await c.req.json<{ step?: 'mgr' | 'dir'; ok?: boolean }>();
+      const { approvePneumoAssignment } = await import('./sto-parts-flow.js');
+      const actor = (c as { get: (k: string) => unknown }).get('actor') as
+        | { id?: string; name?: string }
+        | undefined;
+      const row = await approvePneumoAssignment({
+        id: c.req.param('id'),
+        step: body.step === 'dir' ? 'dir' : 'mgr',
+        ok: body.ok,
+        actor_name: actorName(c as { get: (k: string) => unknown }),
+        actor_id: actor?.id,
+      });
+      return c.json(row);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+    }
+  });
+
+  api.post('/supply/sto-parts/:id/rebrand-done', async (c) => {
+    try {
+      const { markStoRebrandDone } = await import('./sto-parts-flow.js');
+      const row = markStoRebrandDone({
+        id: c.req.param('id'),
+        actor_name: actorName(c as { get: (k: string) => unknown }),
+      });
+      return c.json(row);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+    }
+  });
+
+  api.post('/supply/sto-parts/:id/execute', async (c) => {
+    try {
+      const { executeStoPartsFromTask } = await import('./sto-parts-execute.js');
+      const { getStoTransferRequest } = await import('./supply-chain.js');
+      const req = getStoTransferRequest(c.req.param('id')) as { warehouse_task_id?: string } | null;
+      if (!req?.warehouse_task_id) throw new Error('Нет задания складу');
+      const actor = (c as { get: (k: string) => unknown }).get('actor') as { id?: string } | undefined;
+      const row = executeStoPartsFromTask({
+        task_id: String(req.warehouse_task_id),
+        actor_id: actor?.id,
+      });
+      return c.json(row);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }

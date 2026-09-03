@@ -14,7 +14,20 @@ import {
   stockDocDmLabelsPdf,
   type DocType,
 } from './stock.js';
-import { purgeServiceLinesFromOutDocs, reclassifyAllProductKinds } from './product-kind.js';
+import {
+  createStockAdjustment,
+  ensureStockAdjustmentsSchema,
+  listStockAdjustments,
+} from './stock-adjustments.js';
+import {
+  assignServiceUnits,
+  ensureServiceUnitId,
+  purgeServiceLinesFromOutDocs,
+  reclassifyAllProductKinds,
+  sqlExcludeCrossContourProducts,
+  sqlExcludeServices,
+} from './product-kind.js';
+import { catalogArticleOf, warehouseArticleOf } from './product-display-name.js';
 import {
   dmCodesForBalanceRows,
   listDealLineSources,
@@ -38,13 +51,18 @@ import { catalogCounts, odataConfigFromEnv, syncCatalogsFromOdata } from './odat
 import {
   archiveCompany,
   companiesListPayload,
+  companiesPublicListPayload,
   companyDetailPayload,
   ensureCompaniesSchema,
   ensureCompanySysWarehouses,
   listCompanies,
+  machineCompanyIdRequiredError,
+  parseRequestedCompanyId,
   resolveCompanyId,
   restoreCompany,
   setDefaultCompany,
+  sourceDepartmentsForCompany,
+  sqlSourceDepartmentIn,
   upsertCompany,
 } from './companies.js';
 import {
@@ -84,7 +102,15 @@ import {
   syncPricesOnly,
   syncRestsOnly,
 } from './hs.js';
-import { mediaSyncMeta, syncMediaFrom1c, backfillMediaOrientation, uploadManualProductPhoto } from './media.js';
+import {
+  mediaSyncMeta,
+  syncMediaFrom1c,
+  backfillMediaOrientation,
+  uploadManualProductPhoto,
+  addProductVideoLink,
+  deleteProductMediaItem,
+  deleteProductMediaBatch,
+} from './media.js';
 import { listMediaProducts, listPhotographerQueue, mediaCoverageByCategory } from './media-coverage.js';
 import { s3ConfigFromEnv } from './s3.js';
 import { withCatalogSyncLock } from './sync-lock.js';
@@ -94,10 +120,12 @@ import {
   canAccessPickScreen,
   canAccessPhotoScreen as canAccessPhotoBySection,
   canAccessSection,
+  canUsePurchaseIntake,
   createStaffManual,
   deleteDepartmentConfig,
   emptyDeptOverlay,
   listDepartments,
+  listStoChecklistStaffPicks,
   normDepartmentName,
   parseDeptOverlay,
   parseRights,
@@ -118,10 +146,20 @@ import {
   actorFromContext,
   canDo,
   changeOwnPassword,
+  destroySessionsForActor,
   publicStaffRow,
   setStaffPassword,
   type Actor,
 } from './auth.js';
+import {
+  changeOwnPin,
+  clearOwnAvatar,
+  meProfileExtras,
+  publicAvatarUrl,
+  resolveLocalAvatarPath,
+  saveOwnAvatar,
+  updateOwnPhone,
+} from './staff-profile.js';
 import { homePathForLogin } from './host-screens.js';
 import {
   assertPickShiftForOps,
@@ -172,7 +210,7 @@ import {
 } from './sto-ops.js';
 import { auditFromContext, auditKpi, listAudit, listAuditForDeal, writeAudit } from './audit.js';
 import { enrichClientMeta } from './client-meta.js';
-import { listOnlinePresence, touchPresence } from './presence.js';
+import { clearPresence, listOnlinePresence, touchPresence } from './presence.js';
 import {
   docsSyncMeta,
   enrichOutDocBasis,
@@ -182,21 +220,27 @@ import {
 } from './docs-sync.js';
 import { diskStats } from './disk.js';
 import {
+  acceptDealItemServiceSuggestions,
   addDealItem,
   assignDealUnitByScan,
   dealSalesDocPackTypes,
   dealsMeta,
   deleteDealItem,
+  dealIsLegalEntity,
   getDeal,
   listDealResponsibles,
   listDeals,
   listDealsBoard,
   listPipelines,
+  organizationIdForDealRecord,
   pushDealStageToAmo,
+  rawStatusId,
+  setDealAmoSaleFields,
   setDealIsSto,
   setDealOrgCompany,
   setDealVehicle,
   syncDealsFromAmo1c,
+  syncDealFromAmo1cBackground,
   updateDealBuyer,
   updateDealItem,
   updateDealStage,
@@ -208,28 +252,143 @@ import {
   syncCounterpartiesFromAmo,
 } from './amo-counterparties.js';
 import { pushContractBuyerToAmoContact, pushCounterpartyToAmo } from './amo-contact-buyer.js';
+import { pushDealSaleFieldsToAmo } from './amo-deal-sale-fields.js';
+import {
+  API_KEY_SCOPE_OPTIONS,
+  API_KEY_SECTION_CHECKS,
+  apiMethodsCatalog,
+  countActiveIntegrationApiKeys,
+  createIntegrationApiKey,
+  extractMachineApiKey,
+  hasAnyMachineApiKey,
+  listIntegrationApiKeys,
+  machineApiKeyOk,
+  revokeIntegrationApiKey,
+} from './api-keys.js';
 import {
   createContractDoc,
   createSalesDocFromDeal,
   createSalesDocPackFromDeal,
   createUpdAndWriteOffFromDeal,
   fillContractBuyerFromDeal,
+  fillSalesDocBuyerFromDeal,
   getOrgProfile,
   getSalesDoc,
   listSalesDocs,
+  listUpdRegistryRows,
   renderSalesDocPrintHtml,
   saveOrgProfile,
   salesDocTypeLabel,
   updateSalesDocBuyer,
+  updateSalesDocContractTemplate,
   renameSalesDocBuyerName,
   updateSalesDocVehicle,
+  updateSalesDocStoChecklist,
+  findDealWorkorderForChecklist,
+  syncDealVehicleOntoWorkorders,
+  ensureWorkorderCarPlate,
   type SalesDocType,
 } from './sales-docs.js';
+import {
+  deleteDocTemplate,
+  docTemplatesPublic,
+  pullDocTemplateFromGoogle,
+  listDocTemplatesDriveFolder,
+  saveDocTemplatesConfig,
+  upsertDocTemplate,
+} from './doc-templates.js';
 import { listContractTemplates, renderSaleContractHtml, CONTRACT_TEMPLATE_ID } from './sale-contract.js';
+import {
+  getStoDocTemplate,
+  listStoDocTemplates,
+  renderStoTemplateHtml,
+  splitStoWorkPartLines,
+  vehiclesFromDealOrGarage,
+  stoPackFlowSummary,
+  stoTemplateDocxPath,
+  suggestContractTemplateId,
+  suggestStoContractTemplateId,
+  suggestStoWorkorderTemplateId,
+  paymentFieldsFromDeal,
+  contactFieldsFromDeal,
+  staffFieldsFromDeal,
+  handoverFieldsFromDeal,
+  actorDisplayName,
+} from './sto-doc-templates.js';
+import {
+  buildDealStoFullPackPdf,
+  inspectDealStoFullPack,
+  buildDealStoPdnPdf,
+  buildDealStoExtraPdf,
+} from './sto-pack-pdf.js';
+import {
+  STO_EXTRA_DEAL_TEMPLATE_IDS,
+  isStoExtraDealTemplateId,
+} from './sto-drive-load.js';
+import {
+  listStoChecklistItems,
+  parseStoChecklistJson,
+  stoChecklistProgress,
+  STO_CHECKLIST_PHASES,
+  dealStoChecklistPayload,
+} from './sto-intake-checklist.js';
+import { renderStoChecklistInteractiveHtml } from './sto-checklist-html.js';
+import {
+  deleteWoIntakePhoto,
+  readWoIntakePhoto,
+  saveWoIntakePhoto,
+  woIntakePhotosSummary,
+} from './wo-intake-photos.js';
+import {
+  DEAL_CAR_PHOTO_SIDES,
+  dealCarPhotosSummary,
+  deleteDealCarPhoto,
+  readDealCarPhoto,
+  saveDealCarPhoto,
+} from './deal-car-photos.js';
+import {
+  canUseCarPhotoReception,
+  closeCarPhotoTask,
+  closeOpenCarPhotoTaskForDeal,
+  completeCarPhotoTaskForDeal,
+  deletePushSubscription,
+  ensureWebPushSchema,
+  getCarPhotoTask,
+  getVapidPublicKey,
+  listOpenCarPhotoTasks,
+  requestCarPhotoShoot,
+  requestWarehousePickPush,
+  upsertPushSubscription,
+} from './web-push.js';
+import {
+  deletePdnScan,
+  pdnScansSummary,
+  readPdnScan,
+  savePdnScan,
+} from './pdn-media.js';
+import {
+  confirmPdnSignCode,
+  createAndSendPdnSmsLink,
+  getLatestPdnSignForDeal,
+  getPdnSignByToken,
+  listPdnSignEvents,
+  markPdnOpened,
+  pdnSmsSummary,
+  publicPdnView,
+  requestPdnSignCode,
+} from './pdn-sms-sign.js';
+import {
+  clientPartsSummary,
+  deleteClientPartPhoto,
+  readClientPartPhoto,
+  recognizeClientParts,
+  saveClientParts,
+} from './client-parts.js';
 import { ensureClientOrgContours, listClientOrgSnapshot } from './ensure-client-orgs.js';
 import {
   applyDocNumberingPatch,
   getDocNumberingState,
+  outNumberFromDeal,
   syncDocNumberingFrom1c,
 } from './doc-numbering.js';
 import {
@@ -240,7 +399,17 @@ import {
   saveUiSettings,
   type PhoneFormat,
 } from './phone.js';
-import { renderSalesDocPdf } from './sales-docs-pdf.js';
+import { renderSalesDocPdf, renderUpdRegistryPdf } from './sales-docs-pdf.js';
+import { renderWarehouseBalancesPdf } from './warehouse-balances-pdf.js';
+import {
+  dealNeedsWorkorderBeforePayment,
+  getDealWorkorder,
+  getDealWorkorderGate,
+  markSalesDocPrinted,
+  workorderFormedSummary,
+} from './deal-workorder-gate.js';
+import { buildDealSaleRules, resolveIsSto } from './deal-sale-rules.js';
+import { getDealPaymentSplit } from './deal-payment-split.js';
 import { buildInvoicePaymentPurpose, renderPaymentQrPng } from './payment-qr.js';
 import {
   deleteOrgPrintAsset,
@@ -263,15 +432,34 @@ import {
 } from './payments.js';
 import {
   ensureWarehouseTaskAfterPaid,
+  findSuccessStatusForDeal,
+  getDealCloseReadiness,
   promoteDealToSuccessAfterHanded,
 } from './sales-pipeline.js';
 import {
   buildOrderDocTree,
   ensureOrderDocChain,
+  ensureDealTransferOrderDraft,
   getDealTransferOrderDetail,
   linkTransferToOrder,
   listDealTransferOrdersDetailed,
 } from './order-doc-tree.js';
+import {
+  addDevPlanComment,
+  addDevPlanDep,
+  assignAllDevPlanResponsible,
+  createDevPlanItem,
+  clearAllDevPlanItems,
+  deleteDevPlanDep,
+  deleteDevPlanItem,
+  devPlanGanttRange,
+  listDevPlanDeps,
+  listDevPlanItems,
+  listDevPlanStaffOptions,
+  resolveDevPlanStaffIdForActor,
+  updateDevPlanItem,
+} from './dev-plan.js';
+import { getHelpLcMarks, putHelpLcMarks } from './help-lc-marks.js';
 import {
   createPaymentLinkFromDeal,
   DEFAULT_PAYMENT_LINK_TIMER_MINUTES,
@@ -283,12 +471,16 @@ import {
   getPublicPaymentQrPng,
   listPaymentLinksForDeal,
   paymentLinkPublicUrl,
+  amoWidgetPayUrl,
   planDealStockNeeds,
   pollPublicPaymentLink,
+  getDealInvoiceStockStatus,
   savePaymentLinkSettings,
   submitPublicPayQuestion,
   updatePublicPaymentLinkItems,
   renewPublicPaymentReserve,
+  activeReserveOrdersForPairs,
+  sendPaymentLinkSms,
 } from './payment-links.js';
 import {
   bankSettingsApiUrl,
@@ -301,6 +493,7 @@ import {
   getFiscalReceipt,
   listFiscalReceipts,
   prepareOrSendFiscalReceipt,
+  prepareOrSendFiscalCorrection,
   testAtolConnection,
 } from './atol.js';
 import { listKassaJournal, getKassaOverview } from './kassa.js';
@@ -321,6 +514,11 @@ import {
   yandexPaySettingsPublic,
 } from './integration-settings.js';
 import {
+  getWarrantySettings,
+  saveWarrantySettings,
+  type WarrantyLine,
+} from './warranty-settings.js';
+import {
   decodeStsImages,
   deepseekConfigured,
   deepseekVisionEndpointOk,
@@ -328,20 +526,30 @@ import {
   mergeStsVehicleOcr,
   recognizeStsFromImages,
   sanitizeStsVehicle,
+  normalizePlate,
 } from './sts-ocr.js';
 import {
   deleteCounterpartyVehicle,
   ensureCounterpartyForDeal,
+  resolveCounterpartyIdForDeal,
   garageForDeal,
   listCounterpartyVehicles,
   upsertCounterpartyVehicle,
 } from './counterparty-vehicles.js';
 import {
   assignStsSides,
+  clearStsImagesForDeal,
   ensureStsJpeg,
   readStsImageNormalized,
+  readStsImageNormalizedVehicle,
+  readStsThumb,
+  readStsThumbVehicle,
   saveStsImage,
+  saveStsImageVehicle,
   stsMediaInfo,
+  stsMediaInfoForVehicle,
+  syncStsDealToVehicle,
+  syncStsVehicleToDeal,
   type StsSide,
 } from './sts-media.js';
 import {
@@ -386,13 +594,38 @@ import {
   createTaskFromInboundReceive,
   createTaskFromReturnReceive,
   createTaskFromTransfer,
+  dealIsPaid,
   getTask,
   listTasks,
   markTaskDone,
   packingSlip,
   pickerBoard,
+  pickSitesCatalog,
+  warehouseHandoffsForPick,
+  warehouseCompletedHandoffsForPick,
+  warehouseHandoffsPickTotal,
+  warehouseHandoffPickFilterFacets,
+  parseHandoffPickListFilters,
+  actorPickSiteLock,
+  pickSiteLabel,
+  handoffPickSlipHtml,
+  stockReturnPickSlipHtml,
+  stockReturnsForPick,
+  completeHandoffPick,
+  completeHandoffPickByDeal,
+  setHandoffPickLineSource,
+  type HandoffPickUnitInput,
+  cancelHandoffPick,
+  cancelHandoffPickByDeal,
+  getHandoffReturnState,
+  clearHandoffReturnState,
   scanHandOver,
   scanMarkDone,
+  scanUnitIntoWarehouseTask,
+  lookupUnitsForWarehouseTask,
+  listStockForWarehouseTaskLine,
+  clearUnitFromWarehouseTask,
+  assignManualSerialToWarehouseTask,
   setTaskStatus,
   SHIP_CHANNELS,
   statusLabel,
@@ -482,10 +715,12 @@ import {
   getThinJournalDoc,
   getThinJournalMeta,
   listThinJournalDocs,
+  listTransferOrdersJournal,
   listThinJournalKeys,
   listTransfers,
   listWriteOffs,
   patchThinJournalDoc,
+  patchThinSupplierOrderHeader,
   purchasesInboundReport,
   purchasesReportsHub,
   removeThinJournalLine,
@@ -494,6 +729,9 @@ import {
   thinJournalDmLabelsPdf,
   warehouseReportsHub,
 } from './parity-batch-a.js';
+import { getDiscrepancyAct, listDiscrepancyActs } from './purchase-discrepancy.js';
+import { mountSupplierOrderImportRoutes } from './supplier-order-import.js';
+import { mountSupplierOrderAnalysisRoutes } from './supplier-order-analysis.js';
 import {
   companyReportsHub,
   crmReportsHub,
@@ -516,10 +754,13 @@ import {
   callCdekWidgetAction,
   cdekConfigured,
   fetchCdekDeal,
+  fetchCdekPickPack,
   fetchCdekSettings,
   fetchCdekShipment,
   listCdekDeals,
   refreshCdekShipment,
+  regenerateCdekPickShipment,
+  saveCdekPickPack,
   saveCdekSettings,
   syncTaskCdekTrack,
 } from './cdek.js';
@@ -538,6 +779,51 @@ import { mountSwagger } from './swagger.js';
 import { telegram2faConfigStatus } from './telegram.js';
 import { mountChatRoutes } from './chat.js';
 import { mountSupplyChainRoutes } from './supply-chain.js';
+import { mountPurchaseIntakeRoutes } from './purchase-intake.js';
+import { mountPurchaseDriveRoutes } from './purchase-drive.js';
+import { mountProductCatalogApiRoutes } from './product-catalog-api.js';
+import { mountProductionJobRoutes } from './production-jobs.js';
+import {
+  createProductionJob,
+  createProductionFromDeal,
+  listActiveProductionJobsForDeal,
+  queueProductionSend,
+  type ProductionKind,
+} from './production-jobs.js';
+import {
+  buildHandoffReserveMeta,
+  ensureReserveHandoffComment,
+} from './handoff-reserve.js';
+import {
+  completeStockReturnPick,
+  createHandoffPickDraft,
+  createUrgentToStoHandoffs,
+  ensureHandoffPickAfterPaid,
+  getDealStockFlowStatus,
+  requestStockReturn,
+  transferReserveToSto,
+  writeOffStoOnDealSuccess,
+  runStoSaleWriteoffCron,
+  countOpenDealsOnWarehouse,
+  openDealLinksForStockRows,
+  openDealsCountByWarehouse,
+  dealLinkedStockOnWarehouse,
+  isStoDealReserveWarehouseId,
+  pendingHandoffInboundOnWarehouse,
+  pendingHandoffInboundSummary,
+  countStoDealReserveDeals,
+  type OpenDealLink,
+} from './deal-stock-flow.js';
+import { mountTaxRoutes } from './tax/routes.js';
+import {
+  ensureDefaultInstallService,
+  ensureProductServiceLinksSchema,
+  linkInstallService,
+  listProductServiceLinks,
+  setProductServiceLinks,
+} from './product-service-links.js';
+import { mountWarehouseCellsRoutes, getPlacementSummariesForDocs } from './warehouse-cells.js';
+import { mountWarehouseInboundRoutes } from './warehouse-inbound.js';
 import { renderDataMatrixPng, renderDataMatrixSvg } from './datamatrix.js';
 
 export const api = new Hono();
@@ -547,6 +833,8 @@ api.get('/health', (c) => {
   return c.json({
     ok: true,
     service: 'warehouse-1c',
+    /** Совпадает с LEGACY_UI_BUILD в web/public/legacy.html — устаревшие вкладки перезагрузятся. */
+    ui_build: Number(process.env.WMS_UI_BUILD || 1173) || 1173,
     auth_2fa: {
       channel: twofa.channel,
       mode: twofa.mode,
@@ -563,6 +851,15 @@ api.get('/health', (c) => {
 mountSwagger(api);
 mountChatRoutes(api);
 mountSupplyChainRoutes(api);
+mountPurchaseIntakeRoutes(api);
+mountPurchaseDriveRoutes(api);
+mountProductionJobRoutes(api);
+mountProductCatalogApiRoutes(api);
+mountTaxRoutes(api);
+mountWarehouseCellsRoutes(api);
+mountWarehouseInboundRoutes(api);
+mountSupplierOrderImportRoutes(api);
+mountSupplierOrderAnalysisRoutes(api);
 
 /** Data Matrix PNG/SVG — для этикеток и маркировки */
 api.get('/datamatrix.png', async (c) => {
@@ -672,6 +969,10 @@ api.use('*', async (c, next) => {
   if (path === '/health' || path.startsWith('/public/') || path === '/me' || path.startsWith('/me/')) {
     return next();
   }
+  // Чтение UI-настроек (формат телефона) — всем авторизованным
+  if (path === '/ui-settings' && c.req.method === 'GET') {
+    return next();
+  }
   if (path.startsWith('/sync/') && c.req.method !== 'GET') {
     const actor = actorFromContext(c);
     if (!canDo(actor, 'can_sync')) {
@@ -683,6 +984,44 @@ api.use('*', async (c, next) => {
     const actor = actorFromContext(c);
     if (!canAccessPhotoBySection(actor)) {
       return c.json({ error: 'Недостаточно прав: экран фотографа' }, 403);
+    }
+    return next();
+  }
+  // История на карточке сущности (товар / контрагент / …) — без раздела «Настройки»
+  if (c.req.method === 'GET' && (path === '/audit' || path.startsWith('/audit?'))) {
+    const entity = (c.req.query('entity') || '').trim();
+    const entityId = (c.req.query('entity_id') || '').trim();
+    const dealId = (c.req.query('deal_id') || '').trim();
+    if ((entity && entityId) || dealId) {
+      return next();
+    }
+  }
+  // Возврат на основной с /pick — не требуем раздел CRM
+  if (
+    c.req.method === 'POST' &&
+    /^\/crm\/deals\/[^/]+\/stock-flow\/return-complete\/?$/.test(path)
+  ) {
+    const actor = actorFromContext(c);
+    if (
+      !canAccessSection(actor, 'pick') &&
+      !canAccessSection(actor, 'crm') &&
+      !canOperateWarehouseTasks(actor) &&
+      actor?.role !== 'picker'
+    ) {
+      return c.json({ error: 'Недостаточно прав: возврат на основной' }, 403);
+    }
+    return next();
+  }
+  // Карта ячеек Основного для экрана /pick (селект «Куда положим»)
+  if (c.req.method === 'GET' && path === '/warehouse/cells/map') {
+    const actor = actorFromContext(c);
+    if (
+      !canAccessSection(actor, 'pick') &&
+      !canAccessSection(actor, 'warehouse') &&
+      !canOperateWarehouseTasks(actor) &&
+      actor?.role !== 'picker'
+    ) {
+      return c.json({ error: 'Недостаточно прав: карта ячеек' }, 403);
     }
     return next();
   }
@@ -718,14 +1057,10 @@ function canOperateWarehouseTasks(
   return canDo(actor, 'can_edit_docs');
 }
 
-function publicJsonKeyOk(c: { req: { query: (k: string) => string | undefined; header: (n: string) => string | undefined } }): boolean {
-  const expect = (process.env.WMS_JSON_KEY || process.env.WMS_INGEST_KEY || '').trim();
-  if (!expect) return false;
-  const key =
-    (c.req.query('key') || '').trim()
-    || (c.req.header('x-wms-json-key') || '').trim()
-    || (c.req.header('x-wms-ingest-key') || '').trim();
-  return key === expect;
+function publicJsonKeyOk(c: {
+  req: { query: (k: string) => string | undefined; header: (n: string) => string | undefined };
+}): boolean {
+  return Boolean(machineApiKeyOk(c, 'public'));
 }
 
 function findProductForExport(ref: string) {
@@ -831,14 +1166,14 @@ function buildProductExportJson(product: Record<string, unknown>) {
 }
 
 /** Постоянная JSON-ссылка: товар + цены (+ последняя цена закупа).
- *  Без сессии нужен key=WMS_JSON_KEY|WMS_INGEST_KEY
+ *  Без сессии нужен ключ интеграции (?key= / x-wms-ingest-key) или env WMS_JSON_KEY|WMS_INGEST_KEY.
  *  Примеры:
  *    /api/public/product.json?sku=MRAE21065&key=...
  *    /api/public/product/MRAE21065.json?key=...
  */
 api.get('/public/product.json', (c) => {
   if (!publicJsonKeyOk(c) && !actorFromContext(c)) {
-    return c.json({ error: 'forbidden', hint: 'нужен ?key= или вход в Учёт №1' }, 403);
+    return c.json({ error: 'forbidden', hint: 'нужен ?key= своего клиента или вход в Учёт №1' }, 403);
   }
   const ref =
     c.req.query('sku')
@@ -853,7 +1188,7 @@ api.get('/public/product.json', (c) => {
 
 api.get('/public/product/:ref', (c) => {
   if (!publicJsonKeyOk(c) && !actorFromContext(c)) {
-    return c.json({ error: 'forbidden', hint: 'нужен ?key= или вход в Учёт №1' }, 403);
+    return c.json({ error: 'forbidden', hint: 'нужен ?key= своего клиента или вход в Учёт №1' }, 403);
   }
   let ref = decodeURIComponent(c.req.param('ref') || '');
   if (ref.toLowerCase().endsWith('.json')) ref = ref.slice(0, -5);
@@ -862,7 +1197,7 @@ api.get('/public/product/:ref', (c) => {
   return c.json(buildProductExportJson(product as Record<string, unknown>));
 });
 
-/** Для карточки товара: постоянная ссылка с key (нужна сессия). */
+/** Для карточки товара: шаблон постоянной ссылки (ключ — свой у каждого клиента). */
 api.get('/products/:id/json-link', (c) => {
   const actor = actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
@@ -872,18 +1207,19 @@ api.get('/products/:id/json-link', (c) => {
     [id]
   );
   if (!product) return c.json({ error: 'not found' }, 404);
-  const key = (process.env.WMS_JSON_KEY || process.env.WMS_INGEST_KEY || '').trim();
   const host = c.req.header('x-forwarded-host') || c.req.header('host') || '1c.pnevmopodveska1.ru';
   const proto = c.req.header('x-forwarded-proto') || 'https';
   const base = `${proto}://${host}`;
   const sku = encodeURIComponent(product.sku || product.id);
-  const q = key ? `?key=${encodeURIComponent(key)}` : '';
   return c.json({
     ok: true,
     sku: product.sku,
     code: product.code,
-    url: `${base}/api/public/product/${sku}.json${q}`,
-    url_query: `${base}/api/public/product.json?sku=${sku}${key ? '&key=' + encodeURIComponent(key) : ''}`,
+    url: `${base}/api/public/product/${sku}.json`,
+    url_query: `${base}/api/public/product.json?sku=${sku}`,
+    hint: 'Добавьте ?key=ВАШ_КЛЮЧ или заголовок x-wms-ingest-key (свой ключ клиента в Помощь → Интеграции и API)',
+    keys_active: countActiveIntegrationApiKeys(),
+    env_fallback: hasAnyMachineApiKey(),
   });
 });
 
@@ -951,6 +1287,7 @@ api.get('/me', (c) => {
   const actor = actorFromContext(c);
   if (!actor) {
     // legacy cookie
+    const extras = meProfileExtras('__admin__');
     return c.json({
       id: '__admin__',
       name: 'Админ (системный)',
@@ -961,6 +1298,9 @@ api.get('/me', (c) => {
       isSystemAdmin: true,
       home_path: homePathForLogin(host, { isSystemAdmin: true, role: 'admin' }),
       picker_only: false,
+      department: '',
+      purchase_intake: true,
+      ...extras,
     });
   }
   const secs = actor.rights?.sections || [];
@@ -969,7 +1309,7 @@ api.get('/me', (c) => {
   const mainUi = secs.some((s) =>
     ['crm', 'sales', 'purchases', 'money', 'staff', 'company', 'settings', 'reports'].includes(s)
   );
-  // Роль photographer — всегда на /photo; иначе эвристика по разделам (без ломки pick)
+  // Роль photographer (или только photo/media без CRM) — флаг UI; home = главная
   const photographerOnly =
     !actor.isSystemAdmin &&
     actor.role !== 'admin' &&
@@ -981,6 +1321,8 @@ api.get('/me', (c) => {
     (actor.role === 'warehouse' ||
       actor.role === 'courier' ||
       (hasPick && !mainUi && !hasPhoto));
+  const extras = meProfileExtras(actor.id);
+  const pickSiteLock = actorPickSiteLock(actor);
   return c.json({
     id: actor.id,
     name: actor.name,
@@ -991,8 +1333,33 @@ api.get('/me', (c) => {
     isSystemAdmin: actor.isSystemAdmin,
     home_path: homePathForLogin(host, actor),
     picker_only: pickerOnly,
+    pick_site_lock: pickSiteLock || '',
+    pick_site_label: pickSiteLock ? pickSiteLabel(pickSiteLock) : '',
     photographer_only: photographerOnly,
+    department: actor.department || '',
+    purchase_intake: canUsePurchaseIntake(actor),
+    ...extras,
   });
+});
+
+api.patch('/me', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const body = await c.req.json<{ phone?: string }>().catch(() => ({} as { phone?: string }));
+  try {
+    const phone =
+      body.phone !== undefined ? updateOwnPhone(actor.id, String(body.phone || '')) : undefined;
+    auditFromContext(c, {
+      action: 'staff.profile',
+      entity: 'staff',
+      entityId: actor.id,
+      summary: `Профиль: телефон`,
+      after: { phone },
+    });
+    return c.json({ ok: true, ...meProfileExtras(actor.id), phone: phone ?? meProfileExtras(actor.id).phone });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
 });
 
 api.post('/me/password', async (c) => {
@@ -1011,6 +1378,101 @@ api.post('/me/password', async (c) => {
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
+});
+
+api.post('/me/pin', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const body = await c.req
+    .json<{ pin?: string | null; current_password?: string; current_pin?: string }>()
+    .catch(() => ({} as { pin?: string | null; current_password?: string; current_pin?: string }));
+  try {
+    changeOwnPin(actor.id, {
+      pin: body.pin,
+      current_password: body.current_password,
+      current_pin: body.current_pin,
+    });
+    auditFromContext(c, {
+      action: body.pin === null || String(body.pin || '').trim() === '' ? 'auth.pin_clear' : 'auth.pin_set',
+      entity: 'staff',
+      entityId: actor.id,
+      summary: `Свой PIN: ${actor.name}`,
+    });
+    return c.json({ ok: true, ...meProfileExtras(actor.id) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+api.post('/me/avatar', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  let buf: Buffer | null = null;
+  const contentType = (c.req.header('content-type') || '').toLowerCase();
+  try {
+    if (contentType.includes('multipart/form-data')) {
+      const body = await c.req.parseBody({ all: true });
+      const file = body.file ?? body.avatar ?? body.photo ?? body.image;
+      if (file && typeof file === 'object' && 'arrayBuffer' in file) {
+        buf = Buffer.from(await (file as File).arrayBuffer());
+      }
+    } else if (contentType.includes('application/json')) {
+      const body = await c.req.json<{ image_base64?: string; data_url?: string }>();
+      let raw = String(body.image_base64 || body.data_url || '').trim();
+      const m = raw.match(/^data:image\/[a-z0-9.+-]+;base64,(.+)$/i);
+      if (m) raw = m[1]!;
+      if (raw) buf = Buffer.from(raw, 'base64');
+    } else {
+      const ab = await c.req.arrayBuffer();
+      if (ab.byteLength) buf = Buffer.from(ab);
+    }
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'Не удалось прочитать файл' }, 400);
+  }
+  if (!buf?.length) return c.json({ error: 'Нужен файл (поле file) или image_base64' }, 400);
+  try {
+    const result = await saveOwnAvatar(actor.id, buf);
+    auditFromContext(c, {
+      action: 'staff.avatar',
+      entity: 'staff',
+      entityId: actor.id,
+      summary: `Аватар: ${actor.name}`,
+      after: result,
+    });
+    return c.json({ ok: true, ...result, ...meProfileExtras(actor.id) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'upload failed' }, 400);
+  }
+});
+
+api.delete('/me/avatar', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  clearOwnAvatar(actor.id);
+  auditFromContext(c, {
+    action: 'staff.avatar_clear',
+    entity: 'staff',
+    entityId: actor.id,
+    summary: `Аватар удалён: ${actor.name}`,
+  });
+  return c.json({ ok: true, ...meProfileExtras(actor.id) });
+});
+
+/** Публичная раздача локального аватара (и для чатов). */
+api.get('/staff/:id/avatar', (c) => {
+  const id = String(c.req.param('id') || '').trim();
+  if (!id) return c.json({ error: 'not found' }, 404);
+  const remote = publicAvatarUrl(id);
+  if (remote && /^https?:\/\//i.test(remote)) {
+    return c.redirect(remote, 302);
+  }
+  const local = resolveLocalAvatarPath(id);
+  if (!local) return c.json({ error: 'no avatar' }, 404);
+  const data = fs.readFileSync(local.path);
+  return c.body(new Uint8Array(data), 200, {
+    'Content-Type': local.mime,
+    'Cache-Control': 'public, max-age=86400',
+  });
 });
 
 function bookmarkUserId(actor: ReturnType<typeof actorFromContext>): string {
@@ -1186,6 +1648,40 @@ api.get('/presence/online', (c) => {
   return c.json({ items, total: items.length, online_sec: 120 });
 });
 
+/** Сбросить все сессии пользователя (кик) — только админ. */
+api.post('/presence/kick/:actorId', (c) => {
+  const actor = actorFromContext(c);
+  if (!isAdminActor(actor)) {
+    return c.json({ error: 'Только для администраторов' }, 403);
+  }
+  const targetId = String(c.req.param('actorId') || '').trim();
+  if (!targetId) return c.json({ error: 'actor_id required' }, 400);
+  if (targetId === '__admin__') {
+    return c.json({ error: 'Системный admin так не сбрасывается' }, 400);
+  }
+  const name =
+    get<{ name: string; login: string }>(
+      `SELECT IFNULL(name,'') AS name, IFNULL(login,'') AS login FROM staff WHERE id = ?`,
+      [targetId]
+    ) || null;
+  const label = String(name?.name || name?.login || targetId).trim();
+  const sessionsRemoved = destroySessionsForActor(targetId);
+  clearPresence(targetId);
+  auditFromContext(c, {
+    action: 'auth.session_kick',
+    entity: 'staff',
+    entityId: targetId,
+    summary: `Сброс сессии: ${label} (${sessionsRemoved} шт.)`,
+    after: { actor_id: targetId, sessions_removed: sessionsRemoved },
+  });
+  return c.json({
+    ok: true,
+    actor_id: targetId,
+    actor_name: label,
+    sessions_removed: sessionsRemoved,
+  });
+});
+
 api.get('/stats', (c) => {
   const products = get<{ c: number }>('SELECT COUNT(*) AS c FROM products WHERE is_active = 1')?.c ?? 0;
   const warehouses = get<{ c: number }>('SELECT COUNT(*) AS c FROM warehouses WHERE is_active = 1')?.c ?? 0;
@@ -1231,6 +1727,8 @@ api.get('/crm/deals', (c) => {
   const orgCompanyId = (c.req.query('company_id') || '').trim();
   const responsibleUserId = (c.req.query('responsible_user_id') || '').trim();
   const amoChannel = (c.req.query('amo_channel') || c.req.query('channel') || '').trim();
+  const buyerKind = (c.req.query('buyer_kind') || c.req.query('client') || '').trim();
+  const clientRole = (c.req.query('client_role') || c.req.query('role') || '').trim();
   const queuedRaw = (c.req.query('queued_to_1c') || '').trim();
   const queueStatus = (c.req.query('queue_status') || '').trim();
   const sort = (c.req.query('sort') || '').trim();
@@ -1245,6 +1743,8 @@ api.get('/crm/deals', (c) => {
       orgCompanyId: orgCompanyId || undefined,
       responsibleUserId: responsibleUserId || undefined,
       amoChannel: amoChannel || undefined,
+      buyerKind: buyerKind || undefined,
+      clientRole: clientRole || undefined,
       queuedTo1c: queuedRaw === '1' || queuedRaw === 'true',
       queueStatus: queueStatus || undefined,
       sort: sort || undefined,
@@ -1262,6 +1762,8 @@ api.get('/crm/deals/board', (c) => {
   const orgCompanyId = (c.req.query('company_id') || '').trim();
   const responsibleUserId = (c.req.query('responsible_user_id') || '').trim();
   const amoChannel = (c.req.query('amo_channel') || c.req.query('channel') || '').trim();
+  const buyerKind = (c.req.query('buyer_kind') || c.req.query('client') || '').trim();
+  const clientRole = (c.req.query('client_role') || c.req.query('role') || '').trim();
   const queuedRaw = (c.req.query('queued_to_1c') || '').trim();
   const queueStatus = (c.req.query('queue_status') || '').trim();
   const boardOpts = {
@@ -1269,6 +1771,8 @@ api.get('/crm/deals/board', (c) => {
     orgCompanyId: orgCompanyId || undefined,
     responsibleUserId: responsibleUserId || undefined,
     amoChannel: amoChannel || undefined,
+    buyerKind: buyerKind || undefined,
+    clientRole: clientRole || undefined,
     queuedTo1c: queuedRaw === '1' || queuedRaw === 'true',
     queueStatus: queueStatus || undefined,
   };
@@ -1301,6 +1805,197 @@ api.get('/crm/deals/:id/doc-tree', (c) => {
   const tree = buildOrderDocTree(c.req.param('id'));
   if (!tree) return c.json({ error: 'not found' }, 404);
   return c.json(tree);
+});
+
+/** Готовность к счёту юрлица: свободный остаток (без резерва WAIT-PAY). */
+api.get('/crm/deals/:id/invoice-stock', (c) => {
+  const dealId = String(c.req.param('id') || '').trim();
+  const deal = getDeal(dealId);
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  const preferred = String(c.req.query('warehouse_id') || '').trim();
+  const st = getDealInvoiceStockStatus(dealId, preferred || undefined);
+  return c.json({
+    deal_id: dealId,
+    ok: st.ok,
+    reserved: st.reserved,
+    missing: st.missing,
+    needs_count: st.needs_count,
+    reserves_count: st.reserves.length,
+  });
+});
+
+/** Зарезервировать товар под счёт — отключено (WAIT-PAY больше не используем). */
+api.post('/sales-docs/:id/reserve-stock', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав на документы' }, 403);
+  }
+  const doc = getSalesDoc(c.req.param('id'));
+  if (!doc) return c.json({ error: 'not found' }, 404);
+  if (String(doc.doc_type || '') !== 'invoice') {
+    return c.json({ error: 'Резерв только для счёта на оплату' }, 400);
+  }
+  return c.json(
+    {
+      error: 'Резерв на «Ожидание оплаты» отключён — товар по счёту не бронируем',
+      skipped: true,
+      reason: 'wait_pay_reserve_disabled',
+    },
+    400
+  );
+});
+
+/** Черновик заказа на перемещение по сделке — можно до оплаты (без резерва). */
+api.post('/crm/deals/:id/transfer-order-draft', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('id') || '').trim();
+  if (!dealId) return c.json({ error: 'deal id required' }, 400);
+  try {
+    const deal = getDeal(dealId) as Record<string, unknown> | null;
+    if (!deal) return c.json({ error: 'not found' }, 404);
+    const xfer = ensureDealTransferOrderDraft(dealId);
+    const who = String(actor?.name || actor?.login || '').trim() || 'Сотрудник';
+    const split = getDealPaymentSplit(dealId);
+    const unpaid = Number(split.due_total) > 0.009;
+    const unpaidNote = unpaid ? ' · деньги от клиента ещё не приняты' : '';
+    if (xfer.created || xfer.already) {
+      auditFromContext(c, {
+        action: 'deal.transfer_order_draft',
+        entity: 'crm_deal',
+        entityId: dealId,
+        summary: xfer.created
+          ? `${who} создал заказ на перемещение ${xfer.number || ''}${unpaidNote}`
+          : `${who} открыл заказ на перемещение ${xfer.number || ''}${unpaidNote}`,
+        after: { ...xfer, unpaid },
+      });
+    }
+    return c.json({
+      ok: true,
+      ...xfer,
+      unpaid,
+      warning: unpaid
+        ? 'Перемещение до оплаты: заказ покупателя нельзя закрыть, пока деньги не приняты'
+        : undefined,
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** Готовность закрыть заказ («Успешно реализовано»). */
+api.get('/crm/deals/:id/close-readiness', (c) => {
+  const dealId = String(c.req.param('id') || '').trim();
+  if (!dealId) return c.json({ error: 'id required' }, 400);
+  return c.json(getDealCloseReadiness(dealId));
+});
+
+/** Закрыть заказ в «Успешно реализовано» (те же гейты, что PATCH /stage). */
+api.post('/crm/deals/:id/close-success', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const dealId = String(c.req.param('id') || '').trim();
+  const actorName = actorDisplayName(actor) || actor.login || 'Учёт №1';
+  let readiness = getDealCloseReadiness(dealId, { sto_writeoff_on_close: true });
+  if (readiness.already_won) {
+    let writeoff = null;
+    try {
+      writeoff = writeOffStoOnDealSuccess(dealId, {
+        createdBy: actorName,
+        requireSuccess: true,
+      });
+      if (writeoff.written_off) {
+        auditFromContext(c, {
+          action: 'deal.sto_sale_writeoff',
+          entity: 'crm_deal',
+          entityId: dealId,
+          summary: `Списание по продаже со СТО · ${writeoff.stock_doc_number || ''}`,
+          after: writeoff,
+        });
+      }
+    } catch (e) {
+      writeoff = { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    return c.json({ ok: true, already: true, writeoff, ...readiness });
+  }
+  if (!readiness.ready || !readiness.success) {
+    return c.json(
+      {
+        error:
+          readiness.missing.length
+            ? 'Нельзя завершить: ' + readiness.missing.join('; ')
+            : 'Нет этапа «Успешно реализовано» в воронке',
+        missing: readiness.missing,
+      },
+      400
+    );
+  }
+  const before = getDeal(dealId);
+  if (!before) return c.json({ error: 'not found' }, 404);
+  const b = before as Record<string, unknown>;
+  const statusId = readiness.success.status_id;
+  const pipelineId = readiness.success.pipeline_id;
+  const amoId = String(dealId).replace(/\D/g, '');
+  let amoSynced = false;
+  if (amoId) {
+    const amo = await pushDealStageToAmo({
+      dealId: amoId,
+      statusId,
+      pipelineId,
+    });
+    if (!amo.ok) {
+      return c.json({ error: `Amo: ${amo.error}`, amo_http: amo.http ?? null }, 502);
+    }
+    amoSynced = !amo.skipped;
+  }
+  const result = updateDealStage(dealId, {
+    statusId,
+    statusName: readiness.success.status_name,
+    pipelineId,
+  });
+  if (!result.ok) return c.json({ error: result.error }, 404);
+
+  let writeoff = null;
+  try {
+    writeoff = writeOffStoOnDealSuccess(dealId, {
+      createdBy: actorName,
+      requireSuccess: true,
+    });
+    if (writeoff.written_off) {
+      auditFromContext(c, {
+        action: 'deal.sto_sale_writeoff',
+        entity: 'crm_deal',
+        entityId: dealId,
+        summary: `Списание по продаже со СТО · ${writeoff.stock_doc_number || ''}`,
+        after: writeoff,
+      });
+    }
+  } catch (e) {
+    writeoff = { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
+  auditFromContext(c, {
+    action: 'crm.deal_stage',
+    entity: 'crm_deal',
+    entityId: dealId,
+    summary: `Завершён успешно · заказ ${dealId}${amoSynced ? ' (Amo)' : ''}`,
+    before: { status_id: b.status_id, status_name: b.status_name },
+    after: {
+      status_id: result.deal.status_id,
+      status_name: result.deal.status_name,
+      amo_synced: amoSynced,
+      writeoff,
+    },
+  });
+  return c.json({
+    ok: true,
+    deal: result.deal,
+    amo_synced: amoSynced,
+    status_name: readiness.success.status_name,
+    writeoff,
+  });
 });
 
 /** Готовность к расходной / УПД+списание: структура цепочки + остатки. */
@@ -1337,6 +2032,163 @@ api.get('/transfer-orders/:id', (c) => {
   const row = getDealTransferOrderDetail(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   return c.json(row);
+});
+
+function ensureTransferOrderWarehouseTask(
+  idRaw: string,
+  actorId?: string
+): {
+  warehouse_task_id: string;
+  warehouse_task_number: string;
+  created: boolean;
+  deal_id: string;
+  from_label: string;
+  to_label: string;
+  comment: string;
+} {
+  const id = String(idRaw || '').trim();
+  if (!id) throw new Error('not found');
+  const detail = getDealTransferOrderDetail(id);
+  if (!detail) throw new Error('not found');
+
+  let taskId = String(detail.warehouse_task_id || '').trim();
+  let taskNumber = String(detail.warehouse_task_number || '').trim();
+  const dealId = String(detail.deal_id || '').trim();
+  const fromLabel = String(detail.from_label || '').trim();
+  const toLabel = String(detail.to_label || '').trim();
+  const comment =
+    String(detail.user_comment || detail.comment || '').trim() ||
+    `Перемещение ${String(detail.number || id)}`;
+
+  if (taskId) {
+    const existing = getTask(taskId);
+    if (!existing) throw new Error('Задание склада не найдено');
+    return {
+      warehouse_task_id: taskId,
+      warehouse_task_number: taskNumber || String(existing.number || ''),
+      created: false,
+      deal_id: dealId,
+      from_label: fromLabel,
+      to_label: toLabel,
+      comment,
+    };
+  }
+
+  const isSto = get<{ id: string }>(
+    `SELECT id FROM sto_transfer_requests WHERE id = ? OR number = ? LIMIT 1`,
+    [id, id]
+  );
+  if (isSto) {
+    throw new Error('У перемещения СТО нет задания кладовщику — создайте перемещение заново');
+  }
+
+  const stockDocId = String(detail.stock_doc_id || '').trim();
+  if (!stockDocId) {
+    throw new Error(
+      'Нет документа перемещения запасов. Сначала оформите заказ на перемещение (откуда → куда и товары).'
+    );
+  }
+
+  const lines = (Array.isArray(detail.lines) ? detail.lines : []) as Array<
+    Record<string, unknown>
+  >;
+  const task = createTaskFromTransfer({
+    stock_doc_id: stockDocId,
+    stock_doc_number: String(detail.stock_doc_number || ''),
+    from_label: fromLabel || 'склад',
+    to_label: toLabel || 'склад',
+    comment,
+    actor_id: actorId,
+    deal_id: dealId || undefined,
+    lines: lines.map((l) => ({
+      product_id: String(l.product_id || ''),
+      qty: Number(l.qty) || 0,
+      sku: String(l.sku || ''),
+      name: String(l.name || ''),
+    })),
+  });
+  if (!task?.id) throw new Error('Не удалось создать задание кладовщику');
+
+  taskId = String(task.id);
+  taskNumber = String(task.number || '');
+
+  const thin = get<{ payload_json: string }>(
+    `SELECT IFNULL(payload_json,'') AS payload_json FROM thin_journal_docs
+     WHERE id = ? AND journal_key = 'transfer_orders'`,
+    [id]
+  );
+  if (thin) {
+    let p: Record<string, unknown> = {};
+    try {
+      p = JSON.parse(String(thin.payload_json || '{}') || '{}') as Record<string, unknown>;
+    } catch {
+      p = {};
+    }
+    p.warehouse_task_id = taskId;
+    p.warehouse_task_number = taskNumber;
+    run(
+      `UPDATE thin_journal_docs SET payload_json = ?, updated_at = datetime('now') WHERE id = ?`,
+      [JSON.stringify(p), id]
+    );
+  }
+
+  return {
+    warehouse_task_id: taskId,
+    warehouse_task_number: taskNumber,
+    created: true,
+    deal_id: dealId,
+    from_label: fromLabel,
+    to_label: toLabel,
+    comment,
+  };
+}
+
+/** Пуш кладовщикам: пикинг по заказу на перемещение → /pick?task=… */
+api.post('/transfer-orders/:id/push-pick', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const id = c.req.param('id');
+  try {
+    ensureWebPushSchema();
+    const ensured = ensureTransferOrderWarehouseTask(id, String(actor.id || ''));
+    const push = await requestWarehousePickPush({
+      taskId: ensured.warehouse_task_id,
+      taskNumber: ensured.warehouse_task_number,
+      fromLabel: ensured.from_label,
+      toLabel: ensured.to_label,
+      dealId: ensured.deal_id,
+      transferOrderId: id,
+      comment: ensured.comment,
+    });
+    auditFromContext(c, {
+      action: 'transfer.push_pick',
+      entity: 'transfer_order',
+      entityId: id,
+      summary: `Пикинг в приложение: задание ${ensured.warehouse_task_number || ensured.warehouse_task_id}`,
+      after: {
+        warehouse_task_id: ensured.warehouse_task_id,
+        created_task: ensured.created,
+        notified: push.notified,
+        push_sent: push.push.sent,
+      },
+    });
+    return c.json({
+      ok: true,
+      warehouse_task_id: ensured.warehouse_task_id,
+      warehouse_task_number: ensured.warehouse_task_number,
+      created_task: ensured.created,
+      href: push.href,
+      notified: push.notified,
+      push: push.push,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'push-pick failed';
+    const status = msg === 'not found' ? 404 : 400;
+    return c.json({ error: msg }, status);
+  }
 });
 
 /** Досоздать недостающие документы цепочки (перемещение-черновик, операция по карте). */
@@ -1399,7 +2251,106 @@ api.post('/crm/deals/:id/items', async (c) => {
       price: result.item.price,
     },
   });
-  return c.json({ ok: true, item: result.item, deal: result.deal });
+  return c.json({
+    ok: true,
+    item: result.item,
+    deal: result.deal,
+    service_suggestions: result.service_suggestions || [],
+    auto_services: [],
+  });
+});
+
+/** Добавить выбранные услуги к позиции товара (после предложения в UI). */
+api.post('/crm/deals/:id/items/:itemId/suggested-services', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  const itemId = c.req.param('itemId');
+  const body = (await c.req.json().catch(() => ({}))) as {
+    services?: Array<{ service_product_id: string; qty?: number; price?: number }>;
+    mark?: string;
+    model?: string;
+    generation?: string;
+  };
+  const result = acceptDealItemServiceSuggestions(dealId, itemId, body.services || [], {
+    mark: body.mark,
+    model: body.model,
+    generation: body.generation,
+  });
+  if (!result.ok) {
+    const status = result.error === 'not found' ? 404 : 400;
+    return c.json({ error: result.error }, status);
+  }
+  auditFromContext(c, {
+    action: 'crm.deal_item_services_accept',
+    entity: 'crm_deal',
+    entityId: dealId,
+    summary: `Услуги к позиции: ${result.items.length}`,
+    after: { parent_item_id: itemId, count: result.items.length },
+  });
+  return c.json({ ok: true, items: result.items, deal: result.deal });
+});
+
+api.get('/products/:id/service-links', (c) => {
+  const id = c.req.param('id');
+  const row = get('SELECT id FROM products WHERE id = ?', [id]);
+  if (!row) return c.json({ error: 'not found' }, 404);
+  ensureProductServiceLinksSchema();
+  return c.json({
+    items: listProductServiceLinks(id),
+    default_install: ensureDefaultInstallService(),
+  });
+});
+
+api.put('/products/:id/service-links', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_products')) {
+    return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
+  }
+  const id = c.req.param('id');
+  const body = (await c.req.json().catch(() => ({}))) as {
+    links?: Array<{
+      service_product_id: string;
+      role?: string;
+      price_override?: number | null;
+      auto_add?: boolean;
+      qty_mode?: string;
+    }>;
+    install_price?: number | null;
+  };
+  try {
+    if (body.install_price !== undefined) {
+      const ip =
+        body.install_price === null ? 0 : Math.max(0, Number(body.install_price) || 0);
+      ensureProductServiceLinksSchema();
+      run('UPDATE products SET install_price = ? WHERE id = ?', [ip, id]);
+      if (ip > 0) linkInstallService(id, { price: ip });
+    }
+    const items =
+      body.links != null
+        ? setProductServiceLinks(id, body.links)
+        : listProductServiceLinks(id);
+    return c.json({ ok: true, items });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+api.post('/products/:id/link-install-service', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_products')) {
+    return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
+  }
+  const id = c.req.param('id');
+  const body = (await c.req.json().catch(() => ({}))) as { price?: number };
+  try {
+    const link = linkInstallService(id, { price: body.price });
+    return c.json({ ok: true, link });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
 });
 
 api.patch('/crm/deals/:id/items/:itemId', async (c) => {
@@ -1416,7 +2367,12 @@ api.patch('/crm/deals/:id/items/:itemId', async (c) => {
     action: 'crm.deal_item_update',
     entity: 'crm_deal',
     entityId: dealId,
-    summary: `Позиция ${itemId}: qty=${result.item.qty}, price=${result.item.price}`,
+    summary: (() => {
+      const name = String(result.item.name || result.item.sku || result.item.code || 'позиция').trim();
+      const qty = Number(result.item.qty) || 0;
+      const price = Number(result.item.price) || 0;
+      return `${name}: кол-во ${qty}, цена ${price.toLocaleString('ru-RU')} ₽`;
+    })(),
     after: { item_id: itemId, qty: result.item.qty, price: result.item.price },
   });
   return c.json({ ok: true, item: result.item, deal: result.deal });
@@ -1431,11 +2387,14 @@ api.delete('/crm/deals/:id/items/:itemId', async (c) => {
   const itemId = c.req.param('itemId');
   const result = deleteDealItem(dealId, itemId);
   if (!result.ok) return c.json({ error: result.error }, 404);
+  const label = String(
+    result.deleted.name || result.deleted.sku || result.deleted.code || 'позиция'
+  ).trim();
   auditFromContext(c, {
     action: 'crm.deal_item_delete',
     entity: 'crm_deal',
     entityId: dealId,
-    summary: `Удалена позиция ${itemId}`,
+    summary: `Удалена: ${label}`,
     before: { item_id: itemId },
   });
   return c.json({ ok: true, deal: result.deal });
@@ -1462,8 +2421,13 @@ api.post('/crm/deals/:id/scan-unit', async (c) => {
       action: 'crm.deal_scan_unit',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
-      summary: `Скан ${row.serial} → ${row.sku} · ${row.warehouse_name || 'склад'} · ${row.supplier_name || 'поставщик'}`,
-      after: { serial: row.serial, item_id: row.item.id, matched_by: row.matched_by },
+      summary: `Скан ${row.scan_kind === 'barcode' ? 'штрих' : 'марка'} ${row.serial} → ${row.sku} · ${row.warehouse_name || 'склад'} · ${row.supplier_name || 'поставщик'}`,
+      after: {
+        serial: row.serial,
+        item_id: row.item.id,
+        matched_by: row.matched_by,
+        scan_kind: row.scan_kind,
+      },
     });
     return c.json(row);
   } catch (e) {
@@ -1489,6 +2453,39 @@ api.patch('/crm/deals/:id/stage', async (c) => {
   if (!before) return c.json({ error: 'not found' }, 404);
   const b = before as Record<string, unknown>;
 
+  // «Успешно реализовано» — только при оплате (и ЗН на месте), не для наложки/кредита
+  const successTarget = findSuccessStatusForDeal(dealId);
+  const goingSuccess =
+    !!successTarget && rawStatusId(statusId) === rawStatusId(successTarget.statusId);
+  if (goingSuccess) {
+    const rules = buildDealSaleRules(b);
+    const scheme = String(rules.payment_scheme || '');
+    const allowUnpaidClose = scheme === 'cod' || scheme === 'credit';
+    const split = getDealPaymentSplit(dealId);
+    if (!allowUnpaidClose && (Number(split.due_total) > 0.009 || (Number(split.total) > 0.009 && !dealIsPaid(dealId)))) {
+      return c.json(
+        {
+          error:
+            'Нельзя закрыть заказ покупателя: деньги от клиента ещё не приняты. Перемещение до оплаты можно — закрытие только после оплаты.',
+        },
+        400
+      );
+    }
+    if (dealNeedsWorkorderBeforePayment(b)) {
+      const gate = getDealWorkorderGate({ ...b, id: dealId });
+      if (!gate.ok) {
+        return c.json(
+          {
+            error:
+              gate.error ||
+              'Нельзя закрыть заказ: оформите и распечатайте заказ-наряд',
+          },
+          400
+        );
+      }
+    }
+  }
+
   const pipelineId = String(body.pipeline_id || b.pipeline_id || '').trim();
   const amoId = String(dealId).replace(/\D/g, '');
   let amoSynced = false;
@@ -1507,7 +2504,7 @@ api.patch('/crm/deals/:id/stage', async (c) => {
         502
       );
     }
-    amoSynced = true;
+    amoSynced = !amo.skipped;
   }
 
   const result = updateDealStage(dealId, {
@@ -1516,6 +2513,30 @@ api.patch('/crm/deals/:id/stage', async (c) => {
     pipelineId,
   });
   if (!result.ok) return c.json({ error: result.error }, 404);
+
+  let writeoff: Record<string, unknown> | null = null;
+  if (goingSuccess) {
+    try {
+      writeoff = writeOffStoOnDealSuccess(dealId, {
+        createdBy: actor
+          ? actorDisplayName(actor) || actor.login || 'Учёт №1'
+          : 'Учёт №1',
+        requireSuccess: true,
+      }) as Record<string, unknown>;
+      if (writeoff?.written_off) {
+        auditFromContext(c, {
+          action: 'deal.sto_sale_writeoff',
+          entity: 'crm_deal',
+          entityId: dealId,
+          summary: `Списание по продаже со СТО · ${writeoff.stock_doc_number || ''}`,
+          after: writeoff,
+        });
+      }
+    } catch (e) {
+      writeoff = { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   auditFromContext(c, {
     action: 'crm.deal_stage',
     entity: 'crm_deal',
@@ -1526,9 +2547,10 @@ api.patch('/crm/deals/:id/stage', async (c) => {
       status_id: result.deal.status_id,
       status_name: result.deal.status_name,
       amo_synced: amoSynced,
+      writeoff,
     },
   });
-  return c.json({ ok: true, deal: result.deal, amo_synced: amoSynced });
+  return c.json({ ok: true, deal: result.deal, amo_synced: amoSynced, writeoff });
 });
 
 /** QR СБП на оплату заказа (Точка через bank). */
@@ -1648,7 +2670,7 @@ api.post('/crm/deals/:id/mark-paid', async (c) => {
   }
 });
 
-/** Покупатель заказа (ИНН / ФИО) — для УПД и документов, с пушем имени в Amo. */
+/** Покупатель заказа (тип / ФИО / ИНН / телефон) — для УПД и документов, с пушем в Amo. */
 api.patch('/crm/deals/:id/buyer', async (c) => {
   const actor = actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
@@ -1658,19 +2680,75 @@ api.patch('/crm/deals/:id/buyer', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     buyer_name?: string;
     buyer_inn?: string;
+    buyer_phone?: string;
+    buyer_email?: string;
+    buyer_address?: string;
+    buyer_passport?: string;
+    buyer_kpp?: string;
+    buyer_ogrn?: string;
+    buyer_director?: string;
+    buyer_bank?: string;
+    buyer_bik?: string;
+    buyer_rs?: string;
+    buyer_ks?: string;
+    buyer_vat?: string;
+    buyer_vat_rate?: number | string;
     company_name?: string;
+    company_id?: string;
     is_legal_entity?: boolean | number;
     buyer_kind?: string;
+    is_partner?: boolean | number;
+    client_role?: string;
   };
   try {
+    // Без выбора из списка — сбрасываем привязку, чтобы найти по телефону/ИНН или создать нового
+    if (body.company_id === undefined || String(body.company_id || '').trim() === '') {
+      body.company_id = '';
+    }
     updateDealBuyer(dealId, body);
+    const dealBefore = getDeal(dealId);
+    const existedId = resolveCounterpartyIdForDeal(dealBefore as Record<string, unknown> | null);
     const deal = getDeal(dealId);
     const cpId = ensureCounterpartyForDeal(deal as Record<string, unknown> | null);
+    const created = !!cpId && !existedId;
     if (cpId) {
+      const kind = String(body.buyer_kind || (deal as { buyer_kind?: string })?.buyer_kind || '')
+        .trim()
+        .toLowerCase();
+      const roleRaw = String(
+        body.client_role || (deal as { client_role?: string })?.client_role || ''
+      )
+        .trim()
+        .toLowerCase();
       const name = String(body.buyer_name || body.company_name || '').trim();
       const inn = String(body.buyer_inn || '').replace(/\D/g, '');
+      const phone = String(body.buyer_phone || '').trim();
+      const email = String(body.buyer_email || '').trim();
+      const address = String(body.buyer_address || '').trim();
+      const kpp = String(body.buyer_kpp || '').replace(/\D/g, '');
+      const ogrn = String(body.buyer_ogrn || '').replace(/\D/g, '');
+      const director = String(body.buyer_director || '').trim();
+      const bank = String(body.buyer_bank || '').trim();
+      const bik = String(body.buyer_bik || '').replace(/\D/g, '');
+      const rs = String(body.buyer_rs || '').replace(/\D/g, '');
+      const ks = String(body.buyer_ks || '').replace(/\D/g, '');
+      const partyKind = ['person', 'ip', 'legal'].includes(kind)
+        ? kind
+        : kind === 'partner' || kind === 'partner_delay'
+          ? ''
+          : '';
+      const isPartner =
+        roleRaw === 'partner' ||
+        roleRaw === 'partner_delay' ||
+        kind === 'partner' ||
+        kind === 'partner_delay' ||
+        Number(body.is_partner) === 1
+          ? 1
+          : body.is_partner != null || body.client_role != null
+            ? 0
+            : null;
       const sets: string[] = [];
-      const params: string[] = [];
+      const params: Array<string | number> = [];
       if (name) {
         sets.push('name = ?');
         params.push(name);
@@ -1679,25 +2757,109 @@ api.patch('/crm/deals/:id/buyer', async (c) => {
         sets.push('inn = ?');
         params.push(inn);
       }
+      if (phone) {
+        sets.push('phone = ?');
+        params.push(phone);
+      }
+      if (email) {
+        sets.push('email = ?');
+        params.push(email);
+      }
+      if (address) {
+        sets.push('address = ?');
+        params.push(address);
+      }
+      if (body.buyer_kpp != null) {
+        sets.push('kpp = ?');
+        params.push(kpp);
+      }
+      if (body.buyer_ogrn != null) {
+        sets.push('ogrn = ?');
+        params.push(ogrn);
+      }
+      if (body.buyer_director != null) {
+        sets.push('director = ?');
+        params.push(director);
+      }
+      if (body.buyer_bank != null) {
+        sets.push('bank = ?');
+        params.push(bank);
+      }
+      if (body.buyer_bik != null) {
+        sets.push('bik = ?');
+        params.push(bik);
+      }
+      if (body.buyer_rs != null) {
+        sets.push('rs = ?');
+        params.push(rs);
+      }
+      if (body.buyer_ks != null) {
+        sets.push('ks = ?');
+        params.push(ks);
+      }
+      if (partyKind) {
+        sets.push('party_kind = ?');
+        params.push(partyKind);
+      }
+      if (isPartner != null) {
+        sets.push('is_partner = ?');
+        params.push(isPartner);
+      }
       if (sets.length) {
         params.push(cpId);
         run(`UPDATE counterparties SET ${sets.join(', ')} WHERE id = ?`, params);
       }
-      if (name) {
+      if (name || phone || inn || bank) {
         await pushCounterpartyToAmo({
           counterpartyId: cpId,
-          buyer: { name, inn },
+          buyer: {
+            name,
+            inn,
+            phone,
+            email,
+            address,
+            kpp,
+            ogrn,
+            director,
+            bank,
+            bik,
+            rs,
+            ks,
+          },
           forceName: true,
         });
       }
     }
     const pushName = String(body.buyer_name || body.company_name || '').trim();
-    if (pushName) {
+    if (
+      pushName ||
+      body.buyer_inn ||
+      body.buyer_phone ||
+      body.buyer_email ||
+      body.buyer_address ||
+      body.buyer_kpp != null ||
+      body.buyer_ogrn != null ||
+      body.buyer_director != null ||
+      body.buyer_bank != null ||
+      body.buyer_bik != null ||
+      body.buyer_rs != null ||
+      body.buyer_ks != null
+    ) {
       await pushContractBuyerToAmoContact({
         dealId,
         buyer: {
           name: pushName,
           inn: String(body.buyer_inn || '').replace(/\D/g, ''),
+          phone: String(body.buyer_phone || '').trim(),
+          email: String(body.buyer_email || '').trim(),
+          address: String(body.buyer_address || '').trim(),
+          kpp: String(body.buyer_kpp || '').replace(/\D/g, ''),
+          ogrn: String(body.buyer_ogrn || '').replace(/\D/g, ''),
+          director: String(body.buyer_director || '').trim(),
+          bank: String(body.buyer_bank || '').trim(),
+          bik: String(body.buyer_bik || '').replace(/\D/g, ''),
+          rs: String(body.buyer_rs || '').replace(/\D/g, ''),
+          ks: String(body.buyer_ks || '').replace(/\D/g, ''),
         },
         forceName: true,
       });
@@ -1706,12 +2868,20 @@ api.patch('/crm/deals/:id/buyer', async (c) => {
       action: 'deal.buyer_update',
       entity: 'crm_deal',
       entityId: dealId,
-      summary: `Покупатель заказа: ${pushName || '—'} · ИНН ${
-        String(body.buyer_inn || '').replace(/\D/g, '') || '—'
+      summary: `Покупатель: ${pushName || '—'} · тип ${
+        String(body.buyer_kind || '').trim() || '—'
+      } · роль ${String(body.client_role || '').trim() || '—'} · ИНН ${String(body.buyer_inn || '').replace(/\D/g, '') || '—'} · ${
+        created ? 'новый контрагент' : 'существующий'
       }`,
-      after: body,
+      after: { ...body, counterparty_id: cpId, created },
     });
-    return c.json({ ok: true, deal: getDeal(dealId), counterparty_id: cpId });
+    return c.json({
+      ok: true,
+      deal: getDeal(dealId),
+      counterparty_id: cpId,
+      created,
+      reused: !!cpId && !created,
+    });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -1730,23 +2900,26 @@ api.post('/crm/deals/:id/accept-cash', async (c) => {
     skip_cash_doc?: boolean;
   };
   try {
+    const who = String(actor?.name || actor?.login || '').trim();
     const r = acceptDealCashPayment({
       dealId: c.req.param('id'),
       amount: body.amount,
       covers: body.covers,
       cash_register_id: body.cash_register_id,
       skip_cash_doc: body.skip_cash_doc === true,
-      actorName: actor?.name || actor?.login || '',
+      actorName: who,
+      actorId: actor?.id && actor.id !== '__admin__' ? actor.id : undefined,
     });
     auditFromContext(c, {
       action: 'deal.accept_cash',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
-      summary: `Принято налом (${r.covers || 'all'}) · сделка ${c.req.param('id')} · ${r.payment?.amount ?? ''}`,
+      summary: `Наличные (${r.covers === 'services' ? 'работы' : r.covers === 'goods' ? 'товар' : 'всё'}) · ${r.payment?.amount ?? ''} ₽ · принял ${who || '—'} · сделка ${c.req.param('id')}`,
       after: {
         payment_id: r.payment?.id,
         amount: r.payment?.amount,
         covers: r.covers,
+        accepted_by: who || null,
         cash_doc_id: r.cash_doc?.id,
         cash_doc_error: r.cash_doc_error,
         payment_status: r.payment_status,
@@ -1759,19 +2932,9 @@ api.post('/crm/deals/:id/accept-cash', async (c) => {
   }
 });
 
-/**
- * Webhook / poll ingest: банк или cron помечает оплату по qrc_id / deal_id.
- * Auth: X-Wms-Key = BANK_SBP_KEY | WMS_BANK_API_KEY | INGEST_KEY.
- */
+// Webhook оплаты: X-Wms-Key / ?key= — ключ клиента (scope payment) или env BANK / WMS_INGEST_KEY.
 api.post('/webhooks/payment-paid', async (c) => {
-  const key = (c.req.header('X-Wms-Key') || c.req.query('key') || '').trim();
-  const expect = (
-    process.env.BANK_SBP_KEY ||
-    process.env.WMS_BANK_API_KEY ||
-    process.env.INGEST_KEY ||
-    ''
-  ).trim();
-  if (!expect || key !== expect) return c.json({ error: 'unauthorized' }, 401);
+  if (!machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as {
     payment_id?: string;
     deal_id?: string;
@@ -1790,20 +2953,64 @@ api.post('/webhooks/payment-paid', async (c) => {
   }
 });
 
+/** Т‑Банк Forma (рассрочка): уведомления signed/approved → оплата + колокольчик. */
+api.post('/webhooks/tbank-forma', async (c) => {
+  if (!machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  try {
+    const { applyTbankFormaWebhook } = await import('./tbank-forma.js');
+    const r = applyTbankFormaWebhook(body);
+    auditFromContext(c, {
+      action: 'webhook.tbank_forma',
+      entity: 'crm_deal',
+      entityId: String((r as { deal_id?: string }).deal_id || ''),
+      summary: `Forma · ${(r as { action?: string }).action || ''} · ${(r as { status?: string }).status || ''}`,
+      after: r as Record<string, unknown>,
+    });
+    return c.json(r);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'tbank forma failed' }, 400);
+  }
+});
+
+api.get('/notifications', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor?.id) return c.json({ error: 'unauthorized' }, 401);
+  const { listStaffNotifications } = await import('./staff-notifications.js');
+  return c.json(listStaffNotifications(actor.id, { limit: Number(c.req.query('limit') || 20) || 20 }));
+});
+
+/** Начальная страница: очередь задач по роли (фото / склад / курьер). Админ — всё. */
+api.get('/home/inbox', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    const { buildHomeInbox } = await import('./home-inbox.js');
+    const companyId = String(c.req.query('company_id') || '').trim();
+    return c.json(buildHomeInbox(actor, { companyId }));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'inbox' }, 500);
+  }
+});
+
+api.post('/notifications/read', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor?.id) return c.json({ error: 'unauthorized' }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: string[] };
+  const { markStaffNotificationsRead, listStaffNotifications } = await import(
+    './staff-notifications.js'
+  );
+  markStaffNotificationsRead(actor.id, body.ids);
+  return c.json(listStaffNotifications(actor.id, { limit: 20 }));
+});
+
 /**
  * Хук AmoCRM: изменения сделок / контактов (товары — SQL amo1c).
- * Auth: ?key= или X-Wms-Key / x-wms-ingest-key = WMS_INGEST_KEY.
+ * Auth: ?key= или X-Wms-Key / x-wms-ingest-key — ключ клиента (scope webhook) или env.
  * Amo шлёт form-urlencoded — отвечаем быстро «OK».
  */
 api.post('/webhooks/amo', async (c) => {
-  const expect = amoWebhookSecret();
-  const key = (
-    c.req.query('key') ||
-    c.req.header('X-Wms-Key') ||
-    c.req.header('x-wms-ingest-key') ||
-    ''
-  ).trim();
-  if (!expect || key !== expect) {
+  if (!machineApiKeyOk(c, 'webhook')) {
     return c.json({ error: 'unauthorized' }, 401);
   }
 
@@ -1828,14 +3035,23 @@ api.post('/webhooks/amo', async (c) => {
   }
   const parsed = parseAmoWebhookPayload(body, formKeys);
   recordAmoWebhookHit(parsed);
+  // Amo → Учёт: подтянуть сделки в фоне (канал / СТО / статусы), не блокируя ответ хука
+  const dealIds =
+    parsed.entities.includes('deals') || parsed.entities.includes('other')
+      ? parsed.ids.map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean).slice(0, 15)
+      : [];
+  if (dealIds.length) {
+    // Отдельный процесс: syncDealsFromAmo1c внутри setImmediate блокировал весь Учёт на 5–60с
+    for (const dealId of dealIds) {
+      syncDealFromAmo1cBackground(dealId);
+    }
+  }
   // Amo отключает медленные хуки — короткий ответ
   return c.text('OK', 200, { 'Content-Type': 'text/plain; charset=utf-8' });
 });
 
 api.get('/webhooks/amo', (c) => {
-  const expect = amoWebhookSecret();
-  const key = (c.req.query('key') || c.req.header('X-Wms-Key') || '').trim();
-  if (!expect || key !== expect) return c.json({ error: 'unauthorized' }, 401);
+  if (!machineApiKeyOk(c, 'webhook')) return c.json({ error: 'unauthorized' }, 401);
   return c.json({
     ok: true,
     enabled: isAmoWebhookEnabled(),
@@ -1872,18 +3088,10 @@ api.post('/payments/poll-tochka', async (c) => {
 
 /**
  * Cron: опрос всех незакрытых QR за 14 дней.
- * Auth: X-Wms-Key = BANK_SBP_KEY | WMS_BANK_API_KEY | INGEST_KEY | WMS_INGEST_KEY.
+ * Auth: X-Wms-Key / ?key= — ключ клиента (payment) или env.
  */
 api.post('/cron/poll-sbp', async (c) => {
-  const key = (c.req.header('X-Wms-Key') || c.req.query('key') || '').trim();
-  const expect = (
-    process.env.BANK_SBP_KEY ||
-    process.env.WMS_BANK_API_KEY ||
-    process.env.WMS_INGEST_KEY ||
-    process.env.INGEST_KEY ||
-    ''
-  ).trim();
-  if (!expect || key !== expect) return c.json({ error: 'unauthorized' }, 401);
+  if (!machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
   try {
     const r = await pollPendingSbpPayments({ limit: 50 });
     return c.json(r);
@@ -1892,15 +3100,7 @@ api.post('/cron/poll-sbp', async (c) => {
   }
 });
 api.get('/cron/poll-sbp', async (c) => {
-  const key = (c.req.header('X-Wms-Key') || c.req.query('key') || '').trim();
-  const expect = (
-    process.env.BANK_SBP_KEY ||
-    process.env.WMS_BANK_API_KEY ||
-    process.env.WMS_INGEST_KEY ||
-    process.env.INGEST_KEY ||
-    ''
-  ).trim();
-  if (!expect || key !== expect) return c.json({ error: 'unauthorized' }, 401);
+  if (!machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
   try {
     const r = await pollPendingSbpPayments({ limit: 50 });
     return c.json(r);
@@ -1916,15 +3116,19 @@ function cronAuthOk(c: {
     query: (n: string) => string | undefined;
   };
 }): boolean {
-  const key = (c.req.header('X-Wms-Key') || c.req.query('key') || '').trim();
-  const expect = (
-    process.env.BANK_SBP_KEY ||
-    process.env.WMS_BANK_API_KEY ||
-    process.env.WMS_INGEST_KEY ||
-    process.env.INGEST_KEY ||
-    ''
-  ).trim();
-  return Boolean(expect && key && key === expect);
+  return Boolean(machineApiKeyOk(c, 'payment'));
+}
+
+/** Виджет Amo / machine key — создание и PDF документов продажи. */
+function salesDocsWidgetAuthOk(c: Context): boolean {
+  if (machineApiKeyOk(c, 'payment')) return true;
+  const actor = actorFromContext(c);
+  return !!(actor && (canDo(actor, 'can_edit_docs') || actor.role === 'admin'));
+}
+
+/** Виджет Amo / machine key — промежуточная ссылка на оплату с резервом. */
+function paymentLinkWidgetAuthOk(c: Context): boolean {
+  return salesDocsWidgetAuthOk(c);
 }
 
 api.post('/cron/expire-payment-reserves', (c) => {
@@ -1958,10 +3162,21 @@ api.get('/cron/sync-cbr-rates', async (c) => {
   }
 });
 
+/** Cron: списание со СТО по успешным сделкам (Автосервис / Самовывоз). */
+api.post('/cron/sto-sale-writeoffs', (c) => {
+  if (!cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
+  const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 80) || 80));
+  return c.json(runStoSaleWriteoffCron(limit));
+});
+api.get('/cron/sto-sale-writeoffs', (c) => {
+  if (!cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
+  const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 80) || 80));
+  return c.json(runStoSaleWriteoffCron(limit));
+});
+
 /** Создать / получить активную промежуточную ссылку на оплату по сделке. */
 api.post('/crm/deals/:id/payment-link', async (c) => {
-  const actor = actorFromContext(c);
-  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+  if (!paymentLinkWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -1970,9 +3185,10 @@ api.post('/crm/deals/:id/payment-link', async (c) => {
     source_warehouse_id?: string;
     organization_id?: string;
   };
+  const dealId = c.req.param('id');
   try {
     const r = await createPaymentLinkFromDeal({
-      dealId: c.req.param('id'),
+      dealId,
       timerMinutes: body.timer_minutes,
       reserve: body.reserve,
       sourceWarehouseId: body.source_warehouse_id,
@@ -1982,28 +3198,59 @@ api.post('/crm/deals/:id/payment-link', async (c) => {
       action: 'deal.payment_link',
       entity: 'payment_link',
       entityId: String(r.link.id || ''),
-      summary: `Ссылка на оплату по заказу ${c.req.param('id')}: ${r.url}`,
-      after: { url: r.url, token: r.link.token, expires_at: r.link.expires_at },
+      summary: `Ссылка на оплату по заказу ${dealId}: ${r.url}`,
+      after: { url: r.url, token: r.link.token, expires_at: r.link.expires_at, source: 'wms' },
     });
     return c.json({
       ok: true,
       url: r.url,
+      widget_url: amoWidgetPayUrl({
+        dealId,
+        organizationId: body.organization_id || String(r.link.organization_id || ''),
+      }),
       link: r.link,
       payment: r.payment,
       reserves: r.reserves,
       acquiring: r.acquiring,
+      source: 'wms',
     });
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : 'payment-link failed' }, 400);
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ error: msg || 'payment-link failed' }, 400);
   }
 });
 
 api.get('/crm/deals/:id/payment-links', (c) => {
-  const items = listPaymentLinksForDeal(c.req.param('id')).map((row) => ({
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const widgetUrl = amoWidgetPayUrl({
+    dealId,
+    organizationId: deal ? organizationIdForDealRecord(deal) : undefined,
+  });
+  const items = listPaymentLinksForDeal(dealId).map((row) => ({
     ...row,
     url: paymentLinkPublicUrl(String((row as { token: string }).token)),
   }));
-  return c.json({ items });
+  return c.json({ items, widget_url: widgetUrl });
+});
+
+/** SMS клиенту со ссылкой на оплату (создаст ссылку, если ещё нет активной). */
+api.post('/crm/deals/:id/payment-link/sms', async (c) => {
+  if (!paymentLinkWidgetAuthOk(c)) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    organization_id?: string;
+  };
+  try {
+    const r = await sendPaymentLinkSms({
+      dealId: c.req.param('id'),
+      organizationId: body.organization_id,
+    });
+    return c.json(r, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'sms failed' }, 400);
+  }
 });
 
 /** Публичная страница оплаты (JSON). */
@@ -2011,6 +3258,73 @@ api.get('/public/pay/:token', (c) => {
   const view = getPublicPaymentLinkView(c.req.param('token'));
   if (!view) return c.json({ error: 'not found' }, 404);
   return c.json(view);
+});
+
+/** Публичное согласие ПДн (SMS-подпись). */
+api.get('/public/pdn/:token', async (c) => {
+  const token = c.req.param('token');
+  const session = getPdnSignByToken(token);
+  if (!session) return c.json({ error: 'not found' }, 404);
+  try {
+    await markPdnOpened(c, token);
+  } catch {
+    /* уже открыто / истекло — всё равно отдать view */
+  }
+  const fresh = getPdnSignByToken(token);
+  if (!fresh) return c.json({ error: 'not found' }, 404);
+  return c.json(publicPdnView(fresh));
+});
+
+api.get('/public/pdn/:token/suggest-fio', async (c) => {
+  const token = c.req.param('token');
+  const session = getPdnSignByToken(token);
+  if (!session) return c.json({ error: 'not found' }, 404);
+  if (session.status === 'expired' || session.status === 'revoked' || session.status === 'signed') {
+    return c.json({ items: [] });
+  }
+  const q = String(c.req.query('q') || '').trim();
+  const count = Math.min(8, Math.max(1, Number(c.req.query('count')) || 6));
+  try {
+    const items = await suggestFio(q, count);
+    return c.json({ items });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'dadata failed' }, 400);
+  }
+});
+
+api.post('/public/pdn/:token/request-code', async (c) => {
+  let body: { identity?: unknown } = {};
+  try {
+    body = (await c.req.json()) as { identity?: unknown };
+  } catch {
+    body = {};
+  }
+  try {
+    const r = await requestPdnSignCode(c, c.req.param('token'), body.identity);
+    return c.json(r);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'failed' }, 400);
+  }
+});
+
+api.post('/public/pdn/:token/confirm', async (c) => {
+  let body: { code?: string; identity?: unknown } = {};
+  try {
+    body = (await c.req.json()) as { code?: string; identity?: unknown };
+  } catch {
+    body = {};
+  }
+  try {
+    const r = await confirmPdnSignCode(
+      c,
+      c.req.param('token'),
+      String(body.code || ''),
+      body.identity
+    );
+    return c.json(r);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'failed' }, 400);
+  }
 });
 
 api.get('/public/pay/:token/qr.png', (c) => {
@@ -2097,21 +3411,12 @@ api.post('/public/yandex-pay/webhook', async (c) => {
   }
 });
 
-/** Клиент меняет qty / убирает товары из наличия на странице оплаты. */
+/** Клиент меняет qty / убирает товары — отключено (состав только из заказа). */
 api.patch('/public/pay/:token/items', async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as {
-    items?: Array<{ id?: string; qty?: number }>;
-  };
-  try {
-    const r = await updatePublicPaymentLinkItems(c.req.param('token'), body.items || []);
-    if (!r.ok) {
-      const status = (r.status || 400) as 400 | 404 | 502;
-      return c.json({ ok: false, error: r.error }, status);
-    }
-    return c.json({ ok: true, ...r.view });
-  } catch (e) {
-    return c.json({ ok: false, error: e instanceof Error ? e.message : 'error' }, 400);
-  }
+  return c.json(
+    { ok: false, error: 'Изменение количества на странице оплаты отключено' },
+    403
+  );
 });
 
 /** После снятия резерва: проверить остатки и снова зарезервировать (новая /pay). */
@@ -2168,6 +3473,59 @@ api.post('/public/pay/:token/question', async (c) => {
 
 api.get('/fiscal/status', (c) => c.json(atolStatusInfo()));
 
+/** Разовая панель: чек коррекции (неприменение ККТ / предписание ФНС). */
+api.post('/fiscal/correction', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    deal_id?: string;
+    operation?: 'sell_correction' | 'buy_correction';
+    correction_type?: 'instruction' | 'self';
+    base_date?: string;
+    base_number?: string;
+    base_name?: string;
+    amount?: number;
+    payment_type?: 1 | 2;
+    vat_type?: string;
+    client_email?: string;
+    client_phone?: string;
+    send?: boolean;
+  };
+  try {
+    const receipt = await prepareOrSendFiscalCorrection({
+      dealId: body.deal_id,
+      operation: body.operation,
+      correction_type: body.correction_type,
+      base_date: String(body.base_date || ''),
+      base_number: String(body.base_number || ''),
+      base_name: body.base_name,
+      amount: Number(body.amount),
+      payment_type: body.payment_type,
+      vat_type: body.vat_type,
+      client_email: body.client_email,
+      client_phone: body.client_phone,
+      send: body.send !== false,
+    });
+    auditFromContext(c, {
+      action: 'fiscal.correction',
+      entity: body.deal_id ? 'crm_deal' : 'fiscal_receipt',
+      entityId: body.deal_id || String(receipt?.id || ''),
+      summary: `Чек коррекции ${body.operation || 'sell_correction'}: ${receipt?.status}`,
+      after: {
+        receipt_id: receipt?.id,
+        status: receipt?.status,
+        amount: receipt?.amount,
+        atol_uuid: receipt?.atol_uuid,
+      },
+    });
+    return c.json({ ok: true, receipt, atol: atolStatusInfo() });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'correction failed' }, 400);
+  }
+});
+
 api.get('/crm/deals/:id/fiscal', (c) =>
   c.json({ items: listFiscalReceipts(c.req.param('id')), atol: atolStatusInfo() })
 );
@@ -2175,7 +3533,8 @@ api.get('/crm/deals/:id/fiscal', (c) =>
 /** Чек 1 / 2 / возврат. send по умолчанию true. */
 api.post('/crm/deals/:id/fiscal/:kind', async (c) => {
   const actor = actorFromContext(c);
-  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+  const machinePay = machineApiKeyOk(c, 'payment');
+  if (!machinePay && (!actor || (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin'))) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const kind = c.req.param('kind');
@@ -2186,6 +3545,8 @@ api.post('/crm/deals/:id/fiscal/:kind', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     send?: boolean;
     parent_receipt_id?: string;
+    client_phone?: string;
+    legal_entity?: string;
   };
   try {
     const receipt = await prepareOrSendFiscalReceipt({
@@ -2193,6 +3554,8 @@ api.post('/crm/deals/:id/fiscal/:kind', async (c) => {
       kind: kind as (typeof allowed)[number],
       send: body.send !== false,
       parent_receipt_id: body.parent_receipt_id,
+      client_phone: body.client_phone,
+      legal_entity: body.legal_entity,
     });
     auditFromContext(c, {
       action: 'fiscal.receipt',
@@ -2216,6 +3579,241 @@ api.get('/fiscal/receipts/:id', (c) => {
   const row = getFiscalReceipt(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   return c.json(row);
+});
+
+/** Отметка: деньги по возврату уже вернули покупателю (Точка/банк вручную). */
+api.post('/crm/deals/:id/money-refunded', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  let body: { actor_name?: string } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+  const actorName =
+    String(body.actor_name || '').trim() ||
+    String(actor?.name || actor?.login || '');
+  try {
+    const { markDealMoneyRefunded } = await import('./return-money.js');
+    const result = markDealMoneyRefunded(c.req.param('id'), {
+      id: String(actor?.id || ''),
+      name: actorName,
+    });
+    auditFromContext(c, {
+      action: 'deal.money_refunded',
+      entity: 'crm_deal',
+      entityId: c.req.param('id'),
+      summary: `Деньги возвращены по заказу ${c.req.param('id')}${
+        result.closed_tvd ? ` · закрыто ТВД: ${result.closed_tvd}` : ''
+      }`,
+      after: result,
+    });
+    return c.json({ ok: true, ...result, deal: getDeal(c.req.param('id')) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+api.delete('/crm/deals/:id/money-refunded', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  try {
+    const { clearDealMoneyRefunded } = await import('./return-money.js');
+    const result = clearDealMoneyRefunded(c.req.param('id'));
+    auditFromContext(c, {
+      action: 'deal.money_refunded_clear',
+      entity: 'crm_deal',
+      entityId: c.req.param('id'),
+      summary: `Снята отметка «деньги возвращены» · заказ ${c.req.param('id')}`,
+      after: result,
+    });
+    return c.json({ ok: true, deal_id: result.deal_id, deal: getDeal(c.req.param('id')) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** Варианты возврата денег через Точку (СБП / карта / ПП на подпись). */
+api.get('/crm/deals/:id/tochka-refund/options', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  try {
+    const { getDealRefundOptions } = await import('./tochka-refunds.js');
+    return c.json({ ok: true, ...getDealRefundOptions(c.req.param('id')) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** Возврат по тому же СБП / карте (эквайринг). */
+api.post('/crm/deals/:id/tochka-refund', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    channel?: 'auto' | 'sbp' | 'acquiring';
+    amount?: number;
+    purpose?: string;
+    account_code?: string;
+    mark_done?: boolean;
+  };
+  try {
+    const { refundDealOriginal } = await import('./tochka-refunds.js');
+    const result = await refundDealOriginal({
+      dealId: c.req.param('id'),
+      channel: body.channel || 'auto',
+      amount: body.amount,
+      purpose: body.purpose,
+      accountCode: body.account_code,
+      markDone: body.mark_done !== false,
+      actor: { id: String(actor?.id || ''), name: String(actor?.name || actor?.login || '') },
+    });
+    auditFromContext(c, {
+      action: 'deal.tochka_refund',
+      entity: 'crm_deal',
+      entityId: c.req.param('id'),
+      summary: `Возврат Точка (${result.channel}) · ${result.amount} ₽ · заказ ${c.req.param('id')}`,
+      after: result,
+    });
+    return c.json({ ...result, deal: getDeal(c.req.param('id')) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** Платёжное поручение на подпись в Точке (безнал / ТВД). */
+api.post('/crm/deals/:id/tochka-payment-for-sign', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    amount?: number;
+    purpose?: string;
+    tvd_id?: string;
+    counterparty_name?: string;
+    counterparty_inn?: string;
+    counterparty_bik?: string;
+    counterparty_rs?: string;
+    counterparty_kpp?: string;
+    counterparty_ks?: string;
+    account_code?: string;
+    bank_code?: string;
+    customer_code?: string;
+  };
+  try {
+    const { createDealPaymentForSign } = await import('./tochka-refunds.js');
+    const result = await createDealPaymentForSign({
+      dealId: c.req.param('id'),
+      amount: body.amount,
+      purpose: body.purpose,
+      tvdId: body.tvd_id,
+      counterpartyName: body.counterparty_name,
+      counterpartyInn: body.counterparty_inn,
+      counterpartyBik: body.counterparty_bik,
+      counterpartyRs: body.counterparty_rs,
+      counterpartyKpp: body.counterparty_kpp,
+      counterpartyKs: body.counterparty_ks,
+      accountCode: body.account_code,
+      bankCode: body.bank_code,
+      customerCode: body.customer_code,
+      actor: { id: String(actor?.id || ''), name: String(actor?.name || actor?.login || '') },
+    });
+    auditFromContext(c, {
+      action: 'deal.tochka_payment_for_sign',
+      entity: 'crm_deal',
+      entityId: c.req.param('id'),
+      summary: `ПП на подпись Точка · ${result.amount} ₽ · заказ ${c.req.param('id')}`,
+      after: { request_id: result.request_id, redirect_url: result.redirect_url },
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** ТВД → ПП на подпись / возврат по исх. платежу. */
+api.post('/parity/journals/money_refund_requests/:id/tochka-payment-for-sign', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  try {
+    const { loadTvdDealId, createDealPaymentForSign } = await import('./tochka-refunds.js');
+    const tvd = loadTvdDealId(c.req.param('id'));
+    const result = await createDealPaymentForSign({
+      dealId: tvd.deal_id,
+      amount: body.amount != null ? Number(body.amount) : tvd.amount,
+      purpose: String(body.purpose || `Возврат по ТВД ${tvd.number}`),
+      tvdId: c.req.param('id'),
+      counterpartyName: body.counterparty_name != null ? String(body.counterparty_name) : undefined,
+      counterpartyInn: body.counterparty_inn != null ? String(body.counterparty_inn) : undefined,
+      counterpartyBik: body.counterparty_bik != null ? String(body.counterparty_bik) : undefined,
+      counterpartyRs: body.counterparty_rs != null ? String(body.counterparty_rs) : undefined,
+      counterpartyKpp: body.counterparty_kpp != null ? String(body.counterparty_kpp) : undefined,
+      counterpartyKs: body.counterparty_ks != null ? String(body.counterparty_ks) : undefined,
+      accountCode: body.account_code != null ? String(body.account_code) : undefined,
+      bankCode: body.bank_code != null ? String(body.bank_code) : undefined,
+      customerCode: body.customer_code != null ? String(body.customer_code) : undefined,
+      actor: { id: String(actor?.id || ''), name: String(actor?.name || actor?.login || '') },
+    });
+    auditFromContext(c, {
+      action: 'tvd.tochka_payment_for_sign',
+      entity: 'money_refund_request',
+      entityId: c.req.param('id'),
+      summary: `ТВД ${tvd.number} → ПП на подпись · ${result.amount} ₽`,
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+api.post('/parity/journals/money_refund_requests/:id/tochka-refund', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    channel?: 'auto' | 'sbp' | 'acquiring';
+    amount?: number;
+    purpose?: string;
+    account_code?: string;
+    mark_done?: boolean;
+  };
+  try {
+    const { loadTvdDealId, refundDealOriginal } = await import('./tochka-refunds.js');
+    const tvd = loadTvdDealId(c.req.param('id'));
+    const result = await refundDealOriginal({
+      dealId: tvd.deal_id,
+      channel: body.channel || 'auto',
+      amount: body.amount != null ? body.amount : tvd.amount,
+      purpose: body.purpose || `Возврат по ТВД ${tvd.number}`,
+      accountCode: body.account_code,
+      markDone: body.mark_done !== false,
+      actor: { id: String(actor?.id || ''), name: String(actor?.name || actor?.login || '') },
+    });
+    auditFromContext(c, {
+      action: 'tvd.tochka_refund',
+      entity: 'money_refund_request',
+      entityId: c.req.param('id'),
+      summary: `ТВД ${tvd.number} → возврат ${result.channel} · ${result.amount} ₽`,
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
 });
 
 api.post('/crm/deals/sync', async (c) => {
@@ -2249,6 +3847,72 @@ api.post('/crm/deals/sync', async (c) => {
   }
 });
 
+/** Подтянуть канал/отправку/оплату из Amo для заказов с пустым каналом. */
+api.post('/crm/deals/backfill-amo-channels', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_sync') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав: синхронизация' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    limit?: number;
+    queued_only?: boolean;
+  };
+  const limit = Math.min(500, Math.max(1, Number(body.limit) || 100));
+  const queuedOnly = body.queued_only !== false;
+  const where = [
+    `trim(IFNULL(amo_channel,'')) = ''`,
+    `id NOT LIKE '999%'`,
+    `length(id) >= 6`,
+  ];
+  const params: Array<string | number> = [];
+  if (queuedOnly) where.push(`IFNULL(queued_to_1c,0) = 1`);
+  const ids = all<{ id: string }>(
+    `SELECT id FROM crm_deals
+     WHERE ${where.join(' AND ')}
+     ORDER BY datetime(IFNULL(queued_at, updated_at)) DESC
+     LIMIT ?`,
+    [...params, limit]
+  ).map((r) => String(r.id));
+
+  let filled = 0;
+  let still_empty = 0;
+  let failed = 0;
+  const samples: Array<{ id: string; amo_channel: string }> = [];
+  for (const dealId of ids) {
+    try {
+      syncDealsFromAmo1c({ dealId, limit: 1 });
+      const row = get<{ amo_channel: string }>(
+        `SELECT amo_channel FROM crm_deals WHERE id = ?`,
+        [dealId]
+      );
+      const ch = String(row?.amo_channel || '').trim();
+      if (ch) {
+        filled += 1;
+        if (samples.length < 12) samples.push({ id: dealId, amo_channel: ch });
+      } else still_empty += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  const who = String(actor?.name || actor?.login || '').trim() || 'Сотрудник';
+  auditFromContext(c, {
+    action: 'crm.deals_backfill_amo_channels',
+    entity: 'crm_deal',
+    entityId: '',
+    summary: `${who} догрузка каналов из Amo: заполнено ${filled}, пусто ${still_empty}, ошибок ${failed}`,
+    after: { filled, still_empty, failed, requested: ids.length, queued_only: queuedOnly },
+  });
+  return c.json({
+    ok: true,
+    requested: ids.length,
+    filled,
+    still_empty,
+    failed,
+    queued_only: queuedOnly,
+    samples,
+  });
+});
+
 /** Компании + контакты Amo (+ связи) → counterparties. */
 api.post('/crm/counterparties/sync', async (c) => {
   const actor = actorFromContext(c);
@@ -2278,11 +3942,9 @@ api.post('/crm/counterparties/sync', async (c) => {
 
 api.get('/crm/counterparties/sync/meta', (c) => c.json(amoCounterpartiesMeta()));
 
-/** Dual-write из amo1c при «Отправить в 1С» (ключ WMS_INGEST_KEY). */
+/** Dual-write из amo1c при «Отправить в 1С» (ключ клиента scope=ingest или env). */
 api.post('/crm/deals/ingest', async (c) => {
-  const key = c.req.query('key') || c.req.header('x-wms-ingest-key') || '';
-  const expect = process.env.WMS_INGEST_KEY || '';
-  if (!expect || key !== expect) {
+  if (!machineApiKeyOk(c, 'ingest')) {
     return c.json({ error: 'forbidden' }, 403);
   }
   const body = await c.req.json().catch(() => ({})) as {
@@ -2349,6 +4011,34 @@ api.post('/crm/deals/ingest', async (c) => {
       : null,
   });
   return c.json({ ok: true, id: dealId });
+});
+
+/** Заказ на производство из виджета amo1c (ключ ingest). */
+api.post('/crm/production/jobs', async (c) => {
+  if (!machineApiKeyOk(c, 'ingest')) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    kind?: ProductionKind;
+    deal_id?: string;
+    comment?: string;
+    lines?: Array<{ direction: 'consume' | 'produce'; product_id: string; qty?: number }>;
+    queue_send?: boolean;
+  };
+  try {
+    let job = createProductionJob({
+      kind: body.kind || 'assemble',
+      deal_id: body.deal_id,
+      comment: body.comment,
+      lines: body.lines || [],
+    });
+    if (body.queue_send) {
+      job = queueProductionSend(String(job.id));
+    }
+    return c.json({ ok: true, job }, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
+  }
 });
 
 api.get('/org-profile', (c) => {
@@ -2580,7 +4270,7 @@ api.put('/payment-link-settings', async (c) => {
   auditFromContext(c, {
     action: 'payment_link.settings',
     entity: 'ui_settings',
-    summary: `Ссылка на оплату: таймер ${saved.payment_link_timer_minutes} мин, резерв ${saved.payment_link_reserve_enabled ? 'вкл' : 'выкл'}`,
+    summary: `Ссылка на оплату: таймер ${saved.payment_link_timer_minutes} мин, резерв выкл`,
     after: saved,
   });
   return c.json({
@@ -2590,7 +4280,159 @@ api.put('/payment-link-settings', async (c) => {
   });
 });
 
+/** Шаблоны документов (Google Doc + макросы {{…}}). */
+api.get('/settings/doc-templates', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (
+    !isAdminActor(actor) &&
+    !canAccessSection(actor, 'settings') &&
+    !canAccessSection(actor, 'integrations') &&
+    !canDo(actor, 'can_edit_docs')
+  ) {
+    return c.json({ error: 'Нет доступа' }, 403);
+  }
+  return c.json(docTemplatesPublic());
+});
+
+api.put('/settings/doc-templates', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!isAdminActor(actor) && actor?.role !== 'manager') {
+    return c.json({ error: 'Сохранять шаблоны может админ или менеджер' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    templates?: Array<Record<string, unknown>>;
+  };
+  const saved = saveDocTemplatesConfig({
+    templates: Array.isArray(body.templates) ? body.templates : undefined,
+  });
+  auditFromContext(c, {
+    action: 'doc_templates.save',
+    entity: 'doc_templates',
+    summary: `Шаблоны документов: ${saved.templates.length}`,
+    after: { count: saved.templates.length },
+  });
+  return c.json(docTemplatesPublic());
+});
+
+api.post('/settings/doc-templates', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!isAdminActor(actor) && actor?.role !== 'manager') {
+    return c.json({ error: 'Сохранять шаблоны может админ или менеджер' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const row = upsertDocTemplate(body);
+  auditFromContext(c, {
+    action: 'doc_templates.upsert',
+    entity: 'doc_templates',
+    entityId: row.id,
+    summary: `Шаблон: ${row.title}`,
+    after: row,
+  });
+  return c.json({ ...docTemplatesPublic(), template: row });
+});
+
+api.delete('/settings/doc-templates/:id', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!isAdminActor(actor) && actor?.role !== 'manager') {
+    return c.json({ error: 'Удалять шаблоны может админ или менеджер' }, 403);
+  }
+  const id = String(c.req.param('id') || '').trim();
+  const ok = deleteDocTemplate(id);
+  if (!ok) return c.json({ error: 'not found' }, 404);
+  auditFromContext(c, {
+    action: 'doc_templates.delete',
+    entity: 'doc_templates',
+    entityId: id,
+    summary: `Удалён шаблон ${id}`,
+  });
+  return c.json(docTemplatesPublic());
+});
+
+/** Содержимое Drive-папки «Шаблоны». */
+api.get('/settings/doc-templates/drive', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (
+    !isAdminActor(actor) &&
+    !canAccessSection(actor, 'settings') &&
+    !canDo(actor, 'can_edit_docs')
+  ) {
+    return c.json({ error: 'Нет доступа' }, 403);
+  }
+  try {
+    const folder = await listDocTemplatesDriveFolder();
+    return c.json({ ok: true, ...folder });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** Подтянуть Google Doc → TXT бланка СТО (печать/PDF). */
+api.post('/settings/doc-templates/:id/pull', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!isAdminActor(actor) && actor?.role !== 'manager') {
+    return c.json({ error: 'Подтягивать шаблоны может админ или менеджер' }, 403);
+  }
+  const id = String(c.req.param('id') || '').trim();
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      organization_id?: string;
+      seller_inn?: string;
+    };
+    const r = await pullDocTemplateFromGoogle(id, {
+      organizationId: String(body.organization_id || c.req.query('organization_id') || ''),
+      sellerInn: String(body.seller_inn || c.req.query('seller_inn') || ''),
+    });
+    auditFromContext(c, {
+      action: 'doc_templates.pull',
+      entity: 'doc_templates',
+      entityId: id,
+      summary: `Подтянут ${r.txt_file} (${r.bytes} B)`,
+      after: r,
+    });
+    return c.json({ ...docTemplatesPublic(), ok: true, pull: r });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
 /* ——— Интеграции: СДЭК / АТОЛ / Точка (ключи в UI, секреты в meta / bank) ——— */
+
+api.get('/settings/warranty', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  return c.json({ ok: true, ...getWarrantySettings() });
+});
+
+api.put('/settings/warranty', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!isAdminActor(actor) && actor?.role !== 'manager') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { lines?: WarrantyLine[] };
+  if (!Array.isArray(body.lines)) {
+    return c.json({ error: 'lines[] обязателен' }, 400);
+  }
+  const saved = saveWarrantySettings({ lines: body.lines });
+  writeAudit({
+    actor,
+    action: 'settings.warranty.save',
+    entity: 'meta',
+    entityId: 'warranty_terms',
+    summary: `Сохранены гарантийные сроки (${saved.lines.length} поз.)`,
+    after: { count: saved.lines.length },
+  });
+  return c.json({ ok: true, ...saved });
+});
 
 api.get('/settings/integrations/atol', (c) => {
   const actor = actorFromContext(c);
@@ -2939,11 +4781,166 @@ api.post('/settings/integrations/deepseek/test', async (c) => {
   }
 });
 
+/** Локальный OCR документов (on-prem, фото не уходят наружу). */
+api.get('/settings/integrations/ocr-local', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const { ocrLocalPublic, ocrLocalHealth, getOcrLocalSettings } = await import('./doc-ocr-local.js');
+  const pub = ocrLocalPublic();
+  const health = await ocrLocalHealth(getOcrLocalSettings());
+  return c.json({ ...pub, health });
+});
+
+api.put('/settings/integrations/ocr-local', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!isAdminActor(actor) && actor?.role !== 'manager') {
+    return c.json({ error: 'Сохранять OCR может админ или менеджер' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    mode?: string;
+    base_url?: string;
+  };
+  const { saveOcrLocalSettings, ocrLocalPublic, ocrLocalHealth } = await import('./doc-ocr-local.js');
+  const saved = saveOcrLocalSettings({
+    mode: body.mode as 'local' | 'cloud' | 'off' | undefined,
+    base_url: body.base_url,
+  });
+  auditFromContext(c, {
+    action: 'integrations.ocr_local_save',
+    entity: 'ocr_local',
+    summary: `OCR mode=${saved.mode}`,
+    after: { mode: saved.mode, base_url: saved.base_url },
+  });
+  const health = await ocrLocalHealth(saved);
+  return c.json({ ok: true, ...ocrLocalPublic(saved), health });
+});
+
+api.post('/settings/integrations/ocr-local/test', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const { ocrLocalHealth, getOcrLocalSettings } = await import('./doc-ocr-local.js');
+  const health = await ocrLocalHealth(getOcrLocalSettings());
+  return c.json(health, health.ok ? 200 : 400);
+});
+
 api.post('/settings/integrations/dadata/test', async (c) => {
   const actor = actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const r = await testDadataConnection();
   return c.json(r, r.ok ? 200 : 400);
+});
+
+/** API-ключи сотрудников: у каждого свой (Помощь → Интеграции и API). */
+api.get('/settings/integrations/api-keys', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const isAdmin = isAdminActor(actor);
+  const items = isAdmin
+    ? listIntegrationApiKeys()
+    : listIntegrationApiKeys({ staffId: actor.id });
+  const staffRows = isAdmin
+    ? all<{ id: string; name: string; login: string; role: string }>(
+        `SELECT id, IFNULL(name,'') AS name, IFNULL(login,'') AS login, IFNULL(role,'') AS role
+         FROM staff
+         WHERE is_active = 1 AND can_login = 1
+         ORDER BY name COLLATE NOCASE`
+      )
+    : [
+        {
+          id: actor.id,
+          name: actor.name,
+          login: actor.login,
+          role: actor.role,
+        },
+      ];
+  return c.json({
+    items,
+    active_count: countActiveIntegrationApiKeys(),
+    can_manage_all: isAdmin,
+    staff: staffRows,
+    sections: API_KEY_SECTION_CHECKS,
+    methods: apiMethodsCatalog(),
+    env_fallback: {
+      ingest: Boolean(String(process.env.WMS_INGEST_KEY || '').trim()),
+      json: Boolean(String(process.env.WMS_JSON_KEY || '').trim()),
+      bank: Boolean(
+        String(process.env.BANK_SBP_KEY || process.env.WMS_BANK_API_KEY || '').trim()
+      ),
+    },
+    scopes: API_KEY_SCOPE_OPTIONS,
+  });
+});
+
+api.post('/settings/integrations/api-keys', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const isAdmin = isAdminActor(actor);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    staff_id?: string;
+    name?: string;
+    scopes?: string[] | string;
+    note?: string;
+    all?: boolean;
+  };
+  let staffId = String(body.staff_id || '').trim();
+  if (!isAdmin) {
+    staffId = actor.id;
+  }
+  if (!staffId) staffId = actor.id;
+  const scopes = body.all === true ? ['all'] : body.scopes;
+  try {
+    const created = createIntegrationApiKey({
+      staffId,
+      name: body.name || '',
+      scopes,
+      note: body.note,
+      createdBy: String(actor.login || actor.name || actor.id || ''),
+    });
+    auditFromContext(c, {
+      action: 'integrations.api_key_create',
+      entity: 'integration_api_key',
+      entityId: created.key.id,
+      summary: `Ключ API · ${created.key.staff_name || created.key.name}`,
+      after: {
+        id: created.key.id,
+        staff_id: created.key.staff_id,
+        name: created.key.name,
+        scopes: created.key.scopes,
+        key_hint: created.key.key_hint,
+      },
+    });
+    return c.json({
+      ok: true,
+      item: created.key,
+      secret: created.secret,
+      warning:
+        'Секрет показывается один раз — сохраните. В базе только хеш. Предыдущий ключ этого сотрудника отозван.',
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
+  }
+});
+
+api.post('/settings/integrations/api-keys/:id/revoke', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const id = c.req.param('id');
+  const existing = listIntegrationApiKeys().find((k) => k.id === id);
+  if (!existing) return c.json({ error: 'not found' }, 404);
+  if (!isAdminActor(actor) && existing.staff_id !== actor.id) {
+    return c.json({ error: 'Можно отозвать только свой ключ' }, 403);
+  }
+  const revoked = revokeIntegrationApiKey(id);
+  if (!revoked) return c.json({ error: 'not found' }, 404);
+  auditFromContext(c, {
+    action: 'integrations.api_key_revoke',
+    entity: 'integration_api_key',
+    entityId: revoked.id,
+    summary: `Отозван ключ API · ${revoked.staff_name || revoked.name}`,
+    after: { id: revoked.id, name: revoked.name, revoked_at: revoked.revoked_at },
+  });
+  return c.json({ ok: true, item: revoked });
 });
 
 api.get('/settings/integrations/amo', (c) => {
@@ -2964,11 +4961,13 @@ api.put('/settings/integrations/amo', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     stages?: { success_after_handed?: Record<string, string> };
     pipeline_company?: Record<string, string>;
+    branch_company?: Record<string, string>;
     staff_mappings?: Array<{ staff_id: string; amo_id: string }>;
   };
   const saved = saveAmoIntegrationSettings({
     stages: body.stages,
     pipeline_company: body.pipeline_company,
+    branch_company: body.branch_company,
   });
   let staffUpdated = 0;
   if (Array.isArray(body.staff_mappings)) {
@@ -2978,10 +4977,10 @@ api.put('/settings/integrations/amo', async (c) => {
   auditFromContext(c, {
     action: 'integrations.amo_save',
     entity: 'integration_amo',
-    summary: `Amo: этапы ${Object.keys(saved.stages.success_after_handed).length}, воронок→орг ${Object.keys(saved.pipeline_company).length}, сотрудников ${staffUpdated}`,
+    summary: `Amo: этапы ${Object.keys(saved.stages.success_after_handed).length}, филиалов→орг ${Object.keys(saved.branch_company).length}, сотрудников ${staffUpdated}`,
     after: {
       stages: saved.stages,
-      pipeline_company: saved.pipeline_company,
+      branch_company: saved.branch_company,
       staff_updated: staffUpdated,
     },
   });
@@ -3242,6 +5241,8 @@ api.put('/doc-numbering', async (c) => {
     last_out?: string | number;
     last_in?: string | number;
     last_invoice?: string | number;
+    last_upd_msk?: string | number;
+    last_upd_krd?: string | number;
   };
   try {
     const state = applyDocNumberingPatch(body);
@@ -3302,7 +5303,7 @@ api.get('/sales-docs', (c) => {
   });
 });
 
-/** Каталог шаблонов договоров (БМП и др.). */
+/** Каталог шаблонов договоров (БМП и СТО). */
 api.get('/contract-templates', (c) => {
   return c.json({ items: listContractTemplates() });
 });
@@ -3310,20 +5311,933 @@ api.get('/contract-templates', (c) => {
 /** Превью бланка договора (без записи в БД). */
 api.get('/contract-templates/:id/preview', (c) => {
   const id = c.req.param('id');
-  if (id !== CONTRACT_TEMPLATE_ID) return c.html('<p>Шаблон не найден</p>', 404);
   const orgId = resolveOrganizationId(c.req.query('organization_id'));
   const org = getOrgProfile(orgId);
-  const html = renderSaleContractHtml({
-    number: '____',
+  const docDate = new Date().toISOString().slice(0, 10);
+  if (id === CONTRACT_TEMPLATE_ID) {
+    const html = renderSaleContractHtml({
+      number: '____',
+      docDate,
+      org,
+      buyer: {
+        name: c.req.query('buyer_name') || '',
+        inn: c.req.query('buyer_inn') || '',
+      },
+      city: 'Краснодар',
+    });
+    return c.html(html);
+  }
+  const sto = getStoDocTemplate(id);
+  if (sto?.isContract) {
+    const html = renderStoTemplateHtml(id, {
+      number: '____',
+      docDate,
+      org,
+      buyerName: c.req.query('buyer_name') || '',
+      buyerInn: c.req.query('buyer_inn') || '',
+      city: id === 'sto-contract-legal-msk' ? 'Москва' : 'Краснодар',
+    });
+    if (html) return c.html(html);
+  }
+  return c.html('<p>Шаблон не найден</p>', 404);
+});
+
+/** Каталог пакета документов СТО + регламент (шпаргалка). */
+api.get('/sto-doc-templates', (c) => {
+  const audience = String(c.req.query('audience') || 'all') as 'all' | 'client' | 'internal';
+  return c.json({
+    items: listStoDocTemplates({ audience: audience === 'client' || audience === 'internal' ? audience : 'all' }),
+    flow: stoPackFlowSummary(),
+    key_rule: 'Нет подписанного документа — нет работ.',
+  });
+});
+
+api.get('/sto-doc-templates/:id', (c) => {
+  const t = getStoDocTemplate(c.req.param('id'));
+  if (!t) return c.json({ error: 'not found' }, 404);
+  return c.json({ ...t, key_rule: 'Нет подписанного документа — нет работ.' });
+});
+
+api.get('/sto-doc-templates/:id/print', async (c) => {
+  const id = c.req.param('id');
+  const t = getStoDocTemplate(id);
+  if (!t) return c.html('<p>Шаблон не найден</p>', 404);
+  const orgId = resolveOrganizationId(c.req.query('organization_id'));
+  const org = getOrgProfile(orgId);
+  // Текст из кэша / локального txt (Drive — только «Подтянуть» в настройках)
+  const dealId = String(c.req.query('deal_id') || '').trim();
+  const deal = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+  const number = String(c.req.query('number') || (deal?.number as string) || '').trim() || '____';
+  const dealItems = Array.isArray((deal as { items?: unknown[] } | null)?.items)
+    ? ((deal as { items: Array<Record<string, unknown>> }).items as Array<Record<string, unknown>>)
+    : [];
+  const { workLines, partLines } = splitStoWorkPartLines(dealItems);
+  const actor = actorFromContext(c);
+  const garage = dealId ? garageForDeal(dealId) : { counterparty_id: '', vehicles: [] };
+  const html = renderStoTemplateHtml(id, {
+    number,
     docDate: new Date().toISOString().slice(0, 10),
     org,
-    buyer: {
-      name: c.req.query('buyer_name') || '',
-      inn: c.req.query('buyer_inn') || '',
-    },
-    city: 'Краснодар',
+    buyerName: String(c.req.query('buyer_name') || deal?.buyer_name || deal?.company_name || ''),
+    buyerInn: String(c.req.query('buyer_inn') || deal?.buyer_inn || ''),
+    buyerPhone: String(deal?.buyer_phone || ''),
+    buyerAddress: String(deal?.buyer_address || ''),
+    buyerEmail: String(deal?.buyer_email || ''),
+    buyerDirector: String((deal as { buyer_director?: string } | null)?.buyer_director || ''),
+    carBrand: String(deal?.car_brand || ''),
+    carModel: String(deal?.car_model || ''),
+    carPlate: String(deal?.car_plate || ''),
+    carVin: String(deal?.car_vin || ''),
+    carYear: String(deal?.car_year || ''),
+    carColor: String(deal?.car_color || ''),
+    carMileage: String(deal?.car_mileage || ''),
+    carStsNumber: String(deal?.car_sts_number || ''),
+    vehicles: vehiclesFromDealOrGarage(
+      deal,
+      (garage.vehicles || []) as Array<Record<string, unknown>>
+    ),
+    city: id === 'sto-contract-legal-msk' ? 'Москва' : 'Краснодар',
+    workLines,
+    partLines,
+    ...paymentFieldsFromDeal(deal),
+    ...contactFieldsFromDeal(deal, {
+      docDate: new Date().toISOString().slice(0, 10),
+    }),
+    ...staffFieldsFromDeal(deal, { staffName: actorDisplayName(actor), actorOnly: true }),
+    ...handoverFieldsFromDeal(deal),
   });
+  if (!html) return c.html('<p>Текст шаблона не найден</p>', 404);
   return c.html(html);
+});
+
+api.get('/sto-doc-templates/:id/source', async (c) => {
+  const id = c.req.param('id');
+  const p = stoTemplateDocxPath(id);
+  if (!p) return c.json({ error: 'DOCX не найден' }, 404);
+  const t = getStoDocTemplate(id);
+  const name = t ? `${t.code}_${t.title.replace(/\s+/g, '_')}.docx` : `${id}.docx`;
+  const buf = await fs.promises.readFile(p);
+  const ascii = name.replace(/[^\x20-\x7E]+/g, '_');
+  c.header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  c.header(
+    'Content-Disposition',
+    `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`
+  );
+  return c.body(buf);
+});
+
+/** Рекомендуемый шаблон договора для заказа. */
+api.get('/crm/deals/:id/contract-template-suggestion', (c) => {
+  const deal = getDeal(c.req.param('id')) as Record<string, unknown> | null;
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  const buyerInn = String(c.req.query('buyer_inn') || '').trim();
+  const template_id = suggestContractTemplateId(deal, {
+    organizationId: String(c.req.query('organization_id') || ''),
+    buyerInn,
+  });
+  const workorder_template_id = suggestStoWorkorderTemplateId(deal);
+  const sto = getStoDocTemplate(template_id);
+  const wo = getStoDocTemplate(workorder_template_id);
+  const isLegal =
+    template_id === 'sto-contract-legal' ||
+    template_id === 'sto-contract-legal-msk' ||
+    template_id === CONTRACT_TEMPLATE_ID;
+  const isBmp = template_id === CONTRACT_TEMPLATE_ID;
+  return c.json({
+    template_id,
+    workorder_template_id,
+    apps_template_id: null,
+    pdn_template_id: isLegal ? null : 'sto-pdn-consent',
+    pdn_required: isLegal ? 0 : 1,
+    kind: isBmp ? 'sale' : 'sto',
+    title:
+      (isBmp ? 'Договор поставки и услуг (БМП)' : sto?.title) ||
+      (template_id === 'sto-contract-legal-msk'
+        ? 'Договор · поставка и ремонт (МСК)'
+        : isLegal
+          ? 'Договор ТО · юрлицо / ИП'
+          : 'Договор-оферта · физлицо'),
+    workorder_title: wo?.title || (isLegal ? 'Заказ-наряд · юрлицо' : 'Заказ-наряд · физлицо'),
+    is_sto: Number(deal.is_sto) === 1 ? 1 : 0,
+    audience: isLegal ? 'legal' : 'person',
+  });
+});
+
+/** Чек-лист приёма/выдачи по сделке (JSON для вкладки «Доп. документы»). */
+api.get('/crm/deals/:id/sto-checklist', (c) => {
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  const wo = findDealWorkorderForChecklist(dealId);
+  return c.json(dealStoChecklistPayload(deal, wo));
+});
+
+api.patch('/crm/deals/:id/sto-checklist', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  const wo = findDealWorkorderForChecklist(dealId);
+  if (!wo) {
+    return c.json({ error: 'Сначала создайте заказ-наряд во вкладке «Документы»' }, 400);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    checks?: Record<string, boolean>;
+    master_name?: string;
+    admin_name?: string;
+  };
+  try {
+    updateSalesDocStoChecklist(wo.id, body);
+    const next = findDealWorkorderForChecklist(dealId);
+    const payload = dealStoChecklistPayload(deal, next);
+    auditFromContext(c, {
+      action: 'deal.sto_checklist',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: `Чек-лист СТО: ${payload.progress.done}/${payload.progress.total}`,
+      after: { workorder_id: wo.id, done: payload.progress.done },
+    });
+    return c.json({ ok: true, ...payload });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** Мета пакета СТО: состав бланков + поля, которые уйдут в «________». */
+api.get('/crm/deals/:id/sto-pack-meta', async (c) => {
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId);
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  const meta = await inspectDealStoFullPack(dealId, {
+    organizationId: String(c.req.query('organization_id') || ''),
+  });
+  if (!meta) return c.json({ error: 'не удалось собрать пакет' }, 500);
+  return c.json(meta);
+});
+
+/** Один PDF: пакет СТО (физ: договор+ЗН+ПДн; юр: +приложения) ×2 экз. */
+api.get('/crm/deals/:id/sto-pack.pdf', async (c) => {
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId);
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  try {
+    const facsimile = parseOrgFacsimileFlags({
+      stamps: c.req.query('stamps'),
+      seal: c.req.query('seal'),
+      facsimile: c.req.query('facsimile'),
+      signs: c.req.query('signs'),
+      sign: c.req.query('sign'),
+    });
+    const actor = actorFromContext(c);
+    const result = await buildDealStoFullPackPdf(dealId, {
+      organizationId: String(c.req.query('organization_id') || ''),
+      facsimile,
+      staffName: actorDisplayName(actor),
+      actor,
+    });
+    if (!result) return c.json({ error: 'не удалось собрать пакет' }, 500);
+    const download =
+      c.req.query('download') === '1' || c.req.query('download') === 'true';
+    const asciiName = result.filename.replace(/[^\x20-\x7E]+/g, '_').replace(/"+/g, '') || 'sto-pack.pdf';
+    c.header('Content-Type', 'application/pdf');
+    c.header(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(result.filename)}`
+    );
+    return c.body(new Uint8Array(result.buffer));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'pdf failed' }, 500);
+  }
+});
+
+/** PDF согласия на обработку ПДн (только физлицо) ×1 экз. */
+api.get('/crm/deals/:id/sto-pdn.pdf', async (c) => {
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId);
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  try {
+    const facsimile = parseOrgFacsimileFlags({
+      stamps: c.req.query('stamps'),
+      seal: c.req.query('seal'),
+      facsimile: c.req.query('facsimile'),
+      signs: c.req.query('signs'),
+      sign: c.req.query('sign'),
+    });
+    const result = await buildDealStoPdnPdf(dealId, {
+      organizationId: String(c.req.query('organization_id') || ''),
+      facsimile,
+    });
+    if (!result) return c.json({ error: 'не удалось собрать PDF' }, 500);
+    const download =
+      c.req.query('download') === '1' || c.req.query('download') === 'true';
+    const asciiName = result.filename.replace(/[^\x20-\x7E]+/g, '_').replace(/"+/g, '') || 'pdn.pdf';
+    c.header('Content-Type', 'application/pdf');
+    c.header(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(result.filename)}`
+    );
+    return c.body(new Uint8Array(result.buffer));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'pdf failed' }, 400);
+  }
+});
+
+/** Подписанные сканы/фото согласия ПДн (список). */
+api.get('/crm/deals/:id/pdn-scans', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  return c.json(pdnScansSummary(dealId));
+});
+
+/** Загрузить подписанное согласие ПДн (multipart: file / files, несколько фото/PDF). */
+api.post('/crm/deals/:id/pdn-scans', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const contentType = (c.req.header('content-type') || '').toLowerCase();
+  if (!contentType.includes('multipart/form-data')) {
+    return c.json({ error: 'Нужен multipart/form-data с полем file' }, 400);
+  }
+  try {
+    const form = await c.req.parseBody({ all: true });
+    const raw = form.file ?? form.files ?? form.photo ?? form.photos;
+    const files: File[] = [];
+    const pushFile = (v: unknown) => {
+      if (v && typeof v === 'object' && 'arrayBuffer' in (v as object)) {
+        files.push(v as File);
+      }
+    };
+    if (Array.isArray(raw)) raw.forEach(pushFile);
+    else pushFile(raw);
+    if (!files.length) return c.json({ error: 'Выберите файлы (поле file)' }, 400);
+    const saved = [];
+    for (const f of files.slice(0, 12)) {
+      const buf = Buffer.from(await f.arrayBuffer());
+      const mime = f.type || 'image/jpeg';
+      saved.push(await savePdnScan(dealId, buf, mime));
+    }
+    const summary = pdnScansSummary(dealId);
+    if (summary.scans_ok) {
+      const wo = getDealWorkorder(dealId);
+      if (wo?.id) {
+        try {
+          updateSalesDocStoChecklist(String(wo.id), { checks: { pdn: true } });
+        } catch {
+          /* чек-лист не блокирует загрузку */
+        }
+      }
+    }
+    auditFromContext(c, {
+      action: 'deal.pdn_scans',
+      entity: 'deal',
+      entityId: dealId,
+      summary: `ПДн подписанное: +${saved.length} (всего ${summary.count})`,
+      after: { count: summary.count, added: saved.map((p) => p.id) },
+    });
+    return c.json({ added: saved, ...summary, ok: true }, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'upload failed' }, 400);
+  }
+});
+
+/** Отдать файл подписанного ПДн. */
+api.get('/crm/deals/:id/pdn-scans/:fileId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const file = readPdnScan(dealId, c.req.param('fileId'));
+  if (!file) return c.json({ error: 'Файл не найден' }, 404);
+  return new Response(new Uint8Array(file.buf), {
+    headers: {
+      'Content-Type': file.mime,
+      'Cache-Control': 'private, max-age=120',
+    },
+  });
+});
+
+/** Удалить файл подписанного ПДн. */
+api.delete('/crm/deals/:id/pdn-scans/:fileId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const ok = deletePdnScan(dealId, c.req.param('fileId'));
+  if (!ok) return c.json({ error: 'Файл не найден' }, 404);
+  const summary = pdnScansSummary(dealId);
+  auditFromContext(c, {
+    action: 'deal.pdn_scans_delete',
+    entity: 'deal',
+    entityId: dealId,
+    summary: `ПДн подписанное удалено (осталось ${summary.count})`,
+    after: { count: summary.count },
+  });
+  return c.json({ ...summary, ok: true });
+});
+
+/** Статус SMS-подписи согласия ПДн. */
+api.get('/crm/deals/:id/pdn-sms', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  return c.json(pdnSmsSummary(dealId));
+});
+
+/** Отправить клиенту SMS со ссылкой на согласие ПДн (pdn.uchetn1.ru). */
+api.post('/crm/deals/:id/pdn-sms/send', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  try {
+    const { session, sms_id } = await createAndSendPdnSmsLink({
+      dealId,
+      actorId: actor?.id || '',
+      actorName: actor?.name || actor?.login || '',
+      c,
+    });
+    return c.json(
+      {
+        ok: true,
+        sms_id,
+        token: session.token,
+        url: session.link_url,
+        ...pdnSmsSummary(dealId),
+      },
+      201
+    );
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'sms failed' }, 400);
+  }
+});
+
+/** Журнал SMS-подписи ПДн (для суда / проверки). */
+api.get('/crm/deals/:id/pdn-sms/events', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const summary = pdnSmsSummary(dealId);
+  const session = getLatestPdnSignForDeal(dealId);
+  if (!session) return c.json({ ...summary, events: [] });
+  return c.json({
+    ...summary,
+    session_id: session.id,
+    consent_sha256: session.consent_sha256,
+    events: listPdnSignEvents(session.id),
+  });
+});
+
+/** Фото авто при приёме (все ракурсы) — список. */
+api.get('/crm/deals/:id/car-photos', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  return c.json(dealCarPhotosSummary(dealId));
+});
+
+/** Задача «сфотать авто» + push приёмщикам. */
+api.post('/crm/deals/:id/car-photos/request', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  if (
+    !canDo(actor, 'can_edit_docs') &&
+    actor?.role !== 'admin' &&
+    !canUseCarPhotoReception(actor)
+  ) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { note?: string; kind?: string };
+  try {
+    ensureWebPushSchema();
+    const kindRaw = String(body.kind || 'car').toLowerCase();
+    const kind = kindRaw === 'sts' ? 'sts' : kindRaw === 'both' ? 'both' : 'car';
+    const r = await requestCarPhotoShoot({
+      dealId,
+      kind,
+      note: body.note,
+      createdBy: String(actor.id || ''),
+      createdByName: String(actor.name || actor.login || ''),
+    });
+    auditFromContext(c, {
+      action: kind === 'sts' ? 'deal.sts_photos_request' : 'deal.car_photos_request',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: `Запрос фото ${kind} · push ${r.push.sent} · увед. ${r.notified}`,
+      after: { task_id: r.task.id, href: r.href, push: r.push, kind },
+    });
+    return c.json({ ok: true, ...r });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+api.get('/car-photo-tasks', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  if (!canUseCarPhotoReception(actor) && !canDo(actor, 'can_edit_docs')) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  ensureWebPushSchema();
+  return c.json({ items: listOpenCarPhotoTasks(50) });
+});
+
+api.get('/car-photo-tasks/:id', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  if (!canUseCarPhotoReception(actor) && !canDo(actor, 'can_edit_docs')) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const task = getCarPhotoTask(c.req.param('id'));
+  if (!task) return c.json({ error: 'not found' }, 404);
+  return c.json({ task });
+});
+
+/** Приёмщик: «Готово» — закрыть задачу фотоотчёта вручную. */
+api.post('/car-photo-tasks/:id/complete', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  if (!canUseCarPhotoReception(actor) && !canDo(actor, 'can_edit_docs')) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  ensureWebPushSchema();
+  const taskId = c.req.param('id');
+  const task = closeCarPhotoTask(taskId);
+  if (!task) return c.json({ error: 'Задача не найдена' }, 404);
+  auditFromContext(c, {
+    action: 'deal.car_photos_task_done',
+    entity: 'crm_deal',
+    entityId: task.deal_id,
+    summary: `Фотоотчёт закрыт вручную · ${task.kind}`,
+    after: { task_id: task.id, kind: task.kind, status: task.status },
+  });
+  return c.json({ ok: true, task });
+});
+
+/** Закрыть открытую задачу по сделке (если открыли без task id). */
+api.post('/crm/deals/:id/car-photos/complete', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  if (!canUseCarPhotoReception(actor) && !canDo(actor, 'can_edit_docs')) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  ensureWebPushSchema();
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const task = closeOpenCarPhotoTaskForDeal(dealId);
+  if (!task) return c.json({ ok: true, task: null, message: 'Открытой задачи нет' });
+  auditFromContext(c, {
+    action: 'deal.car_photos_task_done',
+    entity: 'crm_deal',
+    entityId: dealId,
+    summary: `Фотоотчёт закрыт вручную · ${task.kind}`,
+    after: { task_id: task.id, kind: task.kind, status: task.status },
+  });
+  return c.json({ ok: true, task });
+});
+
+api.get('/push/vapid-public-key', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json({ publicKey: getVapidPublicKey() });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'vapid' }, 500);
+  }
+});
+
+api.post('/push/subscribe', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor?.id) return c.json({ error: 'Unauthorized' }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    endpoint?: string;
+    keys?: { p256dh?: string; auth?: string };
+  };
+  try {
+    const id = upsertPushSubscription({
+      staffId: String(actor.id),
+      endpoint: String(body.endpoint || ''),
+      p256dh: String(body.keys?.p256dh || ''),
+      auth: String(body.keys?.auth || ''),
+      userAgent: c.req.header('user-agent') || '',
+    });
+    return c.json({ ok: true, id });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'subscribe failed' }, 400);
+  }
+});
+
+api.delete('/push/subscribe', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor?.id) return c.json({ error: 'Unauthorized' }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as { endpoint?: string };
+  deletePushSubscription(String(body.endpoint || ''), String(actor.id));
+  return c.json({ ok: true });
+});
+
+/** Загрузить фото авто (multipart: file / files, optional side). */
+api.post('/crm/deals/:id/car-photos', async (c) => {
+  const actor = actorFromContext(c);
+  if (
+    !canDo(actor, 'can_edit_docs') &&
+    actor?.role !== 'admin' &&
+    !canUseCarPhotoReception(actor)
+  ) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const contentType = (c.req.header('content-type') || '').toLowerCase();
+  if (!contentType.includes('multipart/form-data')) {
+    return c.json({ error: 'Нужен multipart/form-data с полем file' }, 400);
+  }
+  try {
+    const form = await c.req.parseBody({ all: true });
+    const side = String(form.side || form.angle || '').trim();
+    const mileageRaw = String(form.car_mileage || form.mileage || '').trim();
+    const mileageDigits = mileageRaw.replace(/[^\d]/g, '');
+    const raw = form.file ?? form.files ?? form.photo ?? form.photos;
+    const files: File[] = [];
+    const pushFile = (v: unknown) => {
+      if (v && typeof v === 'object' && 'arrayBuffer' in (v as object)) {
+        files.push(v as File);
+      }
+    };
+    if (Array.isArray(raw)) raw.forEach(pushFile);
+    else pushFile(raw);
+    if (!files.length) return c.json({ error: 'Выберите фото (поле file)' }, 400);
+    const saved = [];
+    for (const f of files.slice(0, 24)) {
+      const buf = Buffer.from(await f.arrayBuffer());
+      const mime = f.type || 'image/jpeg';
+      const ph = await saveDealCarPhoto(dealId, buf, mime, side);
+      saved.push(ph);
+      // дублируем в дело ЗН, если заказ-наряд уже есть
+      try {
+        const wo = findDealWorkorderForChecklist(dealId);
+        if (wo?.id) {
+          await saveWoIntakePhoto(wo.id, buf, mime);
+        }
+      } catch {
+        /* WO optional */
+      }
+    }
+    if (mileageDigits) {
+      try {
+        const cur = (getDeal(dealId) || {}) as Record<string, unknown>;
+        setDealVehicle(dealId, {
+          car_plate: String(cur.car_plate || ''),
+          car_vin: String(cur.car_vin || ''),
+          car_brand: String(cur.car_brand || ''),
+          car_model: String(cur.car_model || ''),
+          car_year: String(cur.car_year || ''),
+          car_color: String(cur.car_color || ''),
+          car_category: String(cur.car_category || ''),
+          car_pts: String(cur.car_pts || ''),
+          car_owner: String(cur.car_owner || ''),
+          car_owner_street: String(cur.car_owner_street || ''),
+          car_owner_house: String(cur.car_owner_house || ''),
+          car_owner_flat: String(cur.car_owner_flat || ''),
+          car_sts_date: String(cur.car_sts_date || ''),
+          car_sts_number: String(cur.car_sts_number || ''),
+          car_brought_by: String(cur.car_brought_by || ''),
+          car_authority_basis: String(cur.car_authority_basis || ''),
+          car_authority_details: String(cur.car_authority_details || ''),
+          car_mileage: mileageDigits,
+        });
+        syncDealVehicleOntoWorkorders(dealId);
+      } catch {
+        /* mileage optional */
+      }
+    }
+    const summary = dealCarPhotosSummary(dealId);
+    if (summary.photos_ok) {
+      try {
+        const wo = findDealWorkorderForChecklist(dealId);
+        if (wo?.id) updateSalesDocStoChecklist(wo.id, { checks: { photos: true } });
+      } catch {
+        /* ignore */
+      }
+      try {
+        completeCarPhotoTaskForDeal(dealId, 'car');
+      } catch {
+        /* optional */
+      }
+    }
+    auditFromContext(c, {
+      action: 'deal.car_photos',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: `Загружено фото авто: +${saved.length} (стало ${summary.count}${
+        summary.photos_ok ? ', норма ≥' + summary.min_required : ', нужно ≥' + summary.min_required
+      })`,
+      after: { count: summary.count, added: saved.map((p) => p.id) },
+    });
+    return c.json({ added: saved, ...summary, ok: true, sides: DEAL_CAR_PHOTO_SIDES }, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'upload failed' }, 400);
+  }
+});
+
+api.get('/crm/deals/:id/car-photos/:photoId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const file = await readDealCarPhoto(dealId, c.req.param('photoId'));
+  if (!file) return c.json({ error: 'Фото не найдено' }, 404);
+  return new Response(new Uint8Array(file.buf), {
+    headers: {
+      'Content-Type': file.mime,
+      'Cache-Control': 'private, max-age=120',
+    },
+  });
+});
+
+api.delete('/crm/deals/:id/car-photos/:photoId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const photoId = c.req.param('photoId');
+  const before = dealCarPhotosSummary(dealId);
+  const victim = before.items.find((p) => p.id === photoId);
+  const ok = await deleteDealCarPhoto(dealId, photoId);
+  if (!ok) return c.json({ error: 'Фото не найдено' }, 404);
+  const summary = dealCarPhotosSummary(dealId);
+  if (!summary.photos_ok) {
+    try {
+      const wo = findDealWorkorderForChecklist(dealId);
+      if (wo?.id) updateSalesDocStoChecklist(wo.id, { checks: { photos: false } });
+    } catch {
+      /* ignore */
+    }
+  }
+  const when = victim?.created_at
+    ? String(victim.created_at).replace('T', ' ').slice(0, 16)
+    : '';
+  auditFromContext(c, {
+    action: 'deal.car_photos_delete',
+    entity: 'crm_deal',
+    entityId: dealId,
+    summary: `Удалено фото авто${when ? ' от ' + when : ''} (осталось ${summary.count})`,
+    before: { photo_id: photoId, count: before.count },
+    after: { count: summary.count },
+  });
+  return c.json({ ...summary, ok: true });
+});
+
+/** Запчасти клиента (привёз свои) — список / фото. Только Автосервис / СТО. */
+api.get('/crm/deals/:id/client-parts', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  if (!resolveIsSto(deal)) {
+    return c.json({ error: 'ЗЧ клиента только для канала Автосервис' }, 400);
+  }
+  return c.json(clientPartsSummary(dealId));
+});
+
+api.put('/crm/deals/:id/client-parts', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  if (!resolveIsSto(deal)) {
+    return c.json({ error: 'ЗЧ клиента только для канала Автосервис' }, 400);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    items?: unknown[];
+    note?: string;
+  };
+  const saved = saveClientParts(dealId, {
+    items: Array.isArray(body.items) ? (body.items as never) : [],
+    note: body.note,
+    source: 'manual',
+  });
+  if (saved.items.length) {
+    const wo = getDealWorkorder(dealId);
+    if (wo?.id) {
+      try {
+        updateSalesDocStoChecklist(String(wo.id), { checks: { client_parts: true } });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  auditFromContext(c, {
+    action: 'deal.client_parts',
+    entity: 'deal',
+    entityId: dealId,
+    summary: `ЗЧ клиента: ${saved.items.length} поз.`,
+    after: { count: saved.items.length },
+  });
+  return c.json({ ...clientPartsSummary(dealId), ok: true });
+});
+
+/** Фото + текст → DeepSeek → список ЗЧ клиента. */
+api.post('/crm/deals/:id/client-parts/recognize', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  if (!resolveIsSto(deal)) {
+    return c.json({ error: 'ЗЧ клиента только для канала Автосервис' }, 400);
+  }
+  try {
+    const contentType = (c.req.header('content-type') || '').toLowerCase();
+    let note = '';
+    const images: Array<{ buf: Buffer; mime: string }> = [];
+    if (contentType.includes('multipart/form-data')) {
+      const form = await c.req.parseBody({ all: true });
+      note = String(form.note || form.text || form.prompt || '').trim();
+      const raw = form.file ?? form.files ?? form.photo ?? form.photos;
+      const pushFile = async (v: unknown) => {
+        if (v && typeof v === 'object' && 'arrayBuffer' in (v as object)) {
+          const f = v as File;
+          images.push({
+            buf: Buffer.from(await f.arrayBuffer()),
+            mime: f.type || 'image/jpeg',
+          });
+        }
+      };
+      if (Array.isArray(raw)) {
+        for (const x of raw.slice(0, 8)) await pushFile(x);
+      } else await pushFile(raw);
+    } else {
+      const body = (await c.req.json().catch(() => ({}))) as {
+        note?: string;
+        text?: string;
+        images?: Array<{ data_base64?: string; mime?: string }>;
+      };
+      note = String(body.note || body.text || '').trim();
+      for (const img of body.images || []) {
+        const b64 = String(img.data_base64 || '').trim();
+        if (!b64) continue;
+        images.push({
+          buf: Buffer.from(b64, 'base64'),
+          mime: img.mime || 'image/jpeg',
+        });
+      }
+    }
+    const saved = await recognizeClientParts({ dealId, note, images, savePhotos: true });
+    if (saved.items.length) {
+      const wo = getDealWorkorder(dealId);
+      if (wo?.id) {
+        try {
+          updateSalesDocStoChecklist(String(wo.id), { checks: { client_parts: true } });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    auditFromContext(c, {
+      action: 'deal.client_parts_recognize',
+      entity: 'deal',
+      entityId: dealId,
+      summary: `DeepSeek ЗЧ клиента: ${saved.items.length} поз.`,
+      after: { count: saved.items.length },
+    });
+    return c.json({ ...clientPartsSummary(dealId), ok: true });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'recognize failed' }, 400);
+  }
+});
+
+api.get('/crm/deals/:id/client-parts/photos/:photoId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const file = readClientPartPhoto(dealId, c.req.param('photoId'));
+  if (!file) return c.json({ error: 'Фото не найдено' }, 404);
+  return new Response(new Uint8Array(file.buf), {
+    headers: {
+      'Content-Type': file.mime,
+      'Cache-Control': 'private, max-age=120',
+    },
+  });
+});
+
+api.delete('/crm/deals/:id/client-parts/photos/:photoId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const ok = deleteClientPartPhoto(dealId, c.req.param('photoId'));
+  if (!ok) return c.json({ error: 'Фото не найдено' }, 404);
+  return c.json({ ...clientPartsSummary(dealId), ok: true });
+});
+
+/** PDF доп. бланка СТО (неявка, чек-лист) — текст с Google Drive. */
+api.get('/crm/deals/:id/sto-extra/:file', async (c) => {
+  const dealId = c.req.param('id');
+  // Hono: `:templateId.pdf` даёт param `templateId.pdf` = `sto-no-show.pdf`, не `templateId`.
+  const file = String(c.req.param('file') || c.req.param('templateId.pdf') || '').trim();
+  const templateId = file.replace(/\.pdf$/i, '').trim();
+  const deal = getDeal(dealId);
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  if (!isStoExtraDealTemplateId(templateId)) {
+    return c.json(
+      { error: 'unknown template', allowed: [...STO_EXTRA_DEAL_TEMPLATE_IDS] },
+      400
+    );
+  }
+  try {
+    const facsimile = parseOrgFacsimileFlags({
+      stamps: c.req.query('stamps'),
+      seal: c.req.query('seal'),
+      facsimile: c.req.query('facsimile'),
+      signs: c.req.query('signs'),
+      sign: c.req.query('sign'),
+    });
+    const result = await buildDealStoExtraPdf(dealId, templateId, {
+      organizationId: String(c.req.query('organization_id') || ''),
+      facsimile,
+      staffName: actorDisplayName(actorFromContext(c)),
+    });
+    if (!result) return c.json({ error: 'не удалось собрать PDF' }, 500);
+    const download =
+      c.req.query('download') === '1' || c.req.query('download') === 'true';
+    const asciiName =
+      result.filename.replace(/[^\x20-\x7E]+/g, '_').replace(/"+/g, '') || 'sto-extra.pdf';
+    c.header('Content-Type', 'application/pdf');
+    c.header(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(result.filename)}`
+    );
+    return c.body(new Uint8Array(result.buffer));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'pdf failed' }, 400);
+  }
 });
 
 /** Создать договор (из сделки или бланк). */
@@ -3335,6 +6249,7 @@ api.post('/contracts', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     deal_id?: string;
     organization_id?: string;
+    template_id?: string;
     buyer_name?: string;
     buyer_inn?: string;
     buyer_address?: string;
@@ -3345,6 +6260,7 @@ api.post('/contracts', async (c) => {
     const doc = createContractDoc({
       dealId: body.deal_id,
       organizationId: body.organization_id,
+      templateId: body.template_id,
       buyerName: body.buyer_name,
       buyerInn: body.buyer_inn,
       buyerAddress: body.buyer_address,
@@ -3357,7 +6273,7 @@ api.post('/contracts', async (c) => {
       entity: 'sales_doc',
       entityId: String(doc?.id || ''),
       summary: `Договор ${doc?.number || ''}`,
-      after: { id: doc?.id, number: doc?.number },
+      after: { id: doc?.id, number: doc?.number, template_id: body.template_id },
     });
     return c.json({ ok: true, doc });
   } catch (e) {
@@ -3380,17 +6296,205 @@ api.get('/sales-docs/:id', (c) => {
   if (!doc) return c.json({ error: 'not found' }, 404);
   if (String(doc.doc_type) === 'contract') {
     doc = fillContractBuyerFromDeal(id) || doc;
+  } else if (['invoice', 'upd', 'sf'].includes(String(doc.doc_type))) {
+    doc = fillSalesDocBuyerFromDeal(id) || doc;
   }
   const dealId = String((doc as { deal_id?: string }).deal_id || '').trim();
   const garage = dealId ? garageForDeal(dealId) : { counterparty_id: '', vehicles: [] };
-  return c.json({
+  const payload: Record<string, unknown> = {
     ...doc,
     buyer_counterparty_id: garage.counterparty_id,
     garage_vehicles: garage.vehicles,
+  };
+  if (String(doc.doc_type) === 'workorder') {
+    const deal = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+    const legal = dealIsLegalEntity(deal);
+    const state = parseStoChecklistJson((doc as { checklist_json?: string }).checklist_json);
+    const intakePhotos = woIntakePhotosSummary(id);
+    payload.sto_checklist = {
+      phases: STO_CHECKLIST_PHASES,
+      items: listStoChecklistItems({ legal }),
+      state,
+      progress: stoChecklistProgress(state, { legal }),
+      legal: legal ? 1 : 0,
+      staff_picks: listStoChecklistStaffPicks(),
+    };
+    payload.intake_photos = intakePhotos;
+  }
+  return c.json(payload);
+});
+
+/** Фотофиксация приёма — список по заказ-наряду. */
+api.get('/sales-docs/:id/intake-photos', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const doc = getSalesDoc(c.req.param('id'));
+  if (!doc) return c.json({ error: 'not found' }, 404);
+  if (String(doc.doc_type) !== 'workorder') {
+    return c.json({ error: 'Фото осмотра только на заказ-наряде' }, 400);
+  }
+  return c.json(woIntakePhotosSummary(c.req.param('id')));
+});
+
+/** Загрузить фото осмотра в дело ЗН (multipart: file / files). */
+api.post('/sales-docs/:id/intake-photos', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const docId = c.req.param('id');
+  const doc = getSalesDoc(docId);
+  if (!doc) return c.json({ error: 'not found' }, 404);
+  if (String(doc.doc_type) !== 'workorder') {
+    return c.json({ error: 'Фото осмотра только на заказ-наряде' }, 400);
+  }
+  const contentType = (c.req.header('content-type') || '').toLowerCase();
+  if (!contentType.includes('multipart/form-data')) {
+    return c.json({ error: 'Нужен multipart/form-data с полем file' }, 400);
+  }
+  try {
+    const form = await c.req.parseBody({ all: true });
+    const raw = form.file ?? form.files ?? form.photo ?? form.photos;
+    const files: File[] = [];
+    const pushFile = (v: unknown) => {
+      if (v && typeof v === 'object' && 'arrayBuffer' in (v as object)) {
+        files.push(v as File);
+      }
+    };
+    if (Array.isArray(raw)) raw.forEach(pushFile);
+    else pushFile(raw);
+    if (!files.length) return c.json({ error: 'Выберите фото (поле file)' }, 400);
+    const saved = [];
+    for (const f of files.slice(0, 24)) {
+      const buf = Buffer.from(await f.arrayBuffer());
+      const mime = f.type || 'image/jpeg';
+      saved.push(await saveWoIntakePhoto(docId, buf, mime));
+    }
+    const summary = woIntakePhotosSummary(docId);
+    if (summary.photos_ok) {
+      try {
+        updateSalesDocStoChecklist(docId, { checks: { photos: true } });
+      } catch {
+        /* чек-лист не блокирует загрузку */
+      }
+    }
+    auditFromContext(c, {
+      action: 'sales_doc.intake_photos',
+      entity: 'sales_doc',
+      entityId: docId,
+      summary: `Фото осмотра: +${saved.length} (всего ${summary.count})`,
+      after: { count: summary.count, added: saved.map((p) => p.id) },
+    });
+    return c.json({ added: saved, ...summary, ok: true }, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'upload failed' }, 400);
+  }
+});
+
+/** Отдать фото осмотра. */
+api.get('/sales-docs/:id/intake-photos/:photoId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const doc = getSalesDoc(c.req.param('id'));
+  if (!doc) return c.json({ error: 'not found' }, 404);
+  const file = readWoIntakePhoto(c.req.param('id'), c.req.param('photoId'));
+  if (!file) return c.json({ error: 'Фото не найдено' }, 404);
+  return new Response(new Uint8Array(file.buf), {
+    headers: {
+      'Content-Type': file.mime,
+      'Cache-Control': 'private, max-age=120',
+    },
   });
 });
 
-api.get('/sales-docs/:id/print', (c) => {
+/** Удалить фото осмотра. */
+api.delete('/sales-docs/:id/intake-photos/:photoId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const docId = c.req.param('id');
+  const doc = getSalesDoc(docId);
+  if (!doc) return c.json({ error: 'not found' }, 404);
+  if (String(doc.doc_type) !== 'workorder') {
+    return c.json({ error: 'Фото осмотра только на заказ-наряде' }, 400);
+  }
+  const ok = deleteWoIntakePhoto(docId, c.req.param('photoId'));
+  if (!ok) return c.json({ error: 'Фото не найдено' }, 404);
+  const summary = woIntakePhotosSummary(docId);
+  if (!summary.photos_ok) {
+    try {
+      updateSalesDocStoChecklist(docId, { checks: { photos: false } });
+    } catch {
+      /* ignore */
+    }
+  }
+  auditFromContext(c, {
+    action: 'sales_doc.intake_photos_delete',
+    entity: 'sales_doc',
+    entityId: docId,
+    summary: `Фото осмотра удалено (осталось ${summary.count})`,
+    after: { count: summary.count },
+  });
+  return c.json({ ...summary, ok: true });
+});
+
+/** Чек-лист приёма/выдачи СТО на заказ-наряде. */
+api.patch('/sales-docs/:id/sto-checklist', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    checks?: Record<string, boolean>;
+    master_name?: string;
+    admin_name?: string;
+  };
+  try {
+    const doc = updateSalesDocStoChecklist(c.req.param('id'), body);
+    const state = parseStoChecklistJson((doc as { checklist_json?: string } | null)?.checklist_json);
+    auditFromContext(c, {
+      action: 'sales_doc.sto_checklist',
+      entity: 'sales_doc',
+      entityId: c.req.param('id'),
+      summary: 'Чек-лист СТО обновлён',
+      after: { done: Object.keys(state.checks).length },
+    });
+    return c.json({ ok: true, state, doc });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** Интерактивный / печатный чек-лист СТО по заказ-наряду. */
+api.get('/sales-docs/:id/sto-checklist', (c) => {
+  const doc = getSalesDoc(c.req.param('id'));
+  if (!doc) return c.html('<p>Документ не найден</p>', 404);
+  if (String(doc.doc_type) !== 'workorder') {
+    return c.html('<p>Чек-лист доступен только для заказ-наряда</p>', 400);
+  }
+  const dealId = String((doc as { deal_id?: string }).deal_id || '').trim();
+  const deal = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+  const legal = dealIsLegalEntity(deal);
+  const state = parseStoChecklistJson((doc as { checklist_json?: string }).checklist_json);
+  const html = renderStoChecklistInteractiveHtml({
+    docId: String(doc.id),
+    number: String(doc.number || ''),
+    docDate: String(doc.doc_date || ''),
+    carPlate: String((doc as { car_plate?: string }).car_plate || ''),
+    carBrand: String((doc as { car_brand?: string }).car_brand || ''),
+    carModel: String((doc as { car_model?: string }).car_model || ''),
+    carVin: String((doc as { car_vin?: string }).car_vin || ''),
+    dealId,
+    legal,
+    state,
+    interactive: c.req.query('print') !== '1',
+    staffPicks: listStoChecklistStaffPicks(),
+  });
+  return c.html(html);
+});
+
+api.get('/sales-docs/:id/print', async (c) => {
   const id = c.req.param('id');
   const preview = getSalesDoc(id);
   if (preview && String(preview.doc_type) === 'contract') {
@@ -3403,7 +6507,9 @@ api.get('/sales-docs/:id/print', (c) => {
     signs: c.req.query('signs'),
     sign: c.req.query('sign'),
   });
-  let html = runWithOrgFacsimile(facsimile, () => renderSalesDocPrintHtml(id));
+  let html = runWithOrgFacsimile(facsimile, () =>
+    renderSalesDocPrintHtml(id, { staffName: actorDisplayName(actorFromContext(c)) })
+  );
   if (!html) return c.html('<p>Документ не найден</p>', 404);
   const autoprint =
     c.req.query('autoprint') === '1' || c.req.query('autoprint') === 'true';
@@ -3415,6 +6521,12 @@ api.get('/sales-docs/:id/print', (c) => {
     if (!html.includes('window.print()')) {
       html += `<script>window.addEventListener('load',function(){setTimeout(function(){window.print()},200)});</script>`;
     }
+  }
+  if (preview && String(preview.doc_type || '') === 'workorder') {
+    markSalesDocPrinted(id, {
+      actor: actorFromContext(c),
+      via: autoprint ? 'print' : 'html',
+    });
   }
   return c.html(html);
 });
@@ -3452,16 +6564,57 @@ api.get('/sales-docs/:id/payment-qr.png', async (c) => {
   }
 });
 
+/** Реестр УПД (позиции) — JSON для экрана /upd. */
+api.get('/sales-docs/upd/registry', (c) => {
+  const q = (c.req.query('q') || '').trim();
+  const companyId = (c.req.query('company_id') || '').trim();
+  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  if (coFilter.mode === 'none') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const { rows, truncated } = listUpdRegistryRows({
+    q: q || undefined,
+    companyId: coFilter.mode === 'one' ? coFilter.id : companyId || undefined,
+    companyIds: coFilter.mode === 'in' ? coFilter.ids : undefined,
+  });
+  return c.json({ rows, truncated, total: rows.length });
+});
+
+/** Реестр УПД в PDF — все строки по фильтрам списка (q, company_id). */
+api.get('/sales-docs/upd/registry.pdf', async (c) => {
+  try {
+    const q = (c.req.query('q') || '').trim();
+    const companyId = (c.req.query('company_id') || '').trim();
+    const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+    if (coFilter.mode === 'none') {
+      return c.json({ error: 'Недостаточно прав' }, 403);
+    }
+    const result = await renderUpdRegistryPdf({
+      q: q || undefined,
+      companyId: coFilter.mode === 'one' ? coFilter.id : companyId || undefined,
+      companyIds: coFilter.mode === 'in' ? coFilter.ids : undefined,
+    });
+    const download = c.req.query('download') === '1' || c.req.query('download') === 'true';
+    const asciiName = result.filename.replace(/[^\x20-\x7E]+/g, '_');
+    c.header('Content-Type', 'application/pdf');
+    c.header(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(result.filename)}`
+    );
+    c.header('Cache-Control', 'no-store');
+    return c.body(new Uint8Array(result.buffer));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'registry pdf failed' }, 500);
+  }
+});
+
 /** Настоящий PDF: ?download=1, ?stamps=0, ?signs=0 — без печати / без подписи. */
 api.get('/sales-docs/:id/pdf', async (c) => {
   try {
     const docId = c.req.param('id');
     const docRow = getSalesDoc(docId);
     if (!docRow) return c.json({ error: 'not found' }, 404);
-    if (
-      String(docRow.doc_type || '') === 'workorder' &&
-      !String(docRow.car_plate || '').trim()
-    ) {
+    if (String(docRow.doc_type || '') === 'workorder' && !ensureWorkorderCarPlate(docId)) {
       return c.json(
         { error: 'Сначала укажите гос. номер автомобиля на заказ-наряде — затем можно скачать PDF' },
         400
@@ -3474,8 +6627,17 @@ api.get('/sales-docs/:id/pdf', async (c) => {
       signs: c.req.query('signs'),
       sign: c.req.query('sign'),
     });
-    const result = await renderSalesDocPdf(docId, { facsimile });
+    const result = await renderSalesDocPdf(docId, {
+      facsimile,
+      staffName: actorDisplayName(actorFromContext(c)),
+    });
     if (!result) return c.json({ error: 'not found' }, 404);
+    if (String(docRow.doc_type || '') === 'workorder') {
+      markSalesDocPrinted(docId, {
+        actor: actorFromContext(c),
+        via: 'pdf',
+      });
+    }
     const download = c.req.query('download') === '1' || c.req.query('download') === 'true';
     const asciiName = result.filename.replace(/[^\x20-\x7E]+/g, '_');
     c.header('Content-Type', 'application/pdf');
@@ -3491,21 +6653,31 @@ api.get('/sales-docs/:id/pdf', async (c) => {
 });
 
 api.post('/sales-docs/from-deal', async (c) => {
-  const actor = actorFromContext(c);
-  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+  if (!salesDocsWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав на документы' }, 403);
   }
+  const actor = actorFromContext(c);
   const body = await c.req.json().catch(() => ({})) as {
     deal_id?: string;
     doc_type?: string;
     vat_rate?: number;
     buyer_name?: string;
     buyer_inn?: string;
+    buyer_address?: string;
+    buyer_ogrn?: string;
     comment?: string;
     organization_id?: string;
+    template_id?: string;
+    created_by?: string;
   };
   const dealId = String(body.deal_id || '').trim();
   const docType = String(body.doc_type || '').trim() as SalesDocType;
+  const createdBy =
+    actorDisplayName(actor) ||
+    actor?.login ||
+    actor?.name ||
+    String(body.created_by || '').trim() ||
+    'amo-widget';
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
   if (!['invoice', 'upd', 'sf', 'workorder', 'contract'].includes(docType)) {
     return c.json({ error: 'doc_type: invoice | upd | sf | workorder | contract' }, 400);
@@ -3516,10 +6688,13 @@ api.post('/sales-docs/from-deal', async (c) => {
         ? createContractDoc({
             dealId,
             organizationId: body.organization_id,
+            templateId: body.template_id,
             buyerName: body.buyer_name,
             buyerInn: body.buyer_inn,
+            buyerAddress: body.buyer_address,
+            buyerOgrn: body.buyer_ogrn,
             comment: body.comment,
-            createdBy: actor?.login || actor?.name || '',
+            createdBy,
           })
         : createSalesDocFromDeal({
             dealId,
@@ -3527,18 +6702,32 @@ api.post('/sales-docs/from-deal', async (c) => {
             vatRate: body.vat_rate,
             buyerName: body.buyer_name,
             buyerInn: body.buyer_inn,
+            buyerAddress: body.buyer_address,
             comment: body.comment,
-            createdBy: actor?.login || actor?.name || '',
+            createdBy,
             organizationId: body.organization_id,
           });
+    const regenerated = !!(doc as { regenerated?: boolean }).regenerated;
+    const docRow = doc as Record<string, unknown>;
+    const createdSummary =
+      docType === 'workorder' && docRow
+        ? workorderFormedSummary({
+            number: docRow.number,
+            total: docRow.total,
+            amount: docRow.amount,
+            deal_id: dealId,
+          })
+        : `${regenerated ? 'Обновлён' : 'Создан'} ${salesDocTypeLabel(docType)} · заказ ${dealId}${
+            docRow?.total != null ? ` · ${docRow.total} ₽` : ''
+          }`;
     auditFromContext(c, {
-      action: 'sales_doc.create',
+      action: regenerated ? 'sales_doc.regenerate' : 'sales_doc.create',
       entity: 'sales_doc',
-      entityId: String(doc?.id || ''),
-      summary: `${salesDocTypeLabel(docType)} из заказа ${dealId}`,
-      after: { id: doc?.id, number: doc?.number, total: doc?.total },
+      entityId: String(docRow?.id || ''),
+      summary: createdSummary,
+      after: { id: docRow?.id, number: docRow?.number, total: docRow?.total, deal_id: dealId, regenerated },
     });
-    return c.json({ ok: true, doc });
+    return c.json({ ok: true, doc: docRow, regenerated });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
   }
@@ -3550,22 +6739,30 @@ api.post('/sales-docs/from-deal', async (c) => {
  * СТО физлицо → ЗН; СТО юрлицо → счёт+ЗН+УПД; продажа юрлицо → счёт+УПД; продажа физлицо → счёт.
  */
 api.post('/sales-docs/pack-from-deal', async (c) => {
-  const actor = actorFromContext(c);
-  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+  if (!salesDocsWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав на документы' }, 403);
   }
+  const actor = actorFromContext(c);
   const body = await c.req.json().catch(() => ({})) as {
     deal_id?: string;
     types?: string[];
     vat_rate?: number;
     buyer_name?: string;
     buyer_inn?: string;
+    buyer_address?: string;
     organization_id?: string;
+    created_by?: string;
   };
   const dealId = String(body.deal_id || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
   const deal = getDeal(dealId);
   if (!deal) return c.json({ error: 'Сделка не найдена' }, 404);
+  const createdBy =
+    actorDisplayName(actor) ||
+    actor?.login ||
+    actor?.name ||
+    String(body.created_by || '').trim() ||
+    'amo-widget';
   const allowed = new Set(['invoice', 'upd', 'sf', 'workorder']);
   const types = (body.types || [])
     .map((t) => String(t).trim())
@@ -3580,17 +6777,27 @@ api.post('/sales-docs/pack-from-deal', async (c) => {
       vatRate: body.vat_rate,
       buyerName: body.buyer_name,
       buyerInn: body.buyer_inn,
-      createdBy: actor?.login || actor?.name || '',
+      buyerAddress: body.buyer_address,
+      createdBy,
       organizationId: body.organization_id,
     });
     for (const doc of docs) {
       if (!doc) continue;
+      const packSummary =
+        String(doc.doc_type) === 'workorder'
+          ? workorderFormedSummary({
+              number: doc.number,
+              total: doc.total,
+              amount: doc.amount,
+              deal_id: dealId,
+            })
+          : `${salesDocTypeLabel(doc.doc_type as SalesDocType)} из заказа ${dealId} (пакет)`;
       auditFromContext(c, {
         action: 'sales_doc.create',
         entity: 'sales_doc',
         entityId: String(doc.id || ''),
-        summary: `${salesDocTypeLabel(doc.doc_type as SalesDocType)} из заказа ${dealId} (пакет)`,
-        after: { id: doc.id, number: doc.number, total: doc.total },
+        summary: packSummary,
+        after: { id: doc.id, number: doc.number, total: doc.total, deal_id: dealId },
       });
     }
     return c.json({
@@ -3630,7 +6837,104 @@ api.patch('/crm/deals/:id/sto', async (c) => {
   }
 });
 
-/** Контур (организация) на заказе — только до выписки счёта. */
+/** Канал реализации / СТО / способ отправки / филиал → Учёт + CF сделки в Amo. */
+api.patch('/crm/deals/:id/amo-sale-fields', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('id') || '').trim();
+  const body = (await c.req.json().catch(() => ({}))) as {
+    amo_channel?: string;
+    amo_sto?: string;
+    amo_shipment?: string;
+    amo_branch?: string;
+    amo_payment_type?: string;
+    amo_pay_method?: string;
+  };
+  const patch: {
+    amo_channel?: string;
+    amo_sto?: string;
+    amo_shipment?: string;
+    amo_branch?: string;
+    amo_payment_type?: string;
+    amo_pay_method?: string;
+  } = {};
+  if (body.amo_channel !== undefined) patch.amo_channel = String(body.amo_channel ?? '').trim();
+  if (body.amo_sto !== undefined) patch.amo_sto = String(body.amo_sto ?? '').trim();
+  if (body.amo_shipment !== undefined) patch.amo_shipment = String(body.amo_shipment ?? '').trim();
+  if (body.amo_branch !== undefined) patch.amo_branch = String(body.amo_branch ?? '').trim();
+  if (body.amo_payment_type !== undefined)
+    patch.amo_payment_type = String(body.amo_payment_type ?? '').trim();
+  if (body.amo_pay_method !== undefined)
+    patch.amo_pay_method = String(body.amo_pay_method ?? '').trim();
+  if (!Object.keys(patch).length) {
+    return c.json(
+      {
+        error:
+          'Укажите amo_channel, amo_sto, amo_shipment, amo_payment_type, amo_pay_method и/или amo_branch',
+      },
+      400
+    );
+  }
+  try {
+    setDealAmoSaleFields(dealId, patch);
+    const amoPush = await pushDealSaleFieldsToAmo({ dealId, fields: patch });
+    const deal = getDeal(dealId);
+    const bits: string[] = [];
+    if (patch.amo_channel !== undefined) bits.push(`канал «${patch.amo_channel || '—'}»`);
+    if (patch.amo_shipment !== undefined) bits.push(`отправка «${patch.amo_shipment || '—'}»`);
+    if (patch.amo_payment_type !== undefined)
+      bits.push(`тип оплаты «${patch.amo_payment_type || '—'}»`);
+    if (patch.amo_pay_method !== undefined)
+      bits.push(`способ оплаты «${patch.amo_pay_method || '—'}»`);
+    if (patch.amo_branch !== undefined) bits.push(`филиал «${patch.amo_branch || '—'}»`);
+    if (patch.amo_sto !== undefined) bits.push(`СТО «${patch.amo_sto || '—'}»`);
+    auditFromContext(c, {
+      action: 'crm.deal_amo_sale_fields',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: `Канал/филиал/отправка/оплата/СТО: ${bits.join(', ')}`,
+      after: { ...patch, amo_ok: amoPush.ok },
+    });
+    return c.json({
+      ok: true,
+      deal,
+      amo: amoPush,
+      warning: amoPush.ok ? undefined : String((amoPush as { error?: string }).error || 'Amo не обновлён'),
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** Тихий sync одной сделки из Amo при открытии карточки. */
+api.post('/crm/deals/:id/refresh-from-amo', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_sync') && !canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('id') || '').trim();
+  if (!dealId) return c.json({ error: 'deal id required' }, 400);
+  try {
+    const result = syncDealsFromAmo1c({ dealId, limit: 1 });
+    const who = String(actor?.name || actor?.login || '').trim() || 'Сотрудник';
+    const n = Number(result?.deals) || 0;
+    auditFromContext(c, {
+      action: 'crm.deal_refresh_from_amo',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary:
+        `${who} обновил заказ из Amo` + (n > 0 ? ' · данные подтянуты' : ' · без изменений'),
+      after: result,
+    });
+    return c.json({ ok: true, ...result, deal: getDeal(dealId) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'refresh failed' }, 500);
+  }
+});
+
+/** Контур (филиал) на заказе — только до выписки счёта; пуш CF «Филиал» в Amo. */
 api.patch('/crm/deals/:id/org-company', async (c) => {
   const actor = actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
@@ -3639,16 +6943,28 @@ api.patch('/crm/deals/:id/org-company', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { org_company_id?: string };
   try {
     const dealId = c.req.param('id');
-    setDealOrgCompany(dealId, String(body.org_company_id || ''));
+    const saved = setDealOrgCompany(dealId, String(body.org_company_id || ''));
+    const amoPush = await pushDealSaleFieldsToAmo({
+      dealId,
+      fields: { amo_branch: saved.amo_branch },
+    });
     const deal = getDeal(dealId);
     auditFromContext(c, {
       action: 'crm.deal_org_company',
       entity: 'crm_deal',
       entityId: dealId,
-      summary: `Организация заказа: ${body.org_company_id || '—'}`,
-      after: { org_company_id: body.org_company_id || '' },
+      summary: `Филиал заказа: ${saved.org_company_id || '—'} → Amo «${saved.amo_branch || '—'}»`,
+      after: { ...saved, amo_ok: amoPush.ok },
     });
-    return c.json({ ok: true, deal });
+    return c.json({
+      ok: true,
+      deal,
+      ...saved,
+      amo: amoPush,
+      warning: amoPush.ok
+        ? undefined
+        : String((amoPush as { error?: string }).error || 'Amo не обновлён'),
+    });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -3657,34 +6973,161 @@ api.patch('/crm/deals/:id/org-company', async (c) => {
 /** Автомобиль на заказе (для заказ-наряда: гос. номер, VIN, СТС…). */
 api.patch('/crm/deals/:id/vehicle', async (c) => {
   const actor = actorFromContext(c);
-  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const bodyKeys = Object.keys(body);
+  const intakeKeys = [
+    'car_mileage',
+    'save_garage',
+    'garage_vehicle_id',
+    'car_fuel_level',
+    'car_keys_count',
+    'car_docs_left',
+    'car_docs_note',
+    'car_damage_notes',
+    'car_completeness',
+    'car_completeness_other',
+  ];
+  const mileageOnly =
+    bodyKeys.length > 0 && bodyKeys.every((k) => intakeKeys.includes(k));
+  if (
+    !canDo(actor, 'can_edit_docs') &&
+    actor?.role !== 'admin' &&
+    !(mileageOnly && canUseCarPhotoReception(actor))
+  ) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   try {
-    setDealVehicle(c.req.param('id'), body);
-    const deal = getDeal(c.req.param('id'));
+    const dealId = c.req.param('id');
+    const cur = (getDeal(dealId) || {}) as Record<string, unknown>;
+    /** Частичный PATCH (только owner и т.п.) не должен затирать госномер/VIN. */
+    const fromBodyOrCur = (key: string): string => {
+      if (Object.prototype.hasOwnProperty.call(body, key)) {
+        return String(body[key] ?? '').trim();
+      }
+      return String(cur[key] ?? '').trim();
+    };
+    const scrubbed = sanitizeStsVehicle({
+      car_plate: fromBodyOrCur('car_plate'),
+      car_vin: fromBodyOrCur('car_vin'),
+      car_brand: fromBodyOrCur('car_brand'),
+      car_model: fromBodyOrCur('car_model'),
+      car_year: fromBodyOrCur('car_year'),
+      car_color: fromBodyOrCur('car_color'),
+      car_category: fromBodyOrCur('car_category'),
+      car_pts: fromBodyOrCur('car_pts'),
+      car_owner: fromBodyOrCur('car_owner'),
+      car_owner_street: fromBodyOrCur('car_owner_street'),
+      car_owner_house: fromBodyOrCur('car_owner_house'),
+      car_owner_flat: fromBodyOrCur('car_owner_flat'),
+      car_sts_date: fromBodyOrCur('car_sts_date'),
+      car_sts_number: fromBodyOrCur('car_sts_number'),
+    });
+    // sanitize мог обнулить «кривой» номер — если в body явно прислали plate и он нормализуется, оставим нормализованный;
+    // если body.plate был и sanitize снёс, а на заказе уже был валидный — не трогаем (кроме явной очистки через clear/new)
+    if (
+      Object.prototype.hasOwnProperty.call(body, 'car_plate') &&
+      String(body.car_plate || '').trim() &&
+      !scrubbed.car_plate
+    ) {
+      // пользователь ввёл номер, sanitize снёс — сохраним нормализованный, чтобы не «пропадал»
+      const raw = normalizePlate(String(body.car_plate || ''));
+      if (raw.length >= 7 && raw.length <= 12) {
+        scrubbed.car_plate = raw;
+      }
+    }
+    const mileage = Object.prototype.hasOwnProperty.call(body, 'car_mileage')
+      ? String(body.car_mileage || '').trim()
+      : String(cur.car_mileage || '').trim();
+    const intakePatch: Record<string, string> = {};
+    for (const k of [
+      'car_fuel_level',
+      'car_keys_count',
+      'car_docs_left',
+      'car_docs_note',
+      'car_damage_notes',
+      'car_completeness_other',
+    ] as const) {
+      if (Object.prototype.hasOwnProperty.call(body, k)) {
+        intakePatch[k] = String(body[k] ?? '').trim();
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'car_completeness')) {
+      const raw = body.car_completeness;
+      if (Array.isArray(raw)) {
+        intakePatch.car_completeness = JSON.stringify(raw.map((x) => String(x || '').trim()).filter(Boolean));
+      } else {
+        intakePatch.car_completeness = String(raw ?? '').trim();
+      }
+    }
+    setDealVehicle(dealId, {
+      ...scrubbed,
+      car_mileage: mileage,
+      ...(Object.prototype.hasOwnProperty.call(body, 'car_brought_by')
+        ? { car_brought_by: fromBodyOrCur('car_brought_by') }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'car_authority_basis')
+        ? { car_authority_basis: fromBodyOrCur('car_authority_basis') }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'car_authority_details')
+        ? { car_authority_details: fromBodyOrCur('car_authority_details') }
+        : {}),
+      ...intakePatch,
+    });
+    syncDealVehicleOntoWorkorders(dealId);
+    if (body.clear_sts === true) {
+      clearStsImagesForDeal(dealId);
+    }
+    let garageVehicle = null as ReturnType<typeof upsertCounterpartyVehicle> | null;
+    const saveGarage = body.save_garage !== false;
+    if (saveGarage && (scrubbed.car_plate || scrubbed.car_vin)) {
+      const dealRow = getDeal(dealId);
+      const cpId = ensureCounterpartyForDeal(dealRow as Record<string, unknown> | null);
+      if (cpId) {
+        garageVehicle = upsertCounterpartyVehicle(cpId, {
+          id: String(body.garage_vehicle_id || ''),
+          ...scrubbed,
+          car_mileage: mileage,
+        });
+        if (garageVehicle?.id) {
+          const vp = stsMediaInfoForVehicle(garageVehicle.id);
+          if (vp.front || vp.back) {
+            await syncStsVehicleToDeal(garageVehicle.id, dealId, { overwrite: true });
+          } else if (body.clear_sts !== true) {
+            // авто без своего СТС — не копируем чужие фото сделки на него
+            clearStsImagesForDeal(dealId);
+          }
+        }
+      }
+    }
+    const deal = getDeal(dealId);
+    const garage = garageForDeal(dealId, { ensure: true });
     auditFromContext(c, {
       action: 'crm.deal_vehicle',
       entity: 'crm_deal',
-      entityId: c.req.param('id'),
-      summary: `Авто: ${body.car_plate || '—'} / VIN ${body.car_vin || '—'}`,
+      entityId: dealId,
+      summary: `Авто: ${scrubbed.car_plate || '—'} / VIN ${scrubbed.car_vin || '—'}`,
       after: {
-        car_plate: body.car_plate,
-        car_vin: body.car_vin,
-        car_year: body.car_year,
-        car_mileage: body.car_mileage,
-        car_brand: body.car_brand,
-        car_model: body.car_model,
+        ...scrubbed,
+        car_mileage: mileage,
+        garage_vehicle_id: garageVehicle?.id,
+        clear_sts: body.clear_sts === true,
+        sts_photos: stsMediaInfo(dealId),
       },
     });
-    return c.json({ ok: true, deal });
+    return c.json({
+      ok: true,
+      deal,
+      garage_vehicle: garageVehicle,
+      garage_vehicles: garage.vehicles,
+      buyer_counterparty_id: garage.counterparty_id,
+      sts_photos: stsMediaInfo(dealId),
+    });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
-/** Фото СТС (лицевая / оборот) — просмотр сохранённого файла. */
+/** Фото СТС (лицевая / оборот) — просмотр сохранённого файла. ?thumb=1 — лёгкое превью. */
 api.get('/crm/deals/:id/vehicle/sts/:side', async (c) => {
   const actor = actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
@@ -3694,7 +7137,65 @@ api.get('/crm/deals/:id/vehicle/sts/:side', async (c) => {
     sideRaw === 'front' || sideRaw === 'back' ? sideRaw : null;
   if (!side) return c.json({ error: 'side = front|back' }, 400);
   if (!getDeal(dealId)) return c.json({ error: 'Заказ покупателя не найден' }, 404);
+  const wantThumb =
+    c.req.query('thumb') === '1' ||
+    c.req.query('thumb') === 'true' ||
+    String(c.req.query('size') || '').toLowerCase() === 'thumb';
+  if (wantThumb) {
+    let thumb = readStsThumb(dealId, side);
+    if (!thumb) {
+      const full = await readStsImageNormalized(dealId, side);
+      if (full) thumb = readStsThumb(dealId, side);
+    }
+    if (!thumb) return c.json({ error: 'Превью не найдено' }, 404);
+    return new Response(new Uint8Array(thumb.buf), {
+      headers: {
+        'Content-Type': thumb.mime,
+        'Cache-Control': 'private, max-age=86400',
+      },
+    });
+  }
   const file = await readStsImageNormalized(dealId, side);
+  if (!file) return c.json({ error: 'Фото не найдено' }, 404);
+  return new Response(new Uint8Array(file.buf), {
+    headers: {
+      'Content-Type': file.mime,
+      'Cache-Control': 'private, max-age=120',
+    },
+  });
+});
+
+/** Фото СТС конкретного авто в гараже. ?thumb=1 — лёгкое превью. */
+api.get('/counterparties/vehicles/:vehicleId/sts/:side', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'Unauthorized' }, 401);
+  const vehicleId = String(c.req.param('vehicleId') || '').trim();
+  const sideRaw = String(c.req.param('side') || '').toLowerCase();
+  const side: StsSide | null =
+    sideRaw === 'front' || sideRaw === 'back' ? sideRaw : null;
+  if (!side) return c.json({ error: 'side = front|back' }, 400);
+  if (!vehicleId || !get('SELECT id FROM counterparty_vehicles WHERE id = ?', [vehicleId])) {
+    return c.json({ error: 'Авто не найдено' }, 404);
+  }
+  const wantThumb =
+    c.req.query('thumb') === '1' ||
+    c.req.query('thumb') === 'true' ||
+    String(c.req.query('size') || '').toLowerCase() === 'thumb';
+  if (wantThumb) {
+    let thumb = readStsThumbVehicle(vehicleId, side);
+    if (!thumb) {
+      const full = await readStsImageNormalizedVehicle(vehicleId, side);
+      if (full) thumb = readStsThumbVehicle(vehicleId, side);
+    }
+    if (!thumb) return c.json({ error: 'Превью не найдено' }, 404);
+    return new Response(new Uint8Array(thumb.buf), {
+      headers: {
+        'Content-Type': thumb.mime,
+        'Cache-Control': 'private, max-age=86400',
+      },
+    });
+  }
+  const file = await readStsImageNormalizedVehicle(vehicleId, side);
   if (!file) return c.json({ error: 'Фото не найдено' }, 404);
   return new Response(new Uint8Array(file.buf), {
     headers: {
@@ -3706,11 +7207,15 @@ api.get('/crm/deals/:id/vehicle/sts/:side', async (c) => {
 
 /**
  * Загрузить фото СТС (1–2 шт.) — сторона определяется автоматически (OCR) или по порядку.
- * Опционально распознать поля и сохранить на сделку.
+ * Опционально распознать поля и сохранить на сделку + на авто гаража.
  */
 api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
   const actor = actorFromContext(c);
-  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+  if (
+    !canDo(actor, 'can_edit_docs') &&
+    actor?.role !== 'admin' &&
+    !canUseCarPhotoReception(actor)
+  ) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
@@ -3723,7 +7228,12 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
     recognize?: boolean;
     /** true = взять уже сохранённые front/back с диска (без новых файлов) */
     from_saved?: boolean;
+    /** авто гаража — СТС хранится на нём */
+    garage_vehicle_id?: string;
+    /** принудительно: front | back (для мобильной съёмки одной стороны) */
+    side?: string;
   };
+  const garageVehicleId = String(body.garage_vehicle_id || '').trim();
   const images = (body.images || [])
     .map((img) => ({
       mime: img.mime,
@@ -3765,10 +7275,13 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
       );
       labels = buffers.map(() => 'unknown' as const);
     } else {
-      // повторное распознавание по уже загруженным лицевая/оборот
+      // повторное распознавание: сначала СТС авто гаража, иначе сделка
       fromSaved = true;
       for (const side of ['front', 'back'] as const) {
-        const img = await readStsImageNormalized(dealId, side);
+        let img = garageVehicleId
+          ? await readStsImageNormalizedVehicle(garageVehicleId, side)
+          : null;
+        if (!img) img = await readStsImageNormalized(dealId, side);
         if (!img) continue;
         buffers.push(img);
         labels.push(side);
@@ -3780,7 +7293,36 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
 
     let recognized = false;
     if (wantRecognize) {
-      if (!deepseekConfigured()) {
+      const { getOcrLocalSettings, ocrLocalHealth } = await import('./doc-ocr-local.js');
+      const ocrCfg = getOcrLocalSettings();
+      if (ocrCfg.mode === 'off') {
+        warn = 'OCR выключен (Настройки → OCR документов). Поля можно ввести вручную.';
+      } else if (ocrCfg.mode === 'local') {
+        const health = await ocrLocalHealth(ocrCfg);
+        if (!health.ok) {
+          warn =
+            'Локальный OCR недоступен (ожидается http://127.0.0.1:3105). Запустите warehouse-ocr-local или введите поля вручную.';
+        } else {
+          try {
+            const jpegImages = buffers.map((b) => ({
+              mime: b.mime,
+              data_base64: b.buf.toString('base64'),
+            }));
+            const result = await recognizeStsFromImages(jpegImages);
+            buffers = result.buffers;
+            vehicle = result.vehicle;
+            model = result.model;
+            if (!fromSaved) labels = result.image_sides;
+            recognized = Object.values(vehicle).some((v) => Boolean(v));
+            if (!recognized) {
+              warn =
+                'Локальный OCR ответил, но поля пустые — переснимите ближе / без бликов.';
+            }
+          } catch (e) {
+            warn = e instanceof Error ? e.message : String(e);
+          }
+        }
+      } else if (!deepseekConfigured()) {
         warn =
           'Фото на месте, но ключ не задан: Настройки → DeepSeek / СТС (OpenRouter + deepseek/deepseek-vl2).';
       } else if (!deepseekVisionEndpointOk()) {
@@ -3808,14 +7350,23 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
 
     const sides = fromSaved
       ? (labels.map((l) => (l === 'front' || l === 'back' ? l : null)) as Array<StsSide | null>)
-      : assignStsSides(labels, buffers.length);
+      : (() => {
+          const force = String(body.side || '').toLowerCase();
+          if ((force === 'front' || force === 'back') && buffers.length === 1) {
+            return [force as StsSide];
+          }
+          return assignStsSides(labels, buffers.length);
+        })();
     const savedSides: Array<{ side: StsSide; size: number }> = [];
-    // новые файлы — сохраняем; from_saved — на диске уже лежат
+    // новые файлы — сохраняем на сделку; при известном авто — и в гараж
     if (!fromSaved) {
       for (let i = 0; i < buffers.length; i++) {
         const side = sides[i];
         if (!side) continue;
         const saved = await saveStsImage(dealId, side, buffers[i].buf, buffers[i].mime);
+        if (garageVehicleId) {
+          await saveStsImageVehicle(garageVehicleId, side, buffers[i].buf, buffers[i].mime);
+        }
         savedSides.push({ side: saved.side, size: saved.size });
       }
     } else {
@@ -3827,6 +7378,7 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
     }
 
     let saved = false;
+    let garageVehicle: ReturnType<typeof upsertCounterpartyVehicle> | null = null;
     const hasFields = Object.values(vehicle).some((v) => v);
     if (body.apply !== false && hasFields) {
       const cur = deal as Record<string, unknown>;
@@ -3836,18 +7388,72 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
         car_mileage: String(cur.car_mileage || ''),
       };
       setDealVehicle(dealId, merged);
+      syncDealVehicleOntoWorkorders(dealId);
       vehicle = sanitizeStsVehicle(merged);
       saved = true;
+      try {
+        const cpId = ensureCounterpartyForDeal(deal as Record<string, unknown>);
+        if (cpId && (vehicle.car_plate || vehicle.car_vin)) {
+          garageVehicle = upsertCounterpartyVehicle(cpId, {
+            id: garageVehicleId,
+            ...vehicle,
+            car_mileage: String(cur.car_mileage || ''),
+          });
+          // новые фото уже на сделке → в авто; иначе подтянуть сделку→авто если у авто пусто
+          await syncStsDealToVehicle(dealId, garageVehicle.id, {
+            overwrite: !fromSaved && !!images.length,
+          });
+        }
+      } catch {
+        /* гараж не обязателен для OCR сделки */
+      }
     }
 
-    const photos = stsMediaInfo(dealId);
+    const photos =
+      garageVehicle?.id || garageVehicleId
+        ? stsMediaInfoForVehicle(garageVehicle?.id || garageVehicleId)
+        : stsMediaInfo(dealId);
+
+    try {
+      if (photos.front && photos.back) completeCarPhotoTaskForDeal(dealId, 'sts');
+    } catch {
+      /* optional */
+    }
 
     auditFromContext(c, {
       action: 'crm.deal_vehicle_ocr',
       entity: 'crm_deal',
       entityId: dealId,
-      summary: `СТС: ${vehicle.car_plate || (recognized ? 'OCR' : 'фото')} · ${savedSides.map((s) => s.side).join('+') || '—'}${warn ? ' · warn' : ''}`,
-      after: { ...vehicle, model, saved, recognized, fromSaved, warn, sides: savedSides, photos },
+      summary: (() => {
+        const sideRu: Record<string, string> = {
+          front: 'лицевая',
+          back: 'оборот',
+          unknown: 'сторона не ясна',
+        };
+        const sidesRu = savedSides
+          .map((s) => sideRu[String(s.side || '').toLowerCase()] || String(s.side || ''))
+          .filter(Boolean);
+        const plate = String(vehicle.car_plate || '').trim();
+        const head = plate
+          ? `СТС распознан · ${plate}`
+          : recognized
+            ? 'СТС распознан'
+            : 'Фото СТС';
+        const mid = sidesRu.length ? ` · ${sidesRu.join(' + ')}` : '';
+        const tail = warn ? ' · есть предупреждения' : '';
+        return `${head}${mid}${tail}`;
+      })(),
+      after: {
+        ...vehicle,
+        model,
+        saved,
+        recognized,
+        fromSaved,
+        warn,
+        sides: savedSides,
+        photos,
+        garage_vehicle_id: garageVehicle?.id || garageVehicleId || '',
+      },
     });
 
     // если просили распознать, а полей нет — явная ошибка (фото при новых upload уже сохранены)
@@ -3863,6 +7469,7 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
           sides: savedSides,
           photos,
           warn,
+          garage_vehicle_id: garageVehicle?.id || garageVehicleId || '',
           deal: getDeal(dealId),
         },
         422
@@ -3878,6 +7485,7 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
       sides: savedSides,
       photos,
       warn,
+      garage_vehicle_id: garageVehicle?.id || garageVehicleId || '',
       deal: getDeal(dealId),
     });
   } catch (e) {
@@ -3885,7 +7493,139 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
   }
 });
 
-/** Наименование покупателя (ЗН/счёт/УПД…) → документы сделки + контрагент + AmoCRM name. */
+/**
+ * Паспорт РФ → ФИО + серия/номер в поля сделки.
+ * Фото только в OCR (RAM), на диск / в гараж не сохраняем (регламент ПДн).
+ */
+api.post('/crm/deals/:id/passport/ocr', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  const deal = getDeal(dealId);
+  if (!deal) return c.json({ error: 'Заказ покупателя не найден' }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    images?: Array<{ mime?: string; data_base64?: string }>;
+    apply?: boolean;
+  };
+  const images = (body.images || [])
+    .map((img) => ({
+      mime: img.mime,
+      data_base64: String(img.data_base64 || ''),
+    }))
+    .filter((img) => img.data_base64);
+  if (!images.length) {
+    return c.json({ error: 'Прикрепите 1–2 фото разворота паспорта с ФИО' }, 400);
+  }
+  try {
+    let buffers = decodeStsImages(images);
+    buffers = await Promise.all(
+      buffers.map(async (b) => {
+        const n = await ensureStsJpeg(b.buf, b.mime);
+        return { mime: n.mime, buf: n.buf };
+      })
+    );
+    const { getOcrLocalSettings, ocrLocalHealth, recognizePassportViaLocal } = await import(
+      './doc-ocr-local.js'
+    );
+    const { looksLikePersonFio } = await import('./person-fio.js');
+    const ocrCfg = getOcrLocalSettings();
+    if (ocrCfg.mode === 'off') {
+      return c.json(
+        { error: 'OCR выключен (Настройки → OCR документов). Введите ФИО вручную.' },
+        400
+      );
+    }
+    if (ocrCfg.mode !== 'local') {
+      return c.json(
+        {
+          error:
+            'Паспорт — только локальный OCR (без cloud). Включите режим local или введите ФИО вручную.',
+        },
+        400
+      );
+    }
+    const health = await ocrLocalHealth(ocrCfg);
+    if (!health.ok) {
+      return c.json(
+        {
+          error:
+            'Локальный OCR недоступен (ожидается http://127.0.0.1:3105). Запустите warehouse-ocr-local или введите поля вручную.',
+        },
+        503
+      );
+    }
+    const jpegImages = buffers.map((b) => ({
+      mime: b.mime,
+      data_base64: b.buf.toString('base64'),
+    }));
+    const result = await recognizePassportViaLocal(jpegImages, ocrCfg);
+    let fio = String(result.fields.fio || '').trim();
+    const passport = String(result.fields.passport || '').trim();
+    if (fio && !looksLikePersonFio(fio)) {
+      // всё равно отдаём в UI — менеджер поправит; в сделку не пишем сомнительное
+    }
+    let saved = false;
+    if (body.apply !== false && (looksLikePersonFio(fio) || passport)) {
+      const patch: { buyer_name?: string; buyer_passport?: string } = {};
+      if (looksLikePersonFio(fio)) patch.buyer_name = fio;
+      if (passport) {
+        const curPass = String((deal as { buyer_passport?: string }).buyer_passport || '').trim();
+        // OCR даёт серию/номер; если уже был длинный текст «кем выдан» — не затираем целиком пустым коротким, а подставляем если пусто или только цифры
+        if (!curPass || /^\d[\d\s№\-]*$/.test(curPass) || curPass.length < passport.length) {
+          patch.buyer_passport = passport;
+        } else if (!/\d{4}/.test(curPass) && passport) {
+          patch.buyer_passport = `${passport} · ${curPass}`;
+        }
+      }
+      if (Object.keys(patch).length) {
+        updateDealBuyer(dealId, patch);
+        saved = true;
+      }
+    }
+    auditFromContext(c, {
+      action: 'crm.deal_passport_ocr',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: `Паспорт OCR: ${fio || '—'} · ${passport || '—'}${saved ? '' : ' · не сохранено'}`,
+      after: {
+        fio,
+        passport,
+        model: result.model,
+        saved,
+        photo_stored: false,
+        warn: result.warn || '',
+      },
+    });
+    if (!fio && !passport) {
+      return c.json(
+        {
+          ok: false,
+          error: result.warn || 'Не удалось распознать паспорт',
+          fields: result.fields,
+          model: result.model,
+          saved: false,
+          photo_stored: false,
+        },
+        422
+      );
+    }
+    return c.json({
+      ok: true,
+      fields: { fio, passport, buyer_name: fio, buyer_passport: passport },
+      model: result.model,
+      saved,
+      photo_stored: false,
+      warn: result.warn || '',
+      deal: getDeal(dealId),
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
+/** Наименование покупателя (ЗН/счёт/УПД…) → документы сделки + контрагент; в Amo — поле «Покупатель», не Название. */
 api.patch('/sales-docs/:id/counterparty-name', async (c) => {
   const actor = actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
@@ -3927,7 +7667,9 @@ api.patch('/sales-docs/:id/counterparty-name', async (c) => {
       summary: `Покупатель: ${renamed.name} · docs ${renamed.docs_updated}${
         amo && amo.ok === false
           ? ' · Amo: ' + amo.error
-          : amo && amo.ok && amo.filled?.includes('name')
+          : amo && amo.ok && amo.filled?.includes('buyer')
+            ? ' · Amo «Покупатель»'
+            : amo && amo.ok && amo.filled?.includes('name')
             ? ' · Amo name'
             : amo && amo.ok
               ? ' · Amo ok'
@@ -3955,6 +7697,7 @@ api.patch('/sales-docs/:id/buyer', async (c) => {
     address?: string;
     phone?: string;
     email?: string;
+    passport?: string;
     director?: string;
     bank?: string;
     bik?: string;
@@ -4007,6 +7750,30 @@ api.patch('/sales-docs/:id/buyer', async (c) => {
   }
 });
 
+/** Тип договора: 01 физлицо / 02 юрлицо·ИП. */
+api.patch('/sales-docs/:id/contract-template', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { template_id?: string };
+  try {
+    const id = c.req.param('id');
+    updateSalesDocContractTemplate(id, String(body.template_id || ''));
+    const doc = getSalesDoc(id);
+    auditFromContext(c, {
+      action: 'sales.doc_contract_template',
+      entity: 'sales_doc',
+      entityId: id,
+      summary: `Тип договора: ${body.template_id || ''}`,
+      after: { template_id: body.template_id },
+    });
+    return c.json({ ok: true, doc });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
 /** Автомобиль в заказ-наряде (правка перед печатью). */
 api.patch('/sales-docs/:id/vehicle', async (c) => {
   const actor = actorFromContext(c);
@@ -4037,6 +7804,18 @@ api.patch('/sales-docs/:id/vehicle', async (c) => {
       ...scrubbed,
       car_mileage: String(body.car_mileage || ''),
     });
+    const docAfterVehicle = getSalesDoc(docId);
+    const dealIdForSync = String(docAfterVehicle?.deal_id || '').trim();
+    if (dealIdForSync && String(docAfterVehicle?.doc_type || '') === 'workorder') {
+      setDealVehicle(dealIdForSync, {
+        ...scrubbed,
+        car_mileage: String(body.car_mileage || ''),
+      });
+    }
+    if (body.clear_sts === true) {
+      const dealId0 = dealIdForSync;
+      if (dealId0) clearStsImagesForDeal(dealId0);
+    }
     let garageVehicle = null as ReturnType<typeof upsertCounterpartyVehicle> | null;
     const saveGarage = body.save_garage !== false;
     if (saveGarage && (scrubbed.car_plate || scrubbed.car_vin)) {
@@ -4048,7 +7827,18 @@ api.patch('/sales-docs/:id/vehicle', async (c) => {
         garageVehicle = upsertCounterpartyVehicle(cpId, {
           id: String(body.garage_vehicle_id || ''),
           ...scrubbed,
+          car_mileage: String(body.car_mileage || ''),
         });
+        if (dealId && garageVehicle?.id) {
+          const vp = stsMediaInfoForVehicle(garageVehicle.id);
+          if (vp.front || vp.back) {
+            // авто уже со своим СТС → на текущий ЗН/сделку
+            await syncStsVehicleToDeal(garageVehicle.id, dealId, { overwrite: true });
+          } else {
+            // авто без СТС — не копируем чужие фото сделки на него
+            clearStsImagesForDeal(dealId);
+          }
+        }
       }
     }
     const doc = getSalesDoc(docId);
@@ -4152,6 +7942,71 @@ api.get('/crm/deals/:id/garage', (c) => {
   return c.json(garageForDeal(dealId));
 });
 
+/** Удалить авто из гаража клиента (по заказу). */
+api.delete('/crm/deals/:id/garage/:vehicleId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = c.req.param('id');
+  const vehicleId = String(c.req.param('vehicleId') || '').trim();
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  if (!deal) return c.json({ error: 'Заказ покупателя не найден' }, 404);
+  if (!vehicleId) return c.json({ error: 'Не указано авто' }, 400);
+  try {
+    const garage = garageForDeal(dealId, { ensure: false });
+    const cpId = String(garage.counterparty_id || '').trim();
+    if (!cpId) return c.json({ error: 'Контрагент заказа не найден' }, 400);
+    const gone = (garage.vehicles || []).find((v) => String(v.id) === vehicleId);
+    if (!gone) return c.json({ error: 'Авто не найдено в гараже' }, 404);
+    const dealVin = String(deal.car_vin || '')
+      .replace(/\s/g, '')
+      .toUpperCase();
+    const dealPlate = String(deal.car_plate || '')
+      .replace(/\s/g, '')
+      .toUpperCase();
+    const goneVin = String(gone.car_vin || '')
+      .replace(/\s/g, '')
+      .toUpperCase();
+    const gonePlate = String(gone.car_plate || '')
+      .replace(/\s/g, '')
+      .toUpperCase();
+    const wasOnDeal =
+      (dealVin && goneVin && dealVin === goneVin) ||
+      (dealPlate && gonePlate && dealPlate === gonePlate);
+    deleteCounterpartyVehicle(cpId, vehicleId);
+    if (wasOnDeal) {
+      setDealVehicle(dealId, {
+        car_plate: '',
+        car_vin: '',
+        car_brand: '',
+        car_model: '',
+        car_year: '',
+        car_color: '',
+        car_mileage: '',
+        car_owner: '',
+        car_sts_number: '',
+        car_sts_date: '',
+        car_category: '',
+        car_pts: '',
+        car_owner_street: '',
+        car_owner_house: '',
+        car_owner_flat: '',
+      });
+      syncDealVehicleOntoWorkorders(dealId);
+    }
+    auditFromContext(c, {
+      action: 'deal.garage_vehicle_delete',
+      entity: 'deal',
+      entityId: dealId,
+      summary: `Удалено авто гаража ${vehicleId}${wasOnDeal ? ' (снято с заказа)' : ''}`,
+    });
+    return c.json({ ok: true, ...garageForDeal(dealId, { ensure: false }), cleared_deal: wasOnDeal });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
 /** УПД (товары+услуги) + проведённая расходная (только товары → склад). */
 api.post('/sales-docs/upd-and-writeoff-from-deal', async (c) => {
   const actor = actorFromContext(c);
@@ -4195,7 +8050,7 @@ api.post('/sales-docs/upd-and-writeoff-from-deal', async (c) => {
         action: 'doc.create',
         entity: 'stock_doc',
         entityId: result.stock_doc_id,
-        summary: `Расходная ${result.stock_doc_number || ''} · списание по заказу ${dealId}`,
+        summary: `Списание ${result.stock_doc_number || ''} · списание по заказу ${dealId}`,
       });
     }
     return c.json({ ok: true, ...result });
@@ -4342,7 +8197,33 @@ api.get('/staff', (c) => {
   }
   const q = (c.req.query('q') || '').trim().toLowerCase();
   const role = (c.req.query('role') || '').trim();
+  const access = (c.req.query('access') || 'on').trim().toLowerCase(); // on | off | all
   let rows = all<Record<string, unknown>>(`SELECT * FROM staff`);
+  // Не тащим служебный мусор из 1С (wsuser / без роли и без логина)
+  const isGhost = (r: Record<string, unknown>) => {
+    const name = String(r.name || '').trim().toLowerCase();
+    if (['wsuser', 'api', 'testhttp'].includes(name)) return true;
+    if (String(r.name || '').startsWith('Диспетчер')) return true;
+    if (String(r.name || '') === 'Администратор_1С') return true;
+    const noCred =
+      !Number(r.can_login) &&
+      !String(r.login || '').trim() &&
+      !String(r.password_hash || '').trim() &&
+      !String(r.pin_hash || '').trim();
+    const noneRole = !r.role || String(r.role) === 'none';
+    const src = String(r.source || '');
+    return noCred && noneRole && (src === '1c' || src === '');
+  };
+  if (!q) {
+    rows = rows.filter((r) => !isGhost(r));
+  }
+  if (access === 'off') {
+    rows = rows.filter((r) => !Number(r.can_login) || !Number(r.is_active ?? 1));
+  } else if (access === 'all') {
+    /* активные и заблокированные (без ghosts) */
+  } else {
+    rows = rows.filter((r) => Number(r.is_active ?? 1) === 1);
+  }
   rows.sort((a, b) => {
     const ra = roleSortRank(String(a.role || ''));
     const rb = roleSortRank(String(b.role || ''));
@@ -4619,6 +8500,7 @@ api.patch('/staff/:id', async (c) => {
   const body = await c.req.json<{
     role?: string;
     can_login?: boolean | number;
+    is_active?: boolean | number;
     notes?: string;
     password?: string;
     pin?: string | null;
@@ -4680,6 +8562,13 @@ api.patch('/staff/:id', async (c) => {
 
   let canLogin = Number(row.can_login) ? 1 : 0;
   if (body.can_login !== undefined) canLogin = body.can_login ? 1 : 0;
+  let isActive = Number(row.is_active ?? 1) ? 1 : 0;
+  if (body.is_active !== undefined) {
+    isActive = body.is_active ? 1 : 0;
+  } else if (body.can_login !== undefined) {
+    // выключили вход → блокируем; включили → активируем
+    isActive = canLogin ? 1 : 0;
+  }
 
   const notes = body.notes !== undefined ? String(body.notes).slice(0, 500) : String(row.notes || '');
   let login = String(row.login || '');
@@ -4695,9 +8584,13 @@ api.patch('/staff/:id', async (c) => {
   if (body.department !== undefined) department = normDepartmentName(body.department);
 
   run(
-    `UPDATE staff SET role = ?, rights_json = ?, can_login = ?, notes = ?, login = ?, name = ?, email = ?, department = ? WHERE id = ?`,
-    [role, JSON.stringify(rights), canLogin, notes, login, name, email, department, id]
+    `UPDATE staff SET role = ?, rights_json = ?, can_login = ?, is_active = ?, notes = ?, login = ?, name = ?, email = ?, department = ? WHERE id = ?`,
+    [role, JSON.stringify(rights), canLogin, isActive, notes, login, name, email, department, id]
   );
+
+  if (body.can_login === false || body.can_login === 0 || isActive === 0) {
+    destroySessionsForActor(id);
+  }
 
   if (body.password) {
     try {
@@ -4797,6 +8690,30 @@ api.get('/dicts/marks/:id/models', (c) => {
   return c.json(
     all(`SELECT * FROM dict_models WHERE mark_id = ? ORDER BY name`, [id])
   );
+});
+
+/** Марки и комбинации применимости (для быстрого создания товара). */
+api.get('/dicts/applicability/combos', (c) => {
+  const appCombos = all<{
+    mark: string;
+    model: string;
+    generation: string;
+    years: string;
+  }>(
+    `SELECT mark, model, generation, years
+     FROM product_applicability
+     WHERE IFNULL(mark,'') != ''
+     GROUP BY mark, model, generation, years
+     ORDER BY mark, COUNT(*) DESC, model, generation, years`
+  );
+  const markSet = new Set<string>();
+  for (const row of appCombos) {
+    if (row.mark) markSet.add(row.mark);
+  }
+  return c.json({
+    marks: [...markSet].sort((a, b) => a.localeCompare(b, 'ru')),
+    combos: appCombos,
+  });
 });
 
 /** Поколения из применимости (каскад после марки/модели). */
@@ -4985,7 +8902,22 @@ api.get('/sync/odata/status', (c) =>
 );
 
 /* ——— фото / медиа покрытие ——— */
-api.get('/media/coverage', (c) => c.json(mediaCoverageByCategory()));
+api.get('/media/coverage', (c) => {
+  const companyIdRaw = (c.req.query('company_id') || '').trim();
+  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  if (!companyParsed.ok) {
+    return c.json({ error: companyParsed.error }, 400);
+  }
+  const companyId = companyParsed.id;
+  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const deptCompanyId =
+    coFilter.mode === 'one' ? coFilter.id : companyId || '';
+  return c.json(
+    mediaCoverageByCategory({
+      source_departments: sourceDepartmentsForCompany(deptCompanyId),
+    })
+  );
+});
 
 api.get('/media/products', (c) => {
   const statusRaw = (c.req.query('status') || 'all').trim();
@@ -4995,6 +8927,15 @@ api.get('/media/products', (c) => {
     statusRaw === 'stock_without'
       ? statusRaw
       : 'all';
+  const companyIdRaw = (c.req.query('company_id') || '').trim();
+  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  if (!companyParsed.ok) {
+    return c.json({ error: companyParsed.error }, 400);
+  }
+  const companyId = companyParsed.id;
+  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const deptCompanyId =
+    coFilter.mode === 'one' ? coFilter.id : companyId || '';
   return c.json(
     listMediaProducts({
       q: (c.req.query('q') || '').trim() || undefined,
@@ -5002,6 +8943,9 @@ api.get('/media/products', (c) => {
       status,
       page: Number(c.req.query('page') || 1) || 1,
       limit: Number(c.req.query('limit') || 50) || 50,
+      sort: (c.req.query('sort') || '').trim() || undefined,
+      dir: (c.req.query('dir') || '').trim() || undefined,
+      source_departments: sourceDepartmentsForCompany(deptCompanyId),
     })
   );
 });
@@ -5012,6 +8956,15 @@ api.get('/media/photo-queue', (c) => {
   if (!canAccessPhotoScreen(actor)) {
     return c.json({ error: 'Недостаточно прав: экран фотографа' }, 403);
   }
+  const companyIdRaw = (c.req.query('company_id') || '').trim();
+  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  if (!companyParsed.ok) {
+    return c.json({ error: companyParsed.error }, 400);
+  }
+  const companyId = companyParsed.id;
+  const coFilter = resolveListCompanyFilter(actor, companyId);
+  const deptCompanyId =
+    coFilter.mode === 'one' ? coFilter.id : companyId || '';
   return c.json(
     listPhotographerQueue({
       q: (c.req.query('q') || '').trim() || undefined,
@@ -5019,6 +8972,7 @@ api.get('/media/photo-queue', (c) => {
       category_id: (c.req.query('category_id') || '').trim() || undefined,
       offset: Number(c.req.query('offset') || 0) || 0,
       limit: Number(c.req.query('limit') || 1) || 1,
+      source_departments: sourceDepartmentsForCompany(deptCompanyId),
     })
   );
 });
@@ -5033,52 +8987,94 @@ function canUploadProductPhoto(actor: ReturnType<typeof actorFromContext>): bool
   return false;
 }
 
-/** Ручная загрузка фото (камера / файл) → S3. */
+/** Ручная загрузка фото (камера / файл / пачка) → S3. */
 api.post('/media/products/:id/photo', async (c) => {
   const actor = actorFromContext(c);
   if (!canUploadProductPhoto(actor)) {
     return c.json({ error: 'Недостаточно прав: загрузка фото' }, 403);
   }
   const id = c.req.param('id');
-  let buf: Buffer | null = null;
+  const buffers: Buffer[] = [];
   const contentType = (c.req.header('content-type') || '').toLowerCase();
   try {
     if (contentType.includes('multipart/form-data')) {
       const body = await c.req.parseBody({ all: true });
-      const file = body.file ?? body.photo ?? body.image;
-      if (file && typeof file === 'object' && 'arrayBuffer' in file) {
-        buf = Buffer.from(await (file as File).arrayBuffer());
+      const raw = body.file ?? body.files ?? body.photo ?? body.image ?? body.photos;
+      const list = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
+      for (const file of list) {
+        if (file && typeof file === 'object' && 'arrayBuffer' in file) {
+          const buf = Buffer.from(await (file as File).arrayBuffer());
+          if (buf.length) buffers.push(buf);
+        }
       }
     } else if (contentType.includes('application/json')) {
-      const body = await c.req.json<{ image_base64?: string; data_url?: string }>();
-      let raw = String(body.image_base64 || body.data_url || '').trim();
-      const m = raw.match(/^data:image\/[a-z0-9.+-]+;base64,(.+)$/i);
-      if (m) raw = m[1];
-      if (raw) buf = Buffer.from(raw, 'base64');
+      const body = await c.req.json<{
+        image_base64?: string;
+        data_url?: string;
+        images_base64?: string[];
+      }>();
+      const many = Array.isArray(body.images_base64) ? body.images_base64 : [];
+      const one = String(body.image_base64 || body.data_url || '').trim();
+      const allRaw = [...many, ...(one ? [one] : [])];
+      for (let raw of allRaw) {
+        raw = String(raw || '').trim();
+        const m = raw.match(/^data:image\/[a-z0-9.+-]+;base64,(.+)$/i);
+        if (m) raw = m[1];
+        if (raw) buffers.push(Buffer.from(raw, 'base64'));
+      }
     } else {
       const ab = await c.req.arrayBuffer();
-      if (ab.byteLength) buf = Buffer.from(ab);
+      if (ab.byteLength) buffers.push(Buffer.from(ab));
     }
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'Не удалось прочитать файл' }, 400);
   }
-  if (!buf?.length) return c.json({ error: 'Нужен файл фото (поле file) или image_base64' }, 400);
+  if (!buffers.length) {
+    return c.json({ error: 'Нужен файл фото (поле file / files) или image_base64' }, 400);
+  }
+  if (buffers.length > 40) {
+    return c.json({ error: 'За раз не больше 40 фото' }, 400);
+  }
 
   try {
     assertPhotoShiftForUpload(actor);
-    const result = await uploadManualProductPhoto(id, buf);
-    let shift = null;
-    if (actor) {
-      shift = recordPhotoShiftUpload(actor.id, { newFile: result.new_file });
+    const items = [];
+    let uploaded = 0;
+    let skipped = 0;
+    for (const buf of buffers) {
+      const result = await uploadManualProductPhoto(id, buf);
+      items.push(result);
+      if (result.new_file) uploaded += 1;
+      else skipped += 1;
+      if (actor && result.new_file) {
+        recordPhotoShiftUpload(actor.id, { newFile: true });
+      }
     }
+    const last = items[items.length - 1];
+    const summary =
+      uploaded === 0 && skipped > 0
+        ? skipped === 1
+          ? 'Фото уже было в карточке (повторная загрузка)'
+          : `Фото уже были в карточке (${skipped} шт., повторная загрузка)`
+        : uploaded === 1 && buffers.length === 1
+          ? `Добавлено фото (${Math.round((last?.size || 0) / 1024)} КБ)`
+          : `Добавлено фото: ${uploaded} шт.${skipped ? `, уже были ${skipped}` : ''}`;
     auditFromContext(c, {
       action: 'media.upload',
       entity: 'product',
       entityId: id,
-      summary: `Фото товара загружено (${Math.round(result.size / 1024)} КБ)`,
-      after: { url: result.url, size: result.size, mime: result.mime },
+      summary,
+      after: { count: items.length, uploaded, skipped },
     });
-    return c.json({ ok: true, ...result, shift });
+    return c.json({
+      ok: true,
+      ...(buffers.length === 1 ? last : {}),
+      items,
+      uploaded,
+      skipped,
+      count: items.length,
+      shift: actor ? photoShiftStatusPayload(actor).shift : null,
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'upload failed';
     const status = /не найден|некорректн|нужно изображение|маленьк|больше|начните смену/i.test(msg)
@@ -5086,6 +9082,88 @@ api.post('/media/products/:id/photo', async (c) => {
       : 500;
     return c.json({ error: msg }, status);
   }
+});
+
+/** Ссылка на видео к товару. */
+api.post('/media/products/:id/video-link', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canUploadProductPhoto(actor)) {
+    return c.json({ error: 'Недостаточно прав: загрузка медиа' }, 403);
+  }
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({})) as { url?: string; title?: string };
+  try {
+    assertPhotoShiftForUpload(actor);
+    const result = addProductVideoLink(id, String(body.url || ''), String(body.title || ''));
+    auditFromContext(c, {
+      action: 'media.video_link',
+      entity: 'product',
+      entityId: id,
+      summary: `Добавлена ссылка на видео: ${result.url}`,
+      after: result,
+    });
+    return c.json({ ok: true, ...result });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'video link failed';
+    return c.json({ error: msg }, /укажите|некорректн|не найден|длинн/i.test(msg) ? 400 : 500);
+  }
+});
+
+api.delete('/media/products/:id/media/:mediaId', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canUploadProductPhoto(actor)) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const id = c.req.param('id');
+  const mediaId = c.req.param('mediaId');
+  const batch = deleteProductMediaBatch(id, [mediaId]);
+  if (!batch.deleted) return c.json({ error: 'not found' }, 404);
+  const kind = Object.keys(batch.kinds)[0] || 'image';
+  auditFromContext(c, {
+    action: 'media.delete',
+    entity: 'product',
+    entityId: id,
+    summary: kind === 'video' ? 'Удалена ссылка на видео' : 'Удалено фото',
+    after: batch,
+  });
+  return c.json({ ok: true });
+});
+
+/** Удаление пачки фото/видео с карточки товара. */
+api.post('/media/products/:id/photos/delete', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canUploadProductPhoto(actor)) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const id = c.req.param('id');
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: string[]; media_ids?: string[] };
+  const ids = Array.isArray(body.ids)
+    ? body.ids
+    : Array.isArray(body.media_ids)
+      ? body.media_ids
+      : [];
+  if (!ids.length) return c.json({ error: 'Укажите ids фото для удаления' }, 400);
+  const batch = deleteProductMediaBatch(id, ids.map(String));
+  if (!batch.deleted) return c.json({ error: 'Ничего не удалено' }, 404);
+  const imgN = batch.kinds.image || 0;
+  const vidN = batch.kinds.video || 0;
+  const parts = [
+    imgN ? `фото ${imgN}` : '',
+    vidN ? `видео ${vidN}` : '',
+  ].filter(Boolean);
+  auditFromContext(c, {
+    action: 'media.delete',
+    entity: 'product',
+    entityId: id,
+    summary:
+      batch.deleted === 1
+        ? imgN
+          ? 'Удалено фото'
+          : 'Удалена ссылка на видео'
+        : `Удалено: ${parts.join(', ')}`,
+    after: batch,
+  });
+  return c.json({ ok: true, ...batch });
 });
 
 /** Статус смены фотографа. */
@@ -5200,7 +9278,10 @@ api.get('/categories', (c) => {
             COALESCE(pc.cnt, 0) AS products_count
      FROM categories c
      LEFT JOIN (
-       SELECT category_id, COUNT(*) AS cnt FROM products GROUP BY category_id
+       SELECT category_id, COUNT(*) AS cnt
+       FROM products
+       WHERE IFNULL(is_active, 1) = 1
+       GROUP BY category_id
      ) pc ON pc.category_id = c.id
      ORDER BY c.name COLLATE NOCASE, products_count DESC, c.created_at DESC`
   );
@@ -5219,7 +9300,29 @@ api.get('/categories', (c) => {
   return c.json(deduped);
 });
 
-api.get('/categories/tree', (c) => c.json(buildCategoryTree()));
+api.get('/categories/tree', (c) => {
+  const isMainQ = (c.req.query('is_main') || '').trim();
+  const itemKind = (c.req.query('item_kind') || '').trim().toLowerCase();
+  const companyIdRaw = (c.req.query('company_id') || '').trim();
+  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  if (!companyParsed.ok) {
+    return c.json({ error: companyParsed.error }, 400);
+  }
+  const companyId = companyParsed.id;
+  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const deptCompanyId =
+    coFilter.mode === 'one' ? coFilter.id : companyId || '';
+  return c.json(
+    buildCategoryTree({
+      is_main: isMainQ === '0' || isMainQ === '1' ? (isMainQ as '0' | '1') : undefined,
+      item_kind:
+        itemKind === 'product' || itemKind === 'service'
+          ? (itemKind as 'product' | 'service')
+          : undefined,
+      source_departments: sourceDepartmentsForCompany(deptCompanyId),
+    })
+  );
+});
 
 api.post('/categories', async (c) => {
   const body = await c.req.json<{ name: string; parent_id?: string }>();
@@ -5294,6 +9397,20 @@ api.get('/warehouses', (c) => {
     `SELECT * FROM warehouses WHERE ${where} ORDER BY is_active DESC, name`,
     params
   );
+  let hsPodveskaIds = new Set<string>();
+  try {
+    const raw = get<{ value: string }>(
+      `SELECT value FROM meta WHERE key = 'hs_podveska_store_ids'`
+    )?.value;
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    if (Array.isArray(parsed)) {
+      hsPodveskaIds = new Set(
+        parsed.map((x) => String(x || '').trim()).filter(Boolean)
+      );
+    }
+  } catch {
+    hsPodveskaIds = new Set();
+  }
   rows = rows.map((w) => {
     const id = String(w.id);
     const links = warehouseLinkInfo(id);
@@ -5302,7 +9419,16 @@ api.get('/warehouses', (c) => {
       has_links: links.linked,
       can_delete: !links.linked,
       link_counts: links.counts,
+      from_1c_podveska: hsPodveskaIds.has(id),
+      hs_source: hsPodveskaIds.has(id) ? 'pnevmopodveska_2025' : '',
     };
+  });
+  // Склады из 1С Подвески — выше в списке
+  rows.sort((a, b) => {
+    const aa = a.from_1c_podveska ? 0 : 1;
+    const bb = b.from_1c_podveska ? 0 : 1;
+    if (aa !== bb) return aa - bb;
+    return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
   });
   if (!withTotals) return c.json(rows);
 
@@ -5325,12 +9451,83 @@ api.get('/warehouses', (c) => {
   );
 });
 
-/** Суммы остатков по складам: закуп (FIFO) + розница. */
+/** Суммы остатков по складам: закуп (FIFO) + розница + открытые сделки.
+ * СТО: позиции/кол-во только по сделкам (без «сирот»).
+ * Отложено под СТО: deals_count = 0 (не склад сделок).
+ * Резерв СТО (STO-RSV): сделки + черновики; склад всегда в списке (даже без FIFO-оценки). */
 api.get('/warehouses/stock-totals', (c) => {
+  const dealsByWh = openDealsCountByWarehouse();
+  const stoId = String(
+    get<{ id: string }>(`SELECT id FROM warehouses WHERE code = 'STO' LIMIT 1`)?.id || ''
+  );
+  const stoLinked = stoId ? dealLinkedStockOnWarehouse(stoId) : null;
+  const rsvRows = all<{ id: string; name: string }>(
+    `SELECT id, IFNULL(name,'') AS name FROM warehouses WHERE UPPER(IFNULL(code,'')) LIKE 'STO-RSV-%'`
+  );
+  const rsvIds = new Set(rsvRows.map((r) => String(r.id)));
+  const byId = new Map(
+    warehouseStockMoneyTotals().map((t) => [String(t.warehouse_id), { ...t }])
+  );
+  for (const r of rsvRows) {
+    const wid = String(r.id);
+    if (byId.has(wid)) continue;
+    const bal = get<{ lines: number; qty: number }>(
+      `SELECT COUNT(*) AS lines, IFNULL(SUM(qty),0) AS qty
+       FROM stock_balances WHERE warehouse_id = ? AND qty > 0`,
+      [wid]
+    );
+    byId.set(wid, {
+      warehouse_id: wid,
+      warehouse: String(r.name || 'Резерв СТО'),
+      value_purchase: 0,
+      value_retail: 0,
+      value_last_purchase: 0,
+      qty: Number(bal?.qty) || 0,
+      lines: Number(bal?.lines) || 0,
+      lines_without_price: 0,
+    });
+  }
   return c.json({
     method: 'fifo_inbound',
     currency: 'RUB',
-    items: warehouseStockMoneyTotals(),
+    items: [...byId.values()].map((t) => {
+      const wid = String(t.warehouse_id);
+      let deals_count = dealsByWh.get(wid) || 0;
+      if (stoId && wid === stoId && stoLinked) {
+        return {
+          ...t,
+          lines: stoLinked.lines,
+          qty: stoLinked.qty,
+          deals_count: stoLinked.deals || deals_count,
+          qty_all: t.qty,
+          lines_all: t.lines,
+          deal_linked_only: true,
+        };
+      }
+      if (rsvIds.has(wid)) {
+        const pending = pendingHandoffInboundSummary(wid);
+        const linked = dealLinkedStockOnWarehouse(wid);
+        const bal = get<{ lines: number; qty: number }>(
+          `SELECT COUNT(*) AS lines, IFNULL(SUM(qty),0) AS qty
+           FROM stock_balances WHERE warehouse_id = ? AND qty > 0`,
+          [wid]
+        );
+        const lines = Math.max(Number(t.lines) || 0, Number(bal?.lines) || 0, linked.lines) + pending.lines;
+        const qty = Math.max(Number(t.qty) || 0, Number(bal?.qty) || 0, linked.qty) + pending.qty;
+        return {
+          ...t,
+          lines,
+          qty,
+          deals_count: countStoDealReserveDeals(wid),
+          pending_inbound: pending,
+          deal_linked_only: true,
+        };
+      }
+      return {
+        ...t,
+        deals_count,
+      };
+    }),
   });
 });
 
@@ -5409,6 +9606,35 @@ function warehouseDetail(id: string) {
   };
 }
 
+/** PDF · остатки выбранного склада (печать из экрана «Остатки»). */
+api.get('/warehouses/:id/balances.pdf', async (c) => {
+  const id = c.req.param('id');
+  const wh = get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [id]);
+  if (!wh) return c.json({ error: 'not found' }, 404);
+  const coFilter = resolveListCompanyFilter(actorFromContext(c), c.req.query('company_id'));
+  if (coFilter.mode === 'none') return c.json({ error: 'forbidden' }, 403);
+  try {
+    const result = await renderWarehouseBalancesPdf({
+      warehouseId: id,
+      q: (c.req.query('q') || '').trim(),
+      companyFilter: coFilter,
+    });
+    const download = ['1', 'true', 'yes'].includes(
+      String(c.req.query('download') || '').trim().toLowerCase()
+    );
+    const asciiName = result.filename.replace(/[^\x20-\x7E]+/g, '_');
+    c.header('Content-Type', 'application/pdf');
+    c.header(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(result.filename)}`
+    );
+    c.header('Cache-Control', 'no-store');
+    return c.body(new Uint8Array(result.buffer));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+
 api.get('/warehouses/:id', (c) => {
   const id = c.req.param('id');
   if (id === 'stock-totals') return c.json({ error: 'not found' }, 404);
@@ -5429,8 +9655,17 @@ api.get('/warehouses/:id/movements', (c) => {
   if (!wh) return c.json({ error: 'not found' }, 404);
   const { page, limit, offset } = parsePage(c, 50);
   const type = (c.req.query('type') || '').trim();
+  const includeDrafts = ['1', 'true', 'yes'].includes(
+    String(c.req.query('include_drafts') || '').trim().toLowerCase()
+  );
   const where = [`(d.warehouse_id = ? OR IFNULL(d.warehouse_to_id,'') = ?)`];
   const params: Array<string | number> = [id, id];
+  if (!isAdminActor(actorFromContext(c))) {
+    where.push('IFNULL(d.admin_only, 0) = 0');
+  }
+  if (!includeDrafts) {
+    where.push('IFNULL(d.posted, 0) = 1');
+  }
   if (type === 'in' || type === 'out' || type === 'transfer' || type === 'return') {
     where.push('d.doc_type = ?');
     params.push(type);
@@ -5467,17 +9702,82 @@ api.get('/warehouses/:id/movements', (c) => {
   });
 });
 
+/** Коррекция остатков — только администраторы Учёта. */
+api.post('/stock/adjustments', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!isAdminActor(actor)) return c.json({ error: 'forbidden' }, 403);
+  ensureStockAdjustmentsSchema();
+  const body = (await c.req.json().catch(() => ({}))) as {
+    warehouse_id?: string;
+    product_id?: string;
+    qty_after?: number;
+    comment?: string;
+  };
+  try {
+    const adjustment = createStockAdjustment({
+      warehouse_id: String(body.warehouse_id || ''),
+      product_id: String(body.product_id || ''),
+      qty_after: Number(body.qty_after),
+      comment: String(body.comment || ''),
+      actor,
+    });
+    return c.json({ ok: true, adjustment });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ error: msg }, 400);
+  }
+});
+
+api.get('/stock/adjustments', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!isAdminActor(actor)) return c.json({ error: 'forbidden' }, 403);
+  ensureStockAdjustmentsSchema();
+  const warehouseId = (c.req.query('warehouse_id') || '').trim();
+  const { page, limit, offset } = parsePage(c, 50);
+  const { items, total } = listStockAdjustments({
+    warehouse_id: warehouseId || undefined,
+    limit,
+    offset,
+  });
+  return c.json({
+    items,
+    total,
+    page,
+    limit,
+    pages: Math.max(1, Math.ceil(total / limit)),
+  });
+});
+
 api.patch('/warehouses/:id', async (c) => {
   ensureCompaniesSchema();
   const id = c.req.param('id');
   const row = get('SELECT * FROM warehouses WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  const body = await c.req.json<{ name?: string; is_active?: boolean | number }>();
+  const body = await c.req.json<{
+    name?: string;
+    is_active?: boolean | number;
+    show_in_widget?: boolean | number;
+    allow_inbound?: boolean | number;
+  }>();
+  const patchSets: string[] = [];
+  const patchParams: Array<string | number> = [];
   if (body.name?.trim()) {
-    run(
-      `UPDATE warehouses SET name = ?, updated_at = datetime('now') WHERE id = ?`,
-      [body.name.trim(), id]
-    );
+    patchSets.push('name = ?');
+    patchParams.push(body.name.trim());
+  }
+  if (body.show_in_widget != null) {
+    patchSets.push('show_in_widget = ?');
+    patchParams.push(body.show_in_widget === true || body.show_in_widget === 1 ? 1 : 0);
+  }
+  if (body.allow_inbound != null) {
+    patchSets.push('allow_inbound = ?');
+    patchParams.push(body.allow_inbound === true || body.allow_inbound === 1 ? 1 : 0);
+  }
+  if (patchSets.length) {
+    patchSets.push("updated_at = datetime('now')");
+    run(`UPDATE warehouses SET ${patchSets.join(', ')} WHERE id = ?`, [...patchParams, id]);
   }
   if (body.is_active != null) {
     const active = body.is_active === true || body.is_active === 1 ? 1 : 0;
@@ -5574,11 +9874,53 @@ api.delete('/warehouses/:id', (c) => {
   return c.json({ ok: true });
 });
 
+/** Потолок пагинации списков API (products, balances, …). */
+const PAGE_LIMIT_MAX = 500;
+
+/** API-ключ без сессии UI: company_id обязателен (или company_id=all). */
+function requireMachineCompanyId(
+  c: Parameters<typeof actorFromContext>[0],
+  companyIdRaw: string
+) {
+  const actor = actorFromContext(c);
+  // actorFromContext подмешивает machine-key как Actor — не путать с сессией UI
+  const isMachine =
+    !!actor &&
+    (String(actor.id || '').startsWith('apikey:') ||
+      String(actor.login || '').startsWith('api:') ||
+      actor.role === 'integration');
+  const isUiSession = !!actor && !isMachine;
+  if (isUiSession) return null;
+  if (!extractMachineApiKey(c) && !isMachine) return null;
+  const err = machineCompanyIdRequiredError(companyIdRaw);
+  if (!err) return null;
+  return c.json(
+    {
+      error: err,
+      hint: 'GET /api/companies → id; Москва = 00000000-0000-4000-8000-000000000001',
+    },
+    400
+  );
+}
+
 function parsePage(c: { req: { query: (k: string) => string | undefined } }, defLimit = 50) {
   const page = Math.max(1, Number(c.req.query('page') || 1) || 1);
-  const limit = Math.min(500, Math.max(1, Number(c.req.query('limit') || defLimit) || defLimit));
+  const raw = c.req.query('limit');
+  const requested =
+    raw != null && String(raw).trim() !== ''
+      ? Number(raw)
+      : defLimit;
+  const limit = Math.min(
+    PAGE_LIMIT_MAX,
+    Math.max(1, Number.isFinite(requested) ? requested : defLimit)
+  );
   const offset = (page - 1) * limit;
-  return { page, limit, offset };
+  const overMax =
+    raw != null &&
+    String(raw).trim() !== '' &&
+    Number.isFinite(requested) &&
+    requested > PAGE_LIMIT_MAX;
+  return { page, limit, offset, requested, overMax, max: PAGE_LIMIT_MAX };
 }
 
 api.get('/counterparties', (c) => {
@@ -5586,6 +9928,7 @@ api.get('/counterparties', (c) => {
   const kind = (c.req.query('kind') || '').trim(); // supplier | buyer | both | ''
   const partyKind = (c.req.query('party_kind') || '').trim().toLowerCase(); // legal | ip | person | partner(legacy) | ''
   const isPartnerQ = (c.req.query('is_partner') || '').trim().toLowerCase(); // 1 | 0 | yes | no | ''
+  const isMainQ = (c.req.query('is_main') || '').trim().toLowerCase(); // 1 | 0 | ''
   const archived = (c.req.query('archived') || '0').trim();
   const sort = (c.req.query('sort') || 'created').trim().toLowerCase();
   const dir = (c.req.query('dir') || 'desc').trim().toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -5625,10 +9968,25 @@ api.get('/counterparties', (c) => {
   } else if (isPartnerQ === '0' || isPartnerQ === 'no' || isPartnerQ === 'false') {
     where.push(`IFNULL(cp.is_partner,0) = 0`);
   }
+  if (isMainQ === '1' || isMainQ === 'yes' || isMainQ === 'true') {
+    where.push(`IFNULL(cp.is_main,0) = 1`);
+  } else if (isMainQ === '0' || isMainQ === 'no' || isMainQ === 'false') {
+    where.push(`IFNULL(cp.is_main,0) = 0`);
+  }
   if (q) {
-    where.push(`(cp.name LIKE ? OR IFNULL(cp.inn,'') LIKE ? OR IFNULL(cp.phone,'') LIKE ?)`);
     const like = `%${q}%`;
-    params.push(like, like, like);
+    const dig = String(q).replace(/\D/g, '');
+    const phoneNormExpr = `replace(replace(replace(replace(replace(replace(replace(IFNULL(cp.phone,''),' ',''),'-',''),'(',''),')',''),'+',''),char(9),''),'.','')`;
+    if (dig.length >= 3) {
+      const digTail = dig.length >= 10 ? dig.slice(-10) : dig;
+      where.push(
+        `(cp.name LIKE ? OR IFNULL(cp.inn,'') LIKE ? OR IFNULL(cp.phone,'') LIKE ? OR ${phoneNormExpr} LIKE ? OR ${phoneNormExpr} LIKE ?)`
+      );
+      params.push(like, like, like, `%${dig}%`, `%${digTail}%`);
+    } else {
+      where.push(`(cp.name LIKE ? OR IFNULL(cp.inn,'') LIKE ? OR IFNULL(cp.phone,'') LIKE ?)`);
+      params.push(like, like, like);
+    }
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   // Только складские — как вкладка «Документы» на карточке (касса/договоры — отдельные вкладки).
@@ -5649,8 +10007,12 @@ api.get('/counterparties', (c) => {
     kind: `(${kindEffectiveExpr}) ${dir}, cp.name COLLATE NOCASE`,
     created: `CASE WHEN IFNULL(TRIM(cp.created_at),'') = '' THEN 1 ELSE 0 END, cp.created_at ${dir}, cp.name COLLATE NOCASE`,
     docs: `${docsCountExpr} ${dir}, cp.name COLLATE NOCASE`,
+    main: `IFNULL(cp.is_main,0) ${dir}, cp.name COLLATE NOCASE`,
   };
-  const orderBy = `IFNULL(cp.is_active,1) DESC, ${orderMap[sort] || orderMap.created}`;
+  // Основные (звёздные) поставщики всегда сверху, если не сортируем явно по main
+  const mainFirst =
+    sort === 'main' ? '' : `IFNULL(cp.is_main,0) DESC, `;
+  const orderBy = `IFNULL(cp.is_active,1) DESC, ${mainFirst}${orderMap[sort] || orderMap.created}`;
   const fromSql = `
      FROM counterparties cp
      LEFT JOIN (
@@ -5820,6 +10182,7 @@ api.patch('/counterparties/:id', async (c) => {
     email?: string;
     party_kind?: string;
     is_partner?: boolean | number | string;
+    is_main?: boolean | number | string;
     barcode_prefix?: string;
   }>();
   const before = {
@@ -5831,6 +10194,7 @@ api.patch('/counterparties/:id', async (c) => {
     is_active: row.is_active,
     party_kind: row.party_kind,
     is_partner: row.is_partner,
+    is_main: row.is_main,
   };
   if (body.name != null) {
     const name = body.name.trim();
@@ -5881,6 +10245,10 @@ api.patch('/counterparties/:id', async (c) => {
   if (body.is_partner != null) {
     const partner = body.is_partner === true || body.is_partner === 1 || body.is_partner === '1' ? 1 : 0;
     run('UPDATE counterparties SET is_partner = ? WHERE id = ?', [partner, id]);
+  }
+  if (body.is_main != null) {
+    const main = body.is_main === true || body.is_main === 1 || body.is_main === '1' ? 1 : 0;
+    run('UPDATE counterparties SET is_main = ? WHERE id = ?', [main, id]);
   }
   if (body.lead_time_days != null) {
     const days = Math.max(0, Math.floor(Number(body.lead_time_days) || 0));
@@ -5993,6 +10361,12 @@ api.delete('/counterparties/:id', (c) => {
 
 api.get('/products', (c) => {
   const q = (c.req.query('q') || '').trim();
+  const codeFilter = (c.req.query('code') || '').trim();
+  const idsFilter = (c.req.query('ids') || '').trim();
+  const updatedSince = (c.req.query('updated_since') || '').trim();
+  const includePrices =
+    (c.req.query('include') || '').split(',').map((x) => x.trim()).includes('prices') ||
+    ['1', 'true', 'yes'].includes(String(c.req.query('with_prices') || '').trim().toLowerCase());
   const categoryId = (c.req.query('category_id') || '').trim();
   const categoryName = (c.req.query('category') || '').trim();
   const mark = (c.req.query('mark') || '').trim();
@@ -6000,19 +10374,39 @@ api.get('/products', (c) => {
   const generation = (c.req.query('generation') || '').trim();
   const archived = (c.req.query('archived') || '0').trim();
   const itemKind = (c.req.query('item_kind') || '').trim().toLowerCase();
-  const sort = (c.req.query('sort') || 'name').trim().toLowerCase();
-  const dir = (c.req.query('dir') || 'asc').trim().toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-  const { page, limit, offset } = parsePage(c, 50);
+  const isMainQ = (c.req.query('is_main') || '').trim();
+  const sort = (c.req.query('sort') || 'created_at').trim().toLowerCase();
+  const dir = (c.req.query('dir') || 'desc').trim().toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const { page, limit, offset, overMax, max: limitMax } = parsePage(c, 50);
+  if (overMax) {
+    return c.json({ error: `limit max is ${limitMax}`, max: limitMax }, 400);
+  }
+  const companyIdRaw = (c.req.query('company_id') || '').trim();
+  const machineCoErr = requireMachineCompanyId(c, companyIdRaw);
+  if (machineCoErr) return machineCoErr;
+  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  if (!companyParsed.ok) {
+    return c.json({ error: companyParsed.error }, 400);
+  }
+  const companyId = companyParsed.id;
+  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const deptCompanyId =
+    coFilter.mode === 'one' ? coFilter.id : companyId || '';
+  const deptFilter = sqlSourceDepartmentIn(
+    'p',
+    sourceDepartmentsForCompany(deptCompanyId)
+  );
   // Остаток по всем складам (stock_balances + Get/Rests без дублей)
   const stockJoin = `
     LEFT JOIN (
-      SELECT x.product_id AS product_id, SUM(x.qty) AS stock_qty
+      SELECT x.product_id AS product_id, SUM(x.qty) AS stock_qty,
+             group_concat(w.name || ' ' || CAST(x.qty AS TEXT), ' · ') AS stock_places
       FROM (
-        SELECT b.product_id AS product_id, b.qty AS qty
+        SELECT b.warehouse_id AS warehouse_id, b.product_id AS product_id, b.qty AS qty
         FROM stock_balances b
         WHERE b.qty != 0
         UNION ALL
-        SELECT r.product_id, r.qty
+        SELECT r.warehouse_id, r.product_id, r.qty
         FROM product_store_rests r
         WHERE r.qty != 0
           AND NOT EXISTS (
@@ -6022,11 +10416,19 @@ api.get('/products', (c) => {
               AND b2.qty != 0
           )
       ) x
+      JOIN warehouses w ON w.id = x.warehouse_id
       GROUP BY x.product_id
     ) st ON st.product_id = p.id`;
+  const imagesCountSql = `(SELECT COUNT(*) FROM product_media m WHERE m.product_id = p.id AND m.kind = 'image')`;
+  const thumbUrlSql = `(SELECT m.url FROM product_media m
+         WHERE m.product_id = p.id AND m.kind = 'image'
+         ORDER BY m.sort_order, m.synced_at LIMIT 1)`;
   const select = `SELECT p.*, u.short_name AS unit, c.name AS category,
             CASE WHEN IFNULL(p.item_kind,'product') = 'service' THEN 'service' ELSE 'product' END AS item_kind,
-            IFNULL(st.stock_qty, 0) AS stock_qty
+            IFNULL(st.stock_qty, 0) AS stock_qty,
+            IFNULL(st.stock_places, '') AS stock_places,
+            ${imagesCountSql} AS images_count,
+            ${thumbUrlSql} AS thumb_url
      FROM products p
      LEFT JOIN units u ON u.id = p.unit_id
      LEFT JOIN categories c ON c.id = p.category_id
@@ -6039,12 +10441,48 @@ api.get('/products', (c) => {
         ? 'WHERE 1=1'
         : 'WHERE IFNULL(p.is_active,1) = 1';
   const params: Array<string | number> = [];
+  where += deptFilter.sql;
+  params.push(...deptFilter.params);
 
   if (itemKind === 'service' || itemKind === 'product') {
     where +=
       itemKind === 'service'
         ? ` AND IFNULL(p.item_kind,'product') = 'service'`
         : ` AND IFNULL(p.item_kind,'product') != 'service'`;
+  }
+  if (isMainQ === '1') {
+    where += ` AND IFNULL(p.is_main,0) = 1`;
+  } else if (isMainQ === '0') {
+    where += ` AND IFNULL(p.is_main,0) = 0`;
+  }
+
+  if (codeFilter) {
+    where += ` AND (
+      upper(replace(IFNULL(p.code,''),' ','')) = upper(replace(?, ' ',''))
+      OR upper(replace(p.sku,' ','')) = upper(replace(?, ' ',''))
+      OR p.id IN (
+        SELECT product_id FROM product_alt_codes
+        WHERE upper(replace(value,' ','')) = upper(replace(?, ' ',''))
+      )
+    )`;
+    params.push(codeFilter, codeFilter, codeFilter);
+  }
+
+  if (idsFilter) {
+    const ids = idsFilter
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .slice(0, 500);
+    if (ids.length) {
+      where += ` AND p.id IN (${ids.map(() => '?').join(',')})`;
+      params.push(...ids);
+    }
+  }
+
+  if (updatedSince) {
+    where += ` AND datetime(IFNULL(p.created_at, '1970-01-01')) >= datetime(?)`;
+    params.push(updatedSince);
   }
 
   if (q) {
@@ -6054,14 +10492,18 @@ api.get('/products', (c) => {
       where += ` AND (
         p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
         OR IFNULL(p.barcode,'') LIKE ? OR IFNULL(p.array_sku,'') LIKE ?
+        OR IFNULL(p.warehouse_sku,'') LIKE ?
         OR IFNULL(p.brand,'') LIKE ? OR IFNULL(c.name,'') LIKE ?
+        OR p.id IN (
+          SELECT product_id FROM product_alt_codes WHERE value LIKE ?
+        )
         OR p.id IN (
           SELECT a.product_id FROM product_applicability a
           WHERE a.mark LIKE ? OR a.model LIKE ? OR a.only_model LIKE ?
           LIMIT 2000
         )
       )`;
-      params.push(like, like, like, like, like, like, like, like, like, like);
+      params.push(like, like, like, like, like, like, like, like, like, like, like, like);
     } else {
       where += ` AND (
         p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
@@ -6120,9 +10562,18 @@ api.get('/products', (c) => {
     kind: "CASE WHEN IFNULL(p.item_kind,'product') = 'service' THEN 1 ELSE 0 END",
     site: 'IFNULL(p.notupload, 0)',
     stock: 'IFNULL(st.stock_qty, 0)',
+    main: 'IFNULL(p.is_main, 0)',
+    photos: imagesCountSql,
+    images_count: imagesCountSql,
+    created_at: "datetime(IFNULL(p.created_at, '1970-01-01'))",
+    created: "datetime(IFNULL(p.created_at, '1970-01-01'))",
   };
-  const orderExpr = orderMap[sort] || orderMap.name;
-  const orderBy = `${orderExpr} ${dir}, p.name COLLATE NOCASE ASC`;
+  const orderExpr = orderMap[sort] || orderMap.created_at;
+  const mainFirst = sort === 'main' ? '' : `IFNULL(p.is_main,0) DESC, `;
+  const orderBy =
+    sort === 'created_at' || sort === 'created'
+      ? `${orderExpr} ${dir}, p.name COLLATE NOCASE ASC`
+      : `${mainFirst}${orderExpr} ${dir}, datetime(IFNULL(p.created_at, '1970-01-01')) DESC, p.name COLLATE NOCASE ASC`;
 
   const total =
     get<{ c: number }>(
@@ -6131,10 +10582,54 @@ api.get('/products', (c) => {
        ${where}`,
       params
     )?.c ?? 0;
-  const items = all(
+  let items = all(
     `${select} ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
     [...params, limit, offset]
-  );
+  ) as Array<Record<string, unknown>>;
+  if (includePrices && items.length) {
+    const ids = items
+      .map((it) => String(it.id || '').trim())
+      .filter(Boolean);
+    const ph = ids.map(() => '?').join(',');
+    const priceRows = all<{ product_id: string; price_type: string; price: number }>(
+      `SELECT product_id, price_type, price FROM product_prices
+       WHERE product_id IN (${ph}) AND IFNULL(price,0) > 0
+       ORDER BY price_type`,
+      ids
+    );
+    const byProduct = new Map<
+      string,
+      { prices: Array<{ type: string; price: number }>; prices_map: Record<string, number>; min: number; max: number }
+    >();
+    for (const row of priceRows) {
+      const pid = String(row.product_id);
+      let bucket = byProduct.get(pid);
+      if (!bucket) {
+        bucket = { prices: [], prices_map: {}, min: Number.POSITIVE_INFINITY, max: 0 };
+        byProduct.set(pid, bucket);
+      }
+      const price = Number(row.price) || 0;
+      const type = String(row.price_type || '');
+      bucket.prices.push({ type, price });
+      bucket.prices_map[type] = price;
+      if (price > 0 && price < bucket.min) bucket.min = price;
+      if (price > bucket.max) bucket.max = price;
+    }
+    items = items.map((it) => {
+      const pid = String(it.id || '');
+      const bucket = byProduct.get(pid);
+      if (!bucket) {
+        return { ...it, prices: [], prices_map: {}, price_min: 0, price_max: 0 };
+      }
+      return {
+        ...it,
+        prices: bucket.prices,
+        prices_map: bucket.prices_map,
+        price_min: Number.isFinite(bucket.min) ? bucket.min : 0,
+        price_max: bucket.max,
+      };
+    });
+  }
   return c.json({
     items,
     total,
@@ -6143,6 +10638,115 @@ api.get('/products', (c) => {
     pages: Math.max(1, Math.ceil(total / limit)),
     sort,
     dir: dir.toLowerCase(),
+    limit_max: PAGE_LIMIT_MAX,
+  });
+});
+
+/** Счётчики для пилюль Вид / Основные (с учётом категории и поиска). */
+api.get('/products/facet-counts', (c) => {
+  const q = (c.req.query('q') || '').trim();
+  const categoryId = (c.req.query('category_id') || '').trim();
+  const categoryName = (c.req.query('category') || '').trim();
+  const archived = (c.req.query('archived') || '0').trim();
+  const itemKind = (c.req.query('item_kind') || '').trim().toLowerCase();
+  const isMainQ = (c.req.query('is_main') || '').trim();
+  const companyIdRaw = (c.req.query('company_id') || '').trim();
+  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  if (!companyParsed.ok) {
+    return c.json({ error: companyParsed.error }, 400);
+  }
+  const companyId = companyParsed.id;
+  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const deptCompanyId =
+    coFilter.mode === 'one' ? coFilter.id : companyId || '';
+  const deptFilter = sqlSourceDepartmentIn(
+    'p',
+    sourceDepartmentsForCompany(deptCompanyId)
+  );
+
+  let where =
+    archived === '1'
+      ? 'WHERE IFNULL(p.is_active,1) = 0'
+      : archived === 'all'
+        ? 'WHERE 1=1'
+        : 'WHERE IFNULL(p.is_active,1) = 1';
+  const params: Array<string | number> = [];
+  where += deptFilter.sql;
+  params.push(...deptFilter.params);
+
+  if (q) {
+    const like = `%${q}%`;
+    if (q.length >= 2) {
+      where += ` AND (
+        p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
+        OR IFNULL(p.barcode,'') LIKE ? OR IFNULL(p.array_sku,'') LIKE ?
+        OR IFNULL(p.warehouse_sku,'') LIKE ?
+        OR IFNULL(p.brand,'') LIKE ? OR IFNULL(c.name,'') LIKE ?
+        OR p.id IN (
+          SELECT a.product_id FROM product_applicability a
+          WHERE a.mark LIKE ? OR a.model LIKE ? OR a.only_model LIKE ?
+          LIMIT 2000
+        )
+      )`;
+      params.push(like, like, like, like, like, like, like, like, like, like, like);
+    } else {
+      where += ` AND (
+        p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
+        OR IFNULL(p.brand,'') LIKE ? OR IFNULL(c.name,'') LIKE ?
+      )`;
+      params.push(like, like, like, like, like);
+    }
+  }
+
+  if (categoryId === '__none__' || categoryName === '__none__') {
+    where += " AND (p.category_id IS NULL OR p.category_id = '')";
+  } else if (categoryId) {
+    const ids = idsForCategoryFilter(categoryId);
+    if (ids.length === 1) {
+      where += ' AND p.category_id = ?';
+      params.push(ids[0]);
+    } else if (ids.length > 1) {
+      where += ` AND p.category_id IN (${ids.map(() => '?').join(',')})`;
+      params.push(...ids);
+    }
+  } else if (categoryName) {
+    where += " AND IFNULL(c.name,'') = ?";
+    params.push(categoryName);
+  }
+
+  const from = `FROM products p LEFT JOIN categories c ON c.id = p.category_id`;
+
+  const countWhere = (extraSql: string, extraParams: Array<string | number> = []) =>
+    get<{ c: number }>(
+      `SELECT COUNT(*) AS c ${from} ${where}${extraSql}`,
+      [...params, ...extraParams]
+    )?.c ?? 0;
+
+  // Вид: учитываем текущий фильтр «Основные»
+  let kindExtra = '';
+  if (isMainQ === '1') kindExtra = ' AND IFNULL(p.is_main,0) = 1';
+  else if (isMainQ === '0') kindExtra = ' AND IFNULL(p.is_main,0) = 0';
+
+  const kindAll = countWhere(kindExtra);
+  const kindProduct = countWhere(
+    `${kindExtra} AND IFNULL(p.item_kind,'product') != 'service'`
+  );
+  const kindService = countWhere(
+    `${kindExtra} AND IFNULL(p.item_kind,'product') = 'service'`
+  );
+
+  // Основные: учитываем текущий фильтр «Вид»
+  let mainExtra = '';
+  if (itemKind === 'service') mainExtra = ` AND IFNULL(p.item_kind,'product') = 'service'`;
+  else if (itemKind === 'product') mainExtra = ` AND IFNULL(p.item_kind,'product') != 'service'`;
+
+  const mainAll = countWhere(mainExtra);
+  const mainYes = countWhere(`${mainExtra} AND IFNULL(p.is_main,0) = 1`);
+  const mainNo = countWhere(`${mainExtra} AND IFNULL(p.is_main,0) = 0`);
+
+  return c.json({
+    kind: { all: kindAll, product: kindProduct, service: kindService },
+    main: { all: mainAll, yes: mainYes, no: mainNo },
   });
 });
 
@@ -6267,7 +10871,7 @@ api.get('/products/:id', (c) => {
      ORDER BY sort_order, synced_at`,
     [id]
   );
-  const rests = all(
+  const restsRaw = all(
     `SELECT x.warehouse_id,
             IFNULL(w.name, x.warehouse_id) AS warehouse,
             IFNULL(w.code, '') AS warehouse_code,
@@ -6300,6 +10904,22 @@ api.get('/products/:id', (c) => {
        IFNULL(w.name, x.warehouse_id)`,
     [id, id]
   );
+  const restsReserveMap = activeReserveOrdersForPairs(
+    restsRaw
+      .filter((r) => Number((r as { is_reserve?: number }).is_reserve) === 1)
+      .map((r) => ({
+        product_id: id,
+        warehouse_id: String((r as { warehouse_id?: string }).warehouse_id || ''),
+      }))
+  );
+  const rests = restsRaw.map((r) => {
+    const row = r as { warehouse_id?: string; is_reserve?: number; [k: string]: unknown };
+    const reserveOrders =
+      Number(row.is_reserve) === 1
+        ? restsReserveMap.get(`${row.warehouse_id}\0${id}`) || []
+        : [];
+    return { ...row, reserve_orders: reserveOrders };
+  });
   const related = all(
     `SELECT p.id, p.sku, p.name
      FROM product_related r
@@ -6333,11 +10953,13 @@ api.get('/products/:id', (c) => {
   });
 });
 
-api.post('/products', async (c) => {
+  api.post('/products', async (c) => {
   const actor = actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
+  const onConflict = (c.req.query('on_conflict') || '').trim().toLowerCase();
+  const matchBy = (c.req.query('match_by') || 'sku').trim().toLowerCase();
   const body = await c.req.json<{
     sku?: string;
     name: string;
@@ -6369,13 +10991,87 @@ api.post('/products', async (c) => {
   const sku = (body.sku || '').trim() || nextCode(prefix);
   const code = (body.code || '').trim() || sku;
   let unitId = (body.unit_id || '').trim();
-  if (!unitId) {
+  if (itemKind === 'service') {
+    unitId = ensureServiceUnitId();
+  } else if (!unitId) {
     unitId =
       get<{ id: string }>('SELECT id FROM units WHERE short_name = ? LIMIT 1', ['шт'])?.id ||
       get<{ id: string }>('SELECT id FROM units LIMIT 1')?.id ||
       '';
   }
   if (!unitId) return c.json({ error: 'нет единиц измерения — синхронизируйте справочники' }, 400);
+
+  const matchValue =
+    matchBy === 'code'
+      ? (body.code || '').trim()
+      : matchBy === 'sku'
+        ? (body.sku || '').trim()
+        : '';
+  if (onConflict === 'update' && matchValue) {
+    const existing = get<{ id: string; sku: string; code: string }>(
+      matchBy === 'code'
+        ? `SELECT id, sku, IFNULL(code,'') AS code FROM products
+           WHERE upper(replace(IFNULL(code,''),' ','')) = upper(replace(?, ' ','')) LIMIT 1`
+        : `SELECT id, sku, IFNULL(code,'') AS code FROM products
+           WHERE upper(replace(sku,' ','')) = upper(replace(?, ' ','')) LIMIT 1`,
+      [matchValue]
+    );
+    if (existing?.id) {
+      run(
+        `UPDATE products SET name = ?, category_id = COALESCE(?, category_id),
+           barcode = CASE WHEN ? != '' THEN ? ELSE barcode END,
+           code = CASE WHEN ? != '' THEN ? ELSE code END
+         WHERE id = ?`,
+        [
+          body.name.trim(),
+          body.category_id ?? null,
+          (body.barcode || '').trim(),
+          body.barcode ?? '',
+          (body.code || '').trim(),
+          body.code ?? '',
+          existing.id,
+        ]
+      );
+      auditFromContext(c, {
+        action: 'product.update',
+        entity: 'product',
+        entityId: existing.id,
+        summary: `Upsert по ${matchBy}: ${body.name.trim()}`,
+      });
+      return c.json(
+        { id: existing.id, sku: existing.sku, code: existing.code, item_kind: itemKind, upsert: true },
+        200
+      );
+    }
+  }
+
+  const existingSku = get<{ id: string; sku: string; code: string }>(
+    `SELECT id, sku, IFNULL(code,'') AS code FROM products WHERE upper(replace(sku,' ','')) = upper(replace(?, ' ','')) LIMIT 1`,
+    [(body.sku || '').trim()]
+  );
+  if (existingSku?.id && (body.sku || '').trim()) {
+    return c.json(
+      { error: 'SKU уже существует', existing_id: existingSku.id, sku: existingSku.sku, code: existingSku.code },
+      409
+    );
+  }
+  const existingCode = get<{ id: string; sku: string; code: string }>(
+    `SELECT id, sku, IFNULL(code,'') AS code FROM products
+     WHERE ? != '' AND upper(replace(IFNULL(code,''),' ','')) = upper(replace(?, ' ','')) LIMIT 1`,
+    [(body.code || '').trim(), (body.code || '').trim()]
+  );
+  if (existingCode?.id && (body.code || '').trim()) {
+    return c.json(
+      {
+        error: 'Код 1С уже существует',
+        existing_id: existingCode.id,
+        sku: existingCode.sku,
+        code: existingCode.code,
+      },
+      409
+    );
+  }
+
   try {
     run(
       `INSERT INTO products (id, sku, name, category_id, unit_id, barcode, item_kind, code)
@@ -6392,6 +11088,16 @@ api.post('/products', async (c) => {
       ]
     );
   } catch {
+    const dup = get<{ id: string; sku: string; code: string }>(
+      `SELECT id, sku, IFNULL(code,'') AS code FROM products WHERE sku = ? OR code = ? LIMIT 1`,
+      [sku, code]
+    );
+    if (dup?.id) {
+      return c.json(
+        { error: 'SKU или код уже существует', existing_id: dup.id, sku: dup.sku, code: dup.code },
+        409
+      );
+    }
     return c.json({ error: 'SKU уже существует' }, 409);
   }
   auditFromContext(c, {
@@ -6431,6 +11137,7 @@ api.patch('/products/:id', async (c) => {
     is_active?: boolean;
     code?: string;
     array_sku?: string;
+    warehouse_sku?: string;
     package_width_cm?: number | null;
     package_height_cm?: number | null;
     package_length_cm?: number | null;
@@ -6441,6 +11148,8 @@ api.patch('/products/:id', async (c) => {
     min_stock?: number | null;
     item_kind?: string;
     notupload?: boolean | number;
+    install_price?: number | null;
+    is_main?: boolean | number | string;
   }>();
   const row = get<Record<string, unknown>>('SELECT * FROM products WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
@@ -6453,6 +11162,7 @@ api.patch('/products/:id', async (c) => {
     is_active: row.is_active,
     code: row.code,
     array_sku: row.array_sku,
+    warehouse_sku: row.warehouse_sku || '',
     package_width_cm: row.package_width_cm,
     package_height_cm: row.package_height_cm,
     package_length_cm: row.package_length_cm,
@@ -6463,6 +11173,8 @@ api.patch('/products/:id', async (c) => {
     min_stock: row.min_stock,
     item_kind: row.item_kind || 'product',
     notupload: row.notupload || 0,
+    install_price: row.install_price || 0,
+    is_main: row.is_main || 0,
   };
   if (body.name != null) {
     run('UPDATE products SET name = ? WHERE id = ?', [body.name.trim(), id]);
@@ -6488,6 +11200,9 @@ api.patch('/products/:id', async (c) => {
   }
   if (body.array_sku != null) {
     run('UPDATE products SET array_sku = ? WHERE id = ?', [body.array_sku.trim(), id]);
+  }
+  if (body.warehouse_sku != null) {
+    run('UPDATE products SET warehouse_sku = ? WHERE id = ?', [body.warehouse_sku.trim(), id]);
   }
   if (body.category_id !== undefined) {
     const cat = body.category_id ? String(body.category_id).trim() : '';
@@ -6540,19 +11255,41 @@ api.patch('/products/:id', async (c) => {
     const kind =
       String(body.item_kind).toLowerCase() === 'service' ? 'service' : 'product';
     run('UPDATE products SET item_kind = ? WHERE id = ?', [kind, id]);
+    if (kind === 'service') {
+      run('UPDATE products SET unit_id = ? WHERE id = ?', [ensureServiceUnitId(), id]);
+    }
   }
   if (body.notupload != null) {
     run('UPDATE products SET notupload = ? WHERE id = ?', [body.notupload ? 1 : 0, id]);
   }
+  if (body.is_main != null) {
+    const main = body.is_main === true || body.is_main === 1 || body.is_main === '1' ? 1 : 0;
+    run('UPDATE products SET is_main = ? WHERE id = ?', [main, id]);
+  }
+  if (body.install_price !== undefined) {
+    ensureProductServiceLinksSchema();
+    const ip =
+      body.install_price === null ? 0 : Math.max(0, Number(body.install_price) || 0);
+    run('UPDATE products SET install_price = ? WHERE id = ?', [ip, id]);
+    if (ip > 0 && String(row.item_kind || 'product') !== 'service') {
+      try {
+        linkInstallService(id, { price: ip });
+      } catch (e) {
+        console.warn('[product] link install:', e instanceof Error ? e.message : e);
+      }
+    }
+  }
 
   const after = get(
     `SELECT name, sku, brand, barcode, category_id, is_active, code, array_sku,
+            IFNULL(warehouse_sku,'') AS warehouse_sku,
             package_width_cm, package_height_cm, package_length_cm, package_weight_g,
             IFNULL(gtin,'') AS gtin, IFNULL(requires_marking,0) AS requires_marking,
             IFNULL(serial_tracked,0) AS serial_tracked,
             IFNULL(min_stock,0) AS min_stock,
             CASE WHEN IFNULL(item_kind,'product') = 'service' THEN 'service' ELSE 'product' END AS item_kind,
-            IFNULL(notupload,0) AS notupload
+            IFNULL(notupload,0) AS notupload,
+            IFNULL(install_price,0) AS install_price
      FROM products WHERE id = ?`,
     [id]
   );
@@ -6832,11 +11569,21 @@ api.put('/products/:id/prices', async (c) => {
 api.get('/balances', (c) => {
   const warehouseId = c.req.query('warehouse_id');
   const productId = (c.req.query('product_id') || '').trim();
-  const companyId = (c.req.query('company_id') || '').trim();
+  const companyIdRaw = (c.req.query('company_id') || '').trim();
+  const machineCoErr = requireMachineCompanyId(c, companyIdRaw);
+  if (machineCoErr) return machineCoErr;
+  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  if (!companyParsed.ok) {
+    return c.json({ error: companyParsed.error }, 400);
+  }
+  const companyId = companyParsed.id;
   const q = (c.req.query('q') || '').trim();
   const sort = (c.req.query('sort') || '').trim().toLowerCase();
   const dir = (c.req.query('dir') || 'asc').trim().toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-  const { page, limit, offset } = parsePage(c, 50);
+  const { page, limit, offset, overMax, max: limitMax } = parsePage(c, 50);
+  if (overMax) {
+    return c.json({ error: `limit max is ${limitMax}`, max: limitMax }, 400);
+  }
   const where: string[] = ['x.qty != 0'];
   const params: Array<string | number> = [];
   if (warehouseId) {
@@ -6846,7 +11593,7 @@ api.get('/balances', (c) => {
   {
     const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
     if (coFilter.mode === 'none') {
-      return c.json({ items: [], total: 0, page: 1, limit, pages: 1, totals: {} });
+      return c.json({ items: [], total: 0, page: 1, limit, pages: 1, totals: {}, limit_max: PAGE_LIMIT_MAX });
     }
     if (coFilter.mode === 'one') {
       where.push("IFNULL(w.company_id,'') = ?");
@@ -6862,9 +11609,16 @@ api.get('/balances', (c) => {
   }
   if (q) {
     const like = `%${q}%`;
-    where.push('(p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,\'\') LIKE ?)');
-    params.push(like, like, like);
+    where.push(
+      `(p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
+        OR IFNULL(p.warehouse_sku,'') LIKE ? OR IFNULL(p.array_sku,'') LIKE ?
+        OR IFNULL(c.name,'') LIKE ?)`
+    );
+    params.push(like, like, like, like, like, like);
   }
+  // На складе — только товары своего контура; услуги в виджете Amo, не в остатках WMS.
+  where.push(sqlExcludeServices('p', 'u'));
+  where.push(sqlExcludeCrossContourProducts('p', 'co'));
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   // stock_balances приоритетнее; если по паре товар+склад нет движений — берём Get/Rests из 1С
   const from = `
@@ -6885,6 +11639,7 @@ api.get('/balances', (c) => {
     ) x
     JOIN products p ON p.id = x.product_id
     JOIN warehouses w ON w.id = x.warehouse_id
+    LEFT JOIN companies co ON co.id = w.company_id
     LEFT JOIN units u ON u.id = p.unit_id
     LEFT JOIN categories c ON c.id = p.category_id
     ${whereSql}`;
@@ -6898,6 +11653,7 @@ api.get('/balances', (c) => {
   const orderMap: Record<string, string> = {
     qty: 'x.qty',
     sku: 'p.sku COLLATE NOCASE',
+    code: "IFNULL(p.code,'') COLLATE NOCASE",
     name: 'p.name COLLATE NOCASE',
     warehouse: 'w.name COLLATE NOCASE',
     unit: "IFNULL(u.short_name,'') COLLATE NOCASE",
@@ -6915,7 +11671,7 @@ api.get('/balances', (c) => {
        w.name, p.name`;
   const total = get<{ c: number }>(`SELECT COUNT(*) AS c ${from}`, params)?.c ?? 0;
   const itemsRaw = all(
-    `SELECT x.qty, p.id AS product_id, p.sku, p.name, w.id AS warehouse_id, w.name AS warehouse,
+    `SELECT x.qty, p.id AS product_id, p.sku, IFNULL(p.code,'') AS code, IFNULL(p.warehouse_sku,'') AS warehouse_sku, p.name, w.id AS warehouse_id, w.name AS warehouse,
             w.code AS warehouse_code, IFNULL(u.short_name, '') AS unit,
             IFNULL(c.name, '') AS category,
             ${kindExpr} AS item_kind,
@@ -6932,7 +11688,20 @@ api.get('/balances', (c) => {
       warehouse_id: String((r as { warehouse_id?: string }).warehouse_id || ''),
     }))
   );
-  const items = itemsRaw.map((r) => {
+  const reservePairs = itemsRaw
+    .filter((r) => Number((r as { is_reserve?: number }).is_reserve) === 1)
+    .map((r) => ({
+      product_id: String((r as { product_id?: string }).product_id || ''),
+      warehouse_id: String((r as { warehouse_id?: string }).warehouse_id || ''),
+    }));
+  const reserveMap = activeReserveOrdersForPairs(reservePairs);
+  const dealLinkMap = openDealLinksForStockRows(
+    itemsRaw.map((r) => ({
+      product_id: String((r as { product_id?: string }).product_id || ''),
+      warehouse_id: String((r as { warehouse_id?: string }).warehouse_id || ''),
+    }))
+  );
+  let items = itemsRaw.map((r) => {
     const row = r as {
       product_id: string;
       warehouse_id: string;
@@ -6941,13 +11710,39 @@ api.get('/balances', (c) => {
     const bucket = dmMap.get(`${row.product_id}\0${row.warehouse_id}`);
     const codes = bucket?.codes || [];
     const dmTotal = bucket?.total || 0;
+    const reserveOrders =
+      Number(row.is_reserve) === 1
+        ? reserveMap.get(`${row.warehouse_id}\0${row.product_id}`) || []
+        : [];
+    const openDeals = dealLinkMap.get(`${row.product_id}\0${row.warehouse_id}`) || [];
     return {
       ...row,
+      warehouse_article: warehouseArticleOf({
+        sku: String(row.sku || ''),
+        warehouse_sku: String(row.warehouse_sku || ''),
+      }),
       dm_codes: codes,
       dm_count: dmTotal,
       dm_more: Math.max(0, dmTotal - codes.length),
+      reserve_orders: reserveOrders,
+      open_deals: openDeals,
+      deal_id: openDeals[0]?.deal_id || '',
     };
   });
+  const groupByDeal = ['1', 'true', 'yes'].includes(
+    String(c.req.query('group_by_deal') || '').trim().toLowerCase()
+  );
+  if (groupByDeal && warehouseId) {
+    items.sort((a, b) => {
+      const ad = String((a as { deal_id?: string }).deal_id || '\uffff');
+      const bd = String((b as { deal_id?: string }).deal_id || '\uffff');
+      if (ad !== bd) return ad.localeCompare(bd, 'ru');
+      return String((a as { name?: string }).name || '').localeCompare(
+        String((b as { name?: string }).name || ''),
+        'ru'
+      );
+    });
+  }
   const qtySums = get<{ qty: number; reserved: number }>(
     `SELECT COALESCE(SUM(x.qty), 0) AS qty,
             COALESCE(SUM((
@@ -6974,20 +11769,88 @@ api.get('/balances', (c) => {
   } catch {
     /* оценка необязательна для списка */
   }
+  let pendingInbound: ReturnType<typeof pendingHandoffInboundOnWarehouse> = [];
+  let pendingSummary = { lines: 0, qty: 0, deals: 0 };
+  if (warehouseId && isStoDealReserveWarehouseId(String(warehouseId))) {
+    pendingInbound = pendingHandoffInboundOnWarehouse(String(warehouseId));
+    pendingSummary = pendingHandoffInboundSummary(String(warehouseId));
+    if (page === 1 && pendingInbound.length) {
+      const qLow = q.toLowerCase();
+      const filtered = qLow
+        ? pendingInbound.filter((r) => {
+            const hay = `${r.sku} ${r.name} ${r.deal_id} ${r.doc_number}`.toLowerCase();
+            return hay.includes(qLow);
+          })
+        : pendingInbound;
+      const pendingAsItems = filtered.map((r) => {
+        const dealId = String(r.deal_id || '').trim();
+        const outNo = dealId ? outNumberFromDeal(dealId) : '';
+        return {
+          qty: r.qty,
+          product_id: r.product_id,
+          sku: r.sku,
+          code: '',
+          warehouse_sku: '',
+          name: r.name,
+          warehouse_id: r.warehouse_id,
+          warehouse: r.warehouse,
+          warehouse_code: r.warehouse_code,
+          unit: r.unit,
+          category: r.category,
+          item_kind: r.kind,
+          is_reserve: 0,
+          reserved_qty: 0,
+          warehouse_article: warehouseArticleOf({ sku: r.sku, warehouse_sku: '' }),
+          dm_codes: [] as string[],
+          dm_count: 0,
+          dm_more: 0,
+          reserve_orders: [],
+          open_deals: r.open_deals,
+          deal_id: dealId,
+          pending: true as const,
+          doc_id: r.doc_id,
+          doc_number: outNo || r.doc_number,
+        };
+      });
+      items = [...pendingAsItems, ...items] as typeof items;
+    }
+    items = items.map((row) => {
+      const dealId = String(
+        (row as { deal_id?: string }).deal_id ||
+          (Array.isArray((row as { open_deals?: OpenDealLink[] }).open_deals) &&
+            (row as { open_deals: OpenDealLink[] }).open_deals[0]?.deal_id) ||
+          ''
+      ).trim();
+      if (!dealId) return row;
+      const outNo = outNumberFromDeal(dealId);
+      if (!outNo) return row;
+      return { ...row, doc_number: outNo };
+    });
+  }
   return c.json({
     items,
-    total,
+    total: total + (page === 1 ? pendingSummary.lines : 0),
     page,
     limit,
-    pages: Math.max(1, Math.ceil(total / limit)),
+    pages: Math.max(1, Math.ceil((total + pendingSummary.lines) / limit)),
     sort: sort || null,
     dir: sort ? dir.toLowerCase() : null,
+    limit_max: PAGE_LIMIT_MAX,
+    pending_inbound: pendingInbound,
     totals: {
-      lines: total,
-      qty: Number(qtySums?.qty) || 0,
+      lines: total + pendingSummary.lines,
+      qty: (Number(qtySums?.qty) || 0) + pendingSummary.qty,
       reserved_qty: Number(qtySums?.reserved) || 0,
       value_purchase: valuePurchase,
       value_retail: valueRetail,
+      deals_count: warehouseId
+        ? isStoDealReserveWarehouseId(String(warehouseId))
+          ? countStoDealReserveDeals(String(warehouseId))
+          : Math.max(countOpenDealsOnWarehouse(String(warehouseId)), pendingSummary.deals)
+        : 0,
+      pending_deals: pendingSummary.deals,
+      pending_qty: pendingSummary.qty,
+      pending_lines: pendingSummary.lines,
     },
   });
 });
@@ -7064,9 +11927,14 @@ api.get('/docs', (c) => {
     }
   }
   if (q) {
-    where.push('(d.number LIKE ? OR IFNULL(c.name,"") LIKE ? OR IFNULL(w.name,"") LIKE ?)');
+    where.push(
+      '(d.number LIKE ? OR IFNULL(c.name,"") LIKE ? OR IFNULL(w.name,"") LIKE ? OR IFNULL(d.supply_number,"") LIKE ? OR IFNULL(d.comment,"") LIKE ?)'
+    );
     const like = `%${q}%`;
-    params.push(like, like, like);
+    params.push(like, like, like, like, like);
+  }
+  if (!isAdminActor(actorFromContext(c))) {
+    where.push('IFNULL(d.admin_only, 0) = 0');
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const orderMap: Record<string, string> = {
@@ -7077,6 +11945,8 @@ api.get('/docs', (c) => {
     warehouse: `IFNULL(w.name,'') ${dir}, d.doc_date DESC`,
     amount: `d.amount ${dir}, d.doc_date DESC`,
     status: `d.posted ${dir}, d.doc_date DESC`,
+    supply: `IFNULL(d.supply_number,'') ${dir}, d.doc_date DESC`,
+    placement: `d.doc_date ${dir}`,
   };
   const orderBy = orderMap[sort] || orderMap.date;
   const docsFrom = `
@@ -7096,8 +11966,24 @@ api.get('/docs', (c) => {
      LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   );
+  const placementMap =
+    type === 'in' ? getPlacementSummariesForDocs(items.map((d) => String(d.id || ''))) : {};
+  const enriched = items.map((d) => {
+    let supply = String((d as { supply_number?: string }).supply_number || '').trim();
+    if (!supply) {
+      const m = String((d as { comment?: string }).comment || '').match(
+        /пост\.?\s*(\d+)/i
+      );
+      if (m) supply = m[1];
+    }
+    return {
+      ...d,
+      supply_number: supply,
+      placement_summary: placementMap[String(d.id || '')] || '',
+    };
+  });
   return c.json({
-    items,
+    items: enriched,
     total,
     page,
     limit,
@@ -7176,8 +12062,12 @@ api.get('/docs/:id', async (c) => {
     [id]
   );
   if (!doc) return c.json({ error: 'not found' }, 404);
+  if (Number((doc as { admin_only?: number }).admin_only) === 1 && !isAdminActor(actorFromContext(c))) {
+    return c.json({ error: 'not found' }, 404);
+  }
   const lines = all(
-    `SELECT l.*, p.sku, p.name AS product_name,
+    `SELECT l.*, p.sku, IFNULL(p.code,'') AS code, IFNULL(p.barcode,'') AS barcode,
+            IFNULL(p.array_sku,'') AS array_sku, p.name AS product_name,
             IFNULL(p.serial_tracked, 0) AS serial_tracked,
             IFNULL(p.item_kind,'product') AS item_kind_raw,
             IFNULL(u.short_name,'') AS unit,
@@ -7190,7 +12080,12 @@ api.get('/docs/:id', async (c) => {
      LEFT JOIN warehouses lw ON lw.id = NULLIF(TRIM(IFNULL(l.warehouse_id,'')), '')
      LEFT JOIN warehouses w ON w.id = d.warehouse_id
      WHERE l.doc_id = ?
-     ORDER BY l.line_no, p.name`,
+     ORDER BY
+       CASE WHEN IFNULL(l.line_no, 0) = 0 THEN 1 ELSE 0 END,
+       l.line_no,
+       IFNULL(p.sku, '') COLLATE NOCASE,
+       IFNULL(p.code, '') COLLATE NOCASE,
+       IFNULL(p.name, '') COLLATE NOCASE`,
     [id]
   ).map((l) => {
     const row = l as Record<string, unknown>;
@@ -7198,11 +12093,19 @@ api.get('/docs/:id', async (c) => {
     const productId = String(row.product_id || '');
     const looksService = isServiceProduct(productId);
     const item_kind = looksService ? 'service' : 'product';
+    const art = catalogArticleOf({
+      sku: String(row.sku || ''),
+      code: String(row.code || ''),
+      barcode: String(row.barcode || ''),
+      array_sku: String(row.array_sku || ''),
+    });
     return {
       ...row,
       serials,
       item_kind,
       writes_off_stock: item_kind !== 'service',
+      article: art.article,
+      code: art.code,
     };
   });
   const allMapped = lines;
@@ -7213,8 +12116,14 @@ api.get('/docs/:id', async (c) => {
   const isOut = String((doc as { doc_type?: string }).doc_type || '') === 'out';
   // Расходные в UI — только товары (услуги живут в заказе / УПД)
   const visibleLines = isOut ? goodsLines : allMapped;
+  let supplyNumber = String((doc as { supply_number?: string }).supply_number || '').trim();
+  if (!supplyNumber) {
+    const m = String((doc as { comment?: string }).comment || '').match(/пост\.?\s*(\d+)/i);
+    if (m) supplyNumber = m[1];
+  }
   return c.json({
     ...doc,
+    supply_number: supplyNumber,
     lines: visibleLines,
     units,
     links,
@@ -7250,7 +12159,7 @@ api.patch('/docs/:id/deal', async (c) => {
       action: 'doc.link_deal',
       entity: 'stock_doc',
       entityId: c.req.param('id'),
-      summary: `Расходная привязана к заказу покупателя ${result.deal_id}`,
+      summary: `Списание привязано к заказу покупателя ${result.deal_id}`,
       after: result,
     });
     return c.json(result);
@@ -7283,7 +12192,7 @@ api.post('/docs', async (c) => {
   }>();
   if (body.doc_type === 'out' && !String(body.deal_id || '').trim()) {
     return c.json(
-      { error: 'Расходная создаётся на основании заказа покупателя — укажите номер заказа' },
+      { error: 'Списание создаётся на основании заказа покупателя — укажите номер заказа' },
       400
     );
   }
@@ -7296,6 +12205,27 @@ api.post('/docs', async (c) => {
         apps: l.apps as string | undefined,
       })),
     });
+    const dealForHandoff = String(body.deal_id || '').trim();
+    if (
+      body.doc_type === 'out' &&
+      dealForHandoff &&
+      /Передача на склад/i.test(String(body.comment || ''))
+    ) {
+      clearHandoffReturnState(dealForHandoff);
+      const reserve = buildHandoffReserveMeta(
+        dealForHandoff,
+        String(body.warehouse_id || '').trim() ||
+          String(body.lines?.find((l) => l.warehouse_id)?.warehouse_id || '').trim()
+      );
+      if (reserve) {
+        const commentNext = ensureReserveHandoffComment(String(body.comment || ''));
+        run(`UPDATE stock_docs SET comment = ?, warehouse_to_id = ? WHERE id = ?`, [
+          commentNext,
+          reserve.dest_warehouse_id,
+          id,
+        ]);
+      }
+    }
     const doc = get('SELECT * FROM stock_docs WHERE id = ?', [id]);
     auditFromContext(c, {
       action: 'doc.create',
@@ -7578,6 +12508,239 @@ api.put('/supplier-product-apps', async (c) => {
 
 const FEEDBACK_KINDS = new Set(['idea', 'bug']);
 const FEEDBACK_STATUSES = new Set(['new', 'planned', 'done', 'rejected']);
+
+/** План разработки: таблица + Гант, ответственные из персонала. */
+api.get('/dev-plan', (c) => {
+  const items = listDevPlanItems();
+  const range = devPlanGanttRange(items);
+  return c.json({
+    items,
+    deps: listDevPlanDeps(),
+    gantt: range,
+    staff: listDevPlanStaffOptions(),
+  });
+});
+
+api.post('/dev-plan/deps', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    item_id?: string;
+    depends_on_id?: string;
+    note?: string;
+  };
+  try {
+    const dep = addDevPlanDep({
+      item_id: String(body.item_id || ''),
+      depends_on_id: String(body.depends_on_id || ''),
+      note: body.note != null ? String(body.note) : undefined,
+    });
+    auditFromContext(c, {
+      action: 'dev_plan.dep_add',
+      entity: 'dev_plan_dep',
+      entityId: dep.id,
+      summary: `${dep.item_title} ← зависит от ${dep.depends_on_title}`,
+      after: dep,
+    });
+    return c.json({ ok: true, dep, deps: listDevPlanDeps() });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'dep failed' }, 400);
+  }
+});
+
+api.delete('/dev-plan/deps/:id', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  try {
+    const r = deleteDevPlanDep(c.req.param('id'));
+    auditFromContext(c, {
+      action: 'dev_plan.dep_delete',
+      entity: 'dev_plan_dep',
+      entityId: r.id,
+      summary: 'Удалена связь зависимости',
+    });
+    return c.json({ ok: true, id: r.id, deps: listDevPlanDeps() });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'delete failed' }, 400);
+  }
+});
+
+/** Назначить текущего пользователя ответственным по всем работам плана. */
+api.post('/dev-plan/assign-me-all', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { staff_id?: string };
+  try {
+    const staffId =
+      String(body.staff_id || '').trim() || resolveDevPlanStaffIdForActor(actor);
+    if (!staffId) {
+      return c.json(
+        { error: 'Не удалось определить сотрудника для текущего пользователя' },
+        400
+      );
+    }
+    const r = assignAllDevPlanResponsible(staffId);
+    auditFromContext(c, {
+      action: 'dev_plan.assign_all',
+      entity: 'dev_plan_item',
+      entityId: '*',
+      summary: `${actor?.name || 'Сотрудник'} назначил ответственным по всем работам: ${r.staff_name}`,
+      after: r,
+    });
+    return c.json({ ok: true, ...r, items: listDevPlanItems() });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'assign failed' }, 400);
+  }
+});
+
+api.post('/dev-plan', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  try {
+    const item = createDevPlanItem({
+      title: String(body.title || ''),
+      description: body.description != null ? String(body.description) : undefined,
+      result_plan: body.result_plan != null ? String(body.result_plan) : undefined,
+      result_fact: body.result_fact != null ? String(body.result_fact) : undefined,
+      constraint_text: body.constraint_text != null ? String(body.constraint_text) : undefined,
+      start_date: body.start_date != null ? String(body.start_date) : undefined,
+      end_date: body.end_date != null ? String(body.end_date) : undefined,
+      responsible_staff_id:
+        body.responsible_staff_id != null ? String(body.responsible_staff_id) : undefined,
+      status: body.status != null ? String(body.status) : undefined,
+      sort_order: body.sort_order != null ? Number(body.sort_order) : undefined,
+      block_key: body.block_key != null ? String(body.block_key) : undefined,
+      block_title: body.block_title != null ? String(body.block_title) : undefined,
+      block_sort: body.block_sort != null ? Number(body.block_sort) : undefined,
+    });
+    auditFromContext(c, {
+      action: 'dev_plan.create',
+      entity: 'dev_plan_item',
+      entityId: item.id,
+      summary: `Работа: ${item.title}`,
+      after: item,
+    });
+    return c.json({ ok: true, item });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
+  }
+});
+
+api.patch('/dev-plan/:id', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  try {
+    const item = updateDevPlanItem(
+      c.req.param('id'),
+      {
+        title: body.title != null ? String(body.title) : undefined,
+        description: body.description != null ? String(body.description) : undefined,
+        result_plan: body.result_plan != null ? String(body.result_plan) : undefined,
+        result_fact: body.result_fact != null ? String(body.result_fact) : undefined,
+        constraint_text: body.constraint_text != null ? String(body.constraint_text) : undefined,
+        start_date: body.start_date != null ? String(body.start_date) : undefined,
+        end_date: body.end_date != null ? String(body.end_date) : undefined,
+        responsible_staff_id:
+          body.responsible_staff_id != null ? String(body.responsible_staff_id) : undefined,
+        status: body.status != null ? String(body.status) : undefined,
+        sort_order: body.sort_order != null ? Number(body.sort_order) : undefined,
+        block_key: body.block_key != null ? String(body.block_key) : undefined,
+        block_title: body.block_title != null ? String(body.block_title) : undefined,
+        block_sort: body.block_sort != null ? Number(body.block_sort) : undefined,
+        reschedule_reason:
+          body.reschedule_reason != null ? String(body.reschedule_reason) : undefined,
+      },
+      { id: actor?.id, name: actor?.name }
+    );
+    auditFromContext(c, {
+      action: 'dev_plan.update',
+      entity: 'dev_plan_item',
+      entityId: item.id,
+      summary: `Работа: ${item.title}`,
+      after: item,
+    });
+    return c.json({ ok: true, item });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'update failed' }, 400);
+  }
+});
+
+api.post('/dev-plan/:id/comments', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  try {
+    const r = addDevPlanComment(c.req.param('id'), {
+      body: String(body.body || ''),
+      kind: body.kind != null ? String(body.kind) : 'note',
+      author_staff_id: actor?.id,
+      author_name: actor?.name,
+    });
+    auditFromContext(c, {
+      action: 'dev_plan.comment',
+      entity: 'dev_plan_item',
+      entityId: r.item.id,
+      summary: `Комментарий: ${r.item.title}`,
+      after: r.comment,
+    });
+    return c.json({ ok: true, item: r.item, comment: r.comment });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'comment failed' }, 400);
+  }
+});
+
+api.delete('/dev-plan', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  try {
+    const r = clearAllDevPlanItems();
+    auditFromContext(c, {
+      action: 'dev_plan.clear_all',
+      entity: 'dev_plan_item',
+      summary: `Очищен план разработки (${r.deleted} работ)`,
+      after: r,
+    });
+    return c.json({ ok: true, ...r });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'clear failed' }, 400);
+  }
+});
+
+api.delete('/dev-plan/:id', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  try {
+    const id = c.req.param('id');
+    deleteDevPlanItem(id);
+    auditFromContext(c, {
+      action: 'dev_plan.delete',
+      entity: 'dev_plan_item',
+      entityId: id,
+      summary: 'Удалена работа плана разработки',
+    });
+    return c.json({ ok: true });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'delete failed' }, 400);
+  }
+});
 
 api.get('/feedback', (c) => {
   const status = (c.req.query('status') || '').trim();
@@ -7893,9 +13056,25 @@ api.get('/warehouse/tasks', (c) => {
   );
 });
 
-api.get('/warehouse/tasks/:id', (c) => {
-  const row = getTask(c.req.param('id'));
+api.get('/warehouse/tasks/:id', async (c) => {
+  const row = getTask(c.req.param('id')) as Record<string, unknown> | null;
   if (!row) return c.json({ error: 'not found' }, 404);
+  const dealId = String(row.deal_id || '').trim();
+  const wantCdek = !!(row.is_cdek || /сдэк|cdek/i.test(String(row.amo_shipment || '')));
+  if (dealId && wantCdek) {
+    try {
+      const { fetchCdekShipment } = await import('./cdek.js');
+      const cdek = await fetchCdekShipment(dealId);
+      const num = String(cdek.cdek_number || '').trim();
+      if (num) row.cdek_number = num;
+      row.cdek_barcode_url = String(cdek.cdek_barcode_url || '').trim();
+      row.cdek_status_name = String(cdek.cdek_status_name || '').trim();
+      row.cdek_uuid = String(cdek.cdek_uuid || '').trim();
+      if (!row.cdek_widget_url) row.cdek_widget_url = String(cdek.widget_url || '');
+    } catch {
+      /* виджет недоступен — карточку всё равно отдаём */
+    }
+  }
   return c.json(row);
 });
 
@@ -7961,6 +13140,48 @@ api.patch('/warehouse/tasks/:id/status', async (c) => {
       actor_id: actor.id,
     });
     touchPickShiftActivity(actor.id);
+    let stoExecute: Record<string, unknown> | null = null;
+    let productionExecute: Record<string, unknown> | null = null;
+    if (
+      String((row as { status?: string } | null)?.status) === 'handed' &&
+      String((row as { channel?: string } | null)?.channel) === 'sto_parts'
+    ) {
+      try {
+        const { executeStoPartsFromTask } = await import('./sto-parts-execute.js');
+        stoExecute = executeStoPartsFromTask({
+          task_id: c.req.param('id'),
+          actor_id: actor.id,
+        }) as Record<string, unknown>;
+      } catch (e) {
+        return c.json(
+          { error: e instanceof Error ? e.message : 'Не удалось исполнить задание на СТО' },
+          400
+        );
+      }
+    }
+    if (String((row as { status?: string } | null)?.status) === 'handed') {
+      const ch = String((row as { channel?: string } | null)?.channel || '');
+      try {
+        if (ch === 'production_send') {
+          const { executeProductionSendFromTask } = await import('./production-jobs.js');
+          productionExecute = executeProductionSendFromTask({
+            task_id: c.req.param('id'),
+            actor_id: actor.id,
+          });
+        } else if (ch === 'production_receive') {
+          const { executeProductionReceiveFromTask } = await import('./production-jobs.js');
+          productionExecute = executeProductionReceiveFromTask({
+            task_id: c.req.param('id'),
+            actor_id: actor.id,
+          });
+        }
+      } catch (e) {
+        return c.json(
+          { error: e instanceof Error ? e.message : 'Не удалось исполнить задание производства' },
+          400
+        );
+      }
+    }
     let dealPromote: Awaited<ReturnType<typeof promoteDealToSuccessAfterHanded>> | null = null;
     if (String((row as { status?: string } | null)?.status) === 'handed') {
       dealPromote = await promoteDealToSuccessAfterHanded({
@@ -7982,9 +13203,15 @@ api.patch('/warehouse/tasks/:id/status', async (c) => {
       entity: 'warehouse_task',
       entityId: c.req.param('id'),
       summary: `Задание → ${body.status}${body.block_reason ? ' · ' + body.block_reason : ''}`,
-      after: { status: body.status, block_reason: body.block_reason, deal_promote: dealPromote },
+      after: {
+        status: body.status,
+        block_reason: body.block_reason,
+        deal_promote: dealPromote,
+        sto_execute: stoExecute,
+        production_execute: productionExecute,
+      },
     });
-    return c.json({ ...row, deal_promote: dealPromote });
+    return c.json({ ...row, deal_promote: dealPromote, sto_execute: stoExecute, production_execute: productionExecute });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'status failed' }, 400);
   }
@@ -8063,6 +13290,160 @@ api.post('/warehouse/tasks/scan-done', async (c) => {
   }
 });
 
+/** Скан марки (Data Matrix) в задание: конкретный экземпляр + поставщик / закупка. */
+api.post('/warehouse/tasks/:id/scan-unit', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!canOperateWarehouseTasks(actor)) {
+    return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
+  }
+  const body = await c.req
+    .json<{ barcode?: string; serial?: string; code?: string }>()
+    .catch(() => ({}));
+  const code = String(
+    (body as { barcode?: string }).barcode ||
+      (body as { serial?: string }).serial ||
+      (body as { code?: string }).code ||
+      ''
+  ).trim();
+  try {
+    assertPickShiftForOps(actor);
+    const row = scanUnitIntoWarehouseTask(c.req.param('id'), code, { actor_id: actor.id });
+    touchPickShiftActivity(actor.id);
+    auditFromContext(c, {
+      action: 'warehouse_task.scan_unit',
+      entity: 'warehouse_task',
+      entityId: c.req.param('id'),
+      summary: `Скан марки ${row.serial} → ${row.product_name} (${row.picked}/${row.need}) · ${row.supplier_name} · ${row.in_doc_number}`,
+      after: row,
+    });
+    return c.json(row);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'scan unit failed' }, 400);
+  }
+});
+
+/** Удалить / сбросить выбранный экземпляр на строке задания (/pick · Изменить / Удалить). */
+api.post('/warehouse/tasks/:id/clear-unit', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!canOperateWarehouseTasks(actor)) {
+    return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
+  }
+  const body = await c.req
+    .json<{ line_idx?: number | string; serial?: string }>()
+    .catch(() => ({}));
+  try {
+    assertPickShiftForOps(actor);
+    const row = clearUnitFromWarehouseTask(c.req.param('id'), {
+      line_idx: (body as { line_idx?: number | string }).line_idx,
+      serial: (body as { serial?: string }).serial,
+      actor_id: actor.id,
+    });
+    touchPickShiftActivity(actor.id);
+    auditFromContext(c, {
+      action: 'warehouse_task.clear_unit',
+      entity: 'warehouse_task',
+      entityId: c.req.param('id'),
+      summary: `Снят экземпляр ${(row.cleared || []).join(', ') || '—'} (строка ${row.line_idx})`,
+      after: row,
+    });
+    return c.json(row);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'clear unit failed' }, 400);
+  }
+});
+
+/** Вручную задать № экземпляра (создаёт учёт марки, если её ещё не было). */
+api.post('/warehouse/tasks/:id/assign-serial', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!canOperateWarehouseTasks(actor)) {
+    return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
+  }
+  const body = await c.req
+    .json<{ line_idx?: number | string; serial?: string }>()
+    .catch(() => ({}));
+  try {
+    assertPickShiftForOps(actor);
+    const row = assignManualSerialToWarehouseTask(c.req.param('id'), {
+      line_idx: (body as { line_idx?: number | string }).line_idx,
+      serial: (body as { serial?: string }).serial,
+      actor_id: actor.id,
+    });
+    touchPickShiftActivity(actor.id);
+    auditFromContext(c, {
+      action: 'warehouse_task.assign_serial',
+      entity: 'warehouse_task',
+      entityId: c.req.param('id'),
+      summary: `№ экземпляра ${row.serial}${row.created_unit ? ' (новый учёт)' : ''}`,
+      after: row,
+    });
+    return c.json(row);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'assign serial failed' }, 400);
+  }
+});
+
+/** Живой поиск экземпляра по номеру в рамках задания (/pick). */
+api.get('/warehouse/tasks/:id/lookup-unit', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!canOperateWarehouseTasks(actor)) {
+    return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
+  }
+  const q = String(c.req.query('q') || c.req.query('code') || '').trim();
+  try {
+    const items = lookupUnitsForWarehouseTask(c.req.param('id'), q, { limit: 8 });
+    return c.json({ ok: true, q, items });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'lookup failed' }, 400);
+  }
+});
+
+/** Остатки / ячейки / экземпляры по строке — выбор «со склада» на /pick. */
+api.get('/warehouse/tasks/:id/line-stock', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!canOperateWarehouseTasks(actor)) {
+    return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
+  }
+  try {
+    const row = listStockForWarehouseTaskLine(
+      c.req.param('id'),
+      c.req.query('line_idx') || c.req.query('idx') || '0'
+    );
+    return c.json({ ok: true, ...row });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'line-stock failed' }, 400);
+  }
+});
+
+/** Найти задание по ШК / номеру (без закрытия) — открыть и сканировать марки. */
+api.post('/warehouse/tasks/scan-open', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (!canOperateWarehouseTasks(actor)) {
+    return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
+  }
+  const body = await c.req.json<{ barcode?: string }>().catch(() => ({}));
+  const code = String((body as { barcode?: string }).barcode || '').trim();
+  try {
+    assertPickShiftForOps(actor);
+    const hit = get<{ id: string }>(
+      `SELECT id FROM warehouse_tasks WHERE barcode = ? OR number = ? LIMIT 1`,
+      [code, code]
+    );
+    if (!hit) throw new Error('Задание по штрихкоду не найдено');
+    const task = getTask(hit.id);
+    if (!task) throw new Error('Задание не найдено');
+    touchPickShiftActivity(actor.id);
+    return c.json({ kind: 'task', task });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'scan open failed' }, 400);
+  }
+});
+
 api.post('/crm/deals/:id/warehouse-task', async (c) => {
   const actor = actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) || actor?.role === 'courier') {
@@ -8092,6 +13473,387 @@ api.post('/crm/deals/:id/warehouse-task', async (c) => {
     return c.json(task, 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
+  }
+});
+
+/** Резерв WAIT-PAY по заказу отключён — товар при ожидании оплаты не бронируем. */
+api.post('/crm/deals/:id/reserve-stock', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !canOperateWarehouseTasks(actor)) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('id') || '').trim();
+  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  if (!deal) return c.json({ error: 'not found' }, 404);
+  return c.json(
+    {
+      error:
+        'Резерв на «Ожидание оплаты» отключён. Товар не бронируем — при необходимости перемещение: основной → СТО / доставка / выдача.',
+      skipped: true,
+      reason: 'wait_pay_reserve_disabled',
+    },
+    400
+  );
+});
+
+/** Обеспечение детали из заказа: со склада / курьер / рынок → Задание на СТО. */
+api.get('/crm/deals/:id/sto-parts', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  try {
+    const { getDealStoPartsStatus } = await import('./sto-parts-flow.js');
+    return c.json(getDealStoPartsStatus(c.req.param('id')));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'status failed' }, 400);
+  }
+});
+
+api.post('/crm/deals/:id/sto-parts', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  if (actor.role === 'courier') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const body = await c
+    .req.json<{
+      source?: 'warehouse' | 'market' | 'courier' | 'nonpneumo' | 'pneumo';
+      needs_rebrand?: boolean;
+      comment?: string;
+      amount?: number;
+      dest_warehouse_id?: string;
+    }>()
+    .catch(() => ({}));
+  try {
+    const dealId = c.req.param('id');
+    const { createStoPartsFromDeal } = await import('./sto-parts-flow.js');
+    const row = await createStoPartsFromDeal({
+      deal_id: dealId,
+      source: (body as { source?: 'warehouse' | 'market' | 'courier' | 'nonpneumo' | 'pneumo' })
+        .source,
+      needs_rebrand: !!(body as { needs_rebrand?: boolean }).needs_rebrand,
+      comment: (body as { comment?: string }).comment,
+      amount: (body as { amount?: number }).amount,
+      dest_warehouse_id: (body as { dest_warehouse_id?: string }).dest_warehouse_id,
+      created_by: actor.name || actor.login || actor.id,
+      actor_id: actor.id,
+    });
+    auditFromContext(c, {
+      action: 'deal.sto_parts',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: (() => {
+        const num = String((row as { number?: string }).number || '').trim() || `С${dealId}`;
+        const src =
+          (
+            {
+              warehouse: 'со склада',
+              market: 'рынок',
+              courier: 'курьер',
+              nonpneumo: 'непневмо',
+              pneumo: 'пневма',
+            } as Record<string, string>
+          )[String((body as { source?: string }).source || 'warehouse')] || 'со склада';
+        const destId = String((body as { dest_warehouse_id?: string }).dest_warehouse_id || '').trim();
+        const destHint = destId ? '' : '';
+        void destHint;
+        return `Перемещение ${num} · ${src}`;
+      })(),
+      after: {
+        sto_request_id: (row as { id?: string }).id,
+        number: (row as { number?: string }).number,
+        warehouse_task_id: (row as { warehouse_task?: { id?: string } }).warehouse_task?.id,
+        courier_run_id: (row as { courier_run?: { id?: string } }).courier_run?.id,
+      },
+    });
+    return c.json(row, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
+  }
+});
+
+/** Поток склада по сделке: резерв, история, блокировки. */
+api.get('/crm/deals/:id/stock-flow', (c) => {
+  const dealId = String(c.req.param('id') || '').trim();
+  if (!dealId) return c.json({ error: 'id required' }, 400);
+  return c.json(getDealStockFlowStatus(dealId));
+});
+
+/** Создать черновик «Передача на склад» (/pick). */
+api.post('/crm/deals/:id/handoff-pick', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const dealId = String(c.req.param('id') || '').trim();
+  let source: 'auto' | 'widget' | 'manual' = 'manual';
+  let actorName = actor.name || actor.login;
+  try {
+    const body = await c.req.json<{ source?: string; actor_name?: string }>();
+    const s = String(body?.source || '').trim();
+    if (s === 'auto' || s === 'widget' || s === 'manual') source = s;
+    const fromBody = String(body?.actor_name || '').trim();
+    if (fromBody) actorName = fromBody;
+  } catch {
+    /* empty body ok */
+  }
+  try {
+    const result = createHandoffPickDraft({
+      deal_id: dealId,
+      source,
+      actor_name: actorName,
+    });
+    auditFromContext(c, {
+      action: 'deal.handoff_pick',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: result.created ? 'Черновик передачи на склад' : 'Черновик уже был',
+      after: result,
+    });
+    return c.json(result, result.created ? 201 : 200);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'handoff failed' }, 400);
+  }
+});
+
+/** Резерв → СТО (клиент приехал). */
+api.post('/crm/deals/:id/stock-flow/to-sto', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const dealId = String(c.req.param('id') || '').trim();
+  try {
+    const result = transferReserveToSto(dealId, actor.name || actor.login);
+    auditFromContext(c, {
+      action: 'deal.stock_to_sto',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: 'Резерв → СТО',
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'to-sto failed' }, 400);
+  }
+});
+
+/** СРОЧНО на СТО: Основной/Отложено → СТО (+ Резерв → СТО, если уже на резерве). */
+api.post('/crm/deals/:id/stock-flow/urgent-to-sto', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const dealId = String(c.req.param('id') || '').trim();
+  let actorName = actor.name || actor.login;
+  try {
+    const body = await c.req.json<{ actor_name?: string }>();
+    const fromBody = String(body?.actor_name || '').trim();
+    if (fromBody) actorName = fromBody;
+  } catch {
+    /* empty body ok */
+  }
+  try {
+    const result = createUrgentToStoHandoffs(dealId, actorName);
+    auditFromContext(c, {
+      action: 'deal.stock_urgent_to_sto',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: 'СРОЧНО на СТО',
+      after: result,
+    });
+    return c.json(result, result.created ? 201 : 200);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'urgent-to-sto failed' }, 400);
+  }
+});
+
+/** Производство по сделке — статус активных заказов. */
+api.get('/crm/deals/:id/production', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const dealId = String(c.req.param('id') || '').trim();
+  try {
+    const jobs = listActiveProductionJobsForDeal(dealId);
+    return c.json({ deal_id: dealId, jobs, can_send: !jobs.length });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'failed' }, 400);
+  }
+});
+
+/** В производство: consume из заказа, produce из тела запроса, задание кладовщику. */
+api.post('/crm/deals/:id/production', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const dealId = String(c.req.param('id') || '').trim();
+  const body = (await c.req.json().catch(() => ({}))) as {
+    kind?: ProductionKind;
+    comment?: string;
+    queue_send?: boolean;
+    consume_lines?: Array<{ product_id: string; qty?: number }>;
+    produce_lines?: Array<{ product_id: string; qty?: number }>;
+  };
+  try {
+    const job = createProductionFromDeal(dealId, {
+      kind: body.kind,
+      comment: body.comment,
+      consume_lines: body.consume_lines,
+      produce_lines: body.produce_lines,
+      queue_send: body.queue_send !== false,
+      actor_id: actor.id,
+    });
+    auditFromContext(c, {
+      action: 'deal.production_send',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: `В производство · ${job.number}`,
+      after: { job_id: job.id, number: job.number, summary: job.summary },
+    });
+    return c.json({ ok: true, job }, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'production failed' }, 400);
+  }
+});
+
+/** Требование вернуть товар на основной (удалили из заказа / не установили). */
+api.post('/crm/deals/:id/stock-flow/return-request', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const dealId = String(c.req.param('id') || '').trim();
+  let body: { reason?: string; lines?: Array<{ product_id: string; qty: number }> } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+  try {
+    const result = requestStockReturn({
+      deal_id: dealId,
+      reason: body.reason,
+      lines: body.lines,
+    });
+    auditFromContext(c, {
+      action: 'deal.stock_return_request',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: `Возврат на склад: ${result.reason}`,
+      after: result,
+    });
+    return c.json({ ok: true, return: result });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'return request failed' }, 400);
+  }
+});
+
+/** Склад подтвердил возврат на основной. */
+api.post('/crm/deals/:id/stock-flow/return-complete', async (c) => {
+  const actor = actorFromContext(c);
+  if (
+    !canOperateWarehouseTasks(actor) &&
+    actor?.role !== 'picker' &&
+    !canAccessSection(actor, 'pick')
+  ) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('id') || '').trim();
+  let body: {
+    from_warehouse_id?: string;
+    from_cell_code?: string;
+    to_cell_code?: string;
+    lines?: Array<{
+      product_id: string;
+      from_cell_code?: string;
+      to_cell_code?: string;
+    }>;
+  } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+  try {
+    const result = await completeStockReturnPick({
+      deal_id: dealId,
+      from_warehouse_id: body.from_warehouse_id,
+      from_cell_code: body.from_cell_code,
+      to_cell_code: body.to_cell_code,
+      lines: body.lines,
+      actor_name: actor?.name || actor?.login,
+    });
+    auditFromContext(c, {
+      action: 'deal.stock_return_complete',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: 'Возврат на основной проведён',
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'return complete failed' }, 400);
+  }
+});
+
+api.get('/warehouse/pick/returns', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  return c.json({ items: stockReturnsForPick(80) });
+});
+
+api.get('/warehouse/pick/returns/:dealId/print', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const dealId = String(c.req.param('dealId') || '').trim();
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  const autoprint =
+    (c.req.query('autoprint') || '').trim() === '1' ||
+    (c.req.query('autoprint') || '').trim().toLowerCase() === 'true';
+  try {
+    const html = stockReturnPickSlipHtml(dealId, { autoprint });
+    return c.html(html);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'print failed' }, 404);
+  }
+});
+
+/** Провести возврат на основной с экрана /pick (раздел pick, без CRM). */
+api.post('/warehouse/pick/returns/:dealId/complete', async (c) => {
+  const actor = actorFromContext(c);
+  if (
+    !canOperateWarehouseTasks(actor) &&
+    actor?.role !== 'picker' &&
+    !canAccessSection(actor, 'pick')
+  ) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('dealId') || '').trim();
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  let body: {
+    from_warehouse_id?: string;
+    from_cell_code?: string;
+    to_cell_code?: string;
+    lines?: Array<{
+      product_id: string;
+      from_cell_code?: string;
+      to_cell_code?: string;
+    }>;
+  } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+  try {
+    const result = await completeStockReturnPick({
+      deal_id: dealId,
+      from_warehouse_id: body.from_warehouse_id,
+      from_cell_code: body.from_cell_code,
+      to_cell_code: body.to_cell_code,
+      lines: body.lines,
+      actor_name: actor?.name || actor?.login,
+    });
+    auditFromContext(c, {
+      action: 'pick_return.complete',
+      entity: 'crm_deal',
+      entityId: dealId,
+      summary: 'Возврат на основной проведён (/pick)',
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'return complete failed' }, 400);
   }
 });
 
@@ -8445,8 +14207,313 @@ api.put('/currencies/:code', async (c) => {
 
 /* ——— Паритет меню / экран сборщика (без правок ops UI) ——— */
 
-api.get('/warehouse/pick/today', (c) => {
-  return c.json(pickerBoard((c.req.query('day') || '').trim() || undefined));
+api.get('/warehouse/pick/today', async (c) => {
+  const actor = actorFromContext(c);
+  const day = (c.req.query('day') || '').trim() || undefined;
+  const site = (c.req.query('site') || '').trim() || undefined;
+  const board = pickerBoard(day, site, actor);
+  const handoffs = warehouseHandoffsForPick(60, site, actor);
+  const handoffs_completed_total = warehouseHandoffsPickTotal(site, actor, true);
+  const returns = stockReturnsForPick(60);
+  return c.json({ ...board, handoffs, handoffs_completed_total, returns });
+});
+
+async function enrichPickHandoffsWithCdek(
+  items: Array<Record<string, unknown>>
+): Promise<Array<Record<string, unknown>>> {
+  const { cdekBarcodePublicUrl, fetchCdekShipment, loadCdekDealFromWidgetCache } = await import('./cdek.js');
+  for (const item of items) {
+    const dealId = String(item.deal_id || '').trim();
+    const deal = (item.deal as Record<string, unknown> | null) || null;
+    const ship = String(deal?.amo_shipment || deal?.ship_channel || '').trim();
+    const isCdek = !!(deal?.is_cdek || /сдэк|cdek/i.test(ship));
+    if (!dealId || !isCdek) continue;
+    try {
+      const cdek = await fetchCdekShipment(dealId);
+      const num = String(cdek.cdek_number || deal?.cdek_number || '').trim();
+      const barcode =
+        String(cdek.cdek_barcode_url || '').trim() ||
+        (num ? cdekBarcodePublicUrl(dealId, num) : '');
+      if (barcode) item.cdek_barcode_url = barcode;
+      if (num) item.cdek_number = num;
+      if (deal) {
+        if (barcode) deal.cdek_barcode_url = barcode;
+        if (num) deal.cdek_number = num;
+      }
+    } catch {
+      const cached = loadCdekDealFromWidgetCache(dealId);
+      const num = String(cached?.cdek_number || deal?.cdek_number || '').trim();
+      if (num) {
+        const barcode =
+          String(cached?.cdek_barcode_url || '').trim() ||
+          cdekBarcodePublicUrl(dealId, num);
+        item.cdek_barcode_url = barcode;
+        item.cdek_number = num;
+        if (deal) {
+          deal.cdek_barcode_url = barcode;
+          deal.cdek_number = num;
+        }
+      }
+    }
+  }
+  return items;
+}
+
+api.get('/warehouse/pick/handoffs', async (c) => {
+  const actor = actorFromContext(c);
+  const limit = Math.max(1, Math.min(120, Number(c.req.query('limit') || 60) || 60));
+  const site = (c.req.query('site') || '').trim() || undefined;
+  const items = warehouseHandoffsForPick(limit, site, actor);
+  const completed_total = warehouseHandoffsPickTotal(site, actor, true);
+  return c.json({
+    items,
+    count: items.length,
+    completed_total,
+    pick_sites: pickSitesCatalog().map((s) => ({ id: s.id, label: s.label })),
+  });
+});
+
+/** Завершённые передачи на склад (проведённые) — архив для /pick.
+ *  Без CDEK-enrich: иначе 15× внешние запросы → таймаут UI (25с) и пустой список при total>0. */
+api.get('/warehouse/pick/handoffs/completed', async (c) => {
+  const actor = actorFromContext(c);
+  const page = Math.max(1, Number(c.req.query('page') || 1) || 1);
+  const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') || 15) || 15));
+  const site = (c.req.query('site') || '').trim() || undefined;
+  const dealQ = (c.req.query('deal') || c.req.query('q') || '').trim() || undefined;
+  const filters = parseHandoffPickListFilters({
+    date_from: c.req.query('date_from'),
+    date_to: c.req.query('date_to'),
+    type: c.req.query('type'),
+    channel: c.req.query('channel'),
+    route_from: c.req.query('route_from'),
+    route_to: c.req.query('route_to'),
+  });
+  const result = warehouseCompletedHandoffsForPick(page, limit, site, actor, dealQ, filters);
+  return c.json(result);
+});
+
+/** Справочники фильтров передач (каналы, склады) для /pick. */
+api.get('/warehouse/pick/handoffs/filters', (c) => {
+  const actor = actorFromContext(c);
+  const site = (c.req.query('site') || '').trim() || undefined;
+  const posted = String(c.req.query('posted') || '1') !== '0';
+  return c.json(warehouseHandoffPickFilterFacets(site, actor, posted));
+});
+
+/** Печатная форма расходной для сборки (прикрепить к коробке). */
+api.get('/warehouse/pick/handoffs/:id/print', (c) => {
+  const id = String(c.req.param('id') || '').trim();
+  const autoprint = String(c.req.query('autoprint') || '') === '1';
+  try {
+    const html = handoffPickSlipHtml(id, { autoprint });
+    return c.html(html);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'print failed';
+    return c.html(`<p style="font-family:sans-serif;padding:16px">${msg}</p>`, 400);
+  }
+});
+
+/** Кладовщик собрал — провести расходную «Передача на склад». */
+api.post('/warehouse/pick/handoffs/:id/complete', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const id = String(c.req.param('id') || '').trim();
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { picks?: HandoffPickUnitInput[] };
+    const picks = Array.isArray(body?.picks) ? body.picks : undefined;
+    const result = await completeHandoffPick(id, actor?.id, picks);
+    auditFromContext(c, {
+      action: 'pick_handoff.complete',
+      entity: 'stock_doc',
+      entityId: id,
+      summary: `Собрано · расходная ${String(result.number || id)} · сделка ${String(result.deal_id || '')}`,
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'complete failed' }, 400);
+  }
+});
+
+/** Кладовщик сменил склад-источник строки на /pick. */
+api.post('/warehouse/pick/handoffs/:id/line-source', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const id = String(c.req.param('id') || '').trim();
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      product_id?: string;
+      warehouse_id?: string;
+    };
+    const result = setHandoffPickLineSource({
+      doc_id: id,
+      product_id: String(body?.product_id || '').trim(),
+      warehouse_id: String(body?.warehouse_id || '').trim(),
+    });
+    auditFromContext(c, {
+      action: 'pick_handoff.line_source',
+      entity: 'stock_doc',
+      entityId: id,
+      summary: `Склад-источник строки · ${String(body?.product_id || '')} → ${String(body?.warehouse_id || '')}`,
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'line-source failed' }, 400);
+  }
+});
+
+
+/** То же по amo deal_id — запасной путь для экрана /pick. */
+api.post('/warehouse/pick/handoffs/by-deal/:dealId/complete', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('dealId') || '').trim();
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { picks?: HandoffPickUnitInput[] };
+    const picks = Array.isArray(body?.picks) ? body.picks : undefined;
+    const result = await completeHandoffPickByDeal(dealId, actor?.id, picks);
+    auditFromContext(c, {
+      action: 'pick_handoff.complete',
+      entity: 'stock_doc',
+      entityId: String(result.doc_id || dealId),
+      summary: `Собрано · расходная ${String(result.number || '')} · сделка ${dealId}`,
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'complete failed' }, 400);
+  }
+});
+
+/** Статус «вернулось со склада» для виджета Amo. */
+api.get('/warehouse/pick/handoffs/return/:dealId', (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const dealId = String(c.req.param('dealId') || '').trim();
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  const state = getHandoffReturnState(dealId);
+  return c.json({ ok: true, deal_id: dealId, return: state });
+});
+
+/** Склад не собрал — отмена черновика «Передача на склад». */
+api.post('/warehouse/pick/handoffs/:id/cancel', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const id = String(c.req.param('id') || '').trim();
+  const body = (await c.req.json().catch(() => ({}))) as { comment?: string };
+  const comment = String(body.comment || '').trim();
+  if (!comment) return c.json({ error: 'Укажите комментарий' }, 400);
+  try {
+    const result = await cancelHandoffPick(id, comment, actor?.id);
+    auditFromContext(c, {
+      action: 'pick_handoff.cancel',
+      entity: 'stock_doc',
+      entityId: id,
+      summary: `Не собрали · сделка ${String(result.deal_id || '')} · ${comment.slice(0, 120)}`,
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'cancel failed' }, 400);
+  }
+});
+
+api.post('/warehouse/pick/handoffs/by-deal/:dealId/cancel', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('dealId') || '').trim();
+  const body = (await c.req.json().catch(() => ({}))) as { comment?: string };
+  const comment = String(body.comment || '').trim();
+  if (!comment) return c.json({ error: 'Укажите комментарий' }, 400);
+  try {
+    const result = await cancelHandoffPickByDeal(dealId, comment, actor?.id);
+    auditFromContext(c, {
+      action: 'pick_handoff.cancel',
+      entity: 'stock_doc',
+      entityId: String(result.doc_id || dealId),
+      summary: `Не собрали · сделка ${dealId} · ${comment.slice(0, 120)}`,
+      after: result,
+    });
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'cancel failed' }, 400);
+  }
+});
+
+/** СДЭК · места / габариты для панели «Передано» (/pick). */
+api.get('/warehouse/pick/handoffs/:dealId/cdek-pack', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('dealId') || '').trim();
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  if (!cdekConfigured()) {
+    return c.json({ ok: false, error: 'СДЭК не настроен (ключ в интеграциях)' }, 503);
+  }
+  try {
+    const pack = await fetchCdekPickPack(dealId);
+    if (pack.ok === false) {
+      return c.json(pack, 400);
+    }
+    return c.json(pack);
+  } catch (e) {
+    return c.json({ ok: false, error: e instanceof Error ? e.message : 'load failed' }, 502);
+  }
+});
+
+api.post('/warehouse/pick/handoffs/:dealId/cdek-pack', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('dealId') || '').trim();
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  if (!cdekConfigured()) {
+    return c.json({ ok: false, error: 'СДЭК не настроен' }, 503);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  try {
+    const result = await saveCdekPickPack(dealId, body);
+    if (result.ok === false) {
+      return c.json(result, 400);
+    }
+    return c.json(result);
+  } catch (e) {
+    return c.json({ ok: false, error: e instanceof Error ? e.message : 'save failed' }, 502);
+  }
+});
+
+api.post('/warehouse/pick/handoffs/:dealId/cdek-regenerate', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const dealId = String(c.req.param('dealId') || '').trim();
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  if (!cdekConfigured()) {
+    return c.json({ ok: false, error: 'СДЭК не настроен' }, 503);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  try {
+    const result = await regenerateCdekPickShipment(dealId, body);
+    const code = result.ok ? 200 : 400;
+    return c.json(result, code);
+  } catch (e) {
+    return c.json({ ok: false, error: e instanceof Error ? e.message : 'regenerate failed' }, 502);
+  }
 });
 
 /** Статус смены сборщика + утренний автостарт. */
@@ -8565,8 +14632,37 @@ api.post('/warehouse/tasks/:id/done', async (c) => {
   }
   try {
     assertPickShiftForOps(actor);
+    const taskBefore = getTask(c.req.param('id')) as { channel?: string; status?: string } | null;
     const row = markTaskDone({ id: c.req.param('id'), actor_id: actor.id });
     touchPickShiftActivity(actor.id);
+    let productionExecute: Record<string, unknown> | null = null;
+    if (
+      String((row as { status?: string } | null)?.status) === 'handed' &&
+      taskBefore &&
+      (String(taskBefore.channel) === 'production_send' ||
+        String(taskBefore.channel) === 'production_receive')
+    ) {
+      try {
+        if (String(taskBefore.channel) === 'production_send') {
+          const { executeProductionSendFromTask } = await import('./production-jobs.js');
+          productionExecute = executeProductionSendFromTask({
+            task_id: c.req.param('id'),
+            actor_id: actor.id,
+          });
+        } else {
+          const { executeProductionReceiveFromTask } = await import('./production-jobs.js');
+          productionExecute = executeProductionReceiveFromTask({
+            task_id: c.req.param('id'),
+            actor_id: actor.id,
+          });
+        }
+      } catch (e) {
+        return c.json(
+          { error: e instanceof Error ? e.message : 'Не удалось исполнить задание производства' },
+          400
+        );
+      }
+    }
     let dealPromote: Awaited<ReturnType<typeof promoteDealToSuccessAfterHanded>> | null = null;
     if (String((row as { status?: string } | null)?.status) === 'handed') {
       dealPromote = await promoteDealToSuccessAfterHanded({
@@ -8588,9 +14684,13 @@ api.post('/warehouse/tasks/:id/done', async (c) => {
       entity: 'warehouse_task',
       entityId: c.req.param('id'),
       summary: `Задание сделано → ${(row as { status?: string } | null)?.status || ''}`,
-      after: { status: (row as { status?: string } | null)?.status, deal_promote: dealPromote },
+      after: {
+        status: (row as { status?: string } | null)?.status,
+        deal_promote: dealPromote,
+        production_execute: productionExecute,
+      },
     });
-    return c.json({ ...row, deal_promote: dealPromote });
+    return c.json({ ...row, deal_promote: dealPromote, production_execute: productionExecute });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'done failed' }, 400);
   }
@@ -9229,6 +15329,11 @@ api.post('/staff/time-kinds', async (c) => {
   }
 });
 
+api.get('/companies', (c) => {
+  ensureCompaniesSchema();
+  return c.json(companiesPublicListPayload());
+});
+
 api.get('/company/companies', (c) => {
   ensureCompaniesSchema();
   return c.json(companiesListPayload());
@@ -9352,10 +15457,11 @@ api.post('/company/organizations/sync-from-tochka', async (c) => {
     auditFromContext(c, {
       action: 'org.sync_tochka',
       entity: 'organization',
-      summary: `Из Точки: +${result.created} / upd ${result.updated} (всего ${result.customers_in_tochka})`,
+      summary: `Из Точки: +${result.created} / upd ${result.updated} / off ${result.deactivated} (customers ${result.customers_in_tochka})`,
       after: {
         created: result.created,
         updated: result.updated,
+        deactivated: result.deactivated,
         customers: result.customers_in_tochka,
       },
     });
@@ -9629,17 +15735,86 @@ api.get('/settings/sales-channels', (c) => c.json(settingsSalesChannels()));
 api.get('/settings/yookassa', (c) => c.json(settingsYookassa()));
 api.get('/settings/reports', (c) => c.json(settingsReportsIndex()));
 
+/** Пометки на схеме жизненного цикла — общие для всех (meta / SQLite). */
+api.get('/help/lifecycle-marks', (c) => c.json(getHelpLcMarks()));
+api.put('/help/lifecycle-marks', async (c) => {
+  const actor = actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as { marks?: unknown };
+  const saved = putHelpLcMarks(body.marks, actor);
+  auditFromContext(c, {
+    action: 'help.lifecycle_marks',
+    entity: 'meta',
+    entityId: 'help_lc_marks',
+    summary: `Пометки ЖЦ: ${Object.keys(saved.marks).length} блоков`,
+    after: saved,
+  });
+  return c.json(saved);
+});
+
+/** Эталон матрицы сценариев (колонки → пакет документов на заказе). */
+api.get('/help/sale-scenarios', async (c) => {
+  const { SALE_SCENARIO_MATRIX } = await import('./sale-scenarios.js');
+  return c.json({
+    ok: true,
+    note:
+      'Колонки dog/apps/dover/pas/sts/zn/pdn/inv/upd/xfer/wh/checks = sale_rules.scenario_docs на заказе. wh = маршрут склада (→СТО / →доставка / →выдача / WAIT-PAY·…).',
+    items: SALE_SCENARIO_MATRIX,
+  });
+});
+
 /** Batch A: Закупки / Продажи / складские отчёты — тонкие журналы + хабы. */
 api.get('/parity/journals', (c) => c.json({ items: listThinJournalKeys() }));
 api.get('/parity/journals/:key', (c) => {
   try {
-    return c.json(
-      listThinJournalDocs(
-        c.req.param('key'),
-        Number(c.req.query('limit') || 200),
-        c.req.query('q') || ''
-      )
-    );
+    const key = c.req.param('key');
+    const limit = Number(c.req.query('limit') || 200);
+    const q = c.req.query('q') || '';
+    if (key === 'transfer_orders') {
+      return c.json(listTransferOrdersJournal(limit, q));
+    }
+    if (key === 'purchase_discrepancy') {
+      const meta = getThinJournalMeta(key);
+      const qq = String(q || '')
+        .trim()
+        .toLowerCase();
+      let items = listDiscrepancyActs(limit).map((a) => ({
+        id: String(a.id || ''),
+        journal_key: key,
+        number: String(a.number || ''),
+        doc_date: String(a.created_at || '').slice(0, 10),
+        status: String(a.status || 'open'),
+        counterparty_name: String(a.inbound_number || a.supply_number || '—'),
+        amount: 0,
+        comment: [
+          a.supply_number ? 'Поставка ' + a.supply_number : '',
+          a.inbound_number ? 'Приход ' + a.inbound_number : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        created_at: String(a.created_at || ''),
+        lines_count: Number(a.lines_count) || 0,
+        inbound_doc_id: String(a.inbound_doc_id || ''),
+      }));
+      if (qq) {
+        items = items.filter(
+          (r) =>
+            r.number.toLowerCase().includes(qq) ||
+            r.comment.toLowerCase().includes(qq) ||
+            r.counterparty_name.toLowerCase().includes(qq) ||
+            r.status.toLowerCase().includes(qq)
+        );
+      }
+      return c.json({
+        journal: key,
+        title: meta?.title || 'Акты о расхождениях',
+        note: meta?.note || '',
+        map_ids: meta?.map_ids || [],
+        total: items.length,
+        items,
+      });
+    }
+    return c.json(listThinJournalDocs(key, limit, q));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -9648,6 +15823,42 @@ api.get('/parity/journals/:key/:id', (c) => {
   try {
     const key = c.req.param('key');
     const id = c.req.param('id');
+    if (key === 'purchase_discrepancy') {
+      const packed = getDiscrepancyAct(id);
+      if (!packed) return c.json({ error: 'not found' }, 404);
+      const a = packed.act;
+      return c.json({
+        id: String(a.id || ''),
+        journal_key: key,
+        number: String(a.number || ''),
+        doc_date: String(a.created_at || '').slice(0, 10),
+        status: String(a.status || 'open'),
+        counterparty_name: String(a.supply_number || a.inbound_doc_id || ''),
+        amount: 0,
+        comment: String(a.comment || ''),
+        created_at: String(a.created_at || ''),
+        inbound_doc_id: String(a.inbound_doc_id || ''),
+        supply_number: String(a.supply_number || ''),
+        supplier_order_id: String(a.supplier_order_id || ''),
+        lines: packed.lines.map((l) => ({
+          product_id: l.product_id,
+          product_name: l.product_name || '',
+          name: l.product_name || '',
+          sku: l.sku || '',
+          code: l.code || '',
+          article: l.sku || l.code || '',
+          qty: l.qty_inbound,
+          price: 0,
+          amount: 0,
+          qty_supply: l.qty_supply,
+          qty_inbound: l.qty_inbound,
+          qty_diff: l.qty_diff,
+          kind: l.kind,
+          note: l.note,
+          comment: l.note || l.kind,
+        })),
+      });
+    }
     // Заказ поставщику: при открытии догенерируем марки (по 1 на каждую шт. qty)
     const row =
       key === 'supplier_orders'
@@ -9678,10 +15889,59 @@ api.post('/parity/journals/:key', async (c) => {
   }
 });
 api.patch('/parity/journals/:key/:id', async (c) => {
+  const key = c.req.param('key');
+  const id = c.req.param('id');
   const body = await c.req.json<Record<string, unknown>>();
-  const row = patchThinJournalDoc(c.req.param('id'), body as Parameters<typeof patchThinJournalDoc>[1]);
-  if (!row) return c.json({ error: 'not found' }, 404);
-  return c.json(row);
+  try {
+    if (key === 'supplier_orders') {
+      const headerKeys = [
+        'invoice_number',
+        'invoice_date',
+        'expected_arrival_date',
+        'organization_id',
+        'counterparty_id',
+        'warehouse_id',
+        'supply_number',
+        'status',
+        'comment',
+        'doc_date',
+        'counterparty_name',
+      ];
+      const hasHeader = headerKeys.some((k) => body[k] != null);
+      if (hasHeader && body.payload_json == null) {
+        const updated = patchThinSupplierOrderHeader(id, {
+          status: body.status != null ? String(body.status) : undefined,
+          comment: body.comment != null ? String(body.comment) : undefined,
+          doc_date: body.doc_date != null ? String(body.doc_date) : undefined,
+          counterparty_name:
+            body.counterparty_name != null ? String(body.counterparty_name) : undefined,
+          counterparty_id:
+            body.counterparty_id != null ? String(body.counterparty_id) : undefined,
+          organization_id:
+            body.organization_id != null ? String(body.organization_id) : undefined,
+          invoice_number:
+            body.invoice_number != null ? String(body.invoice_number) : undefined,
+          invoice_date: body.invoice_date != null ? String(body.invoice_date) : undefined,
+          expected_arrival_date:
+            body.expected_arrival_date != null
+              ? String(body.expected_arrival_date)
+              : undefined,
+          warehouse_id: body.warehouse_id != null ? String(body.warehouse_id) : undefined,
+          supply_number: body.supply_number != null ? String(body.supply_number) : undefined,
+        });
+        if (!updated) return c.json({ error: 'not found' }, 404);
+        return c.json(updated);
+      }
+    }
+    const row = patchThinJournalDoc(id, body as Parameters<typeof patchThinJournalDoc>[1]);
+    if (!row) return c.json({ error: 'not found' }, 404);
+    if (key === 'supplier_orders') {
+      return c.json(getThinJournalDoc(key, id) || row);
+    }
+    return c.json(row);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
 });
 api.post('/parity/journals/:key/:id/lines', async (c) => {
   const body = await c.req.json<{ product_id?: string; qty?: number; price?: number }>();
@@ -9835,7 +16095,7 @@ api.post('/supply/return-request', async (c) => {
   };
   try {
     const outDocId = String(body.out_doc_id || '').trim();
-    if (!outDocId) return c.json({ error: 'Укажите расходную накладную' }, 400);
+    if (!outDocId) return c.json({ error: 'Укажите документ списания' }, 400);
     const outDoc = get<{
       id: string;
       number: string;
@@ -9848,9 +16108,9 @@ api.post('/supply/return-request', async (c) => {
        FROM stock_docs WHERE id = ?`,
       [outDocId]
     );
-    if (!outDoc) return c.json({ error: 'Расходная не найдена' }, 404);
+    if (!outDoc) return c.json({ error: 'Списание не найдено' }, 404);
     if (outDoc.doc_type !== 'out') {
-      return c.json({ error: 'Основание должно быть расходной накладной' }, 400);
+      return c.json({ error: 'Основание должно быть списанием со склада' }, 400);
     }
     const dealId = String(body.deal_id || outDoc.deal_id || '').trim();
     const outNum = String(body.out_doc_number || outDoc.number || '').trim();
@@ -9931,7 +16191,7 @@ api.post('/supply/return-request', async (c) => {
     const money = createMoneyRefundFromReturn({
       warehouseTaskId: String(task?.id || ''),
       warehouseTaskNumber: String(task?.number || ''),
-      amount: Math.round(amount * 100) / 100,
+      amount: Math.round(amount),
       dealId,
       counterpartyName: buyerName,
       counterpartyId: outDoc.counterparty_id,
@@ -9939,7 +16199,7 @@ api.post('/supply/return-request', async (c) => {
       lines: enriched,
       comment:
         String(body.comment || '').trim() ||
-        `Компенсация возврата · расходная ${outNum || outDocId.slice(0, 8)} · задание ${
+        `Компенсация возврата · списание ${outNum || outDocId.slice(0, 8)} · задание ${
           task?.number || ''
         }`,
     });
@@ -9948,7 +16208,7 @@ api.post('/supply/return-request', async (c) => {
       action: 'warehouse_task.create',
       entity: 'warehouse_task',
       entityId: String(task?.id || ''),
-      summary: `Требование возврата ${task?.number || ''}: расходная ${
+      summary: `Требование возврата ${task?.number || ''}: списание ${
         outNum || outDocId.slice(0, 8)
       } → ${wh.name}${money?.number ? ` · ТВД ${money.number}` : ''}`,
       after: { warehouse_task: task, money_refund: money },
@@ -9958,7 +16218,7 @@ api.post('/supply/return-request', async (c) => {
         ok: true,
         warehouse_task: task,
         money_refund: money,
-        amount: Math.round(amount * 100) / 100,
+        amount: Math.round(amount),
         message: `Возврат · задание ${task?.number || ''}${
           money?.number ? ` · ТВД ${money.number}` : ''
         } — передано на склад`,

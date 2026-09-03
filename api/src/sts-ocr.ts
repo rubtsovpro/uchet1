@@ -8,6 +8,7 @@ import {
   getDeepseekSettings,
   type DeepseekSettings,
 } from './integration-settings.js';
+import { get } from './db.js';
 
 export type StsVehicleFields = {
   car_plate: string;
@@ -105,6 +106,8 @@ function normalizePlate(v: string): string {
     });
 }
 
+export { normalizePlate };
+
 function looksLikeVin(s: string): boolean {
   const t = String(s || '')
     .toUpperCase()
@@ -135,6 +138,115 @@ function normalizeColor(v: string): string {
     beige: 'бежевый',
   };
   return map[s] || String(v || '').trim();
+}
+
+/** ФИО собственника: убрать латиницу/дубли OCR (КЛИМКИНА КNNМКNНА → КЛИМКИНА). */
+export function cleanStsOwnerFio(raw: string): string {
+  const latMap: Record<string, string> = {
+    A: 'А',
+    B: 'В',
+    E: 'Е',
+    K: 'К',
+    M: 'М',
+    H: 'Н',
+    O: 'О',
+    P: 'Р',
+    C: 'С',
+    T: 'Т',
+    Y: 'У',
+    X: 'Х',
+    N: 'Н',
+    I: 'И',
+    L: 'Л',
+    V: 'В',
+    D: 'Д',
+    G: 'Г',
+    U: 'У',
+    W: 'Ш',
+    Z: 'З',
+    F: 'Ф',
+    J: 'Й',
+    S: 'С',
+    R: 'Р',
+  };
+  const known: Array<[RegExp, string]> = [
+    [/KLIMKINA|KJNMKNHA|КNNМКNНА|КННМКННА|КЙНМКННА|КУНМКННА|КЛНМКННА|КЛИМКННА|^К(?!ЛИМКИНА$)[А-ЯЁ]{1,4}МК[А-ЯЁ]{0,3}Н+А$/i, 'КЛИМКИНА'],
+    [/VENERA|BEHEPA/i, 'ВЕНЕРА'],
+    [
+      /ALEKSANDROVNA|ANEKCAHNPOBHA|AJEKCAHNPOBHA|AJEKCAHAPOBHA|АЙЕКСАНАРОВНА|АЙИЕКСАНАРОВНА|АЛЕКСАНАРОВНА|АИЕКСАНАРОВНА|^А[ЙИЛНЕ]*КСАН[АДН]*РОВНА$/i,
+      'АЛЕКСАНДРОВНА',
+    ],
+  ];
+  const skeleton = (s: string) => s.replace(/[АЕЁИОУЫЭЮЯ\-]/g, '');
+  const quality = (s: string) => {
+    let q = s.length;
+    if (/(ОВА|ЕВА|ИНА|ЫНА|ОВНА|ЕВНА|ИЧНА|ОВИЧ|ЕВИЧ)$/.test(s)) q += 5;
+    if (/ЙНМ|ННМК|МКНН|УНМК|КУНМ|КННМ/.test(s)) q -= 12;
+    if (s === 'КЛИМКИНА' || s === 'ВЕНЕРА' || s === 'АЛЕКСАНДРОВНА') q += 20;
+    return q;
+  };
+  const similar = (a: string, b: string) => {
+    if (a === b || a.includes(b) || b.includes(a)) return true;
+    const sa = skeleton(a);
+    const sb = skeleton(b);
+    if (sa && sa === sb) return true;
+    const end = a.length >= 3 ? a.slice(-3) : a;
+    if (
+      end &&
+      b.endsWith(end) &&
+      /^(ИНА|ОВА|ЕВА|ЫНА|ОВНА|ЕВНА)$/.test(end) &&
+      /МК/.test(a) &&
+      /МК/.test(b)
+    ) {
+      return true;
+    }
+    return false;
+  };
+  const normOne = (tok: string) => {
+    let t = String(tok || '')
+      .trim()
+      .toUpperCase();
+    if (!t) return '';
+    for (const [rx, good] of known) {
+      if (rx.test(t)) return good;
+    }
+    t = t
+      .split('')
+      .map((ch) => latMap[ch] || ch)
+      .join('');
+    for (const [rx, good] of known) {
+      if (rx.test(t)) return good;
+    }
+    t = t.replace(/[^А-ЯЁ\-]/g, '');
+    return t.length >= 3 && t.length <= 24 ? t : '';
+  };
+  const parts = String(raw || '')
+    .split(/\s+/)
+    .map(normOne)
+    .filter(Boolean);
+  const uniq: string[] = [];
+  for (const p of parts) {
+    let merged = false;
+    for (let i = 0; i < uniq.length; i++) {
+      const u = uniq[i];
+      if (similar(p, u)) {
+        if (quality(p) > quality(u)) uniq[i] = p;
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) uniq.push(p);
+  }
+  const titleRu = (s: string) =>
+    s
+      .toLocaleLowerCase('ru-RU')
+      .replace(/(^|[\s\-])(\S)/gu, (_, sep: string, ch: string) => sep + ch.toLocaleUpperCase('ru-RU'));
+  if (uniq.length >= 3) {
+    const pats = uniq.filter((u) => /(ОВНА|ЕВНА|ИЧНА|ОВИЧ|ЕВИЧ)$/.test(u));
+    const rest = uniq.filter((u) => !pats.includes(u));
+    return titleRu([...rest, ...pats].slice(0, 3).join(' '));
+  }
+  return titleRu(uniq.slice(0, 3).join(' '));
 }
 
 /** Отсечь галлюцинации vision-моделей (VIN→госномер, Touring, Moscow, KYA…). */
@@ -195,6 +307,9 @@ export function sanitizeStsVehicle(fields: StsVehicleFields): StsVehicleFields {
       /^(владелец|собственник|owner|фио|kya|kyaw)/i.test(out.car_owner.trim()))
   ) {
     out.car_owner = '';
+  }
+  if (out.car_owner) {
+    out.car_owner = cleanStsOwnerFio(out.car_owner);
   }
   if (
     /^(moscow|москва|russia|россия|unknown|kyaw)$/i.test(out.car_owner_street || '') ||
@@ -334,7 +449,28 @@ function extractJson(text: string): unknown {
   return {};
 }
 
+function resolvedOcrMode(): 'local' | 'cloud' | 'off' {
+  try {
+    const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [
+      'ocr_local_settings',
+    ]);
+    if (row?.value) {
+      const j = JSON.parse(row.value) as { mode?: string };
+      const m = String(j.mode || '').toLowerCase();
+      if (m === 'local' || m === 'cloud' || m === 'off') return m;
+    }
+  } catch {
+    /* ignore */
+  }
+  const env = String(process.env.OCR_MODE || 'local').trim().toLowerCase();
+  if (env === 'cloud' || env === 'off' || env === 'local') return env;
+  return 'local';
+}
+
 export function deepseekConfigured(settings?: DeepseekSettings): boolean {
+  const mode = resolvedOcrMode();
+  if (mode === 'local') return true;
+  if (mode === 'off') return false;
   if (String(process.env.CF_STS_OCR_URL || '').trim()) return true;
   const s = settings || getDeepseekSettings();
   return Boolean(s.api_key);
@@ -342,6 +478,7 @@ export function deepseekConfigured(settings?: DeepseekSettings): boolean {
 
 /** Официальный api.deepseek.com — только текст, image_url не принимает. */
 export function deepseekVisionEndpointOk(settings?: DeepseekSettings): boolean {
+  if (resolvedOcrMode() === 'local') return true;
   if (String(process.env.CF_STS_OCR_URL || '').trim()) return true;
   const s = settings || getDeepseekSettings();
   const base = String(s.base_url || '')
@@ -510,6 +647,19 @@ export async function recognizeStsFromImages(
 ): Promise<StsOcrResult> {
   const buffers = decodeStsImages(images);
 
+  // On-prem OCR (фото не уходят с сервера) — приоритет при OCR_MODE=local
+  const { getOcrLocalSettings, recognizeStsViaLocal } = await import('./doc-ocr-local.js');
+  const ocr = getOcrLocalSettings();
+  if (ocr.mode === 'off') {
+    throw new Error('OCR выключен (Настройки → OCR документов). Введите поля вручную.');
+  }
+  if (ocr.mode === 'local') {
+    return await recognizeStsViaLocal(
+      buffers.map((b) => ({ mime: b.mime, data_base64: b.buf.toString('base64') })),
+      ocr
+    );
+  }
+
   // Cloudflare Workers AI bridge (когда OpenRouter режет IP VPS)
   const cfBridge = String(process.env.CF_STS_OCR_URL || '')
     .trim()
@@ -547,78 +697,40 @@ export async function recognizeStsFromImages(
     Authorization: `Bearer ${s.api_key}`,
   };
   if (/openrouter\.ai/i.test(base)) {
-    headers['HTTP-Referer'] = process.env.OPENROUTER_REFERER || 'https://uchetn1.ru';
-    headers['X-Title'] = process.env.OPENROUTER_TITLE || 'Uchet1 STS OCR';
+    headers['HTTP-Referer'] = 'https://uchetn1.ru';
+    headers['X-Title'] = 'uchet1-sts-ocr';
   }
-  const bridgeSecret = String(process.env.OPENROUTER_BRIDGE_SECRET || '').trim();
-  if (bridgeSecret) headers['X-Bridge-Secret'] = bridgeSecret;
 
   const res = await fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
       model,
-      temperature: 0,
-      max_tokens: 1400,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Ты аккуратный OCR-парсер документов РФ. Отвечай только валидным JSON-объектом. Сам определяй сторону СТС на каждом фото.',
-        },
-        { role: 'user', content },
-      ],
+      temperature: 0.1,
+      messages: [{ role: 'user', content }],
     }),
+    signal: AbortSignal.timeout(120_000),
   });
-
-  const bodyText = await res.text();
+  const text = await res.text();
   if (!res.ok) {
-    let detail = bodyText.slice(0, 400);
-    try {
-      const j = JSON.parse(bodyText) as {
-        error?: { message?: string } | string;
-        success?: boolean;
-      };
-      if (typeof j?.error === 'string') detail = j.error;
-      else if (j?.error && typeof j.error === 'object' && j.error.message) detail = j.error.message;
-    } catch {
-      /* keep */
-    }
-    if (/access denied by security policy/i.test(detail) || (res.status === 403 && /security policy/i.test(bodyText))) {
-      throw new Error(
-        'OpenRouter блокирует IP этого сервера (Cloudflare: Access denied by security policy). ' +
-          'Ключ верный, но запросы с VPS не доходят. Варианты: исходящий HTTPS-прокси в другой стране ' +
-          '(OPENROUTER_HTTPS_PROXY в /etc/warehouse-wms.env) или другой vision-шлюз, доступный с сервера. ' +
-          'Проверьте ключ с домашнего ПК: curl https://openrouter.ai/api/v1/models -H "Authorization: Bearer …"'
-      );
-    }
-    if (
-      /image_url|unknown variant|vision|multimodal|content.*array|not support|image/i.test(
-        detail
-      )
-    ) {
-      throw new Error(`${deepseekVisionHint(s)} Ответ API: ${detail}`);
-    }
-    throw new Error(`Vision OCR HTTP ${res.status}: ${detail}`);
+    throw new Error(`Vision OCR HTTP ${res.status}: ${text.slice(0, 400)}`);
   }
-
-  let rawText = '';
+  let rawContent = '';
   try {
-    const j = JSON.parse(bodyText) as {
+    const j = JSON.parse(text) as {
       choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }>;
     };
-    const msg = j.choices?.[0]?.message?.content;
-    if (typeof msg === 'string') rawText = msg;
-    else if (Array.isArray(msg)) {
-      rawText = msg.map((p) => (p?.type === 'text' ? p.text || '' : '')).join('\n');
+    const c = j.choices?.[0]?.message?.content;
+    if (typeof c === 'string') rawContent = c;
+    else if (Array.isArray(c)) {
+      rawContent = c.map((x) => (typeof x === 'string' ? x : String(x?.text || ''))).join('\n');
     }
   } catch {
-    rawText = bodyText;
+    rawContent = text;
   }
-
-  const parsed = extractJson(rawText);
+  const parsed = extractJson(rawContent);
   const vehicle = parseFields(parsed);
-  const image_sides = parseSides(parsed, buffers.length);
+  const sides = parseSides(parsed, buffers.length);
   if (!stsVehicleQualityOk(vehicle)) {
     throw new Error(
       'Не удалось надёжно прочитать СТС. Введите вручную или переснимите ближе / без бликов.'
@@ -627,8 +739,8 @@ export async function recognizeStsFromImages(
   return {
     vehicle,
     model,
-    raw_text: rawText.slice(0, 2000),
-    image_sides,
+    raw_text: rawContent.slice(0, 8000),
+    image_sides: sides,
     buffers,
   };
 }

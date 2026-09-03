@@ -3,16 +3,16 @@
  * CLI: дозаполнить контакт/компанию Amo реквизитами из Учёт №1 (договор / карточка контрагента).
  *
  * Правила:
- *  - не перезаписываем уже заполненные поля в Amo;
- *  - имя не меняем, если в Amo уже есть (кроме --force-name);
- *  - пустые поля в Amo заполняем из Учёта.
+ *  - «Название» в Amo не перезаписываем, если уже заполнено (даже с --force-name);
+ *  - если имя из Учёта ≠ названию в Amo → пишем в доп.поле «Покупатель» (для документов);
+ *  - пустые прочие поля в Amo заполняем из Учёта.
  *
  * Usage:
  *   php bin/update_contact_buyer_for_wms.php --deal=25434555 --json='{"name":"..."}'
  *   php bin/update_contact_buyer_for_wms.php --deal=25434555 --force-name --json='{"name":"..."}'
  *   php bin/update_contact_buyer_for_wms.php --contact=26316561 --json='{...}'
- *   php bin/update_contact_buyer_for_wms.php --company=123 --json='{...}'
- *   php bin/update_contact_buyer_for_wms.php --entity=companies --company=123 --json='{...}'
+ *
+ * --force-name: обновить поле «Покупатель» (название Amo не трогаем).
  */
 declare(strict_types=1);
 
@@ -190,6 +190,288 @@ function ensure_entity_cf(
     return null;
 }
 
+/** Контакты сделки: сначала is_main, затем остальные (как в export_deals). */
+function ucbfw_lead_contact_ids_ordered(array $contacts): array
+{
+    $main = [];
+    $rest = [];
+    foreach ($contacts as $contact) {
+        if (!is_array($contact)) {
+            continue;
+        }
+        $id = (int) ($contact['id'] ?? 0);
+        if ($id <= 0) {
+            continue;
+        }
+        if (!empty($contact['is_main'])) {
+            $main[] = $id;
+        } else {
+            $rest[] = $id;
+        }
+    }
+
+    return array_values(array_unique(array_merge($main, $rest)));
+}
+
+function ucbfw_pick_glued_part(string $raw, int $index): string
+{
+    $parts = preg_split('/[,;\/\n\r]+/u', $raw) ?: [];
+    $parts = array_values(array_filter(array_map(static fn($p) => trim((string) $p), $parts)));
+    if (!$parts) {
+        return '';
+    }
+
+    return (string) ($parts[$index] ?? '');
+}
+
+/**
+ * @param array<string,mixed> $buyer
+ * @return array<string,mixed>
+ */
+function ucbfw_apply_buyer_patch(
+    string $entity,
+    int $targetId,
+    array $buyer,
+    bool $forceName,
+    string $subdomain,
+    array $headers,
+    int $gluedIndex = 0
+): array {
+    $cur = amo_http(
+        'GET',
+        'https://' . $subdomain . '.amocrm.ru/api/v4/' . $entity . '/' . $targetId,
+        null,
+        $headers
+    );
+    if (!$cur['ok'] || !is_array($cur['body'])) {
+        return [
+            'ok' => false,
+            'http' => $cur['http'],
+            'entity' => $entity,
+            'contact_id' => $entity === 'contacts' ? $targetId : null,
+            'company_id' => $entity === 'companies' ? $targetId : null,
+            'error' => $entity . ' fetch failed: ' . ($cur['error'] ?: $cur['raw']),
+        ];
+    }
+
+    $row = $cur['body'];
+    $cfs = is_array($row['custom_fields_values'] ?? null) ? $row['custom_fields_values'] : [];
+    $amoName = trim((string) ($row['name'] ?? ''));
+    $formName = trim((string) ($buyer['name'] ?? ''));
+    $nameDiffers = $formName !== '' && $amoName !== '' && norm_name($formName) !== norm_name($amoName);
+
+    $filled = [];
+    $skipped = [];
+    $patch = ['id' => $targetId];
+    $cfPatch = [];
+
+    if ($formName !== '') {
+        if ($amoName === '') {
+            $patch['name'] = $formName;
+            $filled[] = 'name';
+        } else {
+            $skipped[] = 'name';
+            if ($nameDiffers || $forceName) {
+                $buyerFieldId = ensure_entity_cf($entity, $subdomain, $headers, 'Покупатель', 'text');
+                if ($buyerFieldId) {
+                    $amoBuyer = cf_first_value($cfs, $buyerFieldId);
+                    if ($forceName || $amoBuyer === '' || norm_name($amoBuyer) !== norm_name($formName)) {
+                        $cfPatch[] = [
+                            'field_id' => $buyerFieldId,
+                            'values' => [['value' => $formName]],
+                        ];
+                        $filled[] = 'buyer';
+                    } else {
+                        $skipped[] = 'buyer';
+                    }
+                } else {
+                    $skipped[] = 'buyer:no_cf';
+                }
+            }
+        }
+    }
+
+    $formPhone = ucbfw_pick_glued_part(trim((string) ($buyer['phone'] ?? '')), $gluedIndex);
+    if ($formPhone !== '') {
+        $amoPhone = cf_first_value($cfs, null, 'PHONE');
+        if ($amoPhone === '') {
+            $cfPatch[] = [
+                'field_code' => 'PHONE',
+                'values' => [['value' => $formPhone, 'enum_code' => 'WORK']],
+            ];
+            $filled[] = 'phone';
+        } else {
+            $skipped[] = 'phone';
+        }
+    }
+
+    $formEmail = ucbfw_pick_glued_part(trim((string) ($buyer['email'] ?? '')), $gluedIndex);
+    if ($formEmail !== '') {
+        $amoEmail = cf_first_value($cfs, null, 'EMAIL');
+        if ($amoEmail === '') {
+            $cfPatch[] = [
+                'field_code' => 'EMAIL',
+                'values' => [['value' => $formEmail, 'enum_code' => 'WORK']],
+            ];
+            $filled[] = 'email';
+        } else {
+            $skipped[] = 'email';
+        }
+    }
+
+    $formDirector = trim((string) ($buyer['director'] ?? ''));
+    if ($formDirector !== '' && $entity === 'contacts') {
+        $amoPos = cf_first_value($cfs, null, 'POSITION');
+        if ($amoPos === '') {
+            $cfPatch[] = [
+                'field_code' => 'POSITION',
+                'values' => [['value' => $formDirector]],
+            ];
+            $filled[] = 'director';
+        } else {
+            $skipped[] = 'director';
+        }
+    }
+
+    $formAddress = trim((string) ($buyer['address'] ?? ''));
+    if ($formAddress !== '') {
+        if ($entity === 'companies') {
+            $amoAddr = cf_first_value($cfs, null, 'ADDRESS');
+            if ($amoAddr === '') {
+                $cfPatch[] = [
+                    'field_code' => 'ADDRESS',
+                    'values' => [['value' => $formAddress]],
+                ];
+                $filled[] = 'address';
+            } else {
+                $skipped[] = 'address';
+            }
+        } else {
+            $fieldId = ensure_entity_cf($entity, $subdomain, $headers, 'Адрес', 'textarea');
+            if ($fieldId) {
+                $amoVal = cf_first_value($cfs, $fieldId);
+                if ($amoVal === '') {
+                    $cfPatch[] = ['field_id' => $fieldId, 'values' => [['value' => $formAddress]]];
+                    $filled[] = 'address';
+                } else {
+                    $skipped[] = 'address';
+                }
+            } else {
+                $skipped[] = 'address:no_cf';
+            }
+        }
+    }
+
+    $formInn = trim((string) ($buyer['inn'] ?? ''));
+    if ($formInn !== '') {
+        if ($entity === 'companies') {
+            $innId = 820517;
+            $amoInn = cf_first_value($cfs, $innId);
+            if ($amoInn === '') {
+                $cfPatch[] = ['field_id' => $innId, 'values' => [['value' => $formInn]]];
+                $filled[] = 'inn';
+            } else {
+                $skipped[] = 'inn';
+            }
+        } else {
+            $fieldId = ensure_entity_cf($entity, $subdomain, $headers, 'ИНН', 'text');
+            if ($fieldId) {
+                $amoVal = cf_first_value($cfs, $fieldId);
+                if ($amoVal === '') {
+                    $cfPatch[] = ['field_id' => $fieldId, 'values' => [['value' => $formInn]]];
+                    $filled[] = 'inn';
+                } else {
+                    $skipped[] = 'inn';
+                }
+            } else {
+                $skipped[] = 'inn:no_cf';
+            }
+        }
+    }
+
+    $textMap = [
+        'bank' => 'Банк',
+        'bik' => 'БИК',
+        'rs' => 'Р/с',
+        'ks' => 'К/с',
+        'kpp' => 'КПП',
+        'ogrn' => 'ОГРН',
+    ];
+    if ($entity === 'companies' && $formDirector !== '') {
+        $textMap['director'] = 'В лице';
+    }
+
+    foreach ($textMap as $key => $cfName) {
+        $val = trim((string) ($buyer[$key] ?? ''));
+        if ($val === '') {
+            continue;
+        }
+        $fieldId = ensure_entity_cf($entity, $subdomain, $headers, $cfName, 'text');
+        if (!$fieldId) {
+            $skipped[] = $key . ':no_cf';
+            continue;
+        }
+        $amoVal = cf_first_value($cfs, $fieldId);
+        if ($amoVal !== '') {
+            $skipped[] = $key;
+            continue;
+        }
+        $cfPatch[] = [
+            'field_id' => $fieldId,
+            'values' => [['value' => $val]],
+        ];
+        $filled[] = $key;
+    }
+
+    if ($cfPatch) {
+        $patch['custom_fields_values'] = $cfPatch;
+    }
+
+    $changed = count($filled) > 0;
+    $http = 200;
+    if ($changed) {
+        $upd = amo_http(
+            'PATCH',
+            'https://' . $subdomain . '.amocrm.ru/api/v4/' . $entity,
+            [$patch],
+            $headers
+        );
+        $http = $upd['http'];
+        if (!$upd['ok']) {
+            return [
+                'ok' => false,
+                'http' => $http,
+                'entity' => $entity,
+                'contact_id' => $entity === 'contacts' ? $targetId : null,
+                'company_id' => $entity === 'companies' ? $targetId : null,
+                'filled' => $filled,
+                'skipped' => $skipped,
+                'error' => $upd['error'] ?: (is_array($upd['body'])
+                    ? (string) ($upd['body']['detail'] ?? $upd['body']['title'] ?? $upd['raw'])
+                    : $upd['raw']),
+            ];
+        }
+    }
+
+    return [
+        'ok' => true,
+        'http' => $http,
+        'entity' => $entity,
+        'contact_id' => $entity === 'contacts' ? $targetId : null,
+        'company_id' => $entity === 'companies' ? $targetId : null,
+        'amo_name' => $amoName,
+        'form_name' => $formName,
+        'name_differs' => $nameDiffers,
+        'filled' => $filled,
+        'skipped' => $skipped,
+        'changed' => $changed,
+    ];
+}
+
+$explicitContact = $contactId > 0;
+$explicitCompany = $companyId > 0;
+$dealContactIds = [];
+
 if ($contactId <= 0 && $companyId <= 0 && $dealId > 0) {
     $lead = amo_http(
         'GET',
@@ -206,6 +488,7 @@ if ($contactId <= 0 && $companyId <= 0 && $dealId > 0) {
         exit(1);
     }
     $contacts = $lead['body']['_embedded']['contacts'] ?? [];
+    $dealContactIds = ucbfw_lead_contact_ids_ordered($contacts);
     $main = null;
     foreach ($contacts as $c) {
         if (!empty($c['is_main'])) {
@@ -216,7 +499,9 @@ if ($contactId <= 0 && $companyId <= 0 && $dealId > 0) {
     if (!$main && $contacts) {
         $main = $contacts[0];
     }
-    $contactId = (int) ($main['id'] ?? 0);
+    if (!$explicitContact) {
+        $contactId = (int) ($dealContactIds[0] ?? ($main['id'] ?? 0));
+    }
     $companies = $lead['body']['_embedded']['companies'] ?? [];
     if ($companies) {
         $companyId = (int) ($companies[0]['id'] ?? 0);
@@ -230,6 +515,62 @@ if ($entity === '') {
     $entity = $companyId > 0 && $contactId <= 0 ? 'companies' : 'contacts';
 }
 
+if (
+    $dealId > 0
+    && !$explicitContact
+    && !$explicitCompany
+    && $entity === 'contacts'
+    && count($dealContactIds) > 1
+) {
+    $targets = [];
+    $filled = [];
+    $skipped = [];
+    $changed = false;
+    $http = 200;
+    foreach ($dealContactIds as $idx => $cid) {
+        $cid = (int) $cid;
+        if ($cid <= 0) {
+            continue;
+        }
+        $one = ucbfw_apply_buyer_patch('contacts', $cid, $buyer, $forceName, $subdomain, $headers, (int) $idx);
+        $targets[] = $one;
+        if (($one['ok'] ?? false) === false) {
+            echo json_encode(array_merge($one, [
+                'deal_id' => $dealId,
+                'targets' => $targets,
+            ]), JSON_UNESCAPED_UNICODE);
+            exit(1);
+        }
+        if (!empty($one['changed'])) {
+            $changed = true;
+        }
+        $http = max($http, (int) ($one['http'] ?? 200));
+        foreach ($one['filled'] ?? [] as $f) {
+            if (!in_array($f, $filled, true)) {
+                $filled[] = $f;
+            }
+        }
+        foreach ($one['skipped'] ?? [] as $f) {
+            if (!in_array($f, $skipped, true)) {
+                $skipped[] = $f;
+            }
+        }
+    }
+    echo json_encode([
+        'ok' => true,
+        'http' => $http,
+        'entity' => 'contacts',
+        'contact_id' => (int) ($dealContactIds[0] ?? 0),
+        'contact_ids' => $dealContactIds,
+        'deal_id' => $dealId,
+        'targets' => $targets,
+        'filled' => $filled,
+        'skipped' => $skipped,
+        'changed' => $changed,
+    ], JSON_UNESCAPED_UNICODE);
+    exit(0);
+}
+
 $targetId = $entity === 'companies' ? $companyId : $contactId;
 if ($targetId <= 0) {
     echo json_encode([
@@ -240,222 +581,8 @@ if ($targetId <= 0) {
     exit(1);
 }
 
-$cur = amo_http(
-    'GET',
-    'https://' . $subdomain . '.amocrm.ru/api/v4/' . $entity . '/' . $targetId,
-    null,
-    $headers
-);
-if (!$cur['ok'] || !is_array($cur['body'])) {
-    echo json_encode([
-        'ok' => false,
-        'error' => $entity . ' fetch failed: ' . ($cur['error'] ?: $cur['raw']),
-        'http' => $cur['http'],
-        'entity' => $entity,
-        'id' => $targetId,
-    ], JSON_UNESCAPED_UNICODE);
-    exit(1);
-}
-
-$row = $cur['body'];
-$cfs = is_array($row['custom_fields_values'] ?? null) ? $row['custom_fields_values'] : [];
-$amoName = trim((string) ($row['name'] ?? ''));
-$formName = trim((string) ($buyer['name'] ?? ''));
-$nameDiffers = $formName !== '' && $amoName !== '' && norm_name($formName) !== norm_name($amoName);
-
-$filled = [];
-$skipped = [];
-$patch = ['id' => $targetId];
-$cfPatch = [];
-
-if ($formName !== '') {
-    if ($amoName === '' || ($forceName && norm_name($formName) !== norm_name($amoName))) {
-        $patch['name'] = $formName;
-        $filled[] = 'name';
-    } else {
-        $skipped[] = 'name';
-    }
-}
-
-$formPhone = trim((string) ($buyer['phone'] ?? ''));
-if ($formPhone !== '') {
-    $amoPhone = cf_first_value($cfs, null, 'PHONE');
-    if ($amoPhone === '') {
-        $cfPatch[] = [
-            'field_code' => 'PHONE',
-            'values' => [['value' => $formPhone, 'enum_code' => 'WORK']],
-        ];
-        $filled[] = 'phone';
-    } else {
-        $skipped[] = 'phone';
-    }
-}
-
-$formEmail = trim((string) ($buyer['email'] ?? ''));
-if ($formEmail !== '') {
-    $amoEmail = cf_first_value($cfs, null, 'EMAIL');
-    if ($amoEmail === '') {
-        $cfPatch[] = [
-            'field_code' => 'EMAIL',
-            'values' => [['value' => $formEmail, 'enum_code' => 'WORK']],
-        ];
-        $filled[] = 'email';
-    } else {
-        $skipped[] = 'email';
-    }
-}
-
-$formDirector = trim((string) ($buyer['director'] ?? ''));
-if ($formDirector !== '' && $entity === 'contacts') {
-    $amoPos = cf_first_value($cfs, null, 'POSITION');
-    if ($amoPos === '') {
-        $cfPatch[] = [
-            'field_code' => 'POSITION',
-            'values' => [['value' => $formDirector]],
-        ];
-        $filled[] = 'director';
-    } else {
-        $skipped[] = 'director';
-    }
-}
-
-$formAddress = trim((string) ($buyer['address'] ?? ''));
-if ($formAddress !== '') {
-    if ($entity === 'companies') {
-        $amoAddr = cf_first_value($cfs, null, 'ADDRESS');
-        if ($amoAddr === '') {
-            $cfPatch[] = [
-                'field_code' => 'ADDRESS',
-                'values' => [['value' => $formAddress]],
-            ];
-            $filled[] = 'address';
-        } else {
-            $skipped[] = 'address';
-        }
-    } else {
-        $fieldId = ensure_entity_cf($entity, $subdomain, $headers, 'Адрес', 'textarea');
-        if ($fieldId) {
-            $amoVal = cf_first_value($cfs, $fieldId);
-            if ($amoVal === '') {
-                $cfPatch[] = ['field_id' => $fieldId, 'values' => [['value' => $formAddress]]];
-                $filled[] = 'address';
-            } else {
-                $skipped[] = 'address';
-            }
-        } else {
-            $skipped[] = 'address:no_cf';
-        }
-    }
-}
-
-$formInn = trim((string) ($buyer['inn'] ?? ''));
-if ($formInn !== '') {
-    if ($entity === 'companies') {
-        // известный CF ИНН на компаниях
-        $innId = 820517;
-        $amoInn = cf_first_value($cfs, $innId);
-        if ($amoInn === '') {
-            $cfPatch[] = ['field_id' => $innId, 'values' => [['value' => $formInn]]];
-            $filled[] = 'inn';
-        } else {
-            $skipped[] = 'inn';
-        }
-    } else {
-        $fieldId = ensure_entity_cf($entity, $subdomain, $headers, 'ИНН', 'text');
-        if ($fieldId) {
-            $amoVal = cf_first_value($cfs, $fieldId);
-            if ($amoVal === '') {
-                $cfPatch[] = ['field_id' => $fieldId, 'values' => [['value' => $formInn]]];
-                $filled[] = 'inn';
-            } else {
-                $skipped[] = 'inn';
-            }
-        } else {
-            $skipped[] = 'inn:no_cf';
-        }
-    }
-}
-
-$textMap = [
-    'bank' => 'Банк',
-    'bik' => 'БИК',
-    'rs' => 'Р/с',
-    'ks' => 'К/с',
-    'kpp' => 'КПП',
-    'ogrn' => 'ОГРН',
-];
-if ($entity === 'companies' && $formDirector !== '') {
-    $textMap['director'] = 'В лице';
-}
-
-foreach ($textMap as $key => $cfName) {
-    $val = trim((string) ($buyer[$key] ?? ''));
-    if ($val === '') {
-        continue;
-    }
-    $fieldId = ensure_entity_cf($entity, $subdomain, $headers, $cfName, 'text');
-    if (!$fieldId) {
-        $skipped[] = $key . ':no_cf';
-        continue;
-    }
-    $amoVal = cf_first_value($cfs, $fieldId);
-    if ($amoVal !== '') {
-        $skipped[] = $key;
-        continue;
-    }
-    $cfPatch[] = [
-        'field_id' => $fieldId,
-        'values' => [['value' => $val]],
-    ];
-    $filled[] = $key;
-}
-
-if ($cfPatch) {
-    $patch['custom_fields_values'] = $cfPatch;
-}
-
-$changed = count($filled) > 0;
-$http = 200;
-if ($changed) {
-    $upd = amo_http(
-        'PATCH',
-        'https://' . $subdomain . '.amocrm.ru/api/v4/' . $entity,
-        [$patch],
-        $headers
-    );
-    $http = $upd['http'];
-    if (!$upd['ok']) {
-        echo json_encode([
-            'ok' => false,
-            'http' => $http,
-            'entity' => $entity,
-            'contact_id' => $entity === 'contacts' ? $targetId : null,
-            'company_id' => $entity === 'companies' ? $targetId : null,
-            'deal_id' => $dealId ?: null,
-            'name_differs' => $nameDiffers,
-            'filled' => $filled,
-            'skipped' => $skipped,
-            'error' => $upd['error'] ?: (is_array($upd['body'])
-                ? (string) ($upd['body']['detail'] ?? $upd['body']['title'] ?? $upd['raw'])
-                : $upd['raw']),
-        ], JSON_UNESCAPED_UNICODE);
-        exit(1);
-    }
-}
-
-echo json_encode([
-    'ok' => true,
-    'http' => $http,
-    'entity' => $entity,
-    'contact_id' => $entity === 'contacts' ? $targetId : null,
-    'company_id' => $entity === 'companies' ? $targetId : null,
+$result = ucbfw_apply_buyer_patch($entity, $targetId, $buyer, $forceName, $subdomain, $headers, 0);
+echo json_encode(array_merge($result, [
     'deal_id' => $dealId ?: null,
-    'amo_name' => $amoName,
-    'form_name' => $formName,
-    'name_differs' => $nameDiffers,
-    'filled' => $filled,
-    'skipped' => $skipped,
-    'changed' => $changed,
-], JSON_UNESCAPED_UNICODE);
-
-exit(0);
+]), JSON_UNESCAPED_UNICODE);
+exit(($result['ok'] ?? false) ? 0 : 1);

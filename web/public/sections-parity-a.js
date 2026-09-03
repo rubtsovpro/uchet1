@@ -590,13 +590,16 @@
   const THIN_STATUS_RU = {
     draft: 'Черновик',
     posted: 'Проведён',
+    confirmed: 'Проведён',
     sent: 'Отправлен',
     paid: 'Оплачен',
     cancelled: 'Отменён',
     canceled: 'Отменён',
     in_progress: 'В работе',
+    in_transit: 'В пути',
+    partial: 'Частично получен',
     done: 'Выполнен',
-    closed: 'Закрыт',
+    closed: 'Завершён',
     received: 'Получен',
     new: 'Новое',
     open: 'Открыто',
@@ -612,7 +615,8 @@
     const raw = String(status || 'draft').trim().toLowerCase();
     const label = thinStatusRu(raw);
     const draftish = raw === 'draft' || raw === 'cancelled' || raw === 'canceled';
-    return `<span class="badge ${draftish ? 'draft' : ''}">${esc(label)}</span>`;
+    const transit = raw === 'in_transit' || raw === 'partial';
+    return `<span class="badge ${draftish ? 'draft' : ''}${transit ? ' ok' : ''}">${esc(label)}</span>`;
   }
 
   function thinSortState(leg, viewId) {
@@ -817,7 +821,7 @@
     if (page > pages) page = pages;
     leg.state.parityPage[viewId] = page;
     const slice = items.slice((page - 1) * limit, page * limit);
-    const showLines = key === 'supplier_orders' || key === 'transfer_orders';
+    const showLines = key === 'supplier_orders' || key === 'transfer_orders' || key === 'purchase_discrepancy';
     const isTransferReq = key === 'transfer_orders';
     const sortMark = (col) => {
       if (sort !== col) return '';
@@ -1201,6 +1205,100 @@
     const cfg = SCREENS[viewId];
     if (!cfg || !cfg.key) throw new Error('Неизвестный журнал');
     const key = cfg.key;
+    if (key === 'purchase_discrepancy') {
+      const d = await leg.api(
+        '/parity/journals/' + encodeURIComponent(key) + '/' + encodeURIComponent(id)
+      );
+      if (!d || !d.id) throw new Error('Акт не найден');
+      const lines = d.lines || [];
+      const kindRu = (k) =>
+        k === 'missing' ? 'Недостача' : k === 'extra' ? 'Излишек' : 'Расхождение qty';
+      const heading = [d.number, 'Акт о расхождениях'].filter(Boolean).join(' · ');
+      const tab = (leg.state.tabs || []).find((t) => t.id === leg.state.activeTab);
+      if (tab) {
+        tab.title = String(heading).slice(0, 48);
+        if (typeof leg.renderTabs === 'function') leg.renderTabs();
+      }
+      leg.view.innerHTML = leg.formChrome(
+        heading,
+        `<div class="form-grid">
+          <label>Номер<input class="mono" value="${esc(d.number || '')}" readonly /></label>
+          <label>Дата<input value="${esc(String(d.doc_date || '').slice(0, 10))}" readonly /></label>
+          <label>Статус<input value="${esc(d.status || '')}" readonly /></label>
+          <label>Поставка<input class="mono" value="${esc(d.supply_number || '—')}" readonly /></label>
+          <label class="span-2">Основание
+            <input value="${esc(
+              (d.inbound_doc_id ? 'Приходная' : '') +
+                (d.supply_number ? ' / поставка ' + d.supply_number : '')
+            )}" readonly />
+          </label>
+        </div>
+        <h3 style="margin:16px 0 8px;font-size:13px;color:var(--taxi-green)">Расхождения (${lines.length})</h3>
+        <table class="data-table is-dense">
+          <thead><tr>
+            <th>Артикул</th><th>Номенклатура</th><th>В поставке</th><th>В приходе</th><th>Δ</th><th>Тип</th>
+          </tr></thead>
+          <tbody>
+            ${
+              lines
+                .map(
+                  (l) => `<tr class="${l.product_id ? 'clickable' : ''}" ${
+                    l.product_id ? `data-product="${esc(l.product_id)}"` : ''
+                  }>
+                  <td class="mono">${esc(l.sku || l.code || l.article || '')}</td>
+                  <td>${esc(l.product_name || l.name || '—')}</td>
+                  <td class="mono">${esc(l.qty_supply)}</td>
+                  <td class="mono">${esc(l.qty_inbound)}</td>
+                  <td class="mono">${esc(l.qty_diff)}</td>
+                  <td>${esc(kindRu(l.kind))}</td>
+                </tr>`
+                )
+                .join('') ||
+              '<tr><td colspan="6" class="muted">Нет строк</td></tr>'
+            }
+          </tbody>
+        </table>
+        ${
+          d.inbound_doc_id
+            ? `<p style="margin:12px 0 0"><button type="button" class="linkish" id="disc-open-in">Открыть приходную</button></p>`
+            : ''
+        }`,
+        {
+          section: 'Акт о расхождениях',
+          entityKind: 'thin_doc',
+          toolbar: `<button type="button" id="disc-back">К журналу</button>
+            ${
+              d.inbound_doc_id
+                ? `<button type="button" class="primary" id="disc-open-in-tb">Приходная</button>`
+                : ''
+            }`,
+          chatRef: {
+            type: 'thin_doc',
+            id: String(id),
+            label: 'Акт ' + (d.number || id.slice(0, 8)),
+            href: (cfg.path || '/purchases/discrepancy') + '?doc=' + encodeURIComponent(id),
+          },
+        }
+      );
+      leg.bindFormChrome(() => {
+        clearThinDocParam();
+        renderThin(viewId);
+      });
+      const back = () => {
+        clearThinDocParam();
+        renderThin(viewId);
+      };
+      document.getElementById('disc-back')?.addEventListener('click', back);
+      const openIn = () => {
+        if (d.inbound_doc_id) leg.openTab('doc:' + d.inbound_doc_id);
+      };
+      document.getElementById('disc-open-in')?.addEventListener('click', openIn);
+      document.getElementById('disc-open-in-tb')?.addEventListener('click', openIn);
+      leg.view.querySelectorAll('[data-product]').forEach((tr) => {
+        tr.onclick = () => leg.openTab('product:' + tr.dataset.product);
+      });
+      return;
+    }
     const d = await leg.api(
       '/parity/journals/' + encodeURIComponent(key) + '/' + encodeURIComponent(id)
     );
@@ -1300,11 +1398,14 @@
         <div class="form-grid">
           <label>Поставщик<input value="${esc(d.counterparty_name || '')}" readonly /></label>
           <label>Номер<input class="mono" value="${esc(d.number || '')}" readonly /></label>
-          <label>Дата<input class="mono" value="${esc(String(d.doc_date || '').slice(0, 10))}" readonly /></label>
+          <label>Дата<input id="so-doc-date" type="date" value="${esc(String(d.doc_date || '').slice(0, 10))}" /></label>
           <label>Статус<input value="${esc(thinStatusRu(d.status))}" readonly /></label>
+          <label>Вх. номер / инвойс<input id="so-invoice-number" class="mono" value="${esc(d.invoice_number || d.supply_number || '')}" placeholder="K0814-9514-9" autocomplete="off" /></label>
+          <label>Дата инвойса<input id="so-invoice-date" type="date" value="${esc(String(d.invoice_date || '').slice(0, 10))}" /></label>
+          <label>План. поступление<input id="so-eta" type="date" value="${esc(String(d.expected_arrival_date || '').slice(0, 10))}" /></label>
           <label>Сумма<input class="mono" value="${esc(money(d.amount || linesSum))}" readonly /></label>
           <label>Позиций<input class="mono" id="thin-lines-count" value="${esc(String(lines.length))}" readonly /></label>
-          <label class="span-2">Комментарий<input value="${esc(d.comment || '')}" readonly /></label>
+          <label class="span-2">Комментарий<input id="so-comment" value="${esc(d.comment || '')}" autocomplete="off" /></label>
           ${
             d.receipt_numbers
               ? `<label class="span-2">Приходные<input class="mono" value="${esc(d.receipt_numbers)}" readonly /></label>`
@@ -1321,6 +1422,11 @@
               : ''
           }
         </div>
+        <div class="form-actions" style="margin-top:12px">
+          <button type="button" id="so-save-header">Записать</button>
+          <button type="button" class="primary" id="so-post-transit" title="Провести заказ и поставить «В пути»">Провести и закрыть</button>
+          <span class="muted" id="so-header-msg"></span>
+        </div>
       </div>`;
 
     const linesPane = `
@@ -1328,7 +1434,30 @@
         <h3 class="form-section-title">Номенклатура (<span id="thin-lines-shown">${lines.length}</span>)</h3>
         ${
           key === 'supplier_orders'
-            ? '<p class="muted" style="margin:0 0 8px;font-size:12px">Названия — оригинальные из 1С. Марки на каждую штуку создаются автоматически при сохранении позиций.</p>'
+            ? `<p class="muted" style="margin:0 0 8px;font-size:12px">Цены закупки обязательны для заказа. Дубли артикулов — отдельными строками. Импорт: копипаст из Excel/пакинга.</p>
+        <div id="so-import-panel" class="thin-add-panel" hidden>
+          <div class="thin-add-panel-head">
+            <strong>Заполнить из внешнего источника</strong>
+            <button type="button" class="linkish" id="so-import-close">Свернуть</button>
+          </div>
+          <p class="muted" style="margin:0 0 8px;font-size:12px">Скопируйте строки (Ctrl+C) и вставьте (Ctrl+V). Колонки по умолчанию: Артикул · Количество · Цена · Сумма. Опционально 5-я — старый артикул.</p>
+          <label class="span-2">Вставка
+            <textarea id="so-import-paste" rows="8" placeholder="MRAE11305&#9;6&#9;6782&#9;40692&#9;MRAA11305" style="width:100%;font-family:ui-monospace,monospace;font-size:12px"></textarea>
+          </label>
+          <div class="form-grid" style="margin-top:8px">
+            <label class="inline-label"><input type="checkbox" id="so-import-header" /> Первая строка — заголовок</label>
+            <label class="inline-label"><input type="checkbox" id="so-import-create" checked /> Создавать новые карточки</label>
+            <label class="inline-label"><input type="checkbox" id="so-import-minimal" /> Минимальные карточки (без кроссов/розницы)</label>
+            <label class="inline-label"><input type="checkbox" id="so-import-append" /> Добавить к существующим строкам</label>
+            <label>Ст. артикул · колонка (0…)<input id="so-import-old-col" type="number" min="-1" step="1" value="-1" title="-1 = нет" /></label>
+          </div>
+          <div id="so-import-preview" class="muted" style="margin:8px 0;font-size:12px"></div>
+          <div class="thin-add-panel-actions">
+            <button type="button" id="so-import-preview-btn">Сопоставить</button>
+            <button type="button" class="primary" id="so-import-apply-btn">Загрузить данные</button>
+            <span class="muted" id="so-import-msg"></span>
+          </div>
+        </div>`
             : ''
         }
         <div id="thin-add-panel" class="thin-add-panel" hidden>
@@ -1423,12 +1552,33 @@
             </tr>
           </tfoot>
         </table></div>`
-            : '<p class="muted" id="thin-lines-empty">В заказе нет строк номенклатуры — нажмите «Добавить номенклатуру».</p>'
+            : '<p class="muted" id="thin-lines-empty">В заказе нет строк номенклатуры — нажмите «Добавить номенклатуру» или «Из внешнего источника».</p>'
         }
       </div>`;
 
+    const analysisPane =
+      key === 'supplier_orders'
+        ? `<div class="product-pane hidden" data-pane="reports">
+        <h3 class="form-section-title">Анализ заказа поставщику</h3>
+        <p class="muted" style="margin:0 0 10px;font-size:12px">Заказано / получено / осталось. Осталось может быть отрицательным (излишек).</p>
+        <div class="table-tools" style="margin:0 0 8px">
+          <button type="button" class="primary" id="so-analysis-run">Сформировать</button>
+          <label class="inline-label">Вид
+            <select id="so-analysis-mode">
+              <option value="by_product">По номенклатуре</option>
+              <option value="by_line">Как в заказе (строки)</option>
+            </select>
+          </label>
+          <span class="muted" id="so-analysis-msg"></span>
+        </div>
+        <div id="so-analysis-body"><p class="muted">Нажмите «Сформировать».</p></div>
+      </div>`
+        : '';
+
     const activeThinTab =
-      (leg.state.thinOrderTab === 'lines' || leg.state.thinOrderTab === 'data'
+      (leg.state.thinOrderTab === 'lines' ||
+      leg.state.thinOrderTab === 'data' ||
+      leg.state.thinOrderTab === 'reports'
         ? leg.state.thinOrderTab
         : 'lines') || 'lines';
 
@@ -1438,6 +1588,8 @@
           <div class="grow"></div>`;
     const supplierToolbar = `
           <button type="button" class="primary" id="thin-add-line">Добавить номенклатуру</button>
+          <button type="button" id="so-import-open" title="Копипаст / Excel в заказ">Из внешнего источника</button>
+          <button type="button" id="so-create-inbound" title="Черновик приходной на основании заказа">Создать приходную</button>
           <span class="muted" id="thin-line-msg"></span>
           <div class="grow"></div>
           <button type="button" class="toolbar-ico" id="thin-dm-gen" ${lines.length ? '' : 'disabled'} title="Сгенерировать марки" data-tip="Сгенерировать марки" aria-label="Сгенерировать марки">
@@ -1454,13 +1606,16 @@
           </button>`;
     leg.view.innerHTML = leg.formChrome(
       thinHeading || d.number || id.slice(0, 8),
-      `${dataPane}${linesPane}`,
+      `${dataPane}${linesPane}${analysisPane}`,
       {
         section: thinEntity,
         entityKind: key === 'supplier_orders' ? 'supply_order' : 'thin_doc',
         pageTabs: [
           { id: 'data', label: 'Данные' },
           { id: 'lines', label: 'Номенклатура', count: lines.length },
+          ...(key === 'supplier_orders'
+            ? [{ id: 'reports', label: 'Отчёты', tip: 'Анализ заказа поставщику' }]
+            : []),
         ],
         activePageTab: isTransferReq ? 'data' : activeThinTab,
         toolbar: isTransferReq ? transferToolbar : supplierToolbar,
@@ -1512,6 +1667,228 @@
       });
       show(activeThinTab);
     }
+
+    if (key === 'supplier_orders') {
+      const saveHeader = async (opts = {}) => {
+        const msg = document.getElementById('so-header-msg');
+        const oldCol = Number(document.getElementById('so-import-old-col')?.value);
+        void oldCol;
+        const body = {
+          doc_date: document.getElementById('so-doc-date')?.value || undefined,
+          invoice_number: document.getElementById('so-invoice-number')?.value || '',
+          invoice_date: document.getElementById('so-invoice-date')?.value || '',
+          expected_arrival_date: document.getElementById('so-eta')?.value || '',
+          comment: document.getElementById('so-comment')?.value || '',
+        };
+        if (opts.status) body.status = opts.status;
+        if (msg) msg.textContent = 'Сохранение…';
+        try {
+          await leg.api('/parity/journals/supplier_orders/' + encodeURIComponent(id), {
+            method: 'PATCH',
+            body: JSON.stringify(body),
+          });
+          if (msg) msg.textContent = opts.status === 'in_transit' ? 'В пути' : 'Сохранено';
+          if (opts.reload) await renderThinDetail(viewId, id);
+          return true;
+        } catch (e) {
+          if (msg) msg.textContent = e.message || String(e);
+          return false;
+        }
+      };
+      document.getElementById('so-save-header')?.addEventListener('click', () => saveHeader());
+      document.getElementById('so-post-transit')?.addEventListener('click', async () => {
+        if (!lines.length) {
+          alert('Добавьте номенклатуру перед проведением');
+          return;
+        }
+        const bad = lines.find((l) => !(Number(l.price) > 0));
+        if (bad) {
+          if (
+            !confirm(
+              'Есть строки без цены закупки. Провести заказ всё равно (статус «В пути»)?'
+            )
+          ) {
+            return;
+          }
+        }
+        const ok = await saveHeader({ status: 'in_transit', reload: true });
+        if (ok) {
+          /* stay on detail after reload */
+        }
+      });
+
+      const openImport = () => {
+        const panel = document.getElementById('so-import-panel');
+        if (panel) panel.hidden = false;
+        leg.state.thinOrderTab = 'lines';
+        if (typeof leg.bindEntitySectionTabs === 'function') {
+          leg.bindEntitySectionTabs(leg.view, 'lines', 'thinOrderTab', '.product-pane');
+        }
+        document.getElementById('so-import-paste')?.focus();
+      };
+      document.getElementById('so-import-open')?.addEventListener('click', openImport);
+      document.getElementById('so-import-close')?.addEventListener('click', () => {
+        const panel = document.getElementById('so-import-panel');
+        if (panel) panel.hidden = true;
+      });
+
+      const buildImportMap = () => {
+        const oldCol = Number(document.getElementById('so-import-old-col')?.value);
+        return {
+          article: 0,
+          qty: 1,
+          price: 2,
+          amount: 3,
+          old_sku: Number.isFinite(oldCol) && oldCol >= 0 ? oldCol : null,
+        };
+      };
+      document.getElementById('so-import-preview-btn')?.addEventListener('click', async () => {
+        const msg = document.getElementById('so-import-msg');
+        const box = document.getElementById('so-import-preview');
+        const paste = document.getElementById('so-import-paste')?.value || '';
+        if (msg) msg.textContent = 'Сопоставление…';
+        try {
+          const r = await leg.api(
+            '/purchases/supplier-orders/' + encodeURIComponent(id) + '/import/preview',
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                paste,
+                map: buildImportMap(),
+                has_header: !!document.getElementById('so-import-header')?.checked,
+                create_missing: !!document.getElementById('so-import-create')?.checked,
+                minimal_cards: !!document.getElementById('so-import-minimal')?.checked,
+              }),
+            }
+          );
+          if (box) {
+            const errRows = (r.rows || []).filter((x) => x.status === 'error').slice(0, 8);
+            const createRows = (r.rows || [])
+              .filter((x) => x.status === 'will_create')
+              .slice(0, 8);
+            box.innerHTML = `<b>${r.received || 0}</b> строк получено · <b>${r.matched || 0}</b> сопоставлено · <b>${r.will_create || 0}</b> будет создано · <b>${r.errors || 0}</b> невозможно
+              ${
+                createRows.length
+                  ? `<div style="margin-top:6px">Создать: ${createRows
+                      .map((x) => esc(x.article) + (x.create_from_sku ? ' ← ' + esc(x.create_from_sku) : ''))
+                      .join(', ')}</div>`
+                  : ''
+              }
+              ${
+                errRows.length
+                  ? `<div class="error" style="margin-top:6px">${errRows
+                      .map((x) => esc(x.article || '?') + ': ' + esc(x.error || ''))
+                      .join('; ')}</div>`
+                  : ''
+              }`;
+          }
+          if (msg) msg.textContent = r.errors ? 'Есть ошибки' : 'Готово к загрузке';
+        } catch (e) {
+          if (msg) msg.textContent = e.message || String(e);
+        }
+      });
+      document.getElementById('so-import-apply-btn')?.addEventListener('click', async () => {
+        const msg = document.getElementById('so-import-msg');
+        const paste = document.getElementById('so-import-paste')?.value || '';
+        if (msg) msg.textContent = 'Загрузка…';
+        try {
+          const r = await leg.api(
+            '/purchases/supplier-orders/' + encodeURIComponent(id) + '/import/apply',
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                paste,
+                map: buildImportMap(),
+                has_header: !!document.getElementById('so-import-header')?.checked,
+                create_missing: !!document.getElementById('so-import-create')?.checked,
+                minimal_cards: !!document.getElementById('so-import-minimal')?.checked,
+                append: !!document.getElementById('so-import-append')?.checked,
+                allocate_marks: false,
+              }),
+            }
+          );
+          if (msg) {
+            msg.textContent =
+              'Загружено ' +
+              (r.received || 0) +
+              (r.created ? ', создано карточек: ' + r.created : '');
+          }
+          await renderThinDetail(viewId, id);
+        } catch (e) {
+          if (msg) msg.textContent = e.message || String(e);
+        }
+      });
+
+      document.getElementById('so-create-inbound')?.addEventListener('click', async () => {
+        const lineMsg = document.getElementById('thin-line-msg');
+        if (!lines.length) {
+          alert('В заказе нет строк');
+          return;
+        }
+        if (lineMsg) lineMsg.textContent = 'Создание приходной…';
+        try {
+          const r = await leg.api('/warehouse/inbound/from-order', {
+            method: 'POST',
+            body: JSON.stringify({
+              supplier_order_id: id,
+              copy_prices: false,
+            }),
+          });
+          if (lineMsg) lineMsg.textContent = 'Черновик ' + (r.number || '');
+          if (r.id) leg.openTab('doc:' + r.id, r.number || 'Приход');
+        } catch (e) {
+          if (lineMsg) lineMsg.textContent = e.message || String(e);
+          else alert(e.message || String(e));
+        }
+      });
+
+      const runAnalysis = async () => {
+        const msg = document.getElementById('so-analysis-msg');
+        const body = document.getElementById('so-analysis-body');
+        const mode = document.getElementById('so-analysis-mode')?.value || 'by_product';
+        if (msg) msg.textContent = 'Формирование…';
+        try {
+          const r = await leg.api(
+            '/purchases/supplier-orders/' +
+              encodeURIComponent(id) +
+              '/analysis?mode=' +
+              encodeURIComponent(mode)
+          );
+          const tot = r.totals || {};
+          const rows = (r.lines || [])
+            .map((l) => {
+              const rem = Number(l.qty_remaining) || 0;
+              const cls = rem !== 0 ? (rem < 0 ? ' style="color:#0a7"' : ' style="color:#c00"') : '';
+              return `<tr>
+                <td class="mono">${esc(l.sku || '')}</td>
+                <td>${esc(l.name || '')}</td>
+                <td class="mono num">${esc(l.qty_ordered)}</td>
+                <td class="mono num">${esc(l.qty_received)}</td>
+                <td class="mono num"${cls}>${esc(l.qty_remaining)}</td>
+              </tr>`;
+            })
+            .join('');
+          if (body) {
+            body.innerHTML = `<table class="data-table is-dense">
+              <thead><tr><th>Артикул</th><th>Номенклатура</th><th>Заказано</th><th>Получено</th><th>Осталось</th></tr></thead>
+              <tbody>${rows || '<tr><td colspan="5" class="muted">Нет данных</td></tr>'}</tbody>
+              <tfoot><tr>
+                <td colspan="2"><strong>Итого</strong></td>
+                <td class="mono"><strong>${esc(tot.qty_ordered)}</strong></td>
+                <td class="mono"><strong>${esc(tot.qty_received)}</strong></td>
+                <td class="mono"><strong>${esc(tot.qty_remaining)}</strong></td>
+              </tr></tfoot>
+            </table>`;
+          }
+          if (msg) msg.textContent = 'Готово';
+        } catch (e) {
+          if (msg) msg.textContent = e.message || String(e);
+        }
+      };
+      document.getElementById('so-analysis-run')?.addEventListener('click', runAnalysis);
+      if (activeThinTab === 'reports') setTimeout(runAnalysis, 50);
+    }
+
     try {
       const u = new URL(location.href);
       u.searchParams.set('doc', id);
@@ -1619,8 +1996,8 @@
                   <td class="mono">${escFn(p.sku || p.code || '')}</td>
                   <td title="${escFn(title)}">${escFn(title)}</td>
                   <td>${escFn(p.category || '—')}</td>
-                  <td class="thin-prod-num"><input class="thin-prod-qty mono" type="number" inputmode="decimal" step="0.001" min="0.001" value="1" aria-label="Количество" /></td>
-                  <td class="thin-prod-money"><input class="thin-prod-price mono" type="number" inputmode="decimal" step="0.01" min="0" value="0" placeholder="0.00" aria-label="Цена" /></td>
+                  <td class="thin-prod-num"><input class="thin-prod-qty mono" type="number" inputmode="numeric" step="0.001" min="0.001" value="1" aria-label="Количество" /></td>
+                  <td class="thin-prod-money"><input class="thin-prod-price mono" type="number" inputmode="numeric" step="1" min="0" value="0" placeholder="0" aria-label="Цена" /></td>
                 </tr>`;
               })
               .join('');
@@ -2108,8 +2485,8 @@
       'Анализ продаж',
       `
       <p class="muted" style="margin:0 0 10px">${esc(data.note || '')}</p>
-      <p class="muted">Расходные: <b class="mono">${esc(data.outbound_1c && data.outbound_1c.docs)}</b> док. · <b class="mono">${money((data.outbound_1c && data.outbound_1c.amount) || 0)}</b></p>
-      <h3 style="margin:12px 0 6px;font-size:14px">Расходные по месяцам</h3>
+      <p class="muted">Списания: <b class="mono">${esc(data.outbound_1c && data.outbound_1c.docs)}</b> док. · <b class="mono">${money((data.outbound_1c && data.outbound_1c.amount) || 0)}</b></p>
+      <h3 style="margin:12px 0 6px;font-size:14px">Списания по месяцам</h3>
       <table>
         <thead><tr><th>Месяц</th><th>Документов</th><th>Сумма</th></tr></thead>
         <tbody>
@@ -2202,8 +2579,8 @@
       `
       <p class="muted" style="margin:0 0 10px">${esc(data.note || '')}</p>
       <div class="form-metrics" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
-        <div><div class="muted">Расходных</div><b>${esc(data.outbound_docs)}</b></div>
-        <div><div class="muted">Сумма расходных</div><b>${money(data.outbound_amount)}</b></div>
+        <div><div class="muted">Списаний</div><b>${esc(data.outbound_docs)}</b></div>
+        <div><div class="muted">Сумма списаний</div><b>${money(data.outbound_amount)}</b></div>
         <div><div class="muted">Локальных док.</div><b>${esc(data.local_sales_docs)}</b></div>
       </div>
       <h3 style="margin:12px 0 6px;font-size:14px">По месяцам</h3>
@@ -2241,7 +2618,7 @@
         <div><div class="muted">Сегодня док.</div><b>${esc(data.today && data.today.docs)}</b></div>
         <div><div class="muted">Сегодня сумма</div><b>${money((data.today && data.today.amount) || 0)}</b></div>
       </div>
-      <h3 style="margin:12px 0 6px;font-size:14px">По дням (расходные)</h3>
+      <h3 style="margin:12px 0 6px;font-size:14px">По дням (списания)</h3>
       <table><thead><tr><th>День</th><th>Док.</th><th>Сумма</th></tr></thead><tbody>
         ${
           days
@@ -2537,7 +2914,7 @@
           links: [
             { view: 'buyers', label: 'Покупатели' },
             { view: 'deals', label: 'Заказы покупателей' },
-            { view: 'docs', label: 'Расходные накладные' },
+            { view: 'docs', label: 'Списания' },
             { view: 'invoices', label: 'Счета на оплату' },
             { view: 'workorders', label: 'Заказ-наряды' },
             { view: 'upd', label: 'УПД' },
@@ -2571,6 +2948,8 @@
             { view: 'warehouses', label: 'Склады', whHubTab: 'warehouses' },
             { view: 'warehouses', label: 'Заказы на перемещение', whHubTab: 'requests' },
             { view: 'balances', label: 'Остатки' },
+            { view: 'wh-cells', label: 'Адресные ячейки' },
+            { view: 'in', label: 'Приходные накладные' },
             { view: 'wh-tasks', label: 'Задания склада' },
             { label: 'Задачи на сегодня', href: '/pick' },
             { view: 'stock-valuation', label: 'Стоимость склада' },
@@ -2592,7 +2971,6 @@
           links: [
             { view: 'products', label: 'Номенклатура' },
             { view: 'media-photos', label: 'Фото номенклатуры' },
-            { label: 'Фотограф (без фото)', href: '/photo' },
             { view: 'brands', label: 'Бренды' },
           ],
         },

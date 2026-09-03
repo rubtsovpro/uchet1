@@ -27,9 +27,15 @@ Doc: https://docs.google.com/document/d/1FhZzPLBWwxTpB-1PUogEjJsXpGZDoWzTy1CIFIU
 | §18 Помощь — реализация | t.dpvq2q7dcq17 | https://docs.google.com/document/d/1FhZzPLBWwxTpB-1PUogEjJsXpGZDoWzTy1CIFIU67v0/edit?tab=t.dpvq2q7dcq17 |
 | Смета · роадмап ответственности | t.2rgjgt1cln4v | https://docs.google.com/document/d/1FhZzPLBWwxTpB-1PUogEjJsXpGZDoWzTy1CIFIU67v0/edit?tab=t.2rgjgt1cln4v |
 | Моё виденье | t.jyuav6c8r0l5 | https://docs.google.com/document/d/1FhZzPLBWwxTpB-1PUogEjJsXpGZDoWzTy1CIFIU67v0/edit?tab=t.jyuav6c8r0l5 |
+| Д01. Договор | t.eqpi27jrw2ca | https://docs.google.com/document/d/1FhZzPLBWwxTpB-1PUogEjJsXpGZDoWzTy1CIFIU67v0/edit?tab=t.eqpi27jrw2ca |
+| Д02. Календарный план | t.geafotolbv2i | https://docs.google.com/document/d/1FhZzPLBWwxTpB-1PUogEjJsXpGZDoWzTy1CIFIU67v0/edit?tab=t.geafotolbv2i |
+| Тест · сценарии продаж | t.4d371ssjp5y4 | https://docs.google.com/document/d/1FhZzPLBWwxTpB-1PUogEjJsXpGZDoWzTy1CIFIU67v0/edit?tab=t.4d371ssjp5y4 |
 
 Push: `php tools/push_roadmap_tabs_batch.php [all|overview|N|N-M]` (из корня `/Users/a_/Downloads/php/uchetn1`)  
 Карта меню 1С: `php tools/push_map_1c_unf_tab_to_google_doc.php`  
 Смета: `php tools/push_smeta_roadmap_tab_to_google_doc.php`  
 Виденье: `php tools/push_vision_tab_to_google_doc.php`  
-Local: `docs/ROADMAP-uchet1.md`, `docs/MAP-1C-UNF-to-uchet1.md`, `docs/SMETA-roadmap-responsibility.md`, `docs/VISION-uchet1.md`, `docs/sections/TZ-impl-*.md`
+Договор: `php tools/push_dogovor_tab_to_google_doc.php`  
+Календарный план: `php tools/push_calendar_plan_tab_to_google_doc.php`  
+Тест-сценарии: `php tools/push_test_sale_scenarios_tab_to_google_doc.php`  
+Local: `docs/ROADMAP-uchet1.md`, `docs/MAP-1C-UNF-to-uchet1.md`, `docs/SMETA-roadmap-responsibility.md`, `docs/VISION-uchet1.md`, `docs/DOGOVOR-uchet1-priority.md`, `docs/CALENDAR-plan-uchet1.md`, `docs/TEST-sale-scenarios.md`, `docs/sections/TZ-impl-*.md`

@@ -9,7 +9,6 @@ import {
   getYandexPaySettingsForOrg,
   type YandexPaySettings,
 } from './integration-settings.js';
-import { markDealPaymentPaid } from './payments.js';
 
 function publicPayBaseUrl(): string {
   return (
@@ -300,22 +299,76 @@ export async function ensureYandexPayForPublicToken(token: string): Promise<{
 
 const PAID_STATUSES = new Set(['CAPTURED', 'SUCCESS', 'PAID', 'CONFIRMED']);
 
+function dealIdFromYandexOrderId(orderId: string): string {
+  const s = String(orderId || '').trim();
+  if (!s) return '';
+  const prefixed = s.match(/^(?:amo|wms)-(\d+)-/i);
+  if (prefixed) return prefixed[1];
+  const digits = s.match(/(\d{5,})/);
+  return digits ? digits[1] : '';
+}
+
+/** Разбор тела webhook Яндекс Пэй (JWT payload или плоский JSON). */
+export function parseYandexPayWebhookBody(body: Record<string, unknown>): {
+  orderId: string;
+  status: string;
+} {
+  const orderObj = (body.order ||
+    (body.data as { order?: Record<string, unknown> } | undefined)?.order ||
+    (typeof body.event === 'object' && body.event !== null
+      ? (body.event as { order?: Record<string, unknown> }).order
+      : undefined)) as { orderId?: string; paymentStatus?: string } | undefined;
+
+  const orderId = String(
+    body.orderId ||
+      orderObj?.orderId ||
+      (body.data as { orderId?: string } | undefined)?.orderId ||
+      ''
+  ).trim();
+
+  const status = String(
+    body.paymentStatus ||
+      orderObj?.paymentStatus ||
+      (body.data as { paymentStatus?: string } | undefined)?.paymentStatus ||
+      body.status ||
+      ''
+  )
+    .trim()
+    .toUpperCase();
+
+  return { orderId, status };
+}
+
 /** Webhook / ручная проверка статуса Яндекс Пэй → mark paid. */
 export async function applyYandexPayPaymentEvent(input: {
   orderId?: string;
   status?: string;
   event?: Record<string, unknown>;
   settings?: YandexPaySettings | null;
-}): Promise<{ ok: boolean; marked?: boolean; deal_id?: string; error?: string }> {
-  const orderId = String(
+}): Promise<{
+  ok: boolean;
+  marked?: boolean;
+  deal_id?: string;
+  error?: string;
+  action?: string;
+  payment_id?: string;
+  amo?: unknown;
+  automation?: unknown;
+}> {
+  let orderId = String(
     input.orderId ||
       input.event?.orderId ||
       (input.event?.data as { orderId?: string } | undefined)?.orderId ||
       ''
   ).trim();
+  let status = String(input.status || '').toUpperCase();
+  if ((!orderId || !status) && input.event) {
+    const parsed = parseYandexPayWebhookBody(input.event);
+    if (!orderId) orderId = parsed.orderId;
+    if (!status) status = parsed.status;
+  }
   if (!orderId) return { ok: false, error: 'orderId required' };
 
-  let status = String(input.status || '').toUpperCase();
   if (!status) {
     const polled = await getYandexPayOrderStatus(orderId, input.settings);
     status = String(polled.status || '').toUpperCase();
@@ -324,42 +377,160 @@ export async function applyYandexPayPaymentEvent(input: {
     return { ok: true, marked: false };
   }
 
-  const link = get<{ id: string; deal_id: string; payment_id: string; status: string }>(
-    `SELECT id, deal_id, IFNULL(payment_id,'') AS payment_id, status
-     FROM payment_links WHERE yandex_order_id = ? OR id = ? OR token = ?
+  const eventKey = `yandex:${orderId}:${status}`;
+  const already = get<{ id: string }>(
+    `SELECT id FROM deal_payments
+     WHERE IFNULL(meta_json,'') LIKE ?
+     LIMIT 1`,
+    [`%"event_key":"${eventKey}"%`]
+  );
+  if (already?.id) {
+    const dealId = dealIdFromYandexOrderId(orderId);
+    let amo: Awaited<ReturnType<typeof import('./amo-deal-paid.js').pushDealPaidToAmo>> | undefined;
+    if (dealId) {
+      const { getDealBasketTotals, syncDealPaidStatus } = await import('./deal-payment-split.js');
+      const existingPay = get<{ amount: number }>(
+        'SELECT amount FROM deal_payments WHERE id = ?',
+        [already.id]
+      );
+      let fixAmount = Number(existingPay?.amount) || 0;
+      if (!(fixAmount > 0)) {
+        const basket = getDealBasketTotals(dealId);
+        if (basket.total > 0) {
+          fixAmount = basket.total;
+          run('UPDATE deal_payments SET amount = ? WHERE id = ?', [fixAmount, already.id]);
+          syncDealPaidStatus(dealId);
+        }
+      }
+      const { pushDealPaidToAmo } = await import('./amo-deal-paid.js');
+      amo = await pushDealPaidToAmo({ dealId, source: 'yandex_split' });
+      const { runPostPaymentAutomation } = await import('./post-payment-automation.js');
+      await runPostPaymentAutomation({
+        dealId,
+        source: 'yandex_split',
+        username: 'yandex_split',
+        amount: fixAmount > 0 ? fixAmount : undefined,
+        amoAlreadyPaid: amo?.ok === true && amo.already_paid === true,
+      });
+    }
+    return {
+      ok: true,
+      marked: false,
+      deal_id: dealId || undefined,
+      action: 'duplicate',
+      payment_id: already.id,
+      amo,
+    };
+  }
+
+  const link = get<{ id: string; deal_id: string; payment_id: string; status: string; amount: number }>(
+    `SELECT id, deal_id, IFNULL(payment_id,'') AS payment_id, status, IFNULL(amount,0) AS amount
+     FROM payment_links WHERE yandex_order_id = ?
      ORDER BY datetime(created_at) DESC LIMIT 1`,
-    [orderId, orderId.replace(/^wms-/, ''), orderId]
+    [orderId]
   );
-  // более точный поиск: orderId вида wms-{dealId}-{short}
-  const byOrder =
-    link ||
-    get<{ id: string; deal_id: string; payment_id: string; status: string }>(
-      `SELECT id, deal_id, IFNULL(payment_id,'') AS payment_id, status
-       FROM payment_links WHERE yandex_order_id = ? LIMIT 1`,
-      [orderId]
-    );
-  if (!byOrder) {
-    const m = orderId.match(/^wms-(\d+)-/);
-    if (!m) return { ok: false, error: 'payment link not found' };
-    const dealId = m[1];
-    markDealPaymentPaid({ dealId, source: 'yandex_pay' });
-    return { ok: true, marked: true, deal_id: dealId };
+
+  let dealId = link?.deal_id ? String(link.deal_id) : dealIdFromYandexOrderId(orderId);
+  if (!dealId) return { ok: false, error: 'payment link not found' };
+
+  const deal = get<{ id: string; name?: string; price?: number; paid?: number }>(
+    `SELECT id, name, price, paid FROM crm_deals WHERE id = ?`,
+    [dealId]
+  );
+  if (!deal) return { ok: false, error: 'deal_not_found', deal_id: dealId };
+
+  let payAmount = link && Number(link.amount) > 0 ? Number(link.amount) : 0;
+  if (!(payAmount > 0)) {
+    payAmount = Number(deal.price) || 0;
+  }
+  if (!(payAmount > 0)) {
+    const { getDealBasketTotals } = await import('./deal-payment-split.js');
+    const basket = getDealBasketTotals(dealId);
+    if (basket.total > 0) {
+      payAmount = basket.total;
+    }
   }
 
-  if (String(byOrder.status) === 'paid') {
-    return { ok: true, marked: false, deal_id: byOrder.deal_id };
-  }
+  const { newGuid } = await import('./ids.js');
+  const { syncDealPaidStatus } = await import('./deal-payment-split.js');
+  const { markPaymentLinkPaidForDeal } = await import('./payment-links.js');
+  const { notifyDealResponsible } = await import('./staff-notifications.js');
+  const { ensureWarehouseTaskAfterPaid } = await import('./sales-pipeline.js');
+  const { ensureOrderDocChain } = await import('./order-doc-tree.js');
 
-  markDealPaymentPaid({
-    dealId: byOrder.deal_id,
-    paymentId: byOrder.payment_id || undefined,
+  const payId = newGuid();
+  const purpose =
+    `Яндекс Сплит · заказ ${dealId}` + (deal.name ? ` · ${String(deal.name).slice(0, 60)}` : '');
+  const meta = {
     source: 'yandex_pay',
-  });
+    event_key: eventKey,
+    yandex_order_id: orderId,
+    yandex_status: status,
+  };
   run(
-    `UPDATE payment_links SET status = 'paid', paid_at = datetime('now') WHERE id = ? AND status = 'pending'`,
-    [byOrder.id]
+    `INSERT INTO deal_payments (
+       id, deal_id, kind, amount, status, qrc_id, payload, image_png_base64, account, purpose, meta_json
+     ) VALUES (?, ?, 'yandex_split', ?, 'paid', '', '', '', '', ?, ?)`,
+    [payId, dealId, Math.max(0, payAmount), purpose, JSON.stringify(meta)]
   );
-  return { ok: true, marked: true, deal_id: byOrder.deal_id };
+
+  try {
+    markPaymentLinkPaidForDeal(dealId, 'yandex_pay');
+  } catch {
+    /* */
+  }
+  if (link && String(link.status) !== 'paid') {
+    run(
+      `UPDATE payment_links SET status = 'paid', paid_at = datetime('now') WHERE id = ? AND status = 'pending'`,
+      [link.id]
+    );
+  }
+
+  const synced = syncDealPaidStatus(dealId);
+  if (synced.paid) {
+    try {
+      ensureWarehouseTaskAfterPaid({ dealId });
+    } catch {
+      /* */
+    }
+    try {
+      ensureOrderDocChain(dealId);
+    } catch {
+      /* */
+    }
+  }
+
+  notifyDealResponsible({
+    deal_id: dealId,
+    kind: 'deal_paid_yandex',
+    title: 'Сделка оплачена · Яндекс Сплит',
+    body: `Сделка ${deal.name || dealId} оплачена через Яндекс Сплит${
+      payAmount > 0 ? ` · ${Math.round(payAmount).toLocaleString('ru-RU')} ₽` : ''
+    }. Выбейте чек 1 (аванс) в Документах.`,
+    meta: { yandex_order_id: orderId, payment_id: payId, status },
+  });
+
+  const { pushDealPaidToAmo } = await import('./amo-deal-paid.js');
+  const amo = await pushDealPaidToAmo({ dealId, source: 'yandex_split' });
+
+  const { runPostPaymentAutomation } = await import('./post-payment-automation.js');
+  const automation = await runPostPaymentAutomation({
+    dealId,
+    source: 'yandex_split',
+    username: 'yandex_split',
+    amount: payAmount > 0 ? payAmount : undefined,
+    amoAlreadyPaid: amo?.ok === true && amo.already_paid === true,
+  });
+
+  return {
+    ok: true,
+    marked: true,
+    deal_id: dealId,
+    action: 'marked_paid',
+    payment_id: payId,
+    amo,
+    automation,
+  };
 }
 
 /** Poll: если есть yandex_order_id — проверить статус у Яндекса. */

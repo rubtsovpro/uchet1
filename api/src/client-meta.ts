@@ -187,6 +187,19 @@ async function lookupGeoRemote(ip: string): Promise<{ region: string; country: s
   }
 }
 
+/** Geo из кэша без TTL — для отображения в журнале (устаревшее лучше, чем пусто). */
+export function peekGeo(ip: string): { region: string; country: string } {
+  const key = String(ip || '').trim();
+  if (!key) return { region: '', country: '' };
+  if (privateIpRe.test(key)) return { region: 'локальная сеть', country: '' };
+  const row = get<{ region: string; country: string }>(
+    `SELECT region, country FROM ip_geo_cache WHERE ip = ?`,
+    [key]
+  );
+  if (!row) return { region: '', country: '' };
+  return { region: row.region || '', country: row.country || '' };
+}
+
 /** Geo с кэшем; сеть не блокирует дольше ~1.2 с. */
 export async function resolveGeo(ip: string): Promise<{ region: string; country: string }> {
   if (!ip) return { region: '', country: '' };
@@ -194,6 +207,16 @@ export async function resolveGeo(ip: string): Promise<{ region: string; country:
   const cached = readGeoCache(ip);
   if (cached) return cached;
   return lookupGeoRemote(ip);
+}
+
+/** Фоновый прогрев geo для списка IP (не ждём в запросе). */
+export function warmGeoIps(ips: string[]): void {
+  const uniq = [...new Set(ips.map((x) => String(x || '').trim()).filter(Boolean))];
+  for (const ip of uniq.slice(0, 40)) {
+    if (privateIpRe.test(ip)) continue;
+    if (readGeoCache(ip)) continue;
+    void resolveGeo(ip).catch(() => undefined);
+  }
 }
 
 export async function enrichClientMeta(c: Context): Promise<ClientMeta> {

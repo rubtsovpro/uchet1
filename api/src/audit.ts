@@ -6,7 +6,8 @@ import type { Context } from 'hono';
 import { all, get, run } from './db.js';
 import { newGuid } from './ids.js';
 import { actorFromContext, type Actor } from './auth.js';
-import { clientMetaFromContext } from './client-meta.js';
+import { clientMetaFromContext, parseUserAgent, peekGeo, warmGeoIps } from './client-meta.js';
+import { ensureStoTransferEventsSchema } from './deal-doc-numbers.js';
 
 const SECRET_KEY_RE =
   /pass(word)?|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|pin_hash|password_hash/i;
@@ -56,6 +57,17 @@ function truncJson(v: unknown, max = 8000): string {
 
 export function writeAudit(input: AuditInput): void {
   const actor = input.actor;
+  const actorId = String(actor?.id || '').trim();
+  let actorName = String(actor?.name || '').trim();
+  let actorLogin = String(actor?.login || '').trim();
+  if (actorName === '__admin__') actorName = '';
+  if (actorLogin === '__admin__') actorLogin = '';
+  if (!actorName) {
+    if (actorId === '__admin__') actorName = 'Админ';
+    else if (actorLogin) actorName = actorLogin;
+    else if (!actor) actorName = 'система';
+    else actorName = 'сотрудник';
+  }
   run(
     `INSERT INTO audit_log
       (id, created_at, actor_id, actor_login, actor_name, action, entity, entity_id,
@@ -63,9 +75,9 @@ export function writeAudit(input: AuditInput): void {
      VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newGuid(),
-      actor?.id || '',
-      (actor?.login || '').slice(0, 120),
-      actor?.name || 'система',
+      actorId,
+      actorLogin.slice(0, 120),
+      actorName.slice(0, 200),
       input.action,
       input.entity || '',
       input.entityId || '',
@@ -110,7 +122,8 @@ export function auditFromContext(
 }
 
 /**
- * История по заказу покупателя: сделка + все УПД/счета/ЗН/договоры + расходные.
+ * История по заказу покупателя: сделка + УПД/счета/ЗН + складские +
+ * перемещения (sto_transfer_request_events) + задания складу по сделке.
  */
 export function listAuditForDeal(
   dealIdRaw: string,
@@ -119,10 +132,10 @@ export function listAuditForDeal(
   const dealId = String(dealIdRaw || '').trim();
   const page = Math.max(1, opts?.page || 1);
   const limit = Math.min(200, Math.max(1, opts?.limit || 80));
-  const offset = (page - 1) * limit;
   if (!dealId) {
     return { items: [] as Row[], total: 0, page, limit, pages: 1 };
   }
+
   const salesIds = all<{ id: string }>(
     `SELECT id FROM sales_docs WHERE deal_id = ?`,
     [dealId]
@@ -132,9 +145,17 @@ export function listAuditForDeal(
      WHERE IFNULL(deal_id,'') = ? OR IFNULL(basis_order_id,'') = ?`,
     [dealId, dealId]
   ).map((r) => r.id);
+  const taskIds = all<{ id: string }>(
+    `SELECT id FROM warehouse_tasks WHERE IFNULL(deal_id,'') = ?`,
+    [dealId]
+  ).map((r) => r.id);
+  const transferReqs = all<{ id: string; number: string }>(
+    `SELECT id, IFNULL(number,'') AS number FROM sto_transfer_requests WHERE IFNULL(deal_id,'') = ?`,
+    [dealId]
+  );
 
-  const orParts: string[] = ['(entity = ? AND entity_id = ?)'];
-  const params: Array<string | number> = ['crm_deal', dealId];
+  const orParts: string[] = ['(entity = ? AND entity_id = ?)', '(entity = ? AND entity_id = ?)'];
+  const params: Array<string | number> = ['crm_deal', dealId, 'deal', dealId];
   for (const sid of salesIds) {
     orParts.push('(entity = ? AND entity_id = ?)');
     params.push('sales_doc', sid);
@@ -143,22 +164,99 @@ export function listAuditForDeal(
     orParts.push('(entity = ? AND entity_id = ?)');
     params.push('stock_doc', sid);
   }
+  for (const tid of taskIds) {
+    orParts.push('(entity = ? AND entity_id = ?)');
+    params.push('warehouse_task', tid);
+  }
   orParts.push(`(entity = 'deal_payment' AND (entity_id = ? OR summary LIKE ?))`);
   params.push(dealId, `%${dealId}%`);
   orParts.push(`(summary LIKE ?)`);
   params.push(`%сделка ${dealId}%`);
+  orParts.push(`(summary LIKE ? OR summary LIKE ?)`);
+  params.push(`%С${dealId}%`, `%П${dealId}%`);
 
   const whereSql = `WHERE ${orParts.join(' OR ')}`;
-  const total =
-    get<{ c: number }>(`SELECT COUNT(*) AS c FROM audit_log ${whereSql}`, params)?.c ?? 0;
-  const items = all(
+  const auditRows = all(
     `SELECT * FROM audit_log ${whereSql}
      ORDER BY datetime(created_at) DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limit, offset]
+     LIMIT 500`,
+    params
+  ) as Row[];
+
+  ensureStoTransferEventsSchema();
+  const transferEventRows: Row[] = [];
+  for (const req of transferReqs) {
+    const evs = all(
+      `SELECT id, request_id, event, actor_id, actor_name, summary, created_at
+       FROM sto_transfer_request_events
+       WHERE request_id = ?
+       ORDER BY datetime(created_at) DESC
+       LIMIT 80`,
+      [req.id]
+    ) as Array<Record<string, unknown>>;
+    const num = String(req.number || '').trim() || `С${dealId}`;
+    for (const ev of evs) {
+      const event = String(ev.event || '').trim();
+      const sumRaw = String(ev.summary || '').trim();
+      const sum =
+        sumRaw ||
+        ({
+          created: `${num} · создано`,
+          warehouse_task: `${num} · задание складу`,
+          transferred_courier: `${num} · Основной → Склад курьера`,
+          courier_handoff: `${num} · задание курьеру`,
+          courier_accepted: `${num} · курьер принял задание`,
+          courier_picked_up: `${num} · курьер к выполнению`,
+          courier_delivered: `${num} · курьер выполнил задание`,
+          courier_cancelled: `${num} · отмена у курьера`,
+        } as Record<string, string>)[event] ||
+        `${num} · ${event || 'событие'}`;
+      transferEventRows.push({
+        id: `xfer:${ev.id}`,
+        created_at: ev.created_at,
+        actor_id: ev.actor_id || '',
+        actor_name: ev.actor_name || '',
+        actor_login: '',
+        action: event ? `transfer.${event}` : 'transfer.event',
+        entity: 'sto_transfer',
+        entity_id: num,
+        summary: sum,
+        ip: '',
+        user_agent: '',
+        path: '',
+        before_json: '',
+        after_json: '',
+        meta_json: '',
+      });
+    }
+  }
+
+  // дедуп: если audit уже содержит тот же summary в ту же секунду — не дублируем
+  const seen = new Set(
+    auditRows.map(
+      (r) =>
+        `${String(r.created_at || '').slice(0, 19)}|${String(r.summary || '').trim().toLowerCase()}`
+    )
   );
+  const merged = [...auditRows];
+  for (const row of transferEventRows) {
+    const key = `${String(row.created_at || '').slice(0, 19)}|${String(row.summary || '')
+      .trim()
+      .toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(row);
+  }
+
+  merged.sort((a, b) =>
+    String(b.created_at || '').localeCompare(String(a.created_at || ''))
+  );
+  const total = merged.length;
+  const offset = (page - 1) * limit;
+  const pageItems = merged.slice(offset, offset + limit);
+
   return {
-    items,
+    items: enrichAuditItems(pageItems),
     total,
     page,
     limit,
@@ -167,6 +265,26 @@ export function listAuditForDeal(
 }
 
 type Row = Record<string, unknown>;
+
+/** UA + geo к записям журнала (для колонки IP). */
+export function enrichAuditItems(items: Row[]): Row[] {
+  const ips = items.map((r) => String(r.ip || '').trim()).filter(Boolean);
+  warmGeoIps(ips);
+  return items.map((r) => {
+    const ua = String(r.user_agent || '');
+    const ip = String(r.ip || '');
+    const parsed = parseUserAgent(ua);
+    const geo = peekGeo(ip);
+    return {
+      ...r,
+      os: parsed.os,
+      browser: parsed.browser,
+      device: parsed.device,
+      region: geo.region,
+      country: geo.country,
+    };
+  });
+}
 
 export function listAudit(opts: {
   q?: string;
@@ -234,7 +352,7 @@ export function listAudit(opts: {
     [...params, limit, offset]
   );
   return {
-    items,
+    items: enrichAuditItems(items as Row[]),
     total,
     page,
     limit,

@@ -39,6 +39,7 @@ function channelLabel(ch: string): string {
   const map: Record<string, string> = {
     cdek_prepaid: 'СДЭК предоплата',
     cdek_cod: 'СДЭК наложка',
+    avito_cod: 'Авито доставка',
     dellin: 'Деловые Линии',
     pek: 'ПЭК',
     bus: 'Автобус',

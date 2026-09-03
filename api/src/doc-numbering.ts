@@ -1,10 +1,10 @@
 /**
  * Нумерация:
  *   новые из заказа (Amo): СФ{сделка}, УПД{сделка}, Р{сделка}, Д{сделка},
- *     Сч{сделка}, ЗН{сделка}; заказ покупателя = номер сделки;
+ *     Сч{сделка}, ЗН = номер сделки (= заказ покупателя);
  *   синк/старое из 1С УНФ: 00НФ-… / счета meta.
  */
-import { get, run } from './db.js';
+import { all, get, run } from './db.js';
 import { odataConfigFromEnv, type OdataConfig } from './odata.js';
 
 /** Префикс + номер сделки; при коллизии — «-2», «-3»… */
@@ -32,15 +32,35 @@ export const DEAL_SALES_PREFIX: Record<string, string> = {
   upd: 'УПД',
   contract: 'Д',
   invoice: 'Сч',
-  workorder: 'ЗН',
+  /** Как заказ покупателя — сам номер сделки (без «ЗН»). */
+  workorder: '',
 };
 
 export function salesNumberFromDeal(docType: string, dealId: string): string {
-  const prefix = DEAL_SALES_PREFIX[docType];
-  if (!prefix) throw new Error(`Нет префикса для типа ${docType}`);
+  if (!(docType in DEAL_SALES_PREFIX)) throw new Error(`Нет префикса для типа ${docType}`);
+  const prefix = DEAL_SALES_PREFIX[docType] ?? '';
   return numberFromDeal(prefix, dealId, (n) =>
     Boolean(get('SELECT id FROM sales_docs WHERE number = ? LIMIT 1', [n]))
   );
+}
+
+/** Номер заказа покупателя / печати ЗН — id сделки (без префикса «ЗН»). */
+export function customerOrderNumberFromDeal(dealId: string): string {
+  return String(dealId || '')
+    .trim()
+    .replace(/\s+/g, '');
+}
+
+/** Для печати: «ЗН25527663» → «25527663»; иначе как есть. */
+export function workorderPrintNumber(
+  dealId: string | null | undefined,
+  salesNumber?: string | null
+): string {
+  const deal = customerOrderNumberFromDeal(String(dealId || ''));
+  if (deal) return deal;
+  const raw = String(salesNumber || '').trim();
+  const m = raw.match(/^ЗН(.+)$/i);
+  return m ? m[1] : raw;
 }
 
 /** Расходная по заказу: Р{сделка}. */
@@ -135,6 +155,82 @@ export function nextInvoiceNumber(): string {
 }
 
 const KEY_CONTRACT = 'doc_seq_contract';
+
+/** ИНН Безматерных М.П. — Стрела + Фогель одна серия УПД. */
+const UPD_INN_KRD = '231295963240';
+/** ИНН Безматерных Р.П. — Пневмоподвеска · Москва. */
+const UPD_INN_MSK = '231215603728';
+/** Последний занятый № до WMS: следующий УПД = +1 (Москва → 255, Краснодар → 90). */
+const UPD_LAST_BEFORE_SERIES: Record<string, number> = {
+  [UPD_INN_MSK]: 254,
+  [UPD_INN_KRD]: 89,
+};
+
+function updSeqKeyForInn(inn: string): string {
+  const d = String(inn || '').replace(/\D/g, '');
+  return d ? `doc_seq_upd_inn_${d}` : 'doc_seq_upd_default';
+}
+
+function updFallbackLast(inn: string): number {
+  return UPD_LAST_BEFORE_SERIES[inn] ?? 0;
+}
+
+/** Максимальный чисто числовой № УПД по ИНН продавца (на случай рассинхрона meta). */
+function maxOrdinalUpdNumberForInn(inn: string): number {
+  const digits = String(inn || '').replace(/\D/g, '');
+  if (!digits) return 0;
+  const rows = all<{ number: string }>(
+    `SELECT s.number FROM sales_docs s
+     JOIN organizations o ON o.id = s.organization_id
+     WHERE s.doc_type = 'upd' AND REPLACE(IFNULL(o.inn,''),' ','') = ?`,
+    [digits]
+  );
+  let max = 0;
+  for (const row of rows) {
+    const n = String(row.number || '').trim();
+    if (/^\d+$/.test(n)) max = Math.max(max, Number(n));
+  }
+  return max;
+}
+
+/** Установить «последний занятый» порядковый № УПД по ИНН (не следующий). */
+export function setLastOccupiedUpd(inn: string, lastOccupied: number): void {
+  const digits = String(inn || '').replace(/\D/g, '');
+  if (!digits) throw new Error('Некорректный ИНН для УПД');
+  const n = Math.max(0, Math.floor(lastOccupied));
+  metaSet(updSeqKeyForInn(digits), String(n));
+}
+
+/** Последний занятый порядковый № УПД по ИНН продавца (не привязка к сделке). */
+export function nextOrdinalUpdNumber(organizationId: string): string {
+  const orgId = String(organizationId || '').trim();
+  let inn = '';
+  if (orgId) {
+    inn = String(
+      get<{ inn: string }>(`SELECT IFNULL(inn,'') AS inn FROM organizations WHERE id = ?`, [orgId])
+        ?.inn || ''
+    ).replace(/\D/g, '');
+  }
+  if (!inn) inn = UPD_INN_MSK;
+  const key = updSeqKeyForInn(inn);
+  run('BEGIN');
+  try {
+    const cur = readSeq(key, updFallbackLast(inn));
+    const maxDoc = maxOrdinalUpdNumberForInn(inn);
+    const last = Math.max(cur, maxDoc);
+    const next = last + 1;
+    metaSet(key, String(next));
+    run('COMMIT');
+    return String(next);
+  } catch (e) {
+    try {
+      run('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw e;
+  }
+}
 
 /** Договоры с контрагентами: ДГ-00001 */
 export function nextContractNumber(): string {
@@ -264,6 +360,8 @@ export function applyDocNumberingPatch(patch: {
   last_out?: string | number;
   last_in?: string | number;
   last_invoice?: string | number;
+  last_upd_msk?: string | number;
+  last_upd_krd?: string | number;
 }): DocNumberingState {
   if (patch.last_out != null && patch.last_out !== '') {
     const n =
@@ -293,6 +391,22 @@ export function applyDocNumberingPatch(patch: {
     setLastOccupied('invoice', n);
     metaSet('doc_numbering_last_invoice_1c', raw || String(n));
     metaSet('doc_numbering_invoice_note', `Последний счёт задан вручную: ${raw || n}`);
+  }
+  if (patch.last_upd_msk != null && patch.last_upd_msk !== '') {
+    const n =
+      typeof patch.last_upd_msk === 'number'
+        ? patch.last_upd_msk
+        : parseTrailingNumber(String(patch.last_upd_msk));
+    if (n == null) throw new Error('Некорректный last_upd_msk');
+    setLastOccupiedUpd(UPD_INN_MSK, n);
+  }
+  if (patch.last_upd_krd != null && patch.last_upd_krd !== '') {
+    const n =
+      typeof patch.last_upd_krd === 'number'
+        ? patch.last_upd_krd
+        : parseTrailingNumber(String(patch.last_upd_krd));
+    if (n == null) throw new Error('Некорректный last_upd_krd');
+    setLastOccupiedUpd(UPD_INN_KRD, n);
   }
   return getDocNumberingState();
 }

@@ -11,14 +11,22 @@
   }
 
   function esc(s) {
-    return (L() && L().esc ? L().esc(s) : String(s ?? ''))
-      .replaceAll?.('&', '&amp;')
-      .replaceAll?.('<', '&lt;') ||
-      String(s ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+    if (L() && L().esc) return L().esc(s);
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  /** Если в БД уже лежит &quot; из старого двойного esc — вернуть нормальные кавычки. */
+  function decodeHtmlEntities(s) {
+    return String(s ?? '')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
   }
 
   /** Превью печати/подписи на белом фоне по клику */
@@ -54,9 +62,9 @@
 
   function money(n) {
     if (L() && L().formatMoney) return L().formatMoney(n);
-    const x = Number(n) || 0;
+    const x = Math.round(Number(n) || 0);
     return (
-      x.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/\s/g, '\u00a0') +
+      x.toLocaleString('ru-RU', { maximumFractionDigits: 0 }).replace(/\s/g, '\u00a0') +
       '\u00a0₽'
     );
   }
@@ -901,7 +909,8 @@
         <thead><tr>
           <th data-col-id="name">Название</th>
           <th data-col-id="inn">ИНН</th>
-          <th data-col-id="kpp">КПП</th>
+          <th data-col-id="phone">Телефон</th>
+          <th data-col-id="site">Адрес СТО</th>
           <th data-col-id="status">Статус</th>
         </tr></thead>
         <tbody>
@@ -911,14 +920,17 @@
                 const status = r.is_active
                   ? '<span class="badge">Активен</span>'
                   : '<span class="muted">Архив</span>';
+                const site = r.site_address || r.profile?.site_address || '';
+                const phone = r.phone || r.profile?.phone || '';
                 return `<tr class="clickable" data-le-open="${esc(r.id)}">
             <td>${esc(r.name)}</td>
             <td class="mono">${esc(r.inn || '')}</td>
-            <td class="mono">${esc(r.kpp || '—')}</td>
+            <td class="mono">${esc(phone || '—')}</td>
+            <td>${esc(site || '—')}</td>
             <td>${status}</td>
           </tr>`;
               })
-              .join('') || `<tr><td colspan="4" class="muted">Нет юрлиц — добавьте</td></tr>`
+              .join('') || `<tr><td colspan="5" class="muted">Нет юрлиц — добавьте</td></tr>`
           }
         </tbody>
       </table></div>
@@ -1044,10 +1056,13 @@
           <label>КПП<input id="oe-kpp" class="mono" value="${esc(p.kpp || '')}" /></label>
           <label>ОГРН/ОГРНИП<input id="oe-ogrnip" class="mono" value="${esc(p.ogrnip || '')}" /></label>
           <label>НДС %<input id="oe-vat" class="mono" value="${esc(p.vat_rate ?? 5)}" /></label>
-          <label class="span-2">Адрес<input id="oe-address" value="${esc(p.address || '')}" /></label>
-          <label>Телефон<input id="oe-phone" value="${esc(p.phone || '')}" /></label>
+          <label class="span-2">Адрес регистрации (юр.)<input id="oe-address" value="${esc(p.address || '')}" /></label>
+          <label class="span-2">Адрес СТО (пост)<input id="oe-site-address" value="${esc(p.site_address || '')}" placeholder="ул. … / Можайское шоссе…" /></label>
+          <label class="span-2">Режим работы поста<input id="oe-work-hours" value="${esc(p.work_hours || '')}" placeholder="понедельник — суббота с 9:00 до 19:00" /></label>
+          <label>Телефон приёмки<input id="oe-phone" value="${esc(p.phone || '')}" placeholder="+7 …" /></label>
+          <label>E-mail<input id="oe-email" type="email" value="${esc(p.email || '')}" placeholder="info@…" /></label>
           <label>Руководитель<input id="oe-director" value="${esc(p.director || '')}" /></label>
-          <label class="span-2">Банк<input id="oe-bank" value="${esc(p.bank || '')}" /></label>
+          <label class="span-2">Банк<input id="oe-bank" value="${esc(decodeHtmlEntities(p.bank || ''))}" /></label>
           <label>БИК<input id="oe-bik" class="mono" value="${esc(p.bik || '')}" /></label>
           <label>Р/с<input id="oe-rs" class="mono" value="${esc(p.rs || '')}" /></label>
           <label>К/с<input id="oe-ks" class="mono" value="${esc(p.ks || '')}" /></label>
@@ -1132,9 +1147,12 @@
         ogrnip: document.getElementById('oe-ogrnip').value,
         vat_rate: Number(document.getElementById('oe-vat').value) || 0,
         address: document.getElementById('oe-address').value,
+        site_address: document.getElementById('oe-site-address').value,
+        work_hours: document.getElementById('oe-work-hours').value,
         phone: document.getElementById('oe-phone').value,
+        email: document.getElementById('oe-email').value,
         director: document.getElementById('oe-director').value,
-        bank: document.getElementById('oe-bank').value,
+        bank: decodeHtmlEntities(document.getElementById('oe-bank').value),
         bik: document.getElementById('oe-bik').value,
         rs: document.getElementById('oe-rs').value,
         ks: document.getElementById('oe-ks').value,
@@ -1592,24 +1610,40 @@
     leg.view.innerHTML = leg.formChrome(
       cfg.title,
       `
-      <p class="muted" style="margin:0 0 10px">${esc(data.note || '')}</p>
+      <p class="muted" style="margin:0 0 10px">${esc(data.note || '')}${
+        cfg.key === 'money_refund_requests'
+          ? ' · Из карточки заказа: «Вернуть СБП/карту» или «ПП на подпись».'
+          : ''
+      }</p>
       <table>
-        <thead><tr><th>№</th><th>Дата</th><th>Контрагент</th><th>Сумма</th><th>Статус</th><th>Комментарий</th></tr></thead>
+        <thead><tr><th>№</th><th>Дата</th><th>Контрагент</th><th>Сумма</th><th>Статус</th><th>Комментарий</th>${
+          cfg.key === 'money_refund_requests' ? '<th></th>' : ''
+        }</tr></thead>
         <tbody>
           ${
             items
-              .map(
-                (r) => `<tr>
+              .map((r) => {
+                const tvdBtns =
+                  cfg.key === 'money_refund_requests'
+                    ? `<td style="white-space:nowrap">
+                        <button type="button" class="mw-tvd-refund" data-id="${esc(r.id)}">СБП/карта</button>
+                        <button type="button" class="mw-tvd-forsign" data-id="${esc(r.id)}">ПП</button>
+                      </td>`
+                    : '';
+                return `<tr>
               <td class="mono">${esc(r.number)}</td>
               <td>${esc(String(r.doc_date || '').slice(0, 10))}</td>
               <td>${esc(r.counterparty_name || '—')}</td>
               <td class="mono">${r.amount ? money(r.amount) : '—'}</td>
               <td>${esc(r.status || 'draft')}</td>
               <td>${esc(r.comment || '')}</td>
-            </tr>`
-              )
+              ${tvdBtns}
+            </tr>`;
+              })
               .join('') ||
-            `<tr><td colspan="6" class="muted">Пока нет записей — пусто OK.</td></tr>`
+            `<tr><td colspan="${
+              cfg.key === 'money_refund_requests' ? 7 : 6
+            }" class="muted">Пока нет записей — пусто OK.</td></tr>`
           }
         </tbody>
       </table>`,
@@ -1624,6 +1658,48 @@
       }
     );
     leg.bindFormChrome(() => leg.showSection(cfg.section));
+    if (cfg.key === 'money_refund_requests') {
+      leg.view.querySelectorAll('.mw-tvd-refund').forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute('data-id') || '';
+          if (!id || !confirm('Вернуть по исходному СБП/карте через Точку?')) return;
+          btn.disabled = true;
+          try {
+            const r = await leg.api(
+              '/parity/journals/money_refund_requests/' + encodeURIComponent(id) + '/tochka-refund',
+              { method: 'POST', body: JSON.stringify({ channel: 'auto', mark_done: true }) }
+            );
+            alert('Возврат ' + (r.channel || '') + ' · ' + (r.amount != null ? r.amount + ' ₽' : 'ok'));
+            renderThin(viewId);
+          } catch (e) {
+            btn.disabled = false;
+            alert(e.message || String(e));
+          }
+        };
+      });
+      leg.view.querySelectorAll('.mw-tvd-forsign').forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute('data-id') || '';
+          if (!id || !confirm('Создать ПП на подпись в Точке по этому ТВД?')) return;
+          btn.disabled = true;
+          try {
+            const r = await leg.api(
+              '/parity/journals/money_refund_requests/' +
+                encodeURIComponent(id) +
+                '/tochka-payment-for-sign',
+              { method: 'POST', body: '{}' }
+            );
+            if (r.redirect_url) window.open(r.redirect_url, '_blank', 'noopener');
+            else alert('ПП создано · ' + (r.request_id || ''));
+            btn.disabled = false;
+            renderThin(viewId);
+          } catch (e) {
+            btn.disabled = false;
+            alert(e.message || String(e));
+          }
+        };
+      });
+    }
     const search = document.getElementById('mw-search');
     if (search) {
       search.onclick = () => {

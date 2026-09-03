@@ -11,6 +11,7 @@ function env(name: string): string {
   return (process.env[name] || '').trim();
 }
 
+/** Токен бота Учёта (@RubtsovHelpBot). Env: TELEGRAM_BOT_TOKEN / WMS_TELEGRAM_BOT_TOKEN */
 export function telegramBotToken(): string {
   return env('TELEGRAM_BOT_TOKEN') || env('WMS_TELEGRAM_BOT_TOKEN');
 }

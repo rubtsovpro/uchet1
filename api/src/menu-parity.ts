@@ -321,7 +321,7 @@ export function listCashRegistersWithBalances(opts?: {
       organization_name: String(r.organization_name || ''),
       organization_short: String(r.organization_short || r.organization_name || ''),
       organization_inn: String(r.organization_inn || ''),
-      balance: Math.round((Number(row?.balance) || 0) * 100) / 100,
+      balance: Math.round(Number(row?.balance) || 0),
       docs_count: Number(row?.docs_count) || 0,
     };
   });
@@ -1001,7 +1001,7 @@ export function cashBook(limit = 200) {
     const amt = Number(r.amount) || 0;
     if (r.doc_type === 'in') bal += amt;
     else bal -= amt;
-    return { ...r, amount: amt, balance: Math.round(bal * 100) / 100 };
+    return { ...r, amount: amt, balance: Math.round(bal) };
   });
   return {
     note: 'Кассовая книга по локальным ПКО/РКО Учёт №1. Не заменяет кассовую книгу 1С.',
@@ -1549,7 +1549,7 @@ export function homeKpi() {
     debts_receivable: { amount: 0, note: 'Единая дебиторка — позже (P2)' },
     debts_payable: { amount: 0, note: 'Кредиторка — позже (P2)' },
     net_assets: {
-      amount: Math.round((cashBal + stockVal) * 100) / 100,
+      amount: Math.round(cashBal + stockVal),
       note: 'Черновик: касса локальная + оценка склада; не баланс 1С',
     },
     leads: { count: 0, note: 'Лиды ведутся в Amo CRM' },

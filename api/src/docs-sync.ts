@@ -131,9 +131,11 @@ function ensureWarehouse(id: string): string {
     const fallback = '00000000-0000-0000-0000-000000000001';
     if (!get('SELECT id FROM warehouses WHERE id = ?', [fallback])) {
       run(
-        `INSERT OR IGNORE INTO warehouses (id, name, code, is_active) VALUES (?, 'Склад не указан (1С)', '1C-NONE', 1)`,
+        `INSERT OR IGNORE INTO warehouses (id, name, code, is_active) VALUES (?, 'Склад не указан (1С)', '1C-NONE', 0)`,
         [fallback]
       );
+    } else {
+      run(`UPDATE warehouses SET is_active = 0 WHERE id = ? AND code = '1C-NONE'`, [fallback]);
     }
     return fallback;
   }

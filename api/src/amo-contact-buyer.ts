@@ -1,10 +1,12 @@
 /**
  * Пуш реквизитов (договор / карточка контрагента) → Amo контакт/компания.
- * Только пустые поля, без перезаписи. CLI: update_contact_buyer_for_wms.php
+ * «Название» в Amo не перезаписываем; при другом имени из Учёта — поле «Покупатель».
+ * CLI: update_contact_buyer_for_wms.php
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { get, all } from './db.js';
+import { amoPushToAmoEnabled } from './amo-settings.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -34,11 +36,12 @@ export type AmoContactBuyerPushResult =
       contact_id?: number | null;
       company_id?: number | null;
       filled?: string[];
-      skipped?: string[];
+      skipped?: string[] | boolean;
       name_differs?: boolean;
       changed?: boolean;
       amo_name?: string;
       form_name?: string;
+      push_skipped?: boolean;
     }
   | { ok: false; error: string; http?: number; contact_id?: number; company_id?: number };
 
@@ -90,9 +93,12 @@ export async function pushContractBuyerToAmoContact(opts: {
   contactId?: string;
   companyId?: string;
   buyer: ContractBuyerPush;
-  /** Перезаписать name в Amo, даже если уже заполнено */
+  /** Обновить поле «Покупатель» в Amo (название контакта не трогаем) */
   forceName?: boolean;
 }): Promise<AmoContactBuyerPushResult> {
+  if (!amoPushToAmoEnabled()) {
+    return { ok: true, push_skipped: true, changed: false, filled: [] };
+  }
   const dealId = String(opts.dealId || '').replace(/\D/g, '');
   const contactId = String(opts.contactId || '').replace(/\D/g, '');
   const companyId = String(opts.companyId || '').replace(/\D/g, '');
@@ -129,6 +135,9 @@ export async function pushCounterpartyToAmo(opts: {
   results: AmoContactBuyerPushResult[];
   error?: string;
 }> {
+  if (!amoPushToAmoEnabled()) {
+    return { ok: true, results: [{ ok: true, push_skipped: true, changed: false, filled: [] }] };
+  }
   const id = String(opts.counterpartyId || '').trim();
   if (!id) return { ok: false, results: [], error: 'counterparty id required' };
 

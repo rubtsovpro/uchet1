@@ -605,7 +605,94 @@ export function listThinJournalDocs(journalKey: string, limit = 200, q = '') {
   };
 }
 
-function parsePayloadLines(payloadJson: string): Array<{
+/** Журнал перемещений: thin + заявки С… (sto_transfer_requests). */
+export function listTransferOrdersJournal(limit = 200, q = '') {
+  const base = listThinJournalDocs('transfer_orders', limit, q);
+  const lim = Math.min(500, Math.max(1, Math.floor(Number(limit) || 200)));
+  const like = `%${(q || '').trim()}%`;
+  const stoRows = all<{
+    id: string;
+    number: string;
+    status: string;
+    deal_id: string;
+    comment: string;
+    created_at: string;
+    warehouse_task_id: string;
+    dest_warehouse_id: string;
+  }>(
+    `SELECT id, IFNULL(number,'') AS number, IFNULL(status,'') AS status,
+            IFNULL(deal_id,'') AS deal_id, IFNULL(comment,'') AS comment,
+            IFNULL(created_at,'') AS created_at,
+            IFNULL(warehouse_task_id,'') AS warehouse_task_id,
+            IFNULL(dest_warehouse_id,'') AS dest_warehouse_id
+     FROM sto_transfer_requests
+     WHERE (? = '%%' OR number LIKE ? OR deal_id LIKE ? OR comment LIKE ? OR status LIKE ?)
+     ORDER BY datetime(created_at) DESC
+     LIMIT ?`,
+    [like, like, like, like, like, lim]
+  );
+  const whName = (wid: string) => {
+    if (!wid) return '';
+    const w = get<{ name: string }>(
+      `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
+      [wid]
+    );
+    return String(w?.name || '').trim();
+  };
+  const stoItems = stoRows.map((r) => {
+    const task = r.warehouse_task_id
+      ? get<{ number: string; status: string }>(
+          `SELECT IFNULL(number,'') AS number, IFNULL(status,'') AS status
+           FROM warehouse_tasks WHERE id = ?`,
+          [r.warehouse_task_id]
+        )
+      : null;
+    const linesCount =
+      get<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM sto_transfer_request_lines WHERE request_id = ?`,
+        [r.id]
+      )?.c || 0;
+    const toLabel = whName(r.dest_warehouse_id) || 'Склад курьера / СТО';
+    const route = `Основной склад → ${toLabel}`;
+    return {
+      id: r.id,
+      journal_key: 'transfer_orders',
+      number: r.number,
+      doc_date: String(r.created_at || '').slice(0, 10),
+      status: r.status === 'done' ? 'done' : r.status || 'new',
+      counterparty_name: route,
+      amount: 0,
+      comment: r.deal_id
+        ? `заказ ${r.deal_id}${r.comment ? ' · ' + r.comment : ''}`
+        : String(r.comment || '').trim(),
+      created_at: r.created_at,
+      lines_count: linesCount,
+      from_label: 'Основной склад',
+      to_label: toLabel,
+      stock_doc_id: '',
+      stock_doc_number: '',
+      warehouse_task_id: r.warehouse_task_id,
+      warehouse_task_number: task?.number || r.number,
+      deal_id: r.deal_id,
+      kind: 'sto_transfer',
+    };
+  });
+  const seen = new Set((base.items || []).map((x: { id: string }) => x.id));
+  const merged = [...(base.items || [])];
+  for (const s of stoItems) {
+    if (!seen.has(s.id)) merged.push(s);
+  }
+  merged.sort((a, b) =>
+    String(b.doc_date || b.created_at || '').localeCompare(String(a.doc_date || a.created_at || ''))
+  );
+  return {
+    ...base,
+    total: merged.length,
+    items: merged.slice(0, lim),
+  };
+}
+
+export type ThinPayloadLine = {
   product_id: string;
   name: string;
   article: string;
@@ -616,7 +703,24 @@ function parsePayloadLines(payloadJson: string): Array<{
   category: string;
   category_id: string;
   serials: string[];
-}> {
+  old_sku: string;
+};
+
+export type ThinOrderLineInput = {
+  product_id: string;
+  qty?: number;
+  price?: number;
+  article?: string;
+  name?: string;
+  old_sku?: string;
+  serials?: string[];
+};
+
+export function parseThinSupplierOrderLines(payloadJson: string): ThinPayloadLine[] {
+  return parsePayloadLines(payloadJson);
+}
+
+function parsePayloadLines(payloadJson: string): ThinPayloadLine[] {
   if (!payloadJson) return [];
   try {
     const payload = JSON.parse(payloadJson) as { lines?: unknown };
@@ -642,6 +746,7 @@ function parsePayloadLines(payloadJson: string): Array<{
           category: String(row.category || ''),
           category_id: String(row.category_id || ''),
           serials,
+          old_sku: String(row.old_sku || '').trim(),
         };
       })
       .filter((l) => l.name || l.product_id || l.qty);
@@ -835,7 +940,13 @@ export function getThinJournalDoc(journalKey: string, id: string) {
     source: String(payload.source || ''),
     warehouse: String(payload.warehouse || payload.warehouse_name || ''),
     warehouse_name: String(payload.warehouse_name || payload.warehouse || ''),
+    warehouse_id: String(payload.warehouse_id || ''),
     counterparty_id: counterpartyId,
+    organization_id: String(payload.organization_id || ''),
+    invoice_number: String(payload.invoice_number || payload.supply_number || ''),
+    invoice_date: String(payload.invoice_date || '').slice(0, 10),
+    expected_arrival_date: String(payload.expected_arrival_date || '').slice(0, 10),
+    supply_number: String(payload.supply_number || payload.invoice_number || ''),
     from_label: String(payload.from_label || ''),
     to_label: String(payload.to_label || ''),
     user_comment: String(payload.user_comment || ''),
@@ -846,6 +957,128 @@ export function getThinJournalDoc(journalKey: string, id: string) {
     lines,
     lines_count: lines.length,
   };
+}
+
+/** Заменить/дописать строки заказа поставщику (без авто-марок по умолчанию). */
+export function replaceThinSupplierOrderLines(
+  id: string,
+  inputLines: ThinOrderLineInput[],
+  opts?: { append?: boolean; allocate_marks?: boolean }
+) {
+  const journalKey = 'supplier_orders';
+  const row = get<{ id: string; payload_json: string }>(
+    `SELECT id, IFNULL(payload_json,'') AS payload_json
+     FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
+    [id, journalKey]
+  );
+  if (!row) return null;
+  const payload = readPayloadObject(row.payload_json);
+  const lines: ThinPayloadLine[] = opts?.append ? parsePayloadLines(row.payload_json) : [];
+  let maxNo = lines.reduce((m, l) => Math.max(m, Number(l.line_no) || 0), 0);
+  for (const input of inputLines) {
+    const productId = String(input.product_id || '').trim();
+    if (!productId) throw new Error('product_id required');
+    const product = get<{ id: string; sku: string; name: string; code: string }>(
+      `SELECT id, IFNULL(sku,'') AS sku, IFNULL(name,'') AS name, IFNULL(code,'') AS code
+       FROM products WHERE id = ?`,
+      [productId]
+    );
+    if (!product) throw new Error('product not found: ' + productId);
+    const qty = Number(input.qty);
+    const qtySafe = Number.isFinite(qty) && qty > 0 ? qty : 1;
+    const priceIn = Number(input.price);
+    const price = Number.isFinite(priceIn) && priceIn >= 0 ? priceIn : 0;
+    const amount = Math.round(qtySafe * price);
+    maxNo += 1;
+    lines.push({
+      product_id: product.id,
+      name: String(input.name || product.name || product.sku || 'Товар'),
+      article: String(input.article || product.sku || product.code || ''),
+      qty: qtySafe,
+      price,
+      amount,
+      line_no: maxNo,
+      category: '',
+      category_id: '',
+      serials: Array.isArray(input.serials)
+        ? input.serials.map((s) => String(s || '').trim()).filter(Boolean)
+        : [],
+      old_sku: String(input.old_sku || '').trim(),
+    });
+  }
+  saveThinPayload(id, payload, lines);
+  if (opts?.allocate_marks) {
+    const allocated = allocateThinJournalDatamatrix(journalKey, id, { force: false });
+    if (allocated) return allocated;
+  }
+  return getThinJournalDoc(journalKey, id);
+}
+
+/** Обновить поля шапки заказа в payload_json. */
+export function patchThinSupplierOrderHeader(
+  id: string,
+  patch: {
+    status?: string;
+    comment?: string;
+    doc_date?: string;
+    counterparty_name?: string;
+    counterparty_id?: string;
+    organization_id?: string;
+    invoice_number?: string;
+    invoice_date?: string;
+    expected_arrival_date?: string;
+    warehouse_id?: string;
+    supply_number?: string;
+  }
+) {
+  const row = get<{ id: string; payload_json: string }>(
+    `SELECT id, IFNULL(payload_json,'') AS payload_json
+     FROM thin_journal_docs WHERE id = ? AND journal_key = 'supplier_orders'`,
+    [id]
+  );
+  if (!row) return null;
+  const payload = readPayloadObject(row.payload_json);
+  const lines = parsePayloadLines(row.payload_json);
+  if (patch.counterparty_id != null) payload.counterparty_id = String(patch.counterparty_id).trim();
+  if (patch.organization_id != null) payload.organization_id = String(patch.organization_id).trim();
+  if (patch.invoice_number != null) {
+    const inv = String(patch.invoice_number).trim();
+    payload.invoice_number = inv;
+    if (!payload.supply_number) payload.supply_number = inv;
+  }
+  if (patch.supply_number != null) payload.supply_number = String(patch.supply_number).trim();
+  if (patch.invoice_date != null) payload.invoice_date = String(patch.invoice_date).slice(0, 10);
+  if (patch.expected_arrival_date != null) {
+    payload.expected_arrival_date = String(patch.expected_arrival_date).slice(0, 10);
+  }
+  if (patch.warehouse_id != null) payload.warehouse_id = String(patch.warehouse_id).trim();
+
+  if (patch.status != null) {
+    run(`UPDATE thin_journal_docs SET status = ?, updated_at = datetime('now') WHERE id = ?`, [
+      String(patch.status).trim(),
+      id,
+    ]);
+  }
+  if (patch.comment != null) {
+    run(`UPDATE thin_journal_docs SET comment = ?, updated_at = datetime('now') WHERE id = ?`, [
+      String(patch.comment).trim(),
+      id,
+    ]);
+  }
+  if (patch.doc_date != null) {
+    run(`UPDATE thin_journal_docs SET doc_date = ?, updated_at = datetime('now') WHERE id = ?`, [
+      String(patch.doc_date).slice(0, 10),
+      id,
+    ]);
+  }
+  if (patch.counterparty_name != null) {
+    run(
+      `UPDATE thin_journal_docs SET counterparty_name = ?, updated_at = datetime('now') WHERE id = ?`,
+      [String(patch.counterparty_name).trim(), id]
+    );
+  }
+  saveThinPayload(id, payload, lines);
+  return getThinJournalDoc('supplier_orders', id);
 }
 
 export function createThinJournalDoc(
@@ -910,7 +1143,7 @@ function saveThinPayload(
   lines: Array<{ qty: number; price: number; amount: number }>
 ) {
   const next = { ...payload, lines };
-  const amount = Math.round(linesAmount(lines) * 100) / 100;
+  const amount = Math.round(linesAmount(lines));
   run(
     `UPDATE thin_journal_docs
      SET payload_json = ?, amount = ?, updated_at = datetime('now')
@@ -951,7 +1184,7 @@ export function addThinJournalLine(
   const qtySafe = Number.isFinite(qty) && qty > 0 ? qty : 1;
   const priceIn = Number(input.price);
   const price = Number.isFinite(priceIn) && priceIn >= 0 ? priceIn : 0;
-  const amount = Math.round(qtySafe * price * 100) / 100;
+  const amount = Math.round(qtySafe * price);
   const maxNo = lines.reduce((m, l) => Math.max(m, Number(l.line_no) || 0), 0);
   lines.push({
     product_id: product.id,
@@ -964,6 +1197,7 @@ export function addThinJournalLine(
     category: '',
     category_id: '',
     serials: [],
+    old_sku: '',
   });
   saveThinPayload(id, payload, lines);
   // Заказ поставщику: марки сразу на qty

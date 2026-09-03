@@ -283,7 +283,7 @@
       div.innerHTML = `
         <input class="pid" list="prod-list" placeholder="product_id" value="${esc(product_id)}" />
         <input class="qty" type="number" min="1" value="${qty}" />
-        <input class="price" type="number" step="0.01" placeholder="цена" />
+        <input class="price" type="number" step="1" placeholder="цена" />
         <button type="button" class="btn rm">✕</button>`;
       div.querySelector('.rm').onclick = () => div.remove();
       box.appendChild(div);

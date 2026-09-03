@@ -219,25 +219,55 @@
       if (on) btn.dataset.label = btn.textContent || labelIdle || 'Войти';
       btn.textContent = on ? 'Вход…' : (btn.dataset.label || labelIdle || 'Войти');
     }
+    function kioskPathOnly(raw) {
+      const p = String(raw || '').split('?')[0].split('#')[0];
+      return /^\/(pick|photo|lift|reception)(\/|$)/i.test(p);
+    }
+    function safeNextPath(raw) {
+      const qs = String(raw || '').trim();
+      if (!qs || !qs.startsWith('/') || qs.startsWith('//')) return '';
+      return qs;
+    }
     function goNext(data) {
       if (data && data.user) saveLast(data.user);
-      const qs = new URLSearchParams(location.search).get('next');
+      const qs = safeNextPath(new URLSearchParams(location.search).get('next'));
+      const homeRaw = (data && data.home_path) || screenHome || '/';
+      const home =
+        typeof homeRaw === 'string' && homeRaw.trim() ? homeRaw.trim() : '/';
+      const role = data && data.user ? String(data.user.role || '') : '';
+      const isAdmin =
+        role === 'admin' ||
+        (data && data.user && String(data.user.id || '') === '__admin__');
       let dest = '/';
-      if (qs && qs.startsWith('/') && !qs.startsWith('//')) dest = qs;
-      else {
-        const home = (data && data.home_path) || screenHome || '/';
-        dest = home.startsWith('/') && !home.startsWith('//') ? home : '/';
+      const isPhotographer = role === 'photographer';
+      // Фотограф — на главную, не уводить на /pick из next=.
+      if (isPhotographer) {
+        dest = home === '/' || home.startsWith('/') ? home : '/';
+      } else if (qs && kioskPathOnly(qs)) {
+        // Прямая ссылка на киоск (/pick?site=…) — всегда туда, в т.ч. после входа админа.
+        dest = qs;
+      } else if (isAdmin || home === '/' || /^https?:\/\//i.test(home)) {
+        dest = home;
+      } else if (qs) {
+        dest = qs;
+      } else if (home.startsWith('/') && !home.startsWith('//')) {
+        dest = home;
       }
-      // Prefer same origin (https after nginx TLS fix). Keep absolute only if needed.
       setTimeout(() => {
-        location.replace(dest);
+        if (/^https?:\/\//i.test(dest)) location.replace(dest);
+        else location.replace(dest.startsWith('/') && !dest.startsWith('//') ? dest : '/');
       }, 50);
     }
-    function loginPayload(username, secret) {
+    function loginPayload(username, secret, preferPin) {
       const s = String(secret || '');
       const digits = s.replace(/\D/g, '');
-      // короткий числовой секрет → PIN; иначе пароль
-      if (digits.length >= 4 && digits.length <= 6 && digits === s.trim()) {
+      // На быстром входе с PIN — числовой секрет 1–6 цифр как PIN; иначе пароль
+      if (
+        preferPin &&
+        digits.length >= 1 &&
+        digits.length <= 6 &&
+        digits === s.trim()
+      ) {
         return { username, pin: digits };
       }
       return { username, password: s };
@@ -270,7 +300,10 @@
         const btn = document.getElementById('quick-submit');
         setBusy(btn, true, 'Продолжить');
         try {
-          const data = await post('/login', loginPayload(fd.get('username'), fd.get('secret')));
+          const data = await post(
+            '/login',
+            loginPayload(fd.get('username'), fd.get('secret'), !!(lastUser && lastUser.has_pin))
+          );
           if (data.need_2fa && data.challenge_id && twofaEnabled) {
             setBusy(btn, false, 'Продолжить');
             showTwofa(data.challenge_id, data.hint);
@@ -306,6 +339,28 @@
     }
     lastUser = readLast();
     showLogin();
+    // Уже в сессии — не держим на /login, возвращаем на ?next= или экран роли.
+    fetch('/api/me', { credentials: 'same-origin' })
+      .then(async (r) => {
+        if (!r.ok) return;
+        const me = await r.json().catch(() => null);
+        if (!me || !me.id) return;
+        const qs = safeNextPath(new URLSearchParams(location.search).get('next'));
+        let dest = qs;
+        if (!dest) {
+          if (me.role === 'warehouse') dest = '/pick';
+          else if (me.role === 'courier') dest = '/courier';
+          else if (me.role === 'photographer') dest = '/';
+          else if (me.role === 'sto') dest = '/lift';
+          else dest = screenHome || '/';
+        }
+        // Фотограф не уезжает на /pick|/photo из ?next=
+        if (me.role === 'photographer') {
+          dest = '/';
+        }
+        location.replace(dest.startsWith('/') && !dest.startsWith('//') ? dest : '/');
+      })
+      .catch(() => {});
   </script>
 </body>
 </html>

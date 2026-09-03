@@ -36,3 +36,14 @@ api/tsconfig.tsbuildinfo
 *.tsbuildinfo
 # Cloudflare Wrangler local cache
 **/.wrangler/
+
+# one-off remote hacks (not product)
+tools/_*.py
+tools/_*.php
+tmp-*.docx
+tmp-*.png
+tmp-*.js
+tmp-*.py
+
+api/assets/sto-templates/_backup-*/
+api/assets/sto-templates/_upload/

@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Учёт №1" />
+  <meta name="theme-color" content="#0f766e" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta name="reception-photo-ui" content="brand-top-v8-intake" />
+  <link rel="manifest" href="/reception-photo.webmanifest?v=7" />
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <title>Фото авто · приёмка · Учёт №1</title>
+  <style>
+    :root {
+      --bg: #e8f0f0;
+      --bg2: #d4e4e4;
+      --card: #fff;
+      --text: #0f1f1f;
+      --muted: #5a6f6f;
+      --line: #b8cece;
+      --brand: #0f766e;
+      --brand-deep: #0d9488;
+      --brand-soft: #f0fdfa;
+      --accent: #0d7377;
+      --ok: #1b8a5a;
+      --bad: #c0392b;
+      --shadow: 0 2px 10px rgba(13, 50, 50, 0.08);
+      --tap: 52px;
+      --taxi-line: #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      color: var(--text);
+      font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      min-height: 100dvh;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: pan-x pan-y;
+    }
+    body {
+      overflow-x: hidden;
+      background: linear-gradient(180deg, var(--bg), var(--bg2));
+      padding: 0;
+    }
+    /* Верхняя полоса как в основном Учёте */
+    .app-chrome {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: saturate(1.2) blur(10px);
+      -webkit-backdrop-filter: saturate(1.2) blur(10px);
+      border-bottom: 1px solid var(--line);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
+    }
+    .app-chrome-inner {
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 10px 12px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+    .app-chrome::after {
+      content: "";
+      display: block;
+      height: 2px;
+      background: linear-gradient(90deg, var(--brand), var(--brand-deep));
+    }
+    .wrap {
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 12px;
+      padding-bottom: max(16px, env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .ptr-bar {
+      position: fixed;
+      left: 0;
+      right: 0;
+      top: 0;
+      z-index: 80;
+      height: 0;
+      overflow: hidden;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      pointer-events: none;
+      background: linear-gradient(180deg, rgba(15, 118, 110, 0.12), transparent);
+      transition: height 0.12s ease-out;
+    }
+    .ptr-bar.is-visible { transition: none; }
+    .ptr-bar span {
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--brand);
+      letter-spacing: 0.02em;
+    }
+    /* Шапка как на Приёмщик / supply / taxi-top */
+    header.top {
+      display: none;
+    }
+    .brand {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+      flex: 1;
+    }
+    .brand-logo {
+      width: 32px;
+      height: 32px;
+      object-fit: contain;
+      flex-shrink: 0;
+      border-radius: 50%;
+    }
+    .brand-text { min-width: 0; }
+    .brand-product {
+      margin: 0;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--brand);
+      line-height: 1.2;
+    }
+    .brand h1 {
+      margin: 2px 0 0;
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--text);
+      line-height: 1.25;
+    }
+    .brand .sub {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .top-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .btn-tool {
+      min-height: 40px;
+      padding: 0 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+    }
+    .btn-tool.primary {
+      background: var(--brand);
+      color: #fff;
+      border-color: transparent;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 14px;
+      box-shadow: var(--shadow);
+    }
+    .task {
+      display: block;
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--line);
+      background: var(--card);
+      border-radius: 12px;
+      padding: 12px;
+      margin: 0 0 8px;
+      cursor: pointer;
+      font: inherit;
+    }
+    .task.is-active {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.2);
+      background: var(--brand-soft);
+    }
+    .task .plate { font-family: ui-monospace, monospace; font-weight: 700; }
+    .task .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    button.primary, .btn {
+      min-height: var(--tap);
+      border: 0;
+      border-radius: 10px;
+      padding: 0 16px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--brand);
+      color: #fff;
+      width: 100%;
+    }
+    button.primary:hover { background: var(--brand-deep); }
+    .mileage-box button.primary { width: auto; flex: 0 0 auto; }
+    button.ghost, a.ghost {
+      background: transparent;
+      border: 1px solid var(--line);
+      color: var(--text);
+      min-height: 40px;
+      border-radius: 8px;
+      padding: 0 12px;
+      font: inherit;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .row.intake-mile-row { align-items: flex-start; flex-wrap: nowrap; }
+    .intake-mile-col { flex: 1; min-width: 0; }
+    .intake-mile-col #mileage-msg { margin: 4px 0 0; font-size: 12px; line-height: 1.25; }
+    .msg { font-size: 13px; color: var(--muted); }
+    .msg.err { color: var(--bad); }
+    .msg.ok { color: var(--ok); }
+    .sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .side {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      text-align: center;
+      font-size: 13px;
+      background: var(--brand-soft);
+      cursor: pointer;
+    }
+    .side input { display: none; }
+    .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .thumbs a { display: block; cursor: zoom-in; }
+    .thumbs img {
+      width: 72px;
+      height: 54px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+    }
+    .rp-lightbox {
+      position: fixed; inset: 0; z-index: 400;
+      background: rgba(15, 31, 31, 0.82);
+      display: flex; align-items: center; justify-content: center;
+      padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom));
+    }
+    .rp-lightbox.hidden { display: none !important; }
+    .rp-lightbox-card {
+      position: relative; max-width: min(960px, 100%); max-height: 100%;
+      display: flex; flex-direction: column; align-items: center; gap: 10px;
+    }
+    .rp-lightbox-card img {
+      max-width: 100%; max-height: min(78dvh, 720px);
+      object-fit: contain; border-radius: 10px;
+      background: #0c1414; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+    }
+    .rp-lightbox-x {
+      position: absolute; top: -6px; right: -6px;
+      width: 40px; height: 40px; border-radius: 999px; border: 0;
+      background: #fff; color: #0f1f1f; font-size: 18px; font-weight: 700;
+      cursor: pointer; box-shadow: var(--shadow);
+    }
+    .rp-lightbox-nav {
+      display: flex; gap: 8px; align-items: center; justify-content: center;
+    }
+    .rp-lightbox-nav button {
+      min-height: 44px; min-width: 44px; border-radius: 10px;
+      border: 1px solid var(--line); background: #fff; color: var(--text);
+      font: inherit; font-weight: 700; cursor: pointer;
+    }
+    .rp-lightbox-cap { color: #e8f4f4; font-size: 13px; text-align: center; }
+    .hidden { display: none !important; }
+    a { color: var(--accent); }
+    .mileage-box {
+      margin: 10px 0;
+      padding: 12px;
+      border: 1px solid var(--brand);
+      border-radius: 10px;
+      background: var(--brand-soft);
+    }
+    .mileage-box label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0 0 6px;
+    }
+    .mileage-box .row { margin-top: 8px; }
+    .mileage-box input,
+    .mileage-box select,
+    .mileage-box textarea {
+      min-width: 0;
+      min-height: 40px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-family: inherit;
+    }
+    .mileage-box #shoot-mileage {
+      display: block;
+      width: 100%;
+      min-height: var(--tap);
+      font-size: 18px;
+      font-weight: 600;
+      padding: 8px 12px;
+    }
+    .mileage-box #shoot-fuel {
+      flex: 0 0 92px;
+      width: 92px;
+      max-width: 92px;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 8px 6px;
+    }
+    .mileage-box #shoot-completeness-other,
+    .mileage-box #shoot-docs-note,
+    .mileage-box #shoot-damage {
+      display: block;
+      width: 100%;
+      margin: 0 0 8px;
+    }
+    .mileage-box #shoot-damage {
+      resize: vertical;
+      min-height: 56px;
+    }
+    .mileage-box #shoot-keys {
+      flex: 0 0 88px;
+      width: 88px;
+      max-width: 88px;
+    }
+    .mileage-box #shoot-docs {
+      flex: 1 1 0;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .intake-chip {
+      min-height: 36px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .intake-chip.is-on {
+      background: #fff;
+      border-color: var(--brand);
+      color: var(--brand);
+    }
+    .side.is-odo {
+      border-color: var(--brand);
+      background: #ccfbf1;
+      font-weight: 600;
+    }
+    .side.is-extra { border-style: dashed; background: #fff; }
+    .side-hint {
+      display: block;
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="ptr-bar" id="ptr-bar" aria-hidden="true"><span>Отпустите — обновить</span></div>
+  <div class="app-chrome">
+    <div class="app-chrome-inner">
+      <div class="brand">
+        <img class="brand-logo" src="/logo-uchet1.svg" width="32" height="32" alt="Учёт №1" />
+        <div class="brand-text">
+          <div class="brand-product">Учёт №1</div>
+          <h1>Фото авто · приёмка</h1>
+          <p class="sub">Пуш с компа → снимок → в заказ</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <a class="btn-tool primary" href="/">В Учёт</a>
+      </div>
+    </div>
+  </div>
+  <div class="wrap">
+    <header class="top" aria-hidden="true"></header>
+
+    <div class="card" id="auth-box">
+      <p class="msg" id="auth-msg">Проверяем вход…</p>
+      <p><a id="login-link" class="hidden" href="/login?next=/reception-photo">Войти в Учёт</a></p>
+    </div>
+
+    <div class="card hidden" id="push-box">
+      <div class="row" style="justify-content:space-between">
+        <strong>Уведомления</strong>
+        <button type="button" class="ghost" id="btn-push">Включить push</button>
+      </div>
+      <p class="msg" id="push-msg">Чтобы пуш приходил на телефон — включите и добавьте на экран «Домой».</p>
+    </div>
+
+    <div class="card hidden" id="list-box">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <strong>Очередь</strong>
+        <button type="button" class="ghost" id="btn-refresh">Обновить</button>
+      </div>
+      <div id="task-list"></div>
+    </div>
+
+    <div class="card hidden" id="shoot-box">
+      <div class="row" style="justify-content:space-between">
+        <strong id="shoot-title">Съёмка</strong>
+        <button type="button" class="ghost" id="btn-back">← очередь</button>
+      </div>
+      <p class="msg" id="shoot-meta"></p>
+      <p class="msg" id="shoot-count"></p>
+      <div class="mileage-box hidden" id="mileage-box">
+        <label for="shoot-mileage">Приёмка авто</label>
+        <p class="msg" style="margin:0 0 6px">Пробег, топливо, комплектность и ключи — уйдёт в заказ-наряд.</p>
+        <div class="row intake-mile-row">
+          <div class="intake-mile-col">
+            <input id="shoot-mileage" type="text" inputmode="numeric" autocomplete="off" placeholder="пробег, км" />
+            <p class="msg" id="mileage-msg"></p>
+          </div>
+          <input id="shoot-fuel" type="text" autocomplete="off" placeholder="топливо ½" />
+        </div>
+        <div class="intake-checks" id="intake-checks" style="margin:10px 0 8px;display:flex;flex-wrap:wrap;gap:6px"></div>
+        <input id="shoot-completeness-other" type="text" autocomplete="off" placeholder="иное (комплектность)" />
+        <div class="row" style="margin:0 0 8px;flex-wrap:nowrap">
+          <input id="shoot-keys" type="text" inputmode="numeric" autocomplete="off" placeholder="ключей" />
+          <select id="shoot-docs" aria-label="Документы в авто">
+            <option value="">документы?</option>
+            <option value="no">нет</option>
+            <option value="yes">да</option>
+          </select>
+        </div>
+        <input id="shoot-docs-note" type="text" autocomplete="off" placeholder="какие документы" />
+        <textarea id="shoot-damage" rows="2" placeholder="видимые повреждения / дефекты"></textarea>
+        <div class="row">
+          <button type="button" class="primary" id="btn-save-mileage">Записать в заказ</button>
+        </div>
+      </div>
+      <div class="sides" id="sides"></div>
+      <div class="thumbs" id="thumbs"></div>
+      <p class="msg" id="shoot-msg"></p>
+      <div class="row" style="margin:12px 0 0;gap:8px">
+        <button type="button" class="primary" id="btn-done" style="flex:1">Готово</button>
+        <a id="open-deal" class="ghost" href="#" target="_blank" rel="noopener"
+          style="min-height:var(--tap);padding:0 12px;border-radius:10px">Заказ</a>
+      </div>
+    </div>
+  </div>
+  <div id="rp-lightbox" class="rp-lightbox hidden" aria-hidden="true">
+    <div class="rp-lightbox-card" role="dialog" aria-modal="true" aria-label="Фото">
+      <button type="button" class="rp-lightbox-x" id="rp-lb-x" aria-label="Закрыть">✕</button>
+      <img id="rp-lb-img" src="" alt="" />
+      <div class="rp-lightbox-cap" id="rp-lb-cap"></div>
+      <div class="rp-lightbox-nav">
+        <button type="button" id="rp-lb-prev" aria-label="Предыдущее">◀</button>
+        <button type="button" id="rp-lb-next" aria-label="Следующее">▶</button>
+      </div>
+    </div>
+  </div>
+  <script>
+(function () {
+  const SIDES = [
+    { id: 'front', label: 'Перед' },
+    { id: 'rear', label: 'Зад' },
+    { id: 'left', label: 'Левый бок' },
+    { id: 'right', label: 'Правый бок' },
+    { id: 'top', label: 'Крыша' },
+    { id: 'interior', label: 'Салон' },
+    { id: 'odometer', label: 'Пробег · панель' },
+    { id: 'trunk', label: 'Багажник' },
+  ];
+  /** Всегда на экране — можно снять несколько раз. */
+  const EXTRA_SIDES = [
+    { id: 'damage', label: 'Повреждение' },
+    { id: 'other', label: 'Ещё фото' },
+  ];
+
+  const qs = new URLSearchParams(location.search);
+  let dealId = qs.get('deal') || '';
+  let activeTask = qs.get('task') || null;
+  let activeKind = qs.get('kind') || 'car';
+  let me = null;
+  /** Уже снятые ракурсы авто — кнопки прячем (кроме EXTRA_SIDES). */
+  let doneCarSides = new Set();
+  let doneStsFront = false;
+  let doneStsBack = false;
+  /** Галерея лайтбокса: [{ url, title }] */
+  let lbItems = [];
+  let lbIndex = 0;
+
+  /** Адресная строка = экран: очередь без deal/task, съёмка с ними. */
+  function syncUrl(mode, opts) {
+    const push = !!(opts && opts.push);
+    const u = new URL(location.href);
+    const keepV = u.searchParams.get('v') || 'rp7';
+    u.search = '';
+    u.searchParams.set('v', keepV);
+    if (mode === 'shoot' && dealId) {
+      u.searchParams.set('deal', dealId);
+      if (activeTask) u.searchParams.set('task', String(activeTask));
+      if (activeKind) u.searchParams.set('kind', String(activeKind));
+    }
+    const next = u.pathname + u.search + u.hash;
+    const cur = location.pathname + location.search + location.hash;
+    if (next === cur) return;
+    if (push) history.pushState({ rp: mode }, '', next);
+    else history.replaceState({ rp: mode }, '', next);
+  }
+
+  function showQueue(opts) {
+    dealId = '';
+    activeTask = null;
+    show(document.getElementById('shoot-box'), false);
+    show(document.getElementById('list-box'), true);
+    syncUrl('queue', opts);
+    void loadTasks();
+  }
+
+  function closeLightbox() {
+    const root = document.getElementById('rp-lightbox');
+    if (!root) return;
+    root.classList.add('hidden');
+    root.setAttribute('aria-hidden', 'true');
+    const img = document.getElementById('rp-lb-img');
+    if (img) img.removeAttribute('src');
+    document.removeEventListener('keydown', onLightboxKey);
+  }
+
+  function onLightboxKey(e) {
+    if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'ArrowLeft') showLightboxAt(lbIndex - 1);
+    if (e.key === 'ArrowRight') showLightboxAt(lbIndex + 1);
+  }
+
+  function showLightboxAt(i) {
+    if (!lbItems.length) return;
+    lbIndex = (i + lbItems.length) % lbItems.length;
+    const it = lbItems[lbIndex];
+    const root = document.getElementById('rp-lightbox');
+    const img = document.getElementById('rp-lb-img');
+    const cap = document.getElementById('rp-lb-cap');
+    if (!root || !img) return;
+    img.src = it.url;
+    img.alt = it.title || 'Фото';
+    if (cap) {
+      cap.textContent =
+        (it.title ? it.title + ' · ' : '') + (lbIndex + 1) + ' / ' + lbItems.length;
+    }
+    root.classList.remove('hidden');
+    root.setAttribute('aria-hidden', 'false');
+    document.addEventListener('keydown', onLightboxKey);
+  }
+
+  function openLightboxFromThumbs(startUrl) {
+    const thumbs = document.getElementById('thumbs');
+    lbItems = [];
+    thumbs?.querySelectorAll('a[href]').forEach((a) => {
+      const href = a.getAttribute('href') || '';
+      if (!href || href === '#') return;
+      lbItems.push({
+        url: href,
+        title: a.getAttribute('title') || a.getAttribute('aria-label') || '',
+      });
+    });
+    if (!lbItems.length) return;
+    let idx = lbItems.findIndex((x) => x.url === startUrl);
+    if (idx < 0) idx = 0;
+    showLightboxAt(idx);
+  }
+
+  function bindThumbsLightbox() {
+    const thumbs = document.getElementById('thumbs');
+    if (!thumbs || thumbs._lbBound) return;
+    thumbs._lbBound = true;
+    thumbs.addEventListener('click', (ev) => {
+      const a = ev.target.closest('a[href]');
+      if (!a || !thumbs.contains(a)) return;
+      ev.preventDefault();
+      openLightboxFromThumbs(a.getAttribute('href') || '');
+    });
+  }
+
+  function mileageDigits() {
+    return String(document.getElementById('shoot-mileage')?.value || '').replace(/[^\d]/g, '');
+  }
+
+  const INTAKE_ITEMS = [
+    { id: 'spare', label: 'запасное колесо' },
+    { id: 'jack', label: 'домкрат' },
+    { id: 'tools', label: 'инструмент' },
+    { id: 'aid', label: 'аптечка' },
+    { id: 'extinguisher', label: 'огнетушитель' },
+    { id: 'triangle', label: 'знак авар.' },
+    { id: 'mats', label: 'коврики' },
+    { id: 'radio', label: 'магнитола' },
+    { id: 'dashcam', label: 'регистратор' },
+    { id: 'tachograph', label: 'тахограф' },
+  ];
+
+  function renderIntakeChecks(selected) {
+    const box = document.getElementById('intake-checks');
+    if (!box) return;
+    const sel = new Set(Array.isArray(selected) ? selected : []);
+    box.innerHTML = INTAKE_ITEMS.map((it) => {
+      const on = sel.has(it.id);
+      return `<button type="button" class="intake-chip${on ? ' is-on' : ''}" data-intake="${esc(it.id)}">${esc(it.label)}</button>`;
+    }).join('');
+    box.querySelectorAll('[data-intake]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        btn.classList.toggle('is-on');
+      });
+    });
+  }
+
+  function collectIntakePayload() {
+    const completeness = [...document.querySelectorAll('#intake-checks .intake-chip.is-on')].map((el) =>
+      el.getAttribute('data-intake')
+    );
+    return {
+      car_mileage: mileageDigits(),
+      car_fuel_level: String(document.getElementById('shoot-fuel')?.value || '').trim(),
+      car_keys_count: String(document.getElementById('shoot-keys')?.value || '').replace(/[^\d]/g, ''),
+      car_docs_left: String(document.getElementById('shoot-docs')?.value || '').trim(),
+      car_docs_note: String(document.getElementById('shoot-docs-note')?.value || '').trim(),
+      car_damage_notes: String(document.getElementById('shoot-damage')?.value || '').trim(),
+      car_completeness: completeness,
+      car_completeness_other: String(document.getElementById('shoot-completeness-other')?.value || '').trim(),
+    };
+  }
+
+  function fillIntakeFromDeal(deal) {
+    if (!deal) return;
+    const mil = document.getElementById('shoot-mileage');
+    const fuel = document.getElementById('shoot-fuel');
+    const keys = document.getElementById('shoot-keys');
+    const docs = document.getElementById('shoot-docs');
+    const docsNote = document.getElementById('shoot-docs-note');
+    const dmg = document.getElementById('shoot-damage');
+    const other = document.getElementById('shoot-completeness-other');
+    const km = String(deal.car_mileage || '').replace(/[^\d]/g, '');
+    if (mil && km && !String(mil.value || '').trim()) mil.value = km;
+    if (fuel) fuel.value = String(deal.car_fuel_level || '');
+    if (keys) keys.value = String(deal.car_keys_count || '');
+    if (docs) docs.value = String(deal.car_docs_left || '');
+    if (docsNote) docsNote.value = String(deal.car_docs_note || '');
+    if (dmg) dmg.value = String(deal.car_damage_notes || '');
+    if (other) other.value = String(deal.car_completeness_other || '');
+    let comp = [];
+    try {
+      const raw = deal.car_completeness;
+      if (Array.isArray(raw)) comp = raw;
+      else if (typeof raw === 'string' && raw.trim()) comp = JSON.parse(raw);
+    } catch (_) {
+      comp = [];
+    }
+    renderIntakeChecks(comp);
+  }
+
+  async function saveMileage(force) {
+    const payload = collectIntakePayload();
+    const msg = document.getElementById('mileage-msg');
+    if (!payload.car_mileage) {
+      if (force) {
+        if (msg) msg.textContent = 'Впишите пробег цифрами';
+        if (msg) msg.className = 'msg err';
+      }
+      return false;
+    }
+    if (!dealId) return false;
+    if (msg) {
+      msg.textContent = 'Сохраняем приёмку…';
+      msg.className = 'msg';
+    }
+    await api('/crm/deals/' + encodeURIComponent(dealId) + '/vehicle', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+    if (msg) {
+      msg.textContent = 'Пробег ' + payload.car_mileage + ' км · комплектность в заказе';
+      msg.className = 'msg ok';
+    }
+    return true;
+  }
+
+  async function api(path, opts) {
+    const res = await fetch('/api' + path, {
+      credentials: 'same-origin',
+      ...opts,
+      headers: {
+        ...(opts && opts.body && !(opts.body instanceof FormData)
+          ? { 'Content-Type': 'application/json' }
+          : {}),
+        ...((opts && opts.headers) || {}),
+      },
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = { raw: text }; }
+    if (!res.ok) throw new Error((data && data.error) || res.statusText || 'error');
+    return data;
+  }
+
+  function fileToB64(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => {
+        const s = String(r.result || '');
+        const i = s.indexOf(',');
+        resolve({ mime: file.type || 'image/jpeg', data_base64: i >= 0 ? s.slice(i + 1) : s });
+      };
+      r.onerror = reject;
+      r.readAsDataURL(file);
+    });
+  }
+
+  function show(el, on) {
+    el.classList.toggle('hidden', !on);
+  }
+
+  function kindLabel(k) {
+    if (k === 'sts') return 'СТС';
+    if (k === 'both') return 'СТС + авто';
+    return 'авто';
+  }
+
+  function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  function hidePushBox() {
+    show(document.getElementById('push-box'), false);
+  }
+
+  async function ensurePush() {
+    const msg = document.getElementById('push-msg');
+    const btn = document.getElementById('btn-push');
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      msg.textContent = 'Этот браузер не поддерживает Web Push. Откройте Safari/Chrome на телефоне.';
+      btn.disabled = true;
+      return;
+    }
+    try {
+      const reg = await navigator.serviceWorker.register('/reception-photo-sw.js?v=7');
+      await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        try {
+          const j = sub.toJSON();
+          await api('/push/subscribe', {
+            method: 'POST',
+            body: JSON.stringify({ endpoint: j.endpoint, keys: j.keys }),
+          });
+        } catch (_) {
+          /* уже на сервере или сеть — блок всё равно прячем */
+        }
+        hidePushBox();
+        return;
+      }
+      msg.textContent = 'Нажмите «Включить push», затем разрешите уведомления.';
+      btn.onclick = async () => {
+        btn.disabled = true;
+        msg.textContent = 'Запрашиваем разрешение…';
+        try {
+          const perm = await Notification.requestPermission();
+          if (perm !== 'granted') throw new Error('Разрешите уведомления в настройках телефона');
+          const { publicKey } = await api('/push/vapid-public-key');
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey),
+          });
+          const j = sub.toJSON();
+          await api('/push/subscribe', {
+            method: 'POST',
+            body: JSON.stringify({ endpoint: j.endpoint, keys: j.keys }),
+          });
+          hidePushBox();
+        } catch (e) {
+          msg.textContent = e.message || String(e);
+          msg.className = 'msg err';
+          btn.disabled = false;
+        }
+      };
+    } catch (e) {
+      msg.textContent = e.message || String(e);
+      msg.className = 'msg err';
+    }
+  }
+
+  async function loadTasks() {
+    const list = document.getElementById('task-list');
+    list.innerHTML = '<p class="msg">Загрузка…</p>';
+    try {
+      const r = await api('/car-photo-tasks');
+      const items = r.items || [];
+      if (!items.length) {
+        list.innerHTML = '<p class="msg">Открытых задач нет. С компа: Документы → «СТС на телефон» или «Отправить на фото».';
+        return;
+      }
+      list.innerHTML = items.map((t) => {
+        const title = [t.car_brand, t.car_model].filter(Boolean).join(' ') || 'Авто';
+        const plate = t.car_plate || 'без номера';
+        const client = String(t.buyer_name || '').trim() || 'ФИО после ПДн / паспорта';
+        const k = t.kind || 'car';
+        const stsBits = k === 'sts' || k === 'both'
+          ? ' · СТС ' + (t.sts_front ? 'лиц.' : '—') + '/' + (t.sts_back ? 'об.' : '—')
+          : '';
+        const carBits = k === 'car' || k === 'both' ? ' · авто ×' + (t.photo_count || 0) : '';
+        return `<button type="button" class="task" data-deal="${esc(t.deal_id)}" data-id="${esc(t.id)}" data-kind="${esc(k)}">
+          <div class="plate">${esc(plate)} · ${esc(kindLabel(k))}</div>
+          <div>${esc(title)} · ${esc(client)}</div>
+          <div class="meta">${esc(String(t.created_at || '').replace('T',' ').slice(0,16))}${esc(stsBits)}${esc(carBits)}</div>
+        </button>`;
+      }).join('');
+      list.querySelectorAll('.task').forEach((btn) => {
+        btn.addEventListener('click', () =>
+          openShoot(
+            btn.getAttribute('data-deal'),
+            btn.getAttribute('data-id'),
+            btn.getAttribute('data-kind')
+          )
+        );
+      });
+    } catch (e) {
+      list.innerHTML = `<p class="msg err">${esc(e.message || String(e))}</p>`;
+    }
+  }
+
+  function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  }
+
+  async function openShoot(deal, taskId, kind, opts) {
+    dealId = deal;
+    activeTask = taskId || null;
+    activeKind = kind || activeKind || 'car';
+    doneCarSides = new Set();
+    doneStsFront = false;
+    doneStsBack = false;
+    show(document.getElementById('list-box'), false);
+    show(document.getElementById('shoot-box'), true);
+    syncUrl('shoot', { push: !(opts && opts.replace) });
+    document.getElementById('shoot-title').textContent =
+      activeKind === 'sts' ? 'Съёмка СТС' : activeKind === 'both' ? 'СТС и авто' : 'Съёмка авто';
+    document.getElementById('open-deal').href = '/deals/' + encodeURIComponent(deal) + '/sto-pack';
+    const needMileage = activeKind === 'car' || activeKind === 'both';
+    show(document.getElementById('mileage-box'), needMileage);
+    if (needMileage) {
+      const mmsg = document.getElementById('mileage-msg');
+      if (mmsg) {
+        mmsg.textContent = '';
+        mmsg.className = 'msg';
+      }
+      renderIntakeChecks([]);
+    }
+    renderSides();
+    await refreshShoot();
+  }
+
+  async function refreshShoot() {
+    const meta = document.getElementById('shoot-meta');
+    const countEl = document.getElementById('shoot-count');
+    const thumbs = document.getElementById('thumbs');
+    meta.textContent = 'Заказ ' + dealId + ' · ' + kindLabel(activeKind);
+    try {
+      let html = '';
+      let deal = null;
+      try {
+        deal = await api('/crm/deals/' + encodeURIComponent(dealId));
+      } catch (_) {
+        deal = null;
+      }
+      if (deal && (activeKind === 'car' || activeKind === 'both')) {
+        fillIntakeFromDeal(deal);
+        const curKm = String(deal.car_mileage || '').replace(/[^\d]/g, '');
+        if (curKm) {
+          const mmsg = document.getElementById('mileage-msg');
+          if (mmsg && !mmsg.textContent) {
+            mmsg.textContent = 'В заказе уже: ' + curKm + ' км';
+            mmsg.className = 'msg';
+          }
+        }
+      }
+      if (activeKind === 'sts' || activeKind === 'both') {
+        try {
+          const t = activeTask
+            ? await api('/car-photo-tasks/' + encodeURIComponent(activeTask))
+            : null;
+          const task = t && t.task;
+          const front = !!(task && task.sts_front);
+          const back = !!(task && task.sts_back);
+          doneStsFront = front;
+          doneStsBack = back;
+          countEl.textContent =
+            'СТС: лицевая ' + (front ? '✓' : 'нет') + ' · оборот ' + (back ? '✓' : 'нет');
+          if (front) {
+            html += `<a href="/api/crm/deals/${encodeURIComponent(dealId)}/vehicle/sts/front" title="СТС · лицевая"><img src="/api/crm/deals/${encodeURIComponent(dealId)}/vehicle/sts/front?thumb=1&t=${Date.now()}" alt="лицевая" /></a>`;
+          }
+          if (back) {
+            html += `<a href="/api/crm/deals/${encodeURIComponent(dealId)}/vehicle/sts/back" title="СТС · оборот"><img src="/api/crm/deals/${encodeURIComponent(dealId)}/vehicle/sts/back?thumb=1&t=${Date.now()}" alt="оборот" /></a>`;
+          }
+          if (front && back && activeKind === 'sts') {
+            document.getElementById('shoot-msg').textContent = 'СТС готов · задача закроется.';
+            document.getElementById('shoot-msg').className = 'msg ok';
+          }
+        } catch (_) {
+          countEl.textContent = 'СТС: загрузите лицевую и оборот';
+        }
+      }
+      if (activeKind === 'car' || activeKind === 'both') {
+        const sum = await api('/crm/deals/' + encodeURIComponent(dealId) + '/car-photos');
+        if (activeKind === 'car') {
+          countEl.textContent = 'Авто: ' + (sum.count || 0) + ' · нужно ≥' + (sum.min_required || 12);
+        } else {
+          countEl.textContent = (countEl.textContent || '') + ' · авто ×' + (sum.count || 0);
+        }
+        const items = Array.isArray(sum.items) ? sum.items : [];
+        const nextDone = new Set();
+        items.forEach((p) => {
+          const s = String(p.side || '').trim();
+          if (s) nextDone.add(s);
+        });
+        doneCarSides = nextDone;
+        html += items.map((p) =>
+          `<a href="${esc(p.url)}" title="${esc(p.side_label || p.side || 'фото')}"><img src="${esc(p.url)}" alt="" /></a>`
+        ).join('');
+        if (sum.photos_ok && activeKind === 'car') {
+          document.getElementById('shoot-msg').textContent = 'Норма набрана · задача закроется.';
+          document.getElementById('shoot-msg').className = 'msg ok';
+        }
+      }
+      thumbs.innerHTML = html || '<span class="msg">Пока нет фото</span>';
+      bindThumbsLightbox();
+      if (activeKind === 'sts' || activeKind === 'both') {
+        const r = await api('/car-photo-tasks');
+        const cur = (r.items || []).find((x) => x.deal_id === dealId) ||
+          (activeTask ? (await api('/car-photo-tasks/' + encodeURIComponent(activeTask)).catch(() => null) || {}).task : null);
+        if (cur) {
+          doneStsFront = !!cur.sts_front;
+          doneStsBack = !!cur.sts_back;
+          countEl.textContent =
+            (activeKind === 'both' ? countEl.textContent + ' · ' : '') +
+            'СТС лиц.' + (cur.sts_front ? '✓' : '—') + ' / об.' + (cur.sts_back ? '✓' : '—') +
+            (activeKind === 'both' ? '' : '');
+          if (activeKind === 'sts') {
+            countEl.textContent = 'СТС: лицевая ' + (cur.sts_front ? '✓' : 'нет') + ' · оборот ' + (cur.sts_back ? '✓' : 'нет');
+          }
+        }
+        // STS thumbs из deal, если задачa без флагов
+        const sts = (deal && deal.sts_photos) || {};
+        if (sts.front) doneStsFront = true;
+        if (sts.back) doneStsBack = true;
+      }
+      renderSides();
+    } catch (e) {
+      meta.textContent = e.message || String(e);
+    }
+  }
+
+  function renderSides() {
+    const root = document.getElementById('sides');
+    const stsSides = [
+      { id: 'front', label: 'СТС · лицевая', kind: 'sts' },
+      { id: 'back', label: 'СТС · оборот', kind: 'sts' },
+    ].filter((s) => (s.id === 'front' ? !doneStsFront : !doneStsBack));
+    const carMain = SIDES
+      .filter((s) => !doneCarSides.has(s.id))
+      .map((s) => ({ ...s, kind: 'car', multi: false }));
+    const carExtra = EXTRA_SIDES.map((s) => ({ ...s, kind: 'car', multi: true }));
+    let list = [];
+    if (activeKind === 'sts') list = stsSides;
+    else if (activeKind === 'both') list = stsSides.concat(carMain).concat(carExtra);
+    else list = carMain.concat(carExtra);
+    if (!list.length) {
+      root.innerHTML = '<p class="msg ok" style="margin:0">Все ракурсы сняты.</p>';
+      return;
+    }
+    root.innerHTML = list.map((s) =>
+      `<label class="side${s.id === 'odometer' ? ' is-odo' : ''}${s.multi ? ' is-extra' : ''}">${esc(s.label)}${
+        s.multi ? '<span class="side-hint">можно несколько</span>' : ''
+      }
+        <input type="file" accept="image/*" capture="environment"${
+          s.multi ? ' multiple' : ''
+        } data-side="${esc(s.id)}" data-kind="${esc(s.kind)}" data-multi="${s.multi ? '1' : '0'}" />
+      </label>`
+    ).join('');
+    root.querySelectorAll('input[type=file]').forEach((inp) => {
+      inp.addEventListener('change', async () => {
+        const files = Array.from(inp.files || []).filter(Boolean);
+        if (!files.length || !dealId) return;
+        const msg = document.getElementById('shoot-msg');
+        const upKind = inp.getAttribute('data-kind') || 'car';
+        const side = inp.getAttribute('data-side') || 'other';
+        const multi = inp.getAttribute('data-multi') === '1';
+        msg.textContent = files.length > 1 ? 'Загружаем ×' + files.length + '…' : 'Загружаем…';
+        msg.className = 'msg';
+        try {
+          if (upKind === 'sts') {
+            const img = await fileToB64(files[0]);
+            await api('/crm/deals/' + encodeURIComponent(dealId) + '/vehicle/ocr', {
+              method: 'POST',
+              body: JSON.stringify({
+                images: [img],
+                side,
+                recognize: true,
+                apply: true,
+              }),
+            });
+            if (side === 'front') doneStsFront = true;
+            if (side === 'back') doneStsBack = true;
+          } else {
+            if (side === 'odometer') {
+              const km = mileageDigits();
+              if (!km) {
+                msg.textContent = 'Сначала впишите пробег в поле выше, потом фото панели';
+                msg.className = 'msg err';
+                inp.value = '';
+                document.getElementById('shoot-mileage')?.focus();
+                return;
+              }
+            }
+            const fd = new FormData();
+            files.forEach((f) => fd.append('file', f));
+            fd.append('side', side);
+            const km = mileageDigits();
+            if (km) fd.append('car_mileage', km);
+            await api('/crm/deals/' + encodeURIComponent(dealId) + '/car-photos', {
+              method: 'POST',
+              body: fd,
+            });
+            if (!multi) doneCarSides.add(side);
+            if (side === 'odometer' && km) {
+              const mmsg = document.getElementById('mileage-msg');
+              if (mmsg) {
+                mmsg.textContent = 'Пробег ' + km + ' км · в заказе';
+                mmsg.className = 'msg ok';
+              }
+            }
+          }
+          msg.textContent =
+            files.length > 1 ? 'Сохранено ×' + files.length + '.' : 'Сохранено.';
+          msg.className = 'msg ok';
+          inp.value = '';
+          renderSides();
+          await refreshShoot();
+        } catch (e) {
+          msg.textContent = e.message || String(e);
+          msg.className = 'msg err';
+        }
+      });
+    });
+  }
+
+  document.getElementById('btn-save-mileage')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-save-mileage');
+    if (btn) btn.disabled = true;
+    try {
+      await saveMileage(true);
+    } catch (e) {
+      const msg = document.getElementById('mileage-msg');
+      if (msg) {
+        msg.textContent = e.message || String(e);
+        msg.className = 'msg err';
+      }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  document.getElementById('btn-refresh').addEventListener('click', () => loadTasks());
+  document.getElementById('btn-back').addEventListener('click', () => {
+    showQueue({ push: true });
+  });
+
+  window.addEventListener('popstate', () => {
+    const p = new URLSearchParams(location.search);
+    const d = p.get('deal') || '';
+    if (d) {
+      void openShoot(d, p.get('task') || '', p.get('kind') || 'car', { replace: true });
+    } else {
+      dealId = '';
+      activeTask = null;
+      show(document.getElementById('shoot-box'), false);
+      show(document.getElementById('list-box'), true);
+      void loadTasks();
+    }
+  });
+
+  document.getElementById('rp-lb-x')?.addEventListener('click', () => closeLightbox());
+  document.getElementById('rp-lb-prev')?.addEventListener('click', () => showLightboxAt(lbIndex - 1));
+  document.getElementById('rp-lb-next')?.addEventListener('click', () => showLightboxAt(lbIndex + 1));
+  document.getElementById('rp-lightbox')?.addEventListener('click', (e) => {
+    if (e.target === document.getElementById('rp-lightbox')) closeLightbox();
+  });
+
+  document.getElementById('btn-done')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-done');
+    const msg = document.getElementById('shoot-msg');
+    if (!dealId) return;
+    if (btn) btn.disabled = true;
+    if (msg) {
+      msg.textContent = 'Закрываем задачу…';
+      msg.className = 'msg';
+    }
+    try {
+      if (mileageDigits()) {
+        try {
+          await saveMileage(false);
+        } catch (_) {
+          /* пробег опционально */
+        }
+      }
+      if (activeTask) {
+        await api('/car-photo-tasks/' + encodeURIComponent(activeTask) + '/complete', {
+          method: 'POST',
+          body: '{}',
+        });
+      } else {
+        await api('/crm/deals/' + encodeURIComponent(dealId) + '/car-photos/complete', {
+          method: 'POST',
+          body: '{}',
+        });
+      }
+      if (msg) {
+        msg.textContent = 'Готово · задача закрыта.';
+        msg.className = 'msg ok';
+      }
+      showQueue({ push: true });
+    } catch (e) {
+      if (msg) {
+        msg.textContent = e.message || String(e);
+        msg.className = 'msg err';
+      }
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  // Pull-to-refresh: очередь / съёмка (в PWA нативный жест часто выключен).
+  (function enablePullToRefresh() {
+    const bar = document.getElementById('ptr-bar');
+    const THRESH = 78;
+    let startY = 0;
+    let pulling = false;
+    let armed = false;
+
+    function scrollTop() {
+      return window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    }
+
+    function setBar(px, ready) {
+      if (!bar) return;
+      const h = Math.min(96, Math.max(0, px));
+      bar.style.height = h + 'px';
+      bar.classList.toggle('is-visible', h > 8);
+      bar.setAttribute('aria-hidden', h > 8 ? 'false' : 'true');
+      const span = bar.querySelector('span');
+      if (span) span.textContent = ready ? 'Отпустите — обновить' : 'Потяните вниз';
+    }
+
+    async function doRefresh() {
+      setBar(48, true);
+      const span = bar && bar.querySelector('span');
+      if (span) span.textContent = 'Обновляем…';
+      try {
+        if (dealId && !document.getElementById('shoot-box')?.classList.contains('hidden')) {
+          await refreshShoot();
+        } else {
+          await loadTasks();
+        }
+      } catch (_) {
+        location.reload();
+        return;
+      }
+      setBar(0, false);
+    }
+
+    document.addEventListener(
+      'touchstart',
+      (e) => {
+        if (!e.touches || e.touches.length !== 1) return;
+        if (scrollTop() > 2) {
+          armed = false;
+          return;
+        }
+        startY = e.touches[0].clientY;
+        pulling = false;
+        armed = true;
+      },
+      { passive: true }
+    );
+
+    document.addEventListener(
+      'touchmove',
+      (e) => {
+        if (!armed || !e.touches || e.touches.length !== 1) return;
+        if (scrollTop() > 2) {
+          armed = false;
+          setBar(0, false);
+          return;
+        }
+        const dy = e.touches[0].clientY - startY;
+        if (dy <= 0) {
+          pulling = false;
+          setBar(0, false);
+          return;
+        }
+        pulling = true;
+        setBar(dy * 0.45, dy > THRESH);
+        if (dy > 12) e.preventDefault();
+      },
+      { passive: false }
+    );
+
+    document.addEventListener(
+      'touchend',
+      () => {
+        if (!armed) return;
+        const was = pulling;
+        const dy = bar ? parseFloat(bar.style.height || '0') : 0;
+        armed = false;
+        pulling = false;
+        if (was && dy >= THRESH * 0.45) {
+          void doRefresh();
+        } else {
+          setBar(0, false);
+        }
+      },
+      { passive: true }
+    );
+  })();
+
+  (async function init() {
+    try {
+      me = await api('/me');
+      document.getElementById('auth-msg').textContent =
+        'Вы вошли: ' + (me.name || me.login || me.id || 'сотрудник');
+      show(document.getElementById('push-box'), true);
+      show(document.getElementById('list-box'), true);
+      await ensurePush();
+      if (dealId) {
+        await openShoot(dealId, qs.get('task') || '', qs.get('kind') || 'car', { replace: true });
+      } else {
+        renderSides();
+        await loadTasks();
+        syncUrl('queue');
+      }
+    } catch (e) {
+      document.getElementById('auth-msg').textContent = 'Нужен вход в Учёт на этом телефоне.';
+      document.getElementById('auth-msg').className = 'msg err';
+      show(document.getElementById('login-link'), true);
+    }
+  })();
+})();
+  </script>
+</body>
+</html>

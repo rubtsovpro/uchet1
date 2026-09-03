@@ -15,6 +15,7 @@ import { nextBarcode } from './barcodes.js';
 import { invalidateStockValuationCache } from './stock-valuation.js';
 import { appsToJson, parseAppsJson } from './applicability-party.js';
 import { createMoneyRefundFromReturn, getLastSalePrice } from './return-money.js';
+import { applyInboundPlacementsForDoc } from './warehouse-cells.js';
 
 export type DocType = 'in' | 'out' | 'transfer' | 'return';
 
@@ -40,13 +41,19 @@ export function nextDocNumber(docType: DocType): string {
   return nextCode(prefix, 5);
 }
 
-export function applyStockDelta(warehouseId: string, productId: string, delta: number): void {
+export function applyStockDelta(
+  warehouseId: string,
+  productId: string,
+  delta: number,
+  opts?: { ignoreInsufficient?: boolean }
+): void {
   const existing = get<{ qty: number }>(
     'SELECT qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?',
     [warehouseId, productId]
   );
   if (!existing) {
     if (delta < 0) {
+      if (opts?.ignoreInsufficient) return;
       throw new Error('Недостаточно остатка');
     }
     run(
@@ -57,6 +64,13 @@ export function applyStockDelta(warehouseId: string, productId: string, delta: n
   }
   const next = Number(existing.qty) + delta;
   if (next < -0.0001) {
+    if (opts?.ignoreInsufficient) {
+      run(
+        'UPDATE stock_balances SET qty = 0 WHERE warehouse_id = ? AND product_id = ?',
+        [warehouseId, productId]
+      );
+      return;
+    }
     throw new Error('Недостаточно остатка');
   }
   run(
@@ -65,8 +79,13 @@ export function applyStockDelta(warehouseId: string, productId: string, delta: n
   );
 }
 
-function applyDelta(warehouseId: string, productId: string, delta: number): void {
-  applyStockDelta(warehouseId, productId, delta);
+function applyDelta(
+  warehouseId: string,
+  productId: string,
+  delta: number,
+  opts?: { ignoreInsufficient?: boolean }
+): void {
+  applyStockDelta(warehouseId, productId, delta, opts);
 }
 
 function validateLineSerials(
@@ -100,7 +119,10 @@ function lineWarehouse(
   return w || docWh;
 }
 
-export function postDocument(docId: string, opts?: { serialsOptional?: boolean }): void {
+export function postDocument(
+  docId: string,
+  opts?: { serialsOptional?: boolean; ignoreStock?: boolean }
+): void {
   const doc = get<{
     id: string;
     doc_type: DocType;
@@ -128,6 +150,8 @@ export function postDocument(docId: string, opts?: { serialsOptional?: boolean }
   );
   if (!lines.length) throw new Error('Нет строк');
   const serialsOptional = !!opts?.serialsOptional;
+  const ignoreStock = !!opts?.ignoreStock;
+  const deltaOpts = ignoreStock ? { ignoreInsufficient: true } : undefined;
   const supplierId = String(
     get<{ counterparty_id: string | null }>(
       `SELECT counterparty_id FROM stock_docs WHERE id = ?`,
@@ -145,7 +169,36 @@ export function postDocument(docId: string, opts?: { serialsOptional?: boolean }
       if (!wh) throw new Error('Не указан склад строки');
       if (doc.doc_type === 'in' || doc.doc_type === 'return') {
         validateLineSerials(line.product_id, qty, serials, 'in', { serialsOptional });
-        applyDelta(wh, line.product_id, qty);
+        if (doc.doc_type === 'in') {
+          const pls = all<{ cell_code: string; qty: number; warehouse_id: string }>(
+            `SELECT cell_code, qty, IFNULL(warehouse_id,'') AS warehouse_id
+             FROM stock_doc_line_placements WHERE doc_id = ? AND line_id = ?`,
+            [docId, line.id]
+          );
+          if (pls.length) {
+            const byWh = new Map<string, number>();
+            let pSum = 0;
+            for (const p of pls) {
+              const pWh = String(p.warehouse_id || '').trim() || wh;
+              const pq = Number(p.qty) || 0;
+              if (!(pq > 0) || !pWh) continue;
+              pSum += pq;
+              byWh.set(pWh, (byWh.get(pWh) || 0) + pq);
+            }
+            if (Math.abs(pSum - qty) >= 0.0001) {
+              throw new Error(
+                `Сумма по ячейкам (${pSum}) не совпадает с количеством строки (${qty})`
+              );
+            }
+            for (const [pWh, pQty] of byWh) {
+              applyDelta(pWh, line.product_id, pQty, deltaOpts);
+            }
+          } else {
+            applyDelta(wh, line.product_id, qty, deltaOpts);
+          }
+        } else {
+          applyDelta(wh, line.product_id, qty, deltaOpts);
+        }
         receiveUnits({
           productId: line.product_id,
           warehouseId: wh,
@@ -158,8 +211,8 @@ export function postDocument(docId: string, opts?: { serialsOptional?: boolean }
       } else if (doc.doc_type === 'out') {
         // Услуги в УПД есть, на складе не списываем
         if (isServiceProduct(line.product_id)) continue;
-        validateLineSerials(line.product_id, qty, serials, 'out');
-        applyDelta(wh, line.product_id, -qty);
+        validateLineSerials(line.product_id, qty, serials, 'out', { serialsOptional });
+        applyDelta(wh, line.product_id, -qty, deltaOpts);
         shipUnits({
           productId: line.product_id,
           warehouseId: wh,
@@ -169,9 +222,9 @@ export function postDocument(docId: string, opts?: { serialsOptional?: boolean }
         });
       } else {
         if (!doc.warehouse_to_id) throw new Error('Не указан склад-получатель');
-        validateLineSerials(line.product_id, qty, serials, 'transfer');
-        applyDelta(wh, line.product_id, -qty);
-        applyDelta(doc.warehouse_to_id, line.product_id, qty);
+        validateLineSerials(line.product_id, qty, serials, 'transfer', { serialsOptional });
+        applyDelta(wh, line.product_id, -qty, deltaOpts);
+        applyDelta(doc.warehouse_to_id, line.product_id, qty, deltaOpts);
         transferUnits({
           productId: line.product_id,
           warehouseFrom: wh,
@@ -182,7 +235,11 @@ export function postDocument(docId: string, opts?: { serialsOptional?: boolean }
         });
       }
     }
+    // posted=1 до ячеек: applyInboundPlacementsForDoc требует проведённый документ
     run('UPDATE stock_docs SET posted = 1 WHERE id = ?', [docId]);
+    if (doc.doc_type === 'in') {
+      applyInboundPlacementsForDoc(docId);
+    }
     run('COMMIT');
   } catch (e) {
     run('ROLLBACK');
@@ -202,8 +259,12 @@ export function createDocument(input: {
   basis_order_id?: string | null;
   /** Заказ поставщику (thin journal / supply), если приход по заказу. */
   source_supplier_order_id?: string | null;
+  /** Номер поставки поставщика (пост. 405 и т.п.). */
+  supply_number?: string | null;
   /** Приход «для себя» — марки не обязательны. */
   serials_optional?: boolean;
+  /** Провести даже при нулевом stock_balances (ячейки / ручной набор на /pick). */
+  ignore_stock?: boolean;
   lines: DocLineInput[];
   post?: boolean;
 }): string {
@@ -234,6 +295,7 @@ export function createDocument(input: {
   const dealId = String(input.deal_id || '').trim();
   const basisOrderId = String(input.basis_order_id || '').trim();
   const sourceSupplierOrderId = String(input.source_supplier_order_id || '').trim();
+  const supplyNumber = String(input.supply_number || '').trim();
   // Расходная по заказу: Р{номер сделки Amo}; иначе старая серия OUT…
   const number =
     input.doc_type === 'out' && dealId
@@ -242,8 +304,8 @@ export function createDocument(input: {
 
   run(
     `INSERT INTO stock_docs
-      (id, doc_type, number, doc_date, warehouse_id, warehouse_to_id, counterparty_id, comment, posted, organization_id, deal_id, basis_order_id, source_supplier_order_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+      (id, doc_type, number, doc_date, warehouse_id, warehouse_to_id, counterparty_id, comment, posted, organization_id, deal_id, basis_order_id, source_supplier_order_id, supply_number)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
     [
       id,
       input.doc_type,
@@ -257,6 +319,7 @@ export function createDocument(input: {
       dealId,
       basisOrderId,
       sourceSupplierOrderId,
+      supplyNumber,
     ]
   );
   let docAmount = 0;
@@ -275,7 +338,7 @@ export function createDocument(input: {
       });
       price = Math.max(0, Number(sale.price) || 0);
     }
-    const amount = Math.round(price * qty * 100) / 100;
+    const amount = Math.round(price * qty);
     docAmount += amount;
     if (input.doc_type === 'return') returnSerials.push(...serials);
     const lineWh = String(line.warehouse_id || '').trim() || resolvedHeader;
@@ -290,7 +353,21 @@ export function createDocument(input: {
     run(`UPDATE stock_docs SET amount = ? WHERE id = ?`, [docAmount, id]);
   }
   if (input.post !== false) {
-    postDocument(id, { serialsOptional: !!input.serials_optional });
+    try {
+      postDocument(id, {
+        serialsOptional: !!input.serials_optional,
+        ignoreStock: !!input.ignore_stock,
+      });
+    } catch (e) {
+      // Иначе остаются «висячие» TR после ошибки остатка (как у 25705967).
+      try {
+        run('DELETE FROM stock_doc_lines WHERE doc_id = ?', [id]);
+        run('DELETE FROM stock_docs WHERE id = ?', [id]);
+      } catch {
+        /* ignore cleanup */
+      }
+      throw e;
+    }
   }
   if (input.doc_type === 'return' && docAmount > 0) {
     let buyerName = '';

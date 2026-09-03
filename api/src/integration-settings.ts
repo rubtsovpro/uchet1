@@ -123,27 +123,131 @@ const ATOL_DEFAULTS: AtolSettings = {
   client_email: '',
 };
 
-export function getAtolSettings(): AtolSettings {
-  const stored = readMeta<AtolSettings>(META_ATOL);
+/** Ключ профиля АТОЛ: rp = БРП Москва, mp = БМП Краснодар (Фогель/Стрела). */
+export type AtolProfileKey = 'rp' | 'mp';
+
+type AtolStoreRaw = Partial<AtolSettings> & {
+  profiles?: Partial<Record<AtolProfileKey, Partial<AtolSettings>>>;
+};
+
+const ATOL_PROFILE_PRESETS: Record<AtolProfileKey, Partial<AtolSettings>> = {
+  rp: {
+    inn: '231215603728',
+    payment_address: 'https://pay.pnevmopodveska1.ru',
+  },
+  mp: {
+    inn: '231295963240',
+    payment_address: 'https://pay.fogel.com.ru',
+  },
+};
+
+const BMP_ORG_INN = '231295963240';
+
+function readAtolStore(): AtolStoreRaw {
+  return readMeta<AtolStoreRaw>(META_ATOL);
+}
+
+function mergeAtolProfile(
+  key: AtolProfileKey,
+  partial?: Partial<AtolSettings>,
+  envPrefix = ''
+): AtolSettings {
+  const preset = ATOL_PROFILE_PRESETS[key];
+  const p = partial || {};
+  const ep = (name: string) => (envPrefix ? process.env[`${envPrefix}_${name}`] : undefined);
   return {
-    api_url: pickStr(stored.api_url, process.env.ATOL_API_URL, ATOL_DEFAULTS.api_url),
-    login: pickStr(stored.login, process.env.ATOL_LOGIN),
-    pass: pickStr(stored.pass, process.env.ATOL_PASS),
-    group_code: pickStr(stored.group_code, process.env.ATOL_GROUP_CODE),
-    inn: pickStr(stored.inn, process.env.ATOL_INN),
-    sno: pickStr(stored.sno, process.env.ATOL_SNO, ATOL_DEFAULTS.sno),
-    company_email: pickStr(stored.company_email, process.env.ATOL_COMPANY_EMAIL),
+    api_url: pickStr(p.api_url, ep('API_URL'), ATOL_DEFAULTS.api_url),
+    login: pickStr(p.login, ep('LOGIN')),
+    pass: pickStr(p.pass, ep('PASS')),
+    group_code: pickStr(p.group_code, ep('GROUP_CODE')),
+    inn: pickStr(p.inn, ep('INN'), preset.inn, ATOL_DEFAULTS.inn),
+    sno: pickStr(p.sno, ep('SNO'), ATOL_DEFAULTS.sno),
+    company_email: pickStr(p.company_email, ep('COMPANY_EMAIL')),
     payment_address: pickStr(
-      stored.payment_address,
-      process.env.ATOL_PAYMENT_ADDRESS,
+      p.payment_address,
+      ep('PAYMENT_ADDRESS'),
+      preset.payment_address,
       ATOL_DEFAULTS.payment_address
     ),
-    client_email: pickStr(stored.client_email, process.env.ATOL_CLIENT_EMAIL),
+    client_email: pickStr(p.client_email, ep('CLIENT_EMAIL')),
   };
 }
 
-export function saveAtolSettings(patch: Partial<Record<keyof AtolSettings, unknown>>): AtolSettings {
-  const cur = getAtolSettings();
+/** Перенос legacy flat → profiles.rp. */
+function normalizeAtolStore(raw: AtolStoreRaw): Record<AtolProfileKey, AtolSettings> {
+  const profiles: Partial<Record<AtolProfileKey, Partial<AtolSettings>>> = {
+    ...(raw.profiles && typeof raw.profiles === 'object' ? { ...raw.profiles } : {}),
+  };
+  const legacyLogin = pickStr(raw.login, process.env.ATOL_LOGIN);
+  if (legacyLogin && !profiles.rp?.login) {
+    profiles.rp = {
+      api_url: raw.api_url,
+      login: raw.login,
+      pass: raw.pass,
+      group_code: raw.group_code,
+      inn: raw.inn,
+      sno: raw.sno,
+      company_email: raw.company_email,
+      payment_address: raw.payment_address,
+      client_email: raw.client_email,
+    };
+  }
+  return {
+    rp: mergeAtolProfile('rp', profiles.rp, 'ATOL'),
+    mp: mergeAtolProfile('mp', profiles.mp, 'ATOL_MP'),
+  };
+}
+
+export function getAtolSettings(profile: AtolProfileKey = 'rp'): AtolSettings {
+  const { rp, mp } = normalizeAtolStore(readAtolStore());
+  return profile === 'mp' ? mp : rp;
+}
+
+export function listAtolProfileKeys(): AtolProfileKey[] {
+  return ['rp', 'mp'];
+}
+
+/** Профиль АТОЛ по ИНН организации сделки. */
+export function resolveAtolProfileKey(input?: {
+  organization_id?: string | null;
+  inn?: string | null;
+  legal_entity?: string | null;
+}): AtolProfileKey {
+  const legal = String(input?.legal_entity || '').trim().toLowerCase();
+  if (legal === 'mp') return 'mp';
+  if (legal === 'rp') return 'rp';
+  const inn = String(input?.inn || '').replace(/\D/g, '');
+  if (inn === BMP_ORG_INN) return 'mp';
+  if (inn === '231215603728') return 'rp';
+  const orgId = String(input?.organization_id || '').trim();
+  if (orgId) {
+    const row = get<{ inn: string }>(
+      `SELECT IFNULL(inn,'') AS inn FROM organizations WHERE id = ? LIMIT 1`,
+      [orgId]
+    );
+    const orgInn = String(row?.inn || '').replace(/\D/g, '');
+    if (orgInn === BMP_ORG_INN) return 'mp';
+    if (orgInn === '231215603728') return 'rp';
+  }
+  return 'rp';
+}
+
+export function getAtolSettingsForDeal(deal: Record<string, unknown>): AtolSettings {
+  const key = resolveAtolProfileKey({
+    organization_id: deal.organization_id as string | undefined,
+    inn: deal.seller_inn as string | undefined,
+    legal_entity: deal.fiscal_legal_entity as string | undefined,
+  });
+  return getAtolSettings(key);
+}
+
+export function saveAtolSettings(
+  patch: Partial<Record<keyof AtolSettings, unknown>> & { profile?: AtolProfileKey }
+): AtolSettings {
+  const profile = (patch.profile === 'mp' ? 'mp' : 'rp') as AtolProfileKey;
+  const store = readAtolStore();
+  const normalized = normalizeAtolStore(store);
+  const cur = normalized[profile];
   const next: AtolSettings = {
     api_url: pickStr(String(patch.api_url ?? ''), cur.api_url) || ATOL_DEFAULTS.api_url,
     login: applySecret(cur.login, patch.login, { clearable: true }),
@@ -154,18 +258,22 @@ export function saveAtolSettings(patch: Partial<Record<keyof AtolSettings, unkno
     company_email: pickStr(String(patch.company_email ?? cur.company_email)),
     payment_address: pickStr(
       String(patch.payment_address ?? cur.payment_address),
-      ATOL_DEFAULTS.payment_address
+      ATOL_PROFILE_PRESETS[profile].payment_address || ATOL_DEFAULTS.payment_address
     ),
     client_email: pickStr(String(patch.client_email ?? cur.client_email)),
   };
-  writeMeta(META_ATOL, next);
+  const profiles: Partial<Record<AtolProfileKey, AtolSettings>> = {
+    ...normalized,
+    [profile]: next,
+  };
+  writeMeta(META_ATOL, { profiles });
   return next;
 }
 
-export function atolSettingsPublic(s: AtolSettings = getAtolSettings()) {
-  const stored = readMeta<AtolSettings>(META_ATOL);
-  const fromDb = Boolean(stored.login || stored.pass || stored.group_code);
+function atolProfilePublic(key: AtolProfileKey, s: AtolSettings) {
   return {
+    profile: key,
+    label: key === 'mp' ? 'БМП · Фогель / Стрела' : 'БРП · Москва',
     configured: Boolean(s.login && s.pass && s.group_code),
     api_url: s.api_url,
     login: s.login,
@@ -179,6 +287,24 @@ export function atolSettingsPublic(s: AtolSettings = getAtolSettings()) {
     company_email: s.company_email,
     payment_address: s.payment_address,
     client_email: s.client_email,
+  };
+}
+
+export function atolSettingsPublic(s: AtolSettings = getAtolSettings()) {
+  const store = readAtolStore();
+  const normalized = normalizeAtolStore(store);
+  const fromDb = Boolean(
+    store.login ||
+      store.pass ||
+      store.group_code ||
+      store.profiles?.rp?.login ||
+      store.profiles?.mp?.login
+  );
+  const profiles = listAtolProfileKeys().map((k) => atolProfilePublic(k, normalized[k]));
+  return {
+    ...atolProfilePublic('rp', s),
+    configured: profiles.some((p) => p.configured),
+    profiles,
     source: fromDb ? 'db' : 'env',
     sno_options: [
       { id: 'osn', label: 'ОСН' },
@@ -539,7 +665,7 @@ export function yandexPaySettingsPublic(s?: YandexPaySettings) {
     org_url: 'https://id.yandex.ru/org',
     console_url: 'https://pay.yandex.ru/',
     docs_url: 'https://pay.yandex.ru/docs/ru/custom/integration-guide-link.md',
-    callback_url_hint: 'https://pay.pnevmopodveska1.ru/api/public/yandex-pay/webhook',
+    callback_url_hint: 'https://widget.pnevmopodveska1.ru/yandex-pay',
   };
 }
 

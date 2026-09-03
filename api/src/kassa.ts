@@ -211,7 +211,7 @@ export async function getKassaOverview(opts?: {
     ...(!orgId && companyId ? { company_id: companyId } : {}),
   });
   const balance_total =
-    Math.round(registers.reduce((s, r) => s + (Number(r.balance) || 0), 0) * 100) / 100;
+    Math.round(registers.reduce((s, r) => s + (Number(r.balance) || 0), 0));
   const atolInfo = atolStatusInfo();
   const s = getAtolSettings();
   const probeAtol = opts?.probe_atol !== false;

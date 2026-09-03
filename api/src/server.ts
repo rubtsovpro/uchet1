@@ -3,12 +3,13 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { api } from './api.js';
 import { get, migrate, run } from './db.js';
-import { purgeServiceLinesFromOutDocs, reclassifyAllProductKinds } from './product-kind.js';
+import { repairPodveskaMskWarehouses } from './hs.js';
+import { deactivateLegacyServices, purgeServiceLinesFromOutDocs, reclassifyAllProductKinds } from './product-kind.js';
 import {
   actorFromSession,
   authenticatePassword,
@@ -32,17 +33,107 @@ import { touchPresence } from './presence.js';
 import { ensureOrgProfileSeeded } from './sales-docs.js';
 import { ensureClientOrgContours } from './ensure-client-orgs.js';
 import { ensureStaffRoleDefaults } from './staff.js';
+import { ensureDevPlanSchema } from './dev-plan.js';
 import { telegram2faConfigStatus } from './telegram.js';
 import { syncRatesFromCbr } from './currencies.js';
 import { expireDuePaymentLinks } from './payment-links.js';
+import { runStoSaleWriteoffCron } from './deal-stock-flow.js';
+import { ensureStoPartsSchema } from './sto-parts-flow.js';
+import { ensureStaffNotificationsSchema } from './staff-notifications.js';
+import { ensureWebPushSchema } from './web-push.js';
+import { startPurchaseDrivePoller } from './purchase-drive.js';
+import { ensureProductServiceLinksSchema } from './product-service-links.js';
+import { ensureTaxSchema } from './tax/schema.js';
+import { machineApiKeyOkForPath } from './api-keys.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Собранный UI: web/dist (legacy + React). Переходный период — API раздаёт статику. */
 const publicDir = path.resolve(__dirname, '..', '..', 'web', 'dist');
+/** Операционные HTML (pick, courier…) — правим в web/public, без полной сборки Vite. */
+const webPublicDir = path.resolve(__dirname, '..', '..', 'web', 'public');
+
+/** legacy.js ~1.7MB — readFileSync на каждый запрос блокировал event loop и вешал WMS. */
+const publicHtmlCache = new Map<string, { mtimeMs: number; content: string }>();
+
+function readPublicHtml(file: string): string | null {
+  const full = path.join(webPublicDir, file);
+  if (!existsSync(full)) return null;
+  const mtimeMs = statSync(full).mtimeMs;
+  const cached = publicHtmlCache.get(file);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.content;
+  const content = readFileSync(full, 'utf8');
+  publicHtmlCache.set(file, { mtimeMs, content });
+  return content;
+}
+
+function sendLegacyHtml(c: Context) {
+  const html = readPublicHtml('legacy.html');
+  if (!html) return c.text('legacy.html missing', 404);
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  c.header('Pragma', 'no-cache');
+  c.header('Content-Type', 'text/html; charset=utf-8');
+  return c.body(html);
+}
+
+function sendLegacyJs(c: Context) {
+  const js = readPublicHtml('legacy.js');
+  if (!js) return c.text('legacy.js missing', 404);
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  c.header('Pragma', 'no-cache');
+  c.header('Content-Type', 'application/javascript; charset=utf-8');
+  return c.body(js);
+}
+
+function sendLegacyCss(c: Context) {
+  const css = readPublicHtml('styles.css');
+  if (!css) return c.text('styles.css missing', 404);
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  c.header('Pragma', 'no-cache');
+  c.header('Content-Type', 'text/css; charset=utf-8');
+  return c.body(css);
+}
 
 migrate();
+try {
+  const repaired = repairPodveskaMskWarehouses();
+  if (repaired.fixed > 0) {
+    console.log('[startup] repair podveska MSK warehouses:', repaired.fixed);
+  }
+} catch (e) {
+  console.warn('[startup] repair podveska warehouses:', e instanceof Error ? e.message : e);
+}
+try {
+  ensureStoPartsSchema();
+} catch (e) {
+  console.warn('[migrate] sto-parts schema:', e instanceof Error ? e.message : e);
+}
+try {
+  ensureStaffNotificationsSchema();
+} catch (e) {
+  console.warn('[migrate] staff-notifications:', e instanceof Error ? e.message : e);
+}
+try {
+  ensureWebPushSchema();
+} catch (e) {
+  console.warn('[migrate] web-push:', e instanceof Error ? e.message : e);
+}
+try {
+  ensureProductServiceLinksSchema();
+} catch (e) {
+  console.warn('[migrate] product-service-links:', e instanceof Error ? e.message : e);
+}
+try {
+  ensureTaxSchema();
+} catch (e) {
+  console.warn('[migrate] tax schema:', e instanceof Error ? e.message : e);
+}
 ensureStaffRoleDefaults();
 ensureOrgProfileSeeded();
+try {
+  ensureDevPlanSchema();
+} catch (e) {
+  console.warn('[ensureDevPlanSchema]', e instanceof Error ? e.message : e);
+}
 try {
   ensureClientOrgContours();
 } catch (e) {
@@ -75,6 +166,14 @@ try {
   }
 } catch (e) {
   console.warn('[migrate] out services purge failed:', e instanceof Error ? e.message : e);
+}
+try {
+  const hidden = deactivateLegacyServices();
+  if (hidden > 0) {
+    console.log(`[startup] legacy services hidden (not se-*): ${hidden}`);
+  }
+} catch (e) {
+  console.warn('[startup] deactivateLegacyServices failed:', e instanceof Error ? e.message : e);
 }
 
 /** Фоновые задачи внутри процесса (курсы ЦБ + истечение резервов оплаты). */
@@ -113,6 +212,62 @@ function startBackgroundJobs() {
   // Резервы оплаты: каждую минуту
   setInterval(runExpire, 60_000);
   setTimeout(runExpire, 45_000);
+
+  // Списание СТО по успешным сделкам — раз в сутки ~21:00 МСК (подстраховка)
+  let lastStoWriteoffDay = '';
+  const runStoWriteoffIfEvening = () => {
+    try {
+      const msk = new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Moscow' });
+      const [day, hourStr] = [msk.slice(0, 10), msk.slice(11, 13)];
+      const hour = Number(hourStr);
+      if (hour !== 21 || day === lastStoWriteoffDay) return;
+      lastStoWriteoffDay = day;
+      const r = runStoSaleWriteoffCron(120);
+      if (r.written > 0 || r.errors.length) {
+        console.log(
+          `[cron] sto-sale-writeoffs: written=${r.written} skipped=${r.skipped} errors=${r.errors.length}`
+        );
+      }
+    } catch (e) {
+      console.warn('[cron] sto-sale-writeoffs failed', e instanceof Error ? e.message : e);
+    }
+  };
+  setInterval(runStoWriteoffIfEvening, 15 * 60 * 1000);
+  setTimeout(runStoWriteoffIfEvening, 120_000);
+
+  // Google Drive прайсы Жени → purchase-intake (раз в 3 мин)
+  try {
+    startPurchaseDrivePoller();
+  } catch (e) {
+    console.warn('[cron] purchase-drive init:', e instanceof Error ? e.message : e);
+  }
+
+  // Примечания Amo после /pick: при лимите — очередь, слив по 1 шт. ~раз в 45с
+  const runAmoNoteQueue = async () => {
+    try {
+      const { drainAmoLeadNoteQueue, amoLeadNoteQueueSize } = await import('./amo-note-queue.js');
+      if (amoLeadNoteQueueSize() <= 0) return;
+      const { sendAmoLeadNoteOnce, sendAmoLeadTaskOnce } = await import('./amo-pick-handoff.js');
+      const r = await drainAmoLeadNoteQueue({
+        max: 1,
+        sendNote: (item) => sendAmoLeadNoteOnce({ dealId: item.deal_id, text: item.text }),
+        sendTask: (item) => sendAmoLeadTaskOnce({ dealId: item.deal_id, text: item.text }),
+      });
+      if (r.sent || r.dropped || r.deferred) {
+        console.log(
+          `[cron] amo-note-queue: sent=${r.sent} deferred=${r.deferred} dropped=${r.dropped} left=${r.left}`
+        );
+      }
+    } catch (e) {
+      console.warn('[cron] amo-note-queue failed', e instanceof Error ? e.message : e);
+    }
+  };
+  setInterval(() => {
+    void runAmoNoteQueue();
+  }, 45_000);
+  setTimeout(() => {
+    void runAmoNoteQueue();
+  }, 25_000);
 }
 
 const PORT = Number(process.env.WMS_PORT || 3101);
@@ -137,9 +292,29 @@ const CORS_ORIGINS = new Set([
   'https://www.in.uchetn1.ru',
   'https://swagger.uchetn1.ru',
   'https://www.swagger.uchetn1.ru',
+  'https://pdn.uchetn1.ru',
+  'https://www.pdn.uchetn1.ru',
+  'https://pdn.fogel.com.ru',
+  'https://www.pdn.fogel.com.ru',
+  'https://pdn.pnevmopodveska1.ru',
+  'https://www.pdn.pnevmopodveska1.ru',
   'http://localhost:3101',
   'http://127.0.0.1:3101',
 ]);
+
+function isPdnPublicHost(host: string): boolean {
+  const h = String(host || '')
+    .toLowerCase()
+    .split(':')[0]!;
+  return (
+    h === 'pdn.uchetn1.ru' ||
+    h === 'www.pdn.uchetn1.ru' ||
+    h === 'pdn.fogel.com.ru' ||
+    h === 'www.pdn.fogel.com.ru' ||
+    h === 'pdn.pnevmopodveska1.ru' ||
+    h === 'www.pdn.pnevmopodveska1.ru'
+  );
+}
 
 const app = new Hono();
 
@@ -168,8 +343,37 @@ function isAuthed(c: Parameters<typeof getCookie>[0]): boolean {
   return getCookie(c, LEGACY_COOKIE) === LEGACY_OK;
 }
 
+/** Киоск-экраны: HTML отдаём без редиректа на /login; 401 ловит JS → login?next=… */
+function isKioskHtmlPath(p: string): boolean {
+  return (
+    p === '/pick'
+    || p === '/pick.html'
+    || p === '/pick-sw.js'
+    || p === '/pick-new-task.mp3'
+    || p === '/courier'
+    || p === '/courier.html'
+    || p === '/photo'
+    || p === '/photo.html'
+    || p === '/lift'
+    || p === '/lift.html'
+    || p === '/reception'
+    || p === '/reception.html'
+    || p === '/production'
+    || p === '/production.html'
+    || p === '/warehouse/ops'
+    || p === '/warehouse/today'
+    || p === '/warehouse/pick'
+  );
+}
+
 app.use('*', async (c, next) => {
   const p = c.req.path;
+  const hostRaw = c.req.header('x-forwarded-host') || c.req.header('host') || '';
+  const host = String(hostRaw).toLowerCase().split(':')[0]!;
+  // pdn.* — публичная подпись согласия, без логина
+  if (isPdnPublicHost(host)) {
+    return next();
+  }
   // Unpublished: keep only Google Doc + local docs/VISION-uchet1.md
   if (p === '/vision.html') {
     return c.text('Not Found', 404);
@@ -182,6 +386,7 @@ app.use('*', async (c, next) => {
     || p === '/api/auth/2fa-status'
     || p === '/api/auth/screen'
     || p.startsWith('/api/crm/deals/ingest')
+    || p.startsWith('/api/crm/production/jobs')
     || p.startsWith('/api/webhooks/')
     || p.startsWith('/api/cron/')
     || p.startsWith('/api/public/')
@@ -190,26 +395,33 @@ app.use('*', async (c, next) => {
     || p === '/api/openapi.json'
     || p === '/styles.css'
     || p === '/brandbook.html'
+    || p === '/sto-templates-pack.json'
     || p === '/pay'
     || p.startsWith('/pay/')
     || p === '/pay-demo'
     || p === '/pay-demo.html'
+    || p === '/pdn'
+    || p === '/pdn.html'
+    || p.startsWith('/pdn/')
     || p.endsWith('.css')
     || p.endsWith('.js')
     || p.endsWith('.svg')
     || p.endsWith('.png')
+    || p.endsWith('.mp3')
     || p.endsWith('.pdf')
     || p.endsWith('.ico')
     || p.endsWith('.woff2')
+    || isKioskHtmlPath(p)
   ) {
     return next();
   }
   if (!isAuthed(c) && p.startsWith('/api/')) {
+    if (machineApiKeyOkForPath(c)) return next();
     return c.json({ error: 'unauthorized' }, 401);
   }
   if (!isAuthed(c)) {
-    const host = c.req.header('x-forwarded-host') || c.req.header('host');
-    const screen = screenForHost(host);
+    const hostHdr = c.req.header('x-forwarded-host') || c.req.header('host');
+    const screen = screenForHost(hostHdr);
     let nextPath = p && p !== '/login' ? p : '/';
     // На ролевом поддомене «/» → экран роли (для next= после логина)
     if (nextPath === '/' && screen.id !== 'wms') nextPath = screen.home_path;
@@ -459,25 +671,85 @@ app.get('/legacy.html', (c) => {
 // Главная: на ролевых поддоменах — сразу на экран; иначе legacy WMS
 app.get('/', async (c, next) => {
   const host = c.req.header('x-forwarded-host') || c.req.header('host');
+  const h = String(host || '')
+    .toLowerCase()
+    .split(':')[0]!;
+  if (isPdnPublicHost(h)) {
+    return sendPublicHtml('pdn.html')(c, next);
+  }
   const screen = screenForHost(host);
   if (screen.id !== 'wms' && screen.home_path !== '/') {
     return c.redirect(screen.home_path, 302);
   }
-  return sendPublicHtml('legacy.html')(c, next);
+  return sendLegacyHtml(c);
 });
-// Примитивный экран сборщика (замена Ани) — отдельный UI без clutter
-app.get('/pick', (c, next) => {
-  c.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+app.get('/legacy.js', (c) => sendLegacyJs(c));
+app.get('/styles.css', (c) => sendLegacyCss(c));
+const PICK_UI_REV = 'pc41';
+const PICK_UI_SIG = 'pick-deal-search-20260826b';
+
+function sendPickHtml(c: Context) {
+  if (c.req.query('v') !== PICK_UI_REV) {
+    const q = new URLSearchParams();
+    const raw = c.req.query();
+    for (const [k, val] of Object.entries(raw)) {
+      if (k === 'v') continue;
+      if (Array.isArray(val)) val.forEach((x) => q.append(k, String(x)));
+      else if (val != null) q.set(k, String(val));
+    }
+    q.set('v', PICK_UI_REV);
+    return c.redirect('/pick?' + q.toString(), 302);
+  }
+  const pickPath = path.join(webPublicDir, 'pick.html');
+  const html = readPublicHtml('pick.html');
+  if (!html) return c.text('pick.html missing', 404);
+  const mtime = statSync(pickPath).mtimeMs;
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   c.header('Pragma', 'no-cache');
-  return sendPublicHtml('pick.html')(c, next);
+  c.header('Expires', '0');
+  c.header('ETag', `"pick-${PICK_UI_REV}-${Math.floor(mtime)}"`);
+  c.header('Content-Type', 'text/html; charset=utf-8');
+  return c.body(html);
+}
+
+// Примитивный экран сборщика (замена Ани) — отдельный UI без clutter
+app.get('/pick', (c) => sendPickHtml(c));
+app.get('/pick.html', (c) => sendPickHtml(c));
+app.get('/warehouse/ops', (c) => sendPickHtml(c));
+app.get('/warehouse/today', (c) => sendPickHtml(c));
+app.get('/warehouse/pick', (c) => sendPickHtml(c));
+/** Звук новой задачи на /pick — из web/public (не web/dist). */
+app.get('/pick-new-task.mp3', (c) => {
+  const full = path.join(webPublicDir, 'pick-new-task.mp3');
+  if (!existsSync(full)) return c.text('Not Found', 404);
+  c.header('Content-Type', 'audio/mpeg');
+  c.header('Cache-Control', 'public, max-age=86400');
+  return c.body(readFileSync(full));
 });
-app.get('/pick.html', (c, next) => {
-  c.header('Cache-Control', 'no-store, no-cache, must-revalidate');
-  return sendPublicHtml('pick.html')(c, next);
-});
-app.get('/warehouse/ops', sendPublicHtml('pick.html'));
-app.get('/warehouse/today', sendPublicHtml('pick.html'));
-app.get('/warehouse/pick', sendPublicHtml('pick.html'));
+/** Экран курьера — HTML из файла, без кэша (serveStatic иногда кэшируется nginx/браузером) */
+function sendCourierHtml(c: Context) {
+  const html = readPublicHtml('courier.html');
+  if (!html) return c.text('courier.html missing', 404);
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  c.header('Pragma', 'no-cache');
+  c.header('Expires', '0');
+  c.header('Content-Type', 'text/html; charset=utf-8');
+  return c.body(html);
+}
+app.get('/courier', (c) => sendCourierHtml(c));
+app.get('/courier.html', (c) => sendCourierHtml(c));
+/** Экран производства — HTML из web/public (как /pick, /courier) */
+function sendProductionHtml(c: Context) {
+  const html = readPublicHtml('production.html');
+  if (!html) return c.text('production.html missing', 404);
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  c.header('Pragma', 'no-cache');
+  c.header('Expires', '0');
+  c.header('Content-Type', 'text/html; charset=utf-8');
+  return c.body(html);
+}
+app.get('/production', (c) => sendProductionHtml(c));
+app.get('/production.html', (c) => sendProductionHtml(c));
 /** Приёмка поставок по Data Matrix */
 app.get('/in/scan', async (c) => {
   // Сброс кэша старой страницы «ШК»
@@ -507,12 +779,41 @@ app.get('/supply.html', async (c) => {
 app.get('/purchases/supply', async (c) => {
   return c.redirect('/supply?v=dm9', 302);
 });
-/** Экран фотографа: остаток > 0 без фото */
-app.get('/photo', sendPublicHtml('photo.html'));
-app.get('/photo.html', sendPublicHtml('photo.html'));
-app.get('/media/photo', sendPublicHtml('photo.html'));
-app.get('/photo/report', sendPublicHtml('photo-report.html'));
-app.get('/photo/report.html', sendPublicHtml('photo-report.html'));
+/** Экран фотографа временно отключён — на главную */
+app.get('/photo', (c) => c.redirect('/', 302));
+app.get('/photo.html', (c) => c.redirect('/', 302));
+app.get('/media/photo', (c) => c.redirect('/media/photos', 302));
+app.get('/photo/report', (c) => c.redirect('/', 302));
+app.get('/photo/report.html', (c) => c.redirect('/', 302));
+/** Мобильное фото авто при приёме + Web Push — без кэша (старый flat header иначе залипает в PWA) */
+app.get('/reception-photo', async (c) => {
+  if (c.req.query('v') !== 'rp7') {
+    const q = new URLSearchParams();
+    const raw = c.req.query();
+    for (const [k, val] of Object.entries(raw)) {
+      if (val != null && val !== '') q.set(k, String(val));
+    }
+    q.set('v', 'rp7');
+    return c.redirect(`/reception-photo?${q.toString()}`, 302);
+  }
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  c.header('Pragma', 'no-cache');
+  return sendPublicHtml('reception-photo.html')(c, async () => {});
+});
+app.get('/reception-photo.html', async (c) => {
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  c.header('Pragma', 'no-cache');
+  return sendPublicHtml('reception-photo.html')(c, async () => {});
+});
+app.get('/reception-photo.webmanifest', (c, next) => {
+  c.header('Cache-Control', 'no-store, max-age=0');
+  return sendPublicHtml('reception-photo.webmanifest')(c, next);
+});
+app.get('/reception-photo-sw.js', (c, next) => {
+  c.header('Cache-Control', 'no-store, max-age=0');
+  c.header('Service-Worker-Allowed', '/');
+  return sendPublicHtml('reception-photo-sw.js')(c, next);
+});
 /** СТО: подъёмник / приёмщик (HTML может появиться от параллельной задачи) */
 app.get('/lift', (c) => sendScreenHtml(c, 'lift.html', 'Подъёмник', '/lift'));
 app.get('/lift.html', (c) => sendScreenHtml(c, 'lift.html', 'Подъёмник', '/lift'));
@@ -527,6 +828,30 @@ app.get('/pay.html', sendPublicHtml('pay.html'));
 /** Демо экрана оплаты для дизайна/маркетинга (без боевой сделки) */
 app.get('/pay-demo', sendPublicHtml('pay-demo.html'));
 app.get('/pay-demo.html', sendPublicHtml('pay-demo.html'));
+/** Публичная подпись согласия ПДн (SMS-код) */
+app.get('/pdn', sendPublicHtml('pdn.html'));
+app.get('/pdn.html', sendPublicHtml('pdn.html'));
+app.get('/pdn/*', sendPublicHtml('pdn.html'));
+/** Короткий путь /{token} на брендовых pdn-хостах и pdn.uchetn1.ru */
+app.get('/:token', async (c, next) => {
+  const host = c.req.header('x-forwarded-host') || c.req.header('host') || '';
+  const h = String(host).toLowerCase().split(':')[0]!;
+  const token = c.req.param('token');
+  if (isPdnPublicHost(h) && /^[A-Za-z0-9_-]{6,24}$/.test(token)) {
+    return sendPublicHtml('pdn.html')(c, async () => {});
+  }
+  return next();
+});
+/** Разовая панель: чек коррекции АТОЛ (по предписанию ФНС) */
+app.get('/fiscal/correction', (c, next) => {
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+  c.header('Pragma', 'no-cache');
+  return sendPublicHtml('fiscal-correction.html')(c, next);
+});
+app.get('/fiscal/correction.html', (c, next) => {
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+  return sendPublicHtml('fiscal-correction.html')(c, next);
+});
 
 app.use('/*', async (c, next) => {
   await next();
@@ -546,15 +871,20 @@ app.use('/*', async (c, next) => {
     /\.html$/i.test(p) ||
     p.startsWith('/legacy') ||
     p === '/pick' ||
+    p === '/courier' ||
     p === '/photo' ||
+    p === '/production' ||
+    p === '/reception-photo' ||
     p === '/lift' ||
     p === '/reception' ||
     p === '/supply' ||
     p.startsWith('/in/scan') ||
     p.startsWith('/photo/') ||
+    p.startsWith('/reception-photo') ||
     p.startsWith('/sto/') ||
     p.startsWith('/media/photo') ||
     p.startsWith('/pay') ||
+    p.startsWith('/fiscal/correction') ||
     p.startsWith('/warehouse/ops') ||
     p.startsWith('/warehouse/today') ||
     p.startsWith('/warehouse/pick') ||
@@ -576,7 +906,7 @@ app.get('*', async (c, next) => {
   if (REACT_PATH_RE.test(p)) {
     return sendPublicHtml('index.html')(c, next);
   }
-  return sendPublicHtml('legacy.html')(c, next);
+  return sendLegacyHtml(c);
 });
 
 console.log(`WMS listening on :${PORT}`);

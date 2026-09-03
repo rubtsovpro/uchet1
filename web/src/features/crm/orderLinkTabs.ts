@@ -53,7 +53,7 @@ export function dealNeedsContract(d: DealLike | null | undefined): boolean {
 
 /**
  * Вкладки цепочки заказа (как в классическом UI):
- * Заказ · Договоры · Счета · … · Перемещение · Расходные · Структура · История
+ * Заказ · Договоры · Счета · … · Перемещение · Списания · Структура · История
  */
 export function buildDealOrderTabs(opts: {
   dealId: string;
@@ -145,7 +145,7 @@ export function buildDealOrderTabs(opts: {
       id: `xfer:${pick.id}`,
       label: 'Заказ на перемещение',
       count: xfers.length > 1 ? xfers.length : undefined,
-      tip: 'Откуда / куда · кладовщик · марки',
+      tip: 'Внутренний документ · откуда / куда · кладовщик',
       href: `/transfer-orders/${encodeURIComponent(pick.id)}`,
     });
   } else if (opts.allowCreate !== false) {
@@ -153,7 +153,7 @@ export function buildDealOrderTabs(opts: {
       id: 'create:transfer',
       label: 'Заказ на перемещение',
       create: true,
-      tip: 'Создать заказ на перемещение · откуда / куда · кладовщик',
+      tip: 'Внутренний документ · откуда / куда · кладовщик',
     });
   }
 
@@ -161,16 +161,10 @@ export function buildDealOrderTabs(opts: {
     const pick = outs[0];
     tabs.push({
       id: `doc:${pick.id}`,
-      label: 'Расходные',
+      label: 'Списание',
       count: outs.length > 1 ? outs.length : undefined,
+      tip: 'Списание остатков со склада',
       href: `/docs/${encodeURIComponent(pick.id)}`,
-    });
-  } else if (opts.allowCreate !== false) {
-    tabs.push({
-      id: 'create:upd-ship',
-      label: 'Расходные',
-      create: true,
-      tip: 'Создать УПД + расходную (списание товаров со склада)',
     });
   }
 

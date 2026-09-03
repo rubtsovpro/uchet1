@@ -16,7 +16,12 @@ export type OrgProfile = {
   kpp: string;
   ogrnip: string;
   address: string;
+  /** Адрес поста СТО (не юр. адрес регистрации). */
+  site_address: string;
+  /** Режим работы поста, напр. «понедельник — суббота с 9:00 до 19:00». */
+  work_hours: string;
   phone: string;
+  email: string;
   bank: string;
   bik: string;
   rs: string;
@@ -35,7 +40,10 @@ export const DEFAULT_ORG: OrgProfile = {
   kpp: '',
   ogrnip: '322237500133521',
   address: '350000, Краснодарский край, Селезнева, д. 84, кв. 73',
-  phone: '',
+  site_address: 'г. Москва, Можайское шоссе, вл. 167',
+  work_hours: 'понедельник — суббота с 9:00 до 19:00',
+  phone: '+7 (925) 160-80-31',
+  email: 'info@pnevmopodveska1.ru',
   bank: 'ООО "Банк Точка" г. Москва',
   bik: '044525104',
   rs: '40802810109500030587',
@@ -64,7 +72,10 @@ const PROFILE_KEYS: (keyof OrgProfile)[] = [
   'kpp',
   'ogrnip',
   'address',
+  'site_address',
+  'work_hours',
   'phone',
+  'email',
   'bank',
   'bik',
   'rs',
@@ -127,10 +138,10 @@ export function ensureOrganizationsSeeded(): void {
   const companyId = resolveCompanyId(null);
   run(
     `INSERT INTO organizations (
-       id, code, company_id, name, short_name, inn, kpp, ogrnip, address, phone,
-       bank, bik, rs, ks, director, accountant, master_title, vat_rate,
+       id, code, company_id, name, short_name, inn, kpp, ogrnip, address, site_address, work_hours,
+       phone, email, bank, bik, rs, ks, director, accountant, master_title, vat_rate,
        is_default, is_active, source
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'seed')`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'seed')`,
     [
       id,
       'MAIN',
@@ -141,7 +152,10 @@ export function ensureOrganizationsSeeded(): void {
       seed.kpp,
       seed.ogrnip,
       seed.address,
+      seed.site_address || '',
+      seed.work_hours || '',
       seed.phone,
+      seed.email || '',
       seed.bank,
       seed.bik,
       seed.rs,
@@ -203,6 +217,30 @@ export function resolveOrganizationId(organizationId?: string | null): string {
   return def.id;
 }
 
+/** Юрлицо контура (companies.id) — ★ по умолчанию или первое активное. */
+export function resolveOrganizationForCompany(
+  companyId?: string | null,
+  preferredId?: string | null
+): string {
+  const co = String(companyId || '').trim();
+  if (!co) return '';
+  const prefer = String(preferredId || '').trim();
+  if (prefer) {
+    const row = getOrganization(prefer);
+    if (row && row.is_active && String(row.company_id || '') === co) {
+      return row.id;
+    }
+  }
+  const row = get<OrganizationRow>(
+    `SELECT * FROM organizations
+     WHERE company_id = ? AND is_active = 1
+     ORDER BY is_default DESC, name COLLATE NOCASE
+     LIMIT 1`,
+    [co]
+  );
+  return row ? row.id : '';
+}
+
 export function getOrgProfile(organizationId?: string | null): OrgProfile {
   ensureOrganizationsSeeded();
   const id = String(organizationId || '').trim();
@@ -232,7 +270,10 @@ export function upsertOrganization(input: {
   kpp?: string;
   ogrnip?: string;
   address?: string;
+  site_address?: string;
+  work_hours?: string;
   phone?: string;
+  email?: string;
   bank?: string;
   bik?: string;
   rs?: string;
@@ -262,8 +303,16 @@ export function upsertOrganization(input: {
     kpp: String(input.kpp != null ? input.kpp : cur.kpp).trim(),
     ogrnip: String(input.ogrnip != null ? input.ogrnip : cur.ogrnip).trim(),
     address: String(input.address != null ? input.address : cur.address).trim(),
+    site_address: String(
+      input.site_address != null ? input.site_address : cur.site_address
+    ).trim(),
+    work_hours: String(input.work_hours != null ? input.work_hours : cur.work_hours).trim(),
     phone: String(input.phone != null ? input.phone : cur.phone).trim(),
-    bank: String(input.bank != null ? input.bank : cur.bank).trim(),
+    email: String(input.email != null ? input.email : cur.email).trim(),
+    bank: String(input.bank != null ? input.bank : cur.bank)
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, '&')
+      .trim(),
     bik: String(input.bik != null ? input.bik : cur.bik).trim(),
     rs: String(input.rs != null ? input.rs : cur.rs).trim(),
     ks: String(input.ks != null ? input.ks : cur.ks).trim(),
@@ -302,14 +351,15 @@ export function upsertOrganization(input: {
 
   run(
     `INSERT INTO organizations (
-       id, code, company_id, name, short_name, inn, kpp, ogrnip, address, phone,
-       bank, bik, rs, ks, director, accountant, master_title, vat_rate,
+       id, code, company_id, name, short_name, inn, kpp, ogrnip, address, site_address, work_hours,
+       phone, email, bank, bik, rs, ks, director, accountant, master_title, vat_rate,
        is_default, is_active, source, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(id) DO UPDATE SET
        code=excluded.code, company_id=excluded.company_id, name=excluded.name, short_name=excluded.short_name,
        inn=excluded.inn, kpp=excluded.kpp, ogrnip=excluded.ogrnip,
-       address=excluded.address, phone=excluded.phone,
+       address=excluded.address, site_address=excluded.site_address, work_hours=excluded.work_hours,
+       phone=excluded.phone, email=excluded.email,
        bank=excluded.bank, bik=excluded.bik, rs=excluded.rs, ks=excluded.ks,
        director=excluded.director, accountant=excluded.accountant,
        master_title=excluded.master_title, vat_rate=excluded.vat_rate,
@@ -325,7 +375,10 @@ export function upsertOrganization(input: {
       next.kpp,
       next.ogrnip,
       next.address,
+      next.site_address,
+      next.work_hours,
       next.phone,
+      next.email,
       next.bank,
       next.bik,
       next.rs,
@@ -458,6 +511,7 @@ export type TochkaOrgSyncResult = {
   created: number;
   updated: number;
   skipped: number;
+  deactivated: number;
   organizations: Array<{
     id: string;
     name: string;
@@ -494,7 +548,10 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
   let created = 0;
   let updated = 0;
   let skipped = 0;
+  let deactivated = 0;
   const organizations: TochkaOrgSyncResult['organizations'] = [];
+  const syncedCodes = new Set<string>();
+  const seenInns = new Set<string>();
 
   for (const c of customers) {
     const cc = String(c.customer_code || '').trim();
@@ -508,6 +565,12 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
       continue;
     }
     const inn = String(c.inn || '').replace(/\D/g, '');
+    // Один ИНН — одна организация (в Точке бывает дубль customerCode без «ИП»)
+    if (inn && seenInns.has(inn)) {
+      skipped += 1;
+      continue;
+    }
+    if (inn) seenInns.add(inn);
     const ogrnip = String(c.ogrn || '').replace(/\D/g, '');
     const label = String(c.label || fullName).trim();
     const shortName =
@@ -528,6 +591,7 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
       ogrnip: ogrnip || existing?.ogrnip || '',
       address: existing?.address || '',
       phone: existing?.phone || '',
+      email: existing?.email || '',
       bank: TOCHKA_BANK.bank,
       bik: TOCHKA_BANK.bik,
       ks: TOCHKA_BANK.ks,
@@ -541,6 +605,21 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
       source: 'tochka',
     });
 
+    syncedCodes.add(String(row.code || cc));
+    if (inn) {
+      // старые дубли по ИНН с другим code — погасить
+      const dups = all(
+        `SELECT id, code FROM organizations WHERE inn = ? AND id != ?`,
+        [inn, row.id]
+      ) as Array<{ id: string; code: string }>;
+      for (const d of dups) {
+        run(
+          `UPDATE organizations SET is_active = 0, is_default = 0, updated_at = datetime('now') WHERE id = ?`,
+          [d.id]
+        );
+        deactivated += 1;
+      }
+    }
     const action = existing ? 'updated' : 'created';
     if (existing) updated += 1;
     else created += 1;
@@ -554,12 +633,32 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
     });
   }
 
+  // Выключить чужие юрлица из Точки (не в актуальном customers), не трогая локальные контуры Стрела/Фогель
+  if (syncedCodes.size) {
+    const extras = all(
+      `SELECT id, code FROM organizations
+       WHERE IFNULL(is_active,1)=1
+         AND IFNULL(source,'') = 'tochka'
+         AND IFNULL(code,'') != ''
+         AND code NOT IN (${[...syncedCodes].map(() => '?').join(',')})`,
+      [...syncedCodes]
+    ) as Array<{ id: string; code: string }>;
+    for (const e of extras) {
+      run(
+        `UPDATE organizations SET is_active = 0, is_default = 0, updated_at = datetime('now') WHERE id = ?`,
+        [e.id]
+      );
+      deactivated += 1;
+    }
+  }
+
   return {
     ok: true,
     customers_in_tochka: customers.length,
     created,
     updated,
     skipped,
+    deactivated,
     organizations,
   };
 }
@@ -630,6 +729,7 @@ export async function syncOrganizationsFromOdata(cfg: OdataConfig): Promise<numb
       short_name: existing?.short_name || name.slice(0, 40),
       address: existing?.address,
       phone: existing?.phone,
+      email: existing?.email,
       bank: existing?.bank,
       bik: existing?.bik,
       rs: existing?.rs,

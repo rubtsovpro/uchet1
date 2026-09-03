@@ -1,7 +1,7 @@
 export type NavSection = {
   id: string;
   label: string;
-  icon: 'home' | 'crm' | 'sales' | 'documents' | 'purchases' | 'warehouse' | 'works' | 'production' | 'money' | 'kassa' | 'staff' | 'chats' | 'company' | 'settings' | 'ideas' | 'help';
+  icon: 'home' | 'crm' | 'sales' | 'documents' | 'purchases' | 'warehouse' | 'works' | 'production' | 'money' | 'kassa' | 'tax' | 'staff' | 'chats' | 'company' | 'settings' | 'ideas' | 'help';
   /** Чистый URL раздела (классический UI или React) */
   href?: string;
 };
@@ -16,6 +16,7 @@ export const NAV_SECTIONS: NavSection[] = [
   { id: 'works', label: 'Работы', icon: 'works', href: '/works' },
   { id: 'production', label: 'Производство', icon: 'production', href: '/production' },
   { id: 'money', label: 'Деньги', icon: 'money', href: '/money' },
+  { id: 'tax', label: 'Налоги', icon: 'tax', href: '/tax' },
   { id: 'kassa', label: 'Касса', icon: 'kassa', href: '/kassa' },
   { id: 'staff', label: 'Персонал', icon: 'staff', href: '/staff' },
   { id: 'chats', label: 'Чаты', icon: 'chats', href: '/chats' },
@@ -36,6 +37,7 @@ export const NAV_SECTIONS_NOW_IDS = new Set([
   'purchases',
   'warehouse',
   'money',
+  'tax',
   'kassa',
   'staff',
   'chats',
@@ -66,7 +68,7 @@ export const SECTION_LINKS: Record<string, SectionLink[][]> = {
   ],
   documents: [
     [
-      { to: '/docs', label: 'Расходные накладные' },
+      { to: '/docs', label: 'Списания' },
       { to: '/in', label: 'Приходные накладные' },
       { to: '/in/new', label: 'Создать приходную' },
       { to: '/sales/invoices', label: 'Счета на оплату' },
@@ -75,11 +77,13 @@ export const SECTION_LINKS: Record<string, SectionLink[][]> = {
       { to: '/sales/sf', label: 'Счета-фактуры' },
       { to: '/contracts', label: 'Договоры' },
       { to: '/contracts/new', label: 'Создать договор' },
+      { to: '/sto-templates', label: 'Шаблоны СТО' },
     ],
   ],
   purchases: [
     [
       { to: '/suppliers', label: 'Поставщики' },
+      { to: '/purchases/price-intake', label: 'Прайсы и корзины' },
       { to: '/in', label: 'Приходные накладные' },
       { to: '/in/new', label: 'Создать приходную' },
       { to: '/supply?v=dm10', label: 'Заказы · марки / штрихкод' },
@@ -90,6 +94,7 @@ export const SECTION_LINKS: Record<string, SectionLink[][]> = {
   warehouse: [
     [
       { to: '/warehouses', label: 'Склады' },
+      { to: '/warehouse/cells', label: 'Адресные ячейки' },
     ],
   ],
   company: [
@@ -112,6 +117,18 @@ export const SECTION_LINKS: Record<string, SectionLink[][]> = {
       { to: '/money/reports', label: 'Отчёты по деньгам' },
     ],
   ],
+  tax: [
+    [
+      { to: '/tax/calendar', label: 'Календарь' },
+      { to: '/tax/vat', label: 'НДС' },
+      { to: '/tax/usn', label: 'УСН / КУДиР' },
+      { to: '/tax/payroll', label: 'Зарплата' },
+      { to: '/tax/reports', label: 'Отчёты' },
+      { to: '/tax/filings', label: 'Отправки (Контур)' },
+      { to: '/tax/archive', label: 'Архив эталонов' },
+      { to: '/tax/settings', label: 'Настройки' },
+    ],
+  ],
   kassa: [
     [
       { to: '/kassa', label: 'Кассы (остатки)' },
@@ -129,6 +146,8 @@ export const SECTION_LINKS: Record<string, SectionLink[][]> = {
       { to: '/delivery/cdek/settings', label: 'СДЭК' },
       { to: '/settings/atol', label: 'АТОЛ' },
       { to: '/settings/tochka', label: 'Точка Банк' },
+      { to: '/settings/doc-templates', label: 'Шаблоны документов' },
+      { to: '/settings/warranty', label: 'Гарантии' },
       { to: '/staff', label: 'Сотрудники' },
       { to: '/audit', label: 'История / логи' },
       { to: '/settings/equipment', label: 'Оборудование' },

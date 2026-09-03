@@ -23,6 +23,17 @@ function isUuid(id: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 }
 
+/** GUID 1С из id строки WMS (`pnevmopodveska_2025::uuid` → uuid). */
+function catalogGuidFromProductId(productId: string): string {
+  const id = String(productId || '').trim();
+  const idx = id.indexOf('::');
+  return (idx >= 0 ? id.slice(idx + 2) : id).trim().toLowerCase();
+}
+
+function isMediaProductId(productId: string): boolean {
+  return isUuid(catalogGuidFromProductId(productId));
+}
+
 type ImgRow = { guid?: string; array_image?: Array<{ image?: string }> };
 
 export type MediaSyncResult = {
@@ -75,10 +86,14 @@ export async function uploadManualProductPhoto(
   orientation: string;
   new_file: boolean;
 }> {
-  const pid = String(productId || '').trim().toLowerCase();
-  if (!isUuid(pid)) throw new Error('Некорректный id товара');
-  const product = get<{ id: string }>('SELECT id FROM products WHERE id = ?', [pid]);
+  const rawId = String(productId || '').trim();
+  if (!isMediaProductId(rawId)) throw new Error('Некорректный id товара');
+  const product = get<{ id: string }>(
+    'SELECT id FROM products WHERE id = ? OR lower(id) = lower(?) LIMIT 1',
+    [rawId, rawId]
+  );
   if (!product) throw new Error('Товар не найден');
+  const pid = String(product.id);
   if (!buf || buf.length < 32) throw new Error('Файл слишком маленький');
   if (buf.length > 25 * 1024 * 1024) throw new Error('Файл больше 25 МБ');
 
@@ -149,6 +164,122 @@ export async function uploadManualProductPhoto(
     orientation: dims?.orientation || '',
     new_file: true,
   };
+}
+
+const VIDEO_URL_RE =
+  /^(https?:\/\/)(www\.)?(youtube\.com|youtu\.be|rutube\.ru|vk\.com|vkvideo\.ru|vimeo\.com|drive\.google\.com|disk\.yandex\.(ru|com)|cloud\.mail\.ru)\b/i;
+
+export function normalizeProductVideoUrl(raw: string): string {
+  const url = String(raw || '').trim();
+  if (!url) throw new Error('Укажите ссылку на видео');
+  if (url.length > 2000) throw new Error('Ссылка слишком длинная');
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('Некорректная ссылка');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Ссылка должна начинаться с http(s)://');
+  }
+  // Разрешаем известные видеохостинги + любые https (фотограф может кинуть прямую mp4)
+  if (!VIDEO_URL_RE.test(url) && !/\.(mp4|webm|mov)(\?|$)/i.test(parsed.pathname)) {
+    // всё равно принимаем https — не режем жёстко
+  }
+  return parsed.toString();
+}
+
+/** Ссылка на видео в карточке товара (без файла в S3). */
+export function addProductVideoLink(
+  productId: string,
+  rawUrl: string,
+  title = ''
+): { id: string; url: string; title: string; kind: 'video' } {
+  const rawId = String(productId || '').trim();
+  if (!isMediaProductId(rawId)) throw new Error('Некорректный id товара');
+  const product = get<{ id: string }>(
+    'SELECT id FROM products WHERE id = ? OR lower(id) = lower(?) LIMIT 1',
+    [rawId, rawId]
+  );
+  if (!product) throw new Error('Товар не найден');
+  const pid = String(product.id);
+  const url = normalizeProductVideoUrl(rawUrl);
+  const label = String(title || '').trim().slice(0, 200);
+  const sha = createHash('sha256').update(`video|${url}`).digest('hex');
+  const existing = get<{ id: string; url: string }>(
+    `SELECT id, url FROM product_media WHERE product_id = ? AND kind = 'video' AND sha256 = ?`,
+    [pid, sha]
+  );
+  if (existing) {
+    return { id: existing.id, url: existing.url, title: label, kind: 'video' };
+  }
+  const maxSort =
+    get<{ m: number }>(
+      `SELECT COALESCE(MAX(sort_order), -1) AS m FROM product_media WHERE product_id = ?`,
+      [pid]
+    )?.m ?? -1;
+  const id = `${pid}|video|${sha.slice(0, 16)}`;
+  run(
+    `INSERT INTO product_media (id, product_id, kind, mime, ext, s3_key, url, size, sha256, sort_order)
+     VALUES (?, ?, 'video', 'text/uri-list', 'url', '', ?, 0, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET url=excluded.url, synced_at=datetime('now')`,
+    [id, pid, url, sha, Number(maxSort) + 1]
+  );
+  if (label) {
+    try {
+      run(`UPDATE product_media SET orientation = ? WHERE id = ?`, [label, id]);
+    } catch {
+      /* orientation reused as title for video links */
+    }
+  }
+  run(`DELETE FROM product_media WHERE product_id = ? AND kind = 'empty'`, [pid]);
+  return { id, url, title: label, kind: 'video' };
+}
+
+function findProductMediaRow(
+  productId: string,
+  mediaId: string
+): { id: string; kind: string } | null {
+  const pid = String(productId || '').trim();
+  const mid = String(mediaId || '').trim();
+  if (!pid || !mid) return null;
+  const row = get<{ id: string; kind: string }>(
+    `SELECT id, kind FROM product_media WHERE id = ? AND product_id = ?`,
+    [mid, pid]
+  );
+  if (row) return row;
+  return (
+    get<{ id: string; kind: string }>(
+      `SELECT id, kind FROM product_media WHERE id = ? AND lower(product_id) = lower(?)`,
+      [mid, pid]
+    ) || null
+  );
+}
+
+export function deleteProductMediaItem(productId: string, mediaId: string): boolean {
+  const row = findProductMediaRow(productId, mediaId);
+  if (!row) return false;
+  run(`DELETE FROM product_media WHERE id = ?`, [row.id]);
+  return true;
+}
+
+/** Удаление пачки медиа; возвращает удалённые id и виды. */
+export function deleteProductMediaBatch(
+  productId: string,
+  mediaIds: string[]
+): { deleted: number; ids: string[]; kinds: Record<string, number> } {
+  const ids = [...new Set((mediaIds || []).map((x) => String(x || '').trim()).filter(Boolean))];
+  const kinds: Record<string, number> = {};
+  const deletedIds: string[] = [];
+  for (const mid of ids.slice(0, 100)) {
+    const row = findProductMediaRow(productId, mid);
+    if (!row) continue;
+    run(`DELETE FROM product_media WHERE id = ?`, [row.id]);
+    deletedIds.push(row.id);
+    const k = String(row.kind || 'image') || 'image';
+    kinds[k] = (kinds[k] || 0) + 1;
+  }
+  return { deleted: deletedIds.length, ids: deletedIds, kinds };
 }
 
 async function uploadProductImages(
@@ -264,10 +395,16 @@ async function syncGuidList(
   let productsDone = 0;
 
   for (let i = 0; i < productIds.length; i++) {
-    const pid = productIds[i].toLowerCase();
+    const pid = String(productIds[i] || '').trim();
+    const guid = catalogGuidFromProductId(pid);
+    if (!isUuid(guid)) {
+      skipped += 1;
+      productsDone += 1;
+      continue;
+    }
     try {
-      const byGuid = await fetchImagesForGuids([pid]);
-      const row = byGuid.get(pid);
+      const byGuid = await fetchImagesForGuids([guid]);
+      const row = byGuid.get(guid);
       const images = row?.array_image || [];
       if (!images.length) {
         empty += 1;
@@ -321,7 +458,7 @@ export async function syncMediaFrom1c(opts: {
   const replace = !!opts.replace;
 
   if (opts.productIds?.length) {
-    const ids = opts.productIds.filter(isUuid).slice(0, limit);
+    const ids = opts.productIds.filter(isMediaProductId).slice(0, limit);
     const r = await syncGuidList(cfg, ids, replace);
     run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
       'media_synced_at',
@@ -362,9 +499,9 @@ export async function syncMediaFrom1c(opts: {
         [limit]
       );
 
-  const guids = candidates.map((r) => r.id).filter(isUuid);
-  console.log(`media from local products queue=${guids.length} limit=${limit}`);
-  const r = await syncGuidList(cfg, guids, replace);
+  const productIds = candidates.map((r) => r.id).filter(isMediaProductId);
+  console.log(`media from local products queue=${productIds.length} limit=${limit}`);
+  const r = await syncGuidList(cfg, productIds, replace);
 
   run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'media_synced_at',

@@ -10,11 +10,14 @@ export const openApiSpec = {
       'Складской и CRM API Пневмоподвески (Hono + SQLite).',
       '',
       '**Auth:** cookie-сессия `wms_sid` после `POST /api/login`.',
-      'Публичные: `/api/health`, `/api/public/*`, ingest сделок (ключ).',
+      'Публичные: `/api/health`, `/api/public/*`, ingest сделок и вебхуки (ключ).',
+      'Ключ: свой на каждого клиента (Помощь → Интеграции и API).',
+      'Scopes: `nomen` (товары/категории), `stock` (остатки/склады/docs), `nomen+stock`, `all`, webhook/ingest/payment.',
+      'Передача: заголовок `x-wms-ingest-key` / `X-Wms-Key` или `?key=`.',
+      'В UI: **Помощь → Интеграции и API** (`/help/integrations`).',
       '',
-      '**Swagger:** `https://swagger.uchetn1.ru` → `/api/swagger`. Backend API host: `https://api.uchetn1.ru`.',
-      'Вкл. при `SWAGGER_ENABLED=1`. Доступ: сессия admin / системный admin',
-      '(тот же логин WMS); опционально Basic (`SWAGGER_BASIC_*`).',
+      '**Swagger:** в UI — Помощь → Интеграции и API; также `/api/swagger` и `/api/openapi.json` на том же хосте.',
+      'Вкл. при `SWAGGER_ENABLED=1`. Доступ: любая рабочая сессия WMS; опционально Basic (`SWAGGER_BASIC_*`).',
       'Try-it-out для мутаций ограничен (только GET) — полный write через UI приложения.',
       '',
       '**Не путать:** `/api/docs` — CRUD складских документов, не эта документация.',
@@ -22,9 +25,9 @@ export const openApiSpec = {
     version: '0.1.0',
   },
   servers: [
-    { url: 'https://swagger.uchetn1.ru', description: 'Swagger-поддомен (admin)' },
-    { url: 'https://uchetn1.ru', description: 'Учёт №1 (apex)' },
+    { url: 'https://uchetn1.ru', description: 'Учёт №1' },
     { url: 'https://1c.pnevmopodveska1.ru', description: 'Live WMS' },
+    { url: 'http://127.0.0.1:3101', description: 'Local' },
   ],
   tags: [
     { name: 'health' },
@@ -57,6 +60,15 @@ export const openApiSpec = {
         type: 'apiKey',
         in: 'header',
         name: 'x-wms-ingest-key',
+        description:
+          'Машинный ключ WMS_INGEST_KEY (или WMS_JSON_KEY для /public/product). Альтернативы: заголовок X-Wms-Key, query ?key=. См. Помощь → Интеграции и API.',
+      },
+      wmsKey: {
+        type: 'apiKey',
+        in: 'header',
+        name: 'X-Wms-Key',
+        description:
+          'Ключ моста / вебхуков: BANK_SBP_KEY | WMS_BANK_API_KEY | WMS_INGEST_KEY',
       },
     },
     schemas: {
@@ -230,6 +242,17 @@ export const openApiSpec = {
         },
       },
     },
+    '/api/companies': {
+      get: {
+        tags: ['companies'],
+        summary: 'Список контуров (company_id)',
+        description: 'id/name/code для фильтра company_id. Scope: nomen или all.',
+        responses: {
+          '200': { description: '{ items, default_id }' },
+          '401': { description: 'Нет ключа' },
+        },
+      },
+    },
     '/api/products': {
       get: {
         tags: ['products'],
@@ -237,14 +260,23 @@ export const openApiSpec = {
         parameters: [
           { name: 'q', in: 'query', schema: { type: 'string' } },
           { name: 'category_id', in: 'query', schema: { type: 'string' } },
+          { name: 'company_id', in: 'query', schema: { type: 'string' }, description: 'UUID контура; неизвестный → 400; для API-ключа обязателен (или all)' },
+          { name: 'include', in: 'query', schema: { type: 'string' }, description: 'prices — цены в списке' },
+          { name: 'with_prices', in: 'query', schema: { type: 'string', enum: ['1', 'true', 'yes'] } },
           { name: 'page', in: 'query', schema: { type: 'integer', default: 1 } },
-          { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } },
+          {
+            name: 'limit',
+            in: 'query',
+            schema: { type: 'integer', default: 50, maximum: 500 },
+            description: 'Max 500; больше → 400',
+          },
         ],
         responses: {
           '200': {
             description: 'Список',
             content: { 'application/json': { schema: { $ref: '#/components/schemas/ProductList' } } },
           },
+          '400': { description: 'Неизвестный company_id или limit > 500' },
         },
       },
       post: {
@@ -254,8 +286,9 @@ export const openApiSpec = {
           content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } },
         },
         responses: {
-          '200': { description: 'Создан' },
+          '201': { description: 'Создан' },
           '403': { description: 'Нет права can_edit_products' },
+          '409': { description: 'SKU или code уже существует' },
         },
       },
     },
@@ -300,8 +333,18 @@ export const openApiSpec = {
         parameters: [
           { name: 'product_id', in: 'query', schema: { type: 'string' } },
           { name: 'warehouse_id', in: 'query', schema: { type: 'string' } },
+          { name: 'company_id', in: 'query', schema: { type: 'string', format: 'uuid' } },
+          {
+            name: 'limit',
+            in: 'query',
+            schema: { type: 'integer', default: 50, maximum: 500 },
+            description: 'Max 500; больше → 400',
+          },
         ],
-        responses: { '200': { description: 'Остатки' } },
+        responses: {
+          '200': { description: 'Остатки' },
+          '400': { description: 'Неизвестный company_id или limit > 500' },
+        },
       },
     },
     '/api/stock/valuation': {

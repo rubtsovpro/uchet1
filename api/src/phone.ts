@@ -56,7 +56,7 @@ function defaultsUi(): UiSettings {
   return {
     phone_format: DEFAULT_PHONE_FORMAT,
     payment_link_timer_minutes: DEFAULT_PAYMENT_LINK_TIMER_MINUTES,
-    payment_link_reserve_enabled: true,
+    payment_link_reserve_enabled: false,
     payment_link_default_warehouse_id: '',
     payment_link_default_organization_id: '',
   };
@@ -71,7 +71,7 @@ export function getUiSettings(): UiSettings {
     return {
       phone_format: asPhoneFormat(parsed.phone_format),
       payment_link_timer_minutes: asTimerMinutes(parsed.payment_link_timer_minutes),
-      payment_link_reserve_enabled: parsed.payment_link_reserve_enabled !== false,
+      payment_link_reserve_enabled: false,
       payment_link_default_warehouse_id: String(
         parsed.payment_link_default_warehouse_id || ''
       ),
@@ -93,7 +93,8 @@ export function saveUiSettings(patch: Partial<UiSettings>): UiSettings {
     next.payment_link_timer_minutes = asTimerMinutes(patch.payment_link_timer_minutes);
   }
   if (patch.payment_link_reserve_enabled != null) {
-    next.payment_link_reserve_enabled = Boolean(patch.payment_link_reserve_enabled);
+    // WAIT-PAY резерв отключён навсегда
+    next.payment_link_reserve_enabled = false;
   }
   if (patch.payment_link_default_warehouse_id != null) {
     next.payment_link_default_warehouse_id = String(

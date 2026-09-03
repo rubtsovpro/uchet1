@@ -42,6 +42,15 @@ type ChatMessage = {
   read_status?: 'unread' | 'partial' | 'read';
 };
 
+type ChatMember = {
+  actor_id: string;
+  name: string;
+  role: 'admin' | 'member' | string;
+  is_creator?: boolean;
+  joined_at?: string;
+  online?: boolean;
+};
+
 type ChatListItem = {
   id: string;
   type: 'dm' | 'group';
@@ -49,6 +58,10 @@ type ChatListItem = {
   unread: number;
   peer_online?: boolean;
   updated_at: string;
+  created_by?: string;
+  created_by_name?: string;
+  my_role?: string;
+  members_count?: number;
   last_message: {
     id: string;
     body: string;
@@ -249,6 +262,13 @@ export function ChatsPage() {
   const [dirQ, setDirQ] = useState('');
   const [groupTitle, setGroupTitle] = useState('');
   const [groupPick, setGroupPick] = useState<string[]>([]);
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteQ, setInviteQ] = useState('');
+  const [invitePick, setInvitePick] = useState<string[]>([]);
+  const [membersError, setMembersError] = useState('');
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasOlder, setHasOlder] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const photoRef = useRef<HTMLInputElement>(null);
   const threadEndRef = useRef<HTMLDivElement>(null);
@@ -273,9 +293,41 @@ export function ChatsPage() {
   const messagesQ = useQuery({
     queryKey: ['chat-messages', activeId],
     enabled: Boolean(activeId),
-    queryFn: () =>
-      api<{ items: ChatMessage[] }>(`/chats/${activeId}/messages?limit=80`),
+    queryFn: async () => {
+      const key = ['chat-messages', activeId] as const;
+      const prev = qc.getQueryData<{ items: ChatMessage[]; has_more?: boolean }>(key);
+      if (prev?.items?.length) {
+        const last = prev.items[prev.items.length - 1];
+        if (!last?.id) return prev;
+        const r = await api<{ items: ChatMessage[]; has_more?: boolean }>(
+          `/chats/${activeId}/messages?after=${encodeURIComponent(last.id)}&limit=50`
+        );
+        if (!(r.items || []).length) return prev;
+        const seen = new Set(prev.items.map((m) => m.id));
+        const add = (r.items || []).filter((m) => !seen.has(m.id));
+        return { items: [...prev.items, ...add], has_more: prev.has_more };
+      }
+      const r = await api<{ items: ChatMessage[]; has_more?: boolean }>(
+        `/chats/${activeId}/messages?limit=100`
+      );
+      setHasOlder(Boolean(r.has_more));
+      return r;
+    },
     refetchInterval: activeId ? 2500 : false,
+  });
+
+  const membersQ = useQuery({
+    queryKey: ['chat-members', activeId],
+    enabled: Boolean(activeId) && membersOpen,
+    queryFn: () =>
+      api<{
+        items: ChatMember[];
+        created_by: string;
+        created_by_name: string;
+        my_role: string;
+        title: string;
+        type: string;
+      }>(`/chats/${activeId}/members`),
   });
 
   const dirQry = useQuery({
@@ -284,6 +336,15 @@ export function ChatsPage() {
     queryFn: () =>
       api<{ items: DirectoryPerson[] }>(
         `/chats/directory?q=${encodeURIComponent(dirQ)}`
+      ),
+  });
+
+  const inviteDirQry = useQuery({
+    queryKey: ['chat-directory-invite', inviteQ],
+    enabled: inviteOpen,
+    queryFn: () =>
+      api<{ items: DirectoryPerson[] }>(
+        `/chats/directory?q=${encodeURIComponent(inviteQ)}`
       ),
   });
 
@@ -336,6 +397,99 @@ export function ChatsPage() {
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, activeId]);
+
+  useEffect(() => {
+    setMembersOpen(false);
+    setInviteOpen(false);
+    setInvitePick([]);
+    setMembersError('');
+    setHasOlder(false);
+  }, [activeId]);
+
+  const canManageGroup =
+    activeChat?.type === 'group' &&
+    (activeChat.my_role === 'admin' ||
+      me.data?.role === 'admin' ||
+      !!me.data?.isSystemAdmin);
+
+  const loadOlder = useCallback(async () => {
+    if (!activeId || loadingOlder || !messages.length) return;
+    const oldest = messages[0]?.id;
+    if (!oldest) return;
+    setLoadingOlder(true);
+    try {
+      const r = await api<{ items: ChatMessage[]; has_more?: boolean }>(
+        `/chats/${activeId}/messages?before=${encodeURIComponent(oldest)}&limit=100`
+      );
+      setHasOlder(Boolean(r.has_more));
+      qc.setQueryData(
+        ['chat-messages', activeId],
+        (prev: { items: ChatMessage[]; has_more?: boolean } | undefined) => {
+          const cur = prev?.items || [];
+          const seen = new Set(cur.map((m) => m.id));
+          const prepend = (r.items || []).filter((m) => !seen.has(m.id));
+          return { items: [...prepend, ...cur], has_more: r.has_more };
+        }
+      );
+    } catch (e) {
+      setComposerError(e instanceof ApiError ? e.message : 'Не удалось загрузить историю');
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [activeId, loadingOlder, messages, qc]);
+
+  const inviteMembers = useCallback(async () => {
+    if (!activeId || !invitePick.length) return;
+    setMembersError('');
+    try {
+      await api(`/chats/${activeId}/members`, {
+        method: 'POST',
+        body: { member_ids: invitePick },
+      });
+      setInvitePick([]);
+      setInviteOpen(false);
+      void qc.invalidateQueries({ queryKey: ['chat-members', activeId] });
+      void qc.invalidateQueries({ queryKey: ['chats'] });
+    } catch (e) {
+      setMembersError(e instanceof ApiError ? e.message : 'Не удалось пригласить');
+    }
+  }, [activeId, invitePick, qc]);
+
+  const setMemberRole = useCallback(
+    async (actorId: string, role: 'admin' | 'member') => {
+      if (!activeId) return;
+      setMembersError('');
+      try {
+        await api(`/chats/${activeId}/members/${encodeURIComponent(actorId)}`, {
+          method: 'PATCH',
+          body: { role },
+        });
+        void qc.invalidateQueries({ queryKey: ['chat-members', activeId] });
+        void qc.invalidateQueries({ queryKey: ['chats'] });
+      } catch (e) {
+        setMembersError(e instanceof ApiError ? e.message : 'Не удалось изменить роль');
+      }
+    },
+    [activeId, qc]
+  );
+
+  const removeMember = useCallback(
+    async (actorId: string, name: string) => {
+      if (!activeId) return;
+      if (!confirm(`Исключить «${name}» из группы?`)) return;
+      setMembersError('');
+      try {
+        await api(`/chats/${activeId}/members/${encodeURIComponent(actorId)}`, {
+          method: 'DELETE',
+        });
+        void qc.invalidateQueries({ queryKey: ['chat-members', activeId] });
+        void qc.invalidateQueries({ queryKey: ['chats'] });
+      } catch (e) {
+        setMembersError(e instanceof ApiError ? e.message : 'Не удалось исключить');
+      }
+    },
+    [activeId, qc]
+  );
 
   useEffect(() => {
     return () => {
@@ -751,18 +905,244 @@ export function ChatsPage() {
                 <div className="chats-thread-who">
                   <div className="chats-thread-title">{activeChat.title}</div>
                   <div className="chats-thread-sub">
-                    {activeChat.type === 'group' ? 'Группа' : 'Личный чат'}
-                    {activeChat.peer_online ? (
+                    {activeChat.type === 'group' ? (
                       <>
-                        {' · '}
-                        <span className="chats-online-label">онлайн</span>
+                        Группа
+                        {activeChat.members_count
+                          ? ` · ${activeChat.members_count} уч.`
+                          : ''}
+                        {activeChat.created_by_name
+                          ? ` · создатель ${activeChat.created_by_name}`
+                          : ''}
                       </>
-                    ) : null}
+                    ) : (
+                      <>
+                        Личный чат
+                        {activeChat.peer_online ? (
+                          <>
+                            {' · '}
+                            <span className="chats-online-label">онлайн</span>
+                          </>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 </div>
+                {activeChat.type === 'group' ? (
+                  <button
+                    type="button"
+                    className={`chats-members-toggle${membersOpen ? ' is-open' : ''}`}
+                    onClick={() => {
+                      setMembersOpen((v) => !v);
+                      setInviteOpen(false);
+                    }}
+                  >
+                    <span className="chats-members-toggle-ico" aria-hidden>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                        <circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.7" />
+                        <circle cx="17" cy="9" r="2.4" stroke="currentColor" strokeWidth="1.7" />
+                        <path
+                          d="M3.5 18.5c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M14.2 14.2c1.5-.5 3.2-.3 4.3 1.3.6.8.9 1.8 1 3"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    </span>
+                    Участники
+                    {activeChat.members_count ? (
+                      <span className="chats-members-toggle-count">
+                        {activeChat.members_count}
+                      </span>
+                    ) : null}
+                  </button>
+                ) : null}
               </header>
 
+              {membersOpen && activeChat.type === 'group' ? (
+                <div className="chats-members-panel">
+                  <div className="chats-members-head">
+                    <div className="chats-members-head-text">
+                      <strong>Участники</strong>
+                      <span className="chats-members-creator">
+                        Создатель ·{' '}
+                        {membersQ.data?.created_by_name ||
+                          activeChat.created_by_name ||
+                          '—'}
+                      </span>
+                    </div>
+                    {canManageGroup ? (
+                      <button
+                        type="button"
+                        className={`chats-members-invite-btn${inviteOpen ? ' active' : ''}`}
+                        onClick={() => {
+                          setInviteOpen((v) => !v);
+                          setInvitePick([]);
+                          setInviteQ('');
+                        }}
+                      >
+                        {inviteOpen ? 'Отмена' : '+ Пригласить'}
+                      </button>
+                    ) : null}
+                  </div>
+                  {membersError ? <p className="chats-error">{membersError}</p> : null}
+                  {inviteOpen ? (
+                    <div className="chats-invite">
+                      <input
+                        className="chats-field"
+                        placeholder="Найти сотрудника"
+                        value={inviteQ}
+                        onChange={(e) => setInviteQ(e.target.value)}
+                      />
+                      <ul className="chats-dir chats-invite-dir">
+                        {(inviteDirQry.data?.items || [])
+                          .filter(
+                            (p) =>
+                              !(membersQ.data?.items || []).some((m) => m.actor_id === p.id)
+                          )
+                          .map((p) => {
+                            const picked = invitePick.includes(p.id);
+                            return (
+                              <li key={p.id}>
+                                <button
+                                  type="button"
+                                  className={`chats-dir-item${picked ? ' picked' : ''}`}
+                                  onClick={() =>
+                                    setInvitePick((prev) =>
+                                      picked
+                                        ? prev.filter((x) => x !== p.id)
+                                        : [...prev, p.id]
+                                    )
+                                  }
+                                >
+                                  <Avatar name={p.name} online={p.online} size="sm" />
+                                  <span className="chats-dir-meta">
+                                    <span className="chats-dir-name">{p.name}</span>
+                                    <span className="chats-dir-sub">
+                                      {p.department || p.role}
+                                    </span>
+                                  </span>
+                                  {picked ? <span className="chats-check">✓</span> : null}
+                                </button>
+                              </li>
+                            );
+                          })}
+                      </ul>
+                      <div className="chats-invite-foot">
+                        <button
+                          type="button"
+                          className="chats-btn-primary chats-btn-sm"
+                          disabled={!invitePick.length}
+                          onClick={() => void inviteMembers()}
+                        >
+                          Добавить{invitePick.length ? ` · ${invitePick.length}` : ''}
+                        </button>
+                        <p className="chats-invite-hint">
+                          Новым участникам видна вся история
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+                  <ul className="chats-members-list">
+                    {membersQ.isLoading ? (
+                      <li className="chats-members-loading">Загрузка…</li>
+                    ) : null}
+                    {[...(membersQ.data?.items || [])]
+                      .sort((a, b) => {
+                        const rank = (m: ChatMember) =>
+                          m.is_creator ? 0 : m.role === 'admin' ? 1 : 2;
+                        const d = rank(a) - rank(b);
+                        if (d) return d;
+                        return a.name.localeCompare(b.name, 'ru');
+                      })
+                      .map((m) => (
+                      <li key={m.actor_id} className="chats-member-row">
+                        <Avatar name={m.name} online={m.online} size="sm" />
+                        <div className="chats-member-meta">
+                          <div className="chats-member-name">
+                            {m.name}
+                            {m.actor_id === myId ? (
+                              <span className="chats-member-you">вы</span>
+                            ) : null}
+                          </div>
+                          <div className="chats-member-badges">
+                            {m.is_creator ? (
+                              <span className="chats-role-badge is-creator">создатель</span>
+                            ) : null}
+                            {m.role === 'admin' ? (
+                              <span className="chats-role-badge is-admin">админ</span>
+                            ) : (
+                              <span className="chats-role-badge is-member">участник</span>
+                            )}
+                            {m.online ? (
+                              <span className="chats-online-dot">онлайн</span>
+                            ) : null}
+                          </div>
+                        </div>
+                        {canManageGroup && m.actor_id !== myId ? (
+                          <div className="chats-member-actions">
+                            {m.role === 'admin' ? (
+                              <button
+                                type="button"
+                                className="chats-member-act"
+                                title="Снять админа"
+                                onClick={() => void setMemberRole(m.actor_id, 'member')}
+                              >
+                                Снять
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="chats-member-act is-promote"
+                                title="Сделать админом"
+                                onClick={() => void setMemberRole(m.actor_id, 'admin')}
+                              >
+                                В админы
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="chats-member-act is-remove"
+                              title="Исключить"
+                              aria-label="Исключить"
+                              onClick={() => void removeMember(m.actor_id, m.name)}
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+                                <path
+                                  d="M18 6L6 18M6 6l12 12"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                />
+                              </svg>
+                            </button>
+                          </div>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
               <div className="chats-messages">
+                {hasOlder ? (
+                  <div className="chats-load-older">
+                    <button
+                      type="button"
+                      className="chats-chip"
+                      disabled={loadingOlder}
+                      onClick={() => void loadOlder()}
+                    >
+                      {loadingOlder ? 'Загрузка…' : 'Загрузить более ранние сообщения'}
+                    </button>
+                  </div>
+                ) : null}
                 {messages.map((m) => {
                   const mine = m.sender_id === myId;
                   return (

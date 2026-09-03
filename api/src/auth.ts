@@ -13,6 +13,12 @@ import {
   rightsForRole,
   type StaffRights,
 } from './staff.js';
+import {
+  extractMachineApiKey,
+  scopesAllow,
+  verifyAnyMachineApiKey,
+  type ApiKeyScope,
+} from './api-keys.js';
 
 export { canAccessSection };
 
@@ -25,6 +31,7 @@ export type Actor = {
   email: string;
   login: string;
   role: string;
+  department: string;
   rights: StaffRights;
   isSystemAdmin: boolean;
 };
@@ -55,10 +62,11 @@ export function verifyPassword(password: string, stored: string): boolean {
 function systemActor(): Actor {
   return {
     id: '__admin__',
-    name: 'Админ (системный)',
+    name: (process.env.WMS_ADMIN_NAME || 'Рубцов Сергей').trim() || 'Рубцов Сергей',
     email: '',
     login: ENV_USER(),
     role: 'admin',
+    department: '',
     rights: rightsForRole('admin'),
     isSystemAdmin: true,
   };
@@ -67,7 +75,13 @@ function systemActor(): Actor {
 /** Админ / системный — всё; иначе флаг из rights. */
 export function canDo(
   actor: Actor | null,
-  right: 'can_sync' | 'can_edit_products' | 'can_edit_prices' | 'can_edit_docs'
+  right:
+    | 'can_sync'
+    | 'can_edit_products'
+    | 'can_edit_prices'
+    | 'can_edit_docs'
+    | 'can_tax'
+    | 'can_payroll'
 ): boolean {
   if (!actor) return true; // legacy cookie
   if (actor.isSystemAdmin || actor.role === 'admin') return true;
@@ -81,6 +95,7 @@ function staffToActor(row: Record<string, unknown>): Actor {
     email: String(row.email || ''),
     login: String(row.login || row.email || ''),
     role: String(row.role || 'none'),
+    department: String(row.department || ''),
     rights: effectiveRightsForStaff(row),
     isSystemAdmin: false,
   };
@@ -105,6 +120,16 @@ export function destroySession(sid: string | undefined): void {
   run('DELETE FROM sessions WHERE id = ?', [sid]);
 }
 
+/** Сбросить все сессии сотрудника (кик из системы). */
+export function destroySessionsForActor(actorId: string): number {
+  const id = String(actorId || '').trim();
+  if (!id) return 0;
+  const n =
+    get<{ c: number }>('SELECT COUNT(*) AS c FROM sessions WHERE actor_id = ?', [id])?.c ?? 0;
+  run('DELETE FROM sessions WHERE actor_id = ?', [id]);
+  return Number(n) || 0;
+}
+
 export function actorFromSession(sid: string | undefined): Actor | null {
   if (!sid) return null;
   const sess = get<{ actor_id: string; expires_at: string }>(
@@ -126,8 +151,78 @@ export function actorFromSession(sid: string | undefined): Actor | null {
   return staffToActor(row);
 }
 
+function actorFromMachineKey(c: Context): Actor | null {
+  const raw = extractMachineApiKey(c);
+  if (!raw) return null;
+  const v = verifyAnyMachineApiKey(raw);
+  if (!v) return null;
+  const scopes = v.scopes as ApiKeyScope[];
+  const has = (s: ApiKeyScope) => scopesAllow(scopes, s);
+  const full = has('all');
+  const sections: string[] = [];
+  if (has('nomen') || has('public') || full) sections.push('home');
+  if (
+    has('balances') ||
+    has('warehouses') ||
+    has('storage') ||
+    has('stock') ||
+    full
+  ) {
+    sections.push('warehouse');
+  }
+  if (has('ingest') || has('webhook') || full) sections.push('crm');
+
+  const staffId = String((v as { staff_id?: string }).staff_id || '').trim();
+  if (staffId && v.source === 'db') {
+    const row = get<Record<string, unknown>>(
+      `SELECT * FROM staff WHERE id = ? AND can_login = 1 AND is_active = 1`,
+      [staffId]
+    );
+    if (row) {
+      const base = staffToActor(row);
+      return {
+        ...base,
+        rights: {
+          ...base.rights,
+          sections: [...new Set([...(base.rights.sections || []), ...sections])],
+          can_edit_products: base.rights.can_edit_products || has('nomen') || full,
+          can_edit_prices: base.rights.can_edit_prices || has('nomen') || full,
+          can_edit_docs:
+            base.rights.can_edit_docs ||
+            has('warehouses') ||
+            has('balances') ||
+            has('storage') ||
+            has('stock') ||
+            full,
+        },
+      };
+    }
+  }
+
+  return {
+    id: v.source === 'db' ? `apikey:${v.id}` : `apikey:${v.name}`,
+    name: `API · ${v.name}`,
+    email: '',
+    login: `api:${v.name}`,
+    role: full ? 'admin' : 'integration',
+    department: '',
+    rights: {
+      sections,
+      can_sync: false,
+      can_edit_products: has('nomen') || full,
+      can_edit_prices: has('nomen') || full,
+      can_edit_docs:
+        has('warehouses') || has('balances') || has('storage') || has('stock') || full,
+      can_tax: false,
+      can_payroll: false,
+      company_ids: [],
+    },
+    isSystemAdmin: false,
+  };
+}
+
 export function actorFromContext(c: Context): Actor | null {
-  return actorFromSession(getCookie(c, COOKIE_SID));
+  return actorFromSession(getCookie(c, COOKIE_SID)) || actorFromMachineKey(c);
 }
 
 export function requireActor(c: Context): Actor {
@@ -150,10 +245,7 @@ export function authenticatePassword(username: string, password: string): AuthPa
   const p = password;
   if (!u || !p) return { ok: false, error: 'Укажите логин и пароль' };
 
-  if (u === ENV_USER() && p === ENV_PASS()) {
-    return { ok: true, actor: systemActor() };
-  }
-
+  // Сначала сотрудник из Персонала (чтобы PIN/пароль Рубцова работали), потом системный ENV.
   const row = get<Record<string, unknown>>(
     `SELECT * FROM staff
      WHERE (lower(login) = lower(?) OR lower(email) = lower(?) OR lower(auth_login) = lower(?))
@@ -161,15 +253,22 @@ export function authenticatePassword(username: string, password: string): AuthPa
      LIMIT 1`,
     [u, u, u]
   );
-  if (!row) return { ok: false, error: 'Неверный логин или пароль' };
-  const hash = String(row.password_hash || '');
-  if (!hash) {
-    return { ok: false, error: 'Пароль не задан — зарегистрируйтесь или попросите админа' };
+  if (row) {
+    const hash = String(row.password_hash || '');
+    if (!hash) {
+      return { ok: false, error: 'Пароль не задан — зарегистрируйтесь или попросите админа' };
+    }
+    if (!verifyPassword(p, hash)) {
+      return { ok: false, error: 'Неверный логин или пароль' };
+    }
+    return { ok: true, actor: staffToActor(row) };
   }
-  if (!verifyPassword(p, hash)) {
-    return { ok: false, error: 'Неверный логин или пароль' };
+
+  if (u === ENV_USER() && p === ENV_PASS()) {
+    return { ok: true, actor: systemActor() };
   }
-  return { ok: true, actor: staffToActor(row) };
+
+  return { ok: false, error: 'Неверный логин или пароль' };
 }
 
 export function loginWithPassword(
@@ -188,7 +287,7 @@ export function authenticatePin(username: string, pin: string): AuthPasswordResu
   const u = username.trim();
   const p = String(pin || '').replace(/\D/g, '');
   if (!u || !p) return { ok: false, error: 'Укажите логин и PIN' };
-  if (p.length < 4 || p.length > 6) return { ok: false, error: 'PIN — от 4 до 6 цифр' };
+  if (p.length < 1 || p.length > 6) return { ok: false, error: 'PIN — от 1 до 6 цифр' };
 
   const row = get<Record<string, unknown>>(
     `SELECT * FROM staff
@@ -226,7 +325,7 @@ export function staffHasPinPublic(actorId: string): boolean {
 }
 
 export function setStaffPassword(staffId: string, password: string): void {
-  if (password.length < 6) throw new Error('Пароль не короче 6 символов');
+  if (!String(password || '').length) throw new Error('Укажите пароль');
   run(
     `UPDATE staff SET password_hash = ?, password_set_at = datetime('now') WHERE id = ?`,
     [hashPassword(password), staffId]

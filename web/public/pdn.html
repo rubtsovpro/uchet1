@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ru" data-brand="pnevmo">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="robots" content="noindex,nofollow" />
+  <meta name="theme-color" content="#ffbf2e" id="theme-meta" />
+  <link rel="icon" href="/brand/pnevmo-logo.svg" type="image/svg+xml" id="favicon" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <title>Согласие на обработку ПДн</title>
+  <style>
+    :root {
+      --bg: #f3f1ec;
+      --bg2: #ebe6dc;
+      --card: #fff;
+      --text: rgba(0, 0, 0, 0.9);
+      --muted: #585858;
+      --line: #e2e2e2;
+      --accent: #ffbf2e;
+      --accent-soft: #fff6e3;
+      --btn: #ffbf2e;
+      --btn-text: #0a0a0a;
+      --ok: #1b8a5a;
+      --ok-bg: #e8f6ef;
+      --bad: #c0392b;
+      --radius: 18px;
+      --bar: #ffbf2e;
+      --glow: #ffe9a8;
+      --logo-h: 36px;
+    }
+    html[data-brand="fogel"] {
+      --bg: #f7f8fa;
+      --bg2: #eef1f5;
+      --card: #fff;
+      --text: #1a1a1a;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --accent: #c51d24;
+      --accent-soft: #fde8e9;
+      --btn: #c51d24;
+      --btn-text: #fff;
+      --ok: #0f766e;
+      --ok-bg: #ecfdf8;
+      --bad: #c51d24;
+      --radius: 14px;
+      --bar: linear-gradient(90deg, #c51d24 0%, #00a6d9 100%);
+      --glow: #dceef8;
+      --logo-h: 40px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Manrope, system-ui, -apple-system, sans-serif;
+      color: var(--text);
+      min-height: 100dvh;
+      padding: 0 16px 36px;
+      padding-bottom: max(36px, env(safe-area-inset-bottom));
+      background:
+        radial-gradient(120% 70% at 50% -10%, var(--glow) 0%, transparent 55%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+    }
+    .brand-bar {
+      height: 4px;
+      background: var(--bar);
+      margin: 0 -16px 18px;
+    }
+    .wrap { max-width: 640px; margin: 0 auto; }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+      padding: 2px 2px 4px;
+    }
+    .brand img {
+      height: var(--logo-h);
+      width: auto;
+      max-width: 180px;
+      object-fit: contain;
+      display: block;
+    }
+    .brand .tag {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      line-height: 1.3;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 22px 18px 24px;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+    }
+    h1 { margin: 0 0 6px; font-size: 1.35rem; line-height: 1.25; font-weight: 800; letter-spacing: -0.02em; }
+    h2 { margin: 18px 0 10px; font-size: 1rem; font-weight: 700; }
+    .sub { margin: 0 0 14px; color: var(--muted); font-size: 14px; font-weight: 500; }
+    .meta {
+      display: grid; gap: 6px;
+      margin: 0 0 16px; padding: 12px 14px;
+      background: var(--accent-soft);
+      border-radius: 12px;
+      font-size: 13px;
+    }
+    .meta b { font-weight: 700; }
+    .consent {
+      max-height: min(40vh, 360px);
+      overflow: auto;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      white-space: pre-wrap;
+      font-size: 13.5px;
+      line-height: 1.45;
+      background: #fcfcfb;
+    }
+    .form { display: grid; gap: 10px; margin-top: 4px; }
+    .form label {
+      display: grid; gap: 5px;
+      font-size: 13px; font-weight: 700;
+    }
+    .form label span.hint { font-weight: 500; color: var(--muted); }
+    .form input, .form select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 11px 12px;
+      font: inherit; font-weight: 500;
+      background: #fff;
+    }
+    .form input:focus, .form select:focus {
+      outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+      outline-offset: 1px;
+    }
+    .suggest-anchor { position: relative; display: block; }
+    .suggest {
+      position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 20;
+      background: #fff; border: 1px solid var(--line); border-radius: 12px;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+      max-height: 220px; overflow: auto; padding: 4px;
+    }
+    .suggest-item {
+      display: block; width: 100%; text-align: left;
+      border: 0; background: transparent; border-radius: 10px;
+      padding: 10px 12px; font: inherit; font-weight: 600; cursor: pointer;
+      color: var(--text);
+    }
+    .suggest-item:hover { background: var(--accent-soft); }
+    .suggest-item.muted { font-weight: 500; color: var(--muted); cursor: default; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 520px) { .row2 { grid-template-columns: 1fr; } }
+    .actions { margin-top: 18px; display: grid; gap: 10px; }
+    button {
+      appearance: none; border: 0; border-radius: 999px;
+      padding: 14px 18px; font: inherit; font-weight: 800;
+      cursor: pointer;
+    }
+    button.primary { background: var(--btn); color: var(--btn-text); }
+    button.secondary { background: #e8eaed; color: var(--text); font-weight: 700; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .code-row { display: flex; gap: 8px; }
+    .code-row input {
+      flex: 1; border: 1px solid var(--line); border-radius: 12px;
+      padding: 12px 14px; font-size: 20px; letter-spacing: .2em;
+      text-align: center; font-variant-numeric: tabular-nums; font-weight: 700;
+    }
+    .msg { min-height: 1.2em; font-size: 13px; color: var(--muted); font-weight: 500; }
+    .msg.err { color: var(--bad); }
+    .ok-box {
+      background: var(--ok-bg); color: var(--ok);
+      border-radius: 12px; padding: 14px; font-weight: 700;
+    }
+    .hash { margin-top: 10px; font-size: 11px; color: var(--muted); word-break: break-all; }
+    .hidden { display: none !important; }
+    .foot {
+      margin-top: 14px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .foot a { color: inherit; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="brand-bar" aria-hidden="true"></div>
+  <div class="wrap">
+    <div class="brand" id="brand-row">
+      <img id="brand-logo" src="/brand/pnevmo-logo.svg" alt="" />
+      <span class="tag" id="brand-tag">Согласие на обработку персональных данных</span>
+    </div>
+    <div class="card" id="app">
+      <p class="msg">Загрузка…</p>
+    </div>
+    <p class="foot" id="brand-foot"></p>
+  </div>
+  <script>
+    (function () {
+      function hostBrand() {
+        var h = (location.hostname || '').toLowerCase();
+        if (h.indexOf('fogel') >= 0) return 'fogel';
+        if (h.indexOf('pnevmo') >= 0 || h.indexOf('pnevmopodveska') >= 0) return 'pnevmo';
+        return '';
+      }
+
+      function applyBrand(brand, meta) {
+        var b = brand === 'fogel' ? 'fogel' : 'pnevmo';
+        document.documentElement.setAttribute('data-brand', b);
+        var logo = (meta && meta.logo_url) || (b === 'fogel' ? '/brand/fogel-logo.png' : '/brand/pnevmo-logo.svg');
+        var name = (meta && meta.brand_name) || (b === 'fogel' ? 'FOGEL' : 'Пневмоподвеска №1');
+        var site = (meta && meta.site_url) || (b === 'fogel' ? 'https://fogel.com.ru' : 'https://pnevmopodveska1.ru');
+        var img = document.getElementById('brand-logo');
+        var tag = document.getElementById('brand-tag');
+        var foot = document.getElementById('brand-foot');
+        var fav = document.getElementById('favicon');
+        var theme = document.getElementById('theme-meta');
+        if (img) {
+          img.src = logo;
+          img.alt = name;
+        }
+        if (tag) tag.textContent = name + ' · согласие на обработку ПДн';
+        if (foot) {
+          foot.innerHTML = '<a href="' + esc(site) + '" rel="noopener" target="_blank">' + esc(name) + '</a>';
+        }
+        if (fav) {
+          fav.setAttribute('href', logo);
+          fav.setAttribute('type', b === 'fogel' ? 'image/png' : 'image/svg+xml');
+        }
+        if (theme) theme.setAttribute('content', b === 'fogel' ? '#c51d24' : '#ffbf2e');
+        document.title = 'Согласие ПДн · ' + name;
+      }
+
+      applyBrand(hostBrand() || 'pnevmo', null);
+
+      function tokenFromPath() {
+        var p = location.pathname.replace(/\/+$/, '');
+        var parts = p.split('/').filter(Boolean);
+        if (parts[0] === 'pdn' && parts[1]) return parts[1];
+        if (parts.length === 1 && /^[A-Za-z0-9_-]{6,24}$/.test(parts[0])) return parts[0];
+        var q = new URLSearchParams(location.search).get('t');
+        return q || '';
+      }
+
+      function esc(s) {
+        return String(s || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      async function api(path, opts) {
+        var res = await fetch(path, Object.assign({
+          credentials: 'omit',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' }
+        }, opts || {}));
+        var data = null;
+        try { data = await res.json(); } catch (e) { data = {}; }
+        if (!res.ok) throw new Error((data && data.error) || ('Ошибка ' + res.status));
+        return data;
+      }
+
+      var root = document.getElementById('app');
+      var token = tokenFromPath();
+      var state = null;
+
+      function setMsg(el, text, isErr) {
+        if (!el) return;
+        el.textContent = text || '';
+        el.className = 'msg' + (isErr ? ' err' : '');
+      }
+
+      function readIdentity() {
+        var fio = (document.getElementById('fio') || {}).value || '';
+        var doc_type = (document.getElementById('doc_type') || {}).value || 'passport_rf';
+        var series = (document.getElementById('series') || {}).value || '';
+        var number = (document.getElementById('number') || {}).value || '';
+        var other_title = (document.getElementById('other_title') || {}).value || '';
+        return {
+          fio: String(fio).trim(),
+          doc_type: String(doc_type).trim(),
+          series: String(series).trim(),
+          number: String(number).trim(),
+          issued_by: '',
+          issued_at: '',
+          other_title: String(other_title).trim()
+        };
+      }
+
+      function syncOtherField() {
+        var dt = document.getElementById('doc_type');
+        var wrap = document.getElementById('other_wrap');
+        if (!dt || !wrap) return;
+        if (dt.value === 'other') wrap.classList.remove('hidden');
+        else wrap.classList.add('hidden');
+      }
+
+      function wireFioSuggest() {
+        var fioEl = document.getElementById('fio');
+        var box = document.getElementById('fio-suggest');
+        if (!fioEl || !box) return;
+        var timer = null;
+        var seq = 0;
+        function hide() {
+          box.classList.add('hidden');
+          box.innerHTML = '';
+        }
+        async function run() {
+          var q = String(fioEl.value || '').trim();
+          if (q.length < 2) { hide(); return; }
+          var my = ++seq;
+          try {
+            var r = await api(
+              '/api/public/pdn/' + encodeURIComponent(token) + '/suggest-fio?q=' +
+              encodeURIComponent(q) + '&count=6'
+            );
+            if (my !== seq) return;
+            var items = r.items || [];
+            if (!items.length) {
+              box.innerHTML = '<div class="suggest-item muted">Не найдено</div>';
+            } else {
+              box.innerHTML = items.map(function (p) {
+                var val = String(p.value || p.unrestricted_value || '').trim();
+                return '<button type="button" class="suggest-item" data-fio="' + esc(val) + '">' +
+                  esc(val) + '</button>';
+              }).join('');
+              box.querySelectorAll('[data-fio]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                  fioEl.value = btn.getAttribute('data-fio') || '';
+                  hide();
+                });
+              });
+            }
+            box.classList.remove('hidden');
+          } catch (e) {
+            if (my !== seq) return;
+            hide();
+          }
+        }
+        fioEl.addEventListener('input', function () {
+          clearTimeout(timer);
+          timer = setTimeout(run, 220);
+        });
+        fioEl.addEventListener('blur', function () {
+          setTimeout(hide, 180);
+        });
+        fioEl.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Escape') hide();
+        });
+      }
+
+      function render() {
+        if (!token) {
+          root.innerHTML = '<h1>Ссылка неполная</h1><p class="sub">Откройте ссылку из SMS.</p>';
+          return;
+        }
+        if (!state) {
+          root.innerHTML = '<p class="msg">Загрузка…</p>';
+          return;
+        }
+        applyBrand(state.brand || hostBrand() || 'pnevmo', state);
+        if (state.signed || state.status === 'signed') {
+          var idDone = state.identity || {};
+          root.innerHTML =
+            '<div class="ok-box">Согласие подписано</div>' +
+            '<p class="sub" style="margin-top:12px">' + esc(idDone.fio || state.buyer_name || '') +
+            (state.signed_at ? '<br/>' + esc(state.signed_at) : '') + '</p>';
+          return;
+        }
+        if (state.status === 'expired' || state.status === 'revoked' || !state.consent_text) {
+          root.innerHTML =
+            '<h1>Ссылка не действует</h1>' +
+            '<p class="sub">Обратитесь к мастеру — пришлём новую SMS.</p>';
+          return;
+        }
+
+        var id = state.identity || {};
+        var types = Array.isArray(state.doc_types) ? state.doc_types : [
+          { id: 'passport_rf', label: 'Паспорт гражданина РФ' },
+          { id: 'foreign_passport', label: 'Заграничный паспорт' },
+          { id: 'driver_license', label: 'Водительское удостоверение' },
+          { id: 'other', label: 'Иной документ' }
+        ];
+        var opts = types.map(function (t) {
+          var sel = (id.doc_type || 'passport_rf') === t.id ? ' selected' : '';
+          return '<option value="' + esc(t.id) + '"' + sel + '>' + esc(t.label) + '</option>';
+        }).join('');
+
+        root.innerHTML =
+          '<h1>Согласие на обработку персональных данных</h1>' +
+          '<p class="sub">Проверьте текст, укажите ФИО и документ, затем подпишите кодом из SMS.</p>' +
+          '<div class="meta">' +
+            '<div><b>Телефон:</b> ' + esc(state.phone_masked || '—') + '</div>' +
+            '<div><b>Оператор:</b> ' + esc(state.org_name || '—') + '</div>' +
+          '</div>' +
+          '<div class="consent" id="consent">' + esc(state.consent_text) + '</div>' +
+          '<h2>Ваши данные</h2>' +
+          '<div class="form" id="id-form">' +
+            '<label>Ф. И. О. <span class="hint">как в документе</span>' +
+              '<span class="suggest-anchor">' +
+                '<input id="fio" autocomplete="name" value="' + esc(id.fio || '') + '" placeholder="Иванов Иван Иванович" />' +
+                '<div id="fio-suggest" class="suggest hidden"></div>' +
+              '</span></label>' +
+            '<label>Документ' +
+              '<select id="doc_type">' + opts + '</select></label>' +
+            '<label id="other_wrap" class="' + ((id.doc_type === 'other') ? '' : 'hidden') + '">Название документа' +
+              '<input id="other_title" value="' + esc(id.other_title || '') + '" placeholder="Свидетельство / ID-карта…" /></label>' +
+            '<div class="row2">' +
+              '<label>Серия<input id="series" inputmode="text" value="' + esc(id.series || '') + '" placeholder="00 00" /></label>' +
+              '<label>Номер<input id="number" inputmode="text" value="' + esc(id.number || '') + '" placeholder="000000" /></label>' +
+            '</div>' +
+          '</div>' +
+          '<div class="actions" id="step-sign">' +
+            '<button type="button" class="primary" id="btn-sign">Подписать</button>' +
+            '<p class="msg" id="msg-sign"></p>' +
+          '</div>' +
+          '<div class="actions hidden" id="step-code">' +
+            '<p class="sub" style="margin:0">Код отправлен на ' + esc(state.phone_masked) +
+              '. Данные выше можно поправить и подтвердить кодом.</p>' +
+            '<div class="code-row">' +
+              '<input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="••••••" />' +
+              '<button type="button" class="primary" id="btn-confirm">OK</button>' +
+            '</div>' +
+            '<button type="button" class="secondary" id="btn-resend">Выслать код ещё раз</button>' +
+            '<p class="msg" id="msg-code"></p>' +
+          '</div>';
+
+        var btnSign = document.getElementById('btn-sign');
+        var btnConfirm = document.getElementById('btn-confirm');
+        var btnResend = document.getElementById('btn-resend');
+        var codeInp = document.getElementById('code');
+        var msgSign = document.getElementById('msg-sign');
+        var msgCode = document.getElementById('msg-code');
+        var stepSign = document.getElementById('step-sign');
+        var stepCode = document.getElementById('step-code');
+        var docType = document.getElementById('doc_type');
+        if (docType) docType.addEventListener('change', syncOtherField);
+        syncOtherField();
+        wireFioSuggest();
+
+        async function requestCode() {
+          var identity = readIdentity();
+          setMsg(msgSign, 'Отправляем код…');
+          setMsg(msgCode, 'Отправляем код…');
+          try {
+            var r = await api('/api/public/pdn/' + encodeURIComponent(token) + '/request-code', {
+              method: 'POST',
+              body: JSON.stringify({ identity: identity })
+            });
+            state.identity = identity;
+            state.identity_filled = true;
+            if (r.consent_sha256) state.consent_sha256 = r.consent_sha256;
+            stepSign.classList.add('hidden');
+            stepCode.classList.remove('hidden');
+            setMsg(msgCode, 'Введите код из SMS');
+            if (codeInp) codeInp.focus();
+          } catch (e) {
+            setMsg(msgSign, e.message || 'Ошибка', true);
+            setMsg(msgCode, e.message || 'Ошибка', true);
+          }
+        }
+
+        async function confirm() {
+          var code = (codeInp && codeInp.value) || '';
+          setMsg(msgCode, 'Проверяем…');
+          try {
+            var r = await api('/api/public/pdn/' + encodeURIComponent(token) + '/confirm', {
+              method: 'POST',
+              body: JSON.stringify({ code: code, identity: readIdentity() })
+            });
+            state.signed = true;
+            state.status = 'signed';
+            state.signed_at = r.signed_at || '';
+            state.identity = readIdentity();
+            render();
+          } catch (e) {
+            setMsg(msgCode, e.message || 'Ошибка', true);
+          }
+        }
+
+        if (btnSign) btnSign.addEventListener('click', requestCode);
+        if (btnResend) btnResend.addEventListener('click', requestCode);
+        if (btnConfirm) btnConfirm.addEventListener('click', confirm);
+        if (codeInp) {
+          codeInp.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') confirm();
+          });
+        }
+
+        if (state.status === 'code_sent' && state.identity_filled) {
+          stepSign.classList.add('hidden');
+          stepCode.classList.remove('hidden');
+        }
+      }
+
+      async function boot() {
+        if (!token) { render(); return; }
+        try {
+          state = await api('/api/public/pdn/' + encodeURIComponent(token));
+          render();
+        } catch (e) {
+          root.innerHTML =
+            '<h1>Не удалось открыть</h1><p class="sub">' + esc(e.message || 'Ошибка') + '</p>';
+        }
+      }
+
+      boot();
+    })();
+  </script>
+</body>
+</html>

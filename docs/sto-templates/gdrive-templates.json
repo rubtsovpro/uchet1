@@ -1,0 +1,24 @@
+{
+    "folder_id": "1jjmTeuMnTxH5V9I-WPSR97m43nMFBsY1",
+    "folder_url": "https:\/\/drive.google.com\/drive\/folders\/1jjmTeuMnTxH5V9I-WPSR97m43nMFBsY1",
+    "folder_name": "Шаблоны",
+    "parent_id": "1PukJzT4zkQlWQWG6n3t_UmZOZ8VmTJ0j",
+    "updated_at": "2026-08-06T12:35:05+00:00",
+    "files": [
+        {
+            "title": "03 Заказ-наряд",
+            "google_doc_id": null,
+            "google_doc_url": null,
+            "local_path": "\/Users\/a_\/Downloads\/php\/uchetn1\/api\/assets\/sto-templates\/docx\/03-workorder.docx",
+            "template_id": "tpl-sto-workorder",
+            "use_for": [
+                "workorder",
+                "sto"
+            ],
+            "audience": [
+                "any"
+            ],
+            "pending_upload": true
+        }
+    ]
+}

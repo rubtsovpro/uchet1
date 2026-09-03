@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Учёт №1</title>
+    <script>
+      (function () {
+        try {
+          var KEY = 'uchet1_ui_phone';
+          var q = new URLSearchParams(location.search);
+          var v = q.get('mobile') || q.get('phone');
+          if (v === '0' || v === 'desktop') localStorage.setItem(KEY, '0');
+          else if (v === '1') localStorage.setItem(KEY, '1');
+          var stored = localStorage.getItem(KEY);
+          var on = stored === '1';
+          if (stored === null) {
+            var chromeH = (window.outerHeight || 0) - (window.innerHeight || 0);
+            var chromeW = (window.outerWidth || 0) - (window.innerWidth || 0);
+            var w = window.innerWidth || 0;
+            on = chromeH < 70 && chromeW < 30 && w >= 360 && w < 1600;
+          }
+          if (on) document.documentElement.classList.add('ui-phone');
+        } catch (e) { /* ignore */ }
+      })();
+    </script>
     <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

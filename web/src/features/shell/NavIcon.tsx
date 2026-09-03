@@ -74,6 +74,13 @@ export function NavIcon({ name }: IconProps) {
           <path d="M9 5v8M7 7.5c.5-1 4-1 4 1s-3.5 1.5-4 2.5c-.4.8 2.5 1.5 4 .8" fill="none" stroke="currentColor" strokeWidth="1.2" />
         </svg>
       );
+    case 'tax':
+      return (
+        <svg {...common}>
+          <path d="M4 14V4h3v10H4zm7 0V8h3v6h-3z" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M3 15h12" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        </svg>
+      );
     case 'kassa':
       return (
         <svg {...common}>

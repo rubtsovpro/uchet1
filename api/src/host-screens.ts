@@ -26,9 +26,9 @@ const SCREENS: Record<ScreenId, HostScreen> = {
   },
   photo: {
     id: 'photo',
-    home_path: '/photo',
+    home_path: '/',
     title: 'Фотограф',
-    subtitle: 'Съёмка товаров без фото',
+    subtitle: 'Главная Учёта (отдельный экран /photo отключён)',
   },
   lift: {
     id: 'lift',
@@ -90,32 +90,26 @@ export function roleHomePath(actor: {
   role?: string;
   rights?: { sections?: string[] };
 }): string {
+  // На основном домене всех ведём в полный Учёт; экраны сборки/фото — на поддоменах.
   if (actor.isSystemAdmin || actor.role === 'admin') return '/';
-  const secs = actor.rights?.sections || [];
-  const hasPick = secs.includes('pick');
-  const hasPhoto = secs.includes('photo') || secs.includes('media');
-  const mainUi = secs.some((s) =>
-    ['crm', 'sales', 'purchases', 'money', 'staff', 'company', 'settings', 'reports'].includes(s)
-  );
-  const photographerOnly =
-    actor.role === 'photographer' ||
-    (hasPhoto && !mainUi && !hasPick && actor.role !== 'warehouse');
-  if (photographerOnly) return '/photo';
-  const pickerOnly =
-    actor.role === 'warehouse' ||
-    actor.role === 'courier' ||
-    (hasPick && !mainUi && !hasPhoto);
-  if (pickerOnly) return '/pick';
-  if (actor.role === 'sto') {
-    // мастер СТО — подъёмник; приёмщик часто тоже sto с разделом works
-    if (secs.includes('lift') || secs.includes('works')) return '/lift';
-  }
   return '/';
 }
 
+function wmsPublicOrigin(): string {
+  const raw = String(process.env.WMS_PUBLIC_URL || 'https://uchetn1.ru').trim();
+  try {
+    const u = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    return u.origin;
+  } catch {
+    return 'https://uchetn1.ru';
+  }
+}
+
 /**
- * После логина: на ролевом поддомене всегда его экран;
- * на полном WMS — по роли.
+ * После логина:
+ * — админы всегда в полный Учёт (на ролевом поддомене — абсолютный URL основного сайта);
+ * — на основном домене всем — `/` (не уводим на /pick через next);
+ * — на ролевом поддомене не-админы — экран роли.
  */
 export function homePathForLogin(
   hostHeader: string | undefined | null,
@@ -125,9 +119,19 @@ export function homePathForLogin(
     rights?: { sections?: string[] };
   }
 ): string {
+  const isAdmin = !!(actor.isSystemAdmin || actor.role === 'admin');
   const screen = screenForHost(hostHeader);
+  if (isAdmin) {
+    if (screen.id !== 'wms') return wmsPublicOrigin() + '/';
+    return '/';
+  }
   if (screen.id !== 'wms') return screen.home_path;
-  return roleHomePath(actor);
+  if (actor.role === 'courier') return '/courier';
+  if (actor.role === 'warehouse') return '/pick';
+  // Фотограф — главная Учёта (отдельный киоск /photo отключён)
+  if (actor.role === 'photographer') return '/';
+  if (actor.role === 'sto') return '/lift';
+  return '/';
 }
 
 export function listHostScreens(): Array<HostScreen & { hosts: string[] }> {

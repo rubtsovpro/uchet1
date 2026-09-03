@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0d7377" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <title>Производство · Учёт №1</title>
+  <style>
+    :root, [data-theme="light"] {
+      --bg: #e8f0f0; --card: #fff; --text: #0f1f1f; --muted: #5a6f6f;
+      --line: #b8cece; --accent: #0d7377; --ok: #1b8a5a; --warn: #c47a12;
+      --shadow: 0 2px 10px rgba(13,50,50,.08);
+    }
+    [data-theme="dark"] {
+      --bg: #0c1414; --card: #1a2828; --text: #e8f4f4; --muted: #8aa0a0;
+      --line: #2a4040; --accent: #2dd4bf; --ok: #22a06b; --warn: #f59e0b;
+      --shadow: 0 2px 14px rgba(0,0,0,.45); color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100dvh; background: var(--bg); color: var(--text);
+      font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif; }
+    body { padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+    .wrap { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+    header {
+      display: flex; align-items: center; gap: 10px; background: var(--card);
+      border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: var(--shadow);
+    }
+    header h1 { margin: 0; font-size: 16px; color: var(--accent); flex: 1; }
+    .btn {
+      border: 1px solid var(--line); background: var(--card); color: var(--text);
+      border-radius: 10px; padding: 8px 12px; font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    .btn.primary { background: var(--ok); border-color: var(--ok); color: #fff; }
+    .btn:disabled { opacity: .45; cursor: default; }
+    .hint { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.45; }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+      padding: 12px; box-shadow: var(--shadow);
+    }
+    .card h2 { margin: 0 0 6px; font-size: 15px; }
+    .meta { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+    .summary { font-size: 14px; margin: 0 0 10px; line-height: 1.4; }
+    .deal { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+    .empty { text-align: center; padding: 28px 12px; color: var(--muted); }
+    .err { color: #c0392b; font-size: 13px; margin: 0; }
+    .ok { color: var(--ok); font-size: 13px; margin: 0; }
+    .mono { font-family: ui-monospace, monospace; }
+    .badge {
+      display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px;
+      border-radius: 999px; background: var(--accent); color: #fff; margin-left: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="/logo-uchet1.svg" alt="" width="28" height="28" style="border-radius:50%" />
+      <h1>Производство</h1>
+      <button type="button" class="btn" id="btn-reload">Обновить</button>
+    </header>
+    <p class="hint">
+      На участке (PROD-WIP): после сборки/разбора нажмите <b>Готово</b> — склад получит задание на оприходование.
+      Каждый шаг пишется примечанием в сделку Amo.
+    </p>
+    <p class="err" id="err" hidden></p>
+    <p class="ok" id="ok" hidden></p>
+    <div id="list"></div>
+  </div>
+  <script>
+    async function api(path, opts) {
+      const res = await fetch('/api' + path, {
+        credentials: 'same-origin',
+        ...opts,
+        headers: {
+          ...(opts && opts.body ? { 'Content-Type': 'application/json' } : {}),
+          ...((opts && opts.headers) || {}),
+        },
+      });
+      if (res.status === 401) {
+        location.href = '/login?next=' + encodeURIComponent(location.pathname || '/production');
+        throw new Error('login');
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+      );
+    }
+    function showErr(msg) {
+      const el = document.getElementById('err');
+      el.hidden = !msg;
+      el.textContent = msg || '';
+    }
+    function showOk(msg) {
+      const el = document.getElementById('ok');
+      el.hidden = !msg;
+      el.textContent = msg || '';
+      if (msg) setTimeout(() => { el.hidden = true; }, 2500);
+    }
+    async function markDone(id) {
+      await api('/production/jobs/' + encodeURIComponent(id) + '/done', { method: 'POST' });
+      showOk('Готово — склад получит задание');
+      await loadJobs();
+    }
+    async function loadJobs() {
+      showErr('');
+      const list = document.getElementById('list');
+      list.innerHTML = '<div class="empty">Загрузка…</div>';
+      try {
+        const data = await api('/production/jobs?limit=80');
+        const items = (data.items || []).filter((j) =>
+          j.status === 'at_production' || j.status === 'await_receive'
+        );
+        if (!items.length) {
+          list.innerHTML = '<div class="card empty"><b>Нет заказов на участке</b><br/>Ждём, пока кладовщик отнесёт детали (статус «В производстве»).</div>';
+          return;
+        }
+        list.innerHTML = items.map((j) => {
+          const canDone = j.status === 'at_production';
+          const st = esc(j.status_label || j.status);
+          const deal = j.deal_id
+            ? `<div class="deal">Сделка Amo: <span class="mono">${esc(j.deal_id)}</span></div>`
+            : '';
+          return `<article class="card" data-id="${esc(j.id)}">
+            <h2><span class="mono">${esc(j.number)}</span>
+              <span class="badge">${esc(j.kind_label || j.kind)}</span></h2>
+            <p class="meta">${st}</p>
+            ${deal}
+            <p class="summary">${esc(j.summary || '')}</p>
+            <button type="button" class="btn primary" data-done="${esc(j.id)}" ${canDone ? '' : 'disabled'}>
+              ${canDone ? 'Готово' : 'Ждём склад'}
+            </button>
+          </article>`;
+        }).join('');
+        list.querySelectorAll('[data-done]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const id = btn.getAttribute('data-done');
+            btn.disabled = true;
+            try {
+              await markDone(id);
+            } catch (e) {
+              showErr(e.message || 'ошибка');
+              btn.disabled = false;
+            }
+          });
+        });
+      } catch (e) {
+        if (e.message === 'login') return;
+        list.innerHTML = '';
+        showErr(e.message || 'Не удалось загрузить');
+      }
+    }
+    document.getElementById('btn-reload').addEventListener('click', () => loadJobs());
+    loadJobs();
+  </script>
+</body>
+</html>

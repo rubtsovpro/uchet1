@@ -242,6 +242,79 @@ export async function s3GetObject(
   });
 }
 
+/** Удалить объект (тихий no-op при 404). */
+export async function s3DeleteObject(cfg: S3Config, key: string): Promise<void> {
+  const k = key.replace(/^\//, '');
+  const url = objectUrl(cfg, k);
+  const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const dateStamp = amzDate.slice(0, 8);
+  const payloadHash = sha256Hex('');
+  const host = url.host;
+
+  const headers: Record<string, string> = {
+    host,
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+  };
+
+  const signedNames = Object.keys(headers).sort();
+  const canonicalHeaders = signedNames.map((n) => `${n}:${headers[n].trim().replace(/\s+/g, ' ')}\n`).join('');
+  const signedHeaders = signedNames.join(';');
+  const canonicalRequest = [
+    'DELETE',
+    url.pathname,
+    '',
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join('\n');
+
+  const scope = `${dateStamp}/${cfg.region}/s3/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256Hex(canonicalRequest)].join('\n');
+  const signature = createHmac('sha256', signingKey(cfg.secretKey, dateStamp, cfg.region))
+    .update(stringToSign, 'utf8')
+    .digest('hex');
+  const authorization = `AWS4-HMAC-SHA256 Credential=${cfg.accessKey}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  await new Promise<void>((resolve, reject) => {
+    const req = httpsRequest(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: url.pathname + url.search,
+        method: 'DELETE',
+        headers: {
+          Authorization: authorization,
+          'x-amz-content-sha256': payloadHash,
+          'x-amz-date': amzDate,
+        },
+        timeout: 60_000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const code = res.statusCode || 0;
+          if (code === 404 || code === 204 || (code >= 200 && code < 300)) {
+            resolve();
+            return;
+          }
+          reject(
+            new Error(`S3 delete HTTP ${code}: ${Buffer.concat(chunks).toString('utf8').slice(0, 200)}`)
+          );
+        });
+      }
+    );
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('S3 delete timeout'));
+    });
+    req.end();
+  });
+}
+
 export function detectMediaType(buf: Buffer): { ext: string; mime: string; kind: 'image' | 'document' | 'file' } {
   if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
     return { ext: 'jpg', mime: 'image/jpeg', kind: 'image' };

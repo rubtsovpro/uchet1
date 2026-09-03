@@ -418,8 +418,6 @@ export function ChatFab({ me }: { me: StaffMe | undefined }) {
 
   if (!enabled) return null;
 
-  const badge = unreadTotal > 99 ? '99+' : String(unreadTotal);
-
   return (
     <div
       className="chat-fab-root"
@@ -436,7 +434,6 @@ export function ChatFab({ me }: { me: StaffMe | undefined }) {
         >
           <div className="chat-pop-head">
             <strong>Чаты</strong>
-            {unreadTotal > 0 ? <span className="chat-pop-unread muted">{unreadTotal} новых</span> : null}
             <div className="grow" />
             <Link className="chat-pop-link" to="/chats">
               Открыть
@@ -707,7 +704,7 @@ export function ChatFab({ me }: { me: StaffMe | undefined }) {
       ) : null}
       <button
         type="button"
-        className={`chat-fab${open ? ' is-open' : ''}${unreadTotal > 0 ? ' has-unread' : ''}${
+        className={`chat-fab${open ? ' is-open' : ''}${
           dropHint && !open ? ' is-drop-target' : ''
         }`}
         title="Чаты"
@@ -738,7 +735,6 @@ export function ChatFab({ me }: { me: StaffMe | undefined }) {
             strokeLinecap="round"
           />
         </svg>
-        {unreadTotal > 0 ? <span className="chat-fab-badge">{badge}</span> : null}
       </button>
     </div>
   );

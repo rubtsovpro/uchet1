@@ -382,6 +382,35 @@ export function migrate(): void {
   addCol('hs_category_id', `hs_category_id TEXT DEFAULT ''`);
   addCol('measurement_unit', `measurement_unit TEXT DEFAULT ''`);
   addCol('item_kind', `item_kind TEXT NOT NULL DEFAULT 'product'`);
+  addCol('is_main', `is_main INTEGER NOT NULL DEFAULT 0`);
+  addCol('warehouse_sku', `warehouse_sku TEXT NOT NULL DEFAULT ''`);
+  /** База 1С: pnevmopodveska_2025 (Москва / Роман) или fogel_2025 (Краснодар / Михаил). */
+  addCol('source_department', `source_department TEXT NOT NULL DEFAULT ''`);
+  /** GUID номенклатуры в 1С (Amo); id строки = source_department::catalog_guid для изоляции баз. */
+  addCol('catalog_guid', `catalog_guid TEXT NOT NULL DEFAULT ''`);
+
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_products_created ON products(created_at DESC)`);
+  } catch {
+    /* ignore */
+  }
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_products_is_main ON products(is_main)`);
+  } catch {
+    /* ignore */
+  }
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_products_source_department ON products(source_department)`);
+  } catch {
+    /* ignore */
+  }
+  try {
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_products_dept_catalog ON products(source_department, catalog_guid)`
+    );
+  } catch {
+    /* ignore */
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS product_related (
@@ -500,6 +529,8 @@ export function migrate(): void {
   addStaffCol('telegram_chat_id', `telegram_chat_id TEXT NOT NULL DEFAULT ''`);
   addStaffCol('pin_hash', `pin_hash TEXT NOT NULL DEFAULT ''`);
   addStaffCol('pin_set_at', `pin_set_at TEXT NOT NULL DEFAULT ''`);
+  addStaffCol('phone', `phone TEXT NOT NULL DEFAULT ''`);
+  addStaffCol('avatar_url', `avatar_url TEXT NOT NULL DEFAULT ''`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_staff_login ON staff(login)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_staff_email ON staff(email)`);
 
@@ -614,25 +645,59 @@ export function migrate(): void {
   addDealItemCol('mark', `mark TEXT NOT NULL DEFAULT ''`);
   addDealItemCol('model', `model TEXT NOT NULL DEFAULT ''`);
   addDealItemCol('generation', `generation TEXT NOT NULL DEFAULT ''`);
+  addDealItemCol('name_1c', `name_1c TEXT NOT NULL DEFAULT ''`);
+  addDealItemCol('applicability_key', `applicability_key TEXT NOT NULL DEFAULT ''`);
   addDealItemCol('serials_json', `serials_json TEXT NOT NULL DEFAULT '[]'`);
+
+  // Amo-синк часто писал price, но amount=0 — сумма в UI была «0 ₽»
+  try {
+    db.exec(`
+      UPDATE crm_deal_items
+      SET amount = ROUND(IFNULL(qty,0) * IFNULL(price,0), 2)
+      WHERE IFNULL(amount,0) = 0
+        AND IFNULL(price,0) != 0
+        AND IFNULL(qty,0) != 0
+    `);
+  } catch {
+    /* ignore */
+  }
 
   // покупатель / юрлицо на сделке
   const dealCols = all<{ name: string }>('PRAGMA table_info(crm_deals)').map((c) => c.name);
   const dealExtra: Array<[string, string]> = [
     ['company_id', "TEXT NOT NULL DEFAULT ''"],
     ['company_name', "TEXT NOT NULL DEFAULT ''"],
+    /** Главный контакт сделки в Amo — якорь реквизитов покупателя */
+    ['amo_contact_id', "TEXT NOT NULL DEFAULT ''"],
+    /** Все контакты сделки (после склейки в Amo их может быть несколько), через запятую */
+    ['amo_contact_ids', "TEXT NOT NULL DEFAULT ''"],
     ['buyer_name', "TEXT NOT NULL DEFAULT ''"],
     ['buyer_inn', "TEXT NOT NULL DEFAULT ''"],
     ['buyer_phone', "TEXT NOT NULL DEFAULT ''"],
     ['buyer_kind', "TEXT NOT NULL DEFAULT 'person'"],
+    ['buyer_email', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_address', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_passport', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_kpp', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_ogrn', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_director', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_bank', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_bik', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_rs', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_ks', "TEXT NOT NULL DEFAULT ''"],
     ['is_legal_entity', 'INTEGER NOT NULL DEFAULT 0'],
     ['is_partner', 'INTEGER NOT NULL DEFAULT 0'],
+    ['client_role', "TEXT NOT NULL DEFAULT 'client'"],
     ['ship_channel', "TEXT NOT NULL DEFAULT ''"],
     ['amo_channel', "TEXT NOT NULL DEFAULT ''"],
     ['amo_shipment', "TEXT NOT NULL DEFAULT ''"],
     ['amo_payment_type', "TEXT NOT NULL DEFAULT ''"],
     ['amo_pay_method', "TEXT NOT NULL DEFAULT ''"],
     ['amo_sto', "TEXT NOT NULL DEFAULT ''"],
+    /** Amo CF 855167 «Филиал» */
+    ['amo_branch', "TEXT NOT NULL DEFAULT ''"],
+    /** Amo CF 816977 «Жалоба клиента» → ЗН п. 3.3 */
+    ['amo_client_complaint', "TEXT NOT NULL DEFAULT ''"],
     /** 1 = работы СТО (заказ-наряд); 0 = продажа (счёт/УПД) */
     ['is_sto', 'INTEGER NOT NULL DEFAULT 0'],
     /** 1 = менеджер задал вручную — синк из Amo не перезаписывает */
@@ -653,6 +718,21 @@ export function migrate(): void {
     ['car_owner_flat', "TEXT NOT NULL DEFAULT ''"],
     ['car_sts_date', "TEXT NOT NULL DEFAULT ''"],
     ['car_sts_number', "TEXT NOT NULL DEFAULT ''"],
+    /** Кто пригнал авто на СТО (представитель) + основание полномочий */
+    ['car_brought_by', "TEXT NOT NULL DEFAULT ''"],
+    ['car_authority_basis', "TEXT NOT NULL DEFAULT ''"],
+    ['car_authority_details', "TEXT NOT NULL DEFAULT ''"],
+    /** Приёмка: топливо / ключи / комплектность / повреждения → ЗН */
+    ['car_fuel_level', "TEXT NOT NULL DEFAULT ''"],
+    ['car_keys_count', "TEXT NOT NULL DEFAULT ''"],
+    ['car_docs_left', "TEXT NOT NULL DEFAULT ''"],
+    ['car_docs_note', "TEXT NOT NULL DEFAULT ''"],
+    ['car_damage_notes', "TEXT NOT NULL DEFAULT ''"],
+    ['car_completeness', "TEXT NOT NULL DEFAULT ''"],
+    ['car_completeness_other', "TEXT NOT NULL DEFAULT ''"],
+    /** НДС для счёта / УПД / СФ по юр/ИП: '' | no | yes + ставка % */
+    ['buyer_vat', "TEXT NOT NULL DEFAULT ''"],
+    ['buyer_vat_rate', 'REAL NOT NULL DEFAULT 0'],
     /** Контур (companies.id) по маппингу воронки Amo */
     ['org_company_id', "TEXT NOT NULL DEFAULT ''"],
   ];
@@ -663,6 +743,46 @@ export function migrate(): void {
       }
     }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_crm_deals_org_co ON crm_deals(org_company_id)`);
+  }
+
+  {
+    const migrated = get<{ value: string }>(
+      `SELECT value FROM meta WHERE key = ?`,
+      ['client_role_migrated_v1']
+    );
+    if (!migrated) {
+      try {
+        db.exec(`
+          UPDATE crm_deals
+          SET client_role = 'partner_delay'
+          WHERE (IFNULL(is_partner,0) = 1 OR lower(IFNULL(buyer_kind,'')) IN ('partner','partner_delay'))
+            AND lower(IFNULL(amo_pay_method,'')) LIKE '%отсроч%';
+          UPDATE crm_deals
+          SET client_role = 'partner'
+          WHERE (IFNULL(is_partner,0) = 1 OR lower(IFNULL(buyer_kind,'')) IN ('partner','partner_delay'))
+            AND IFNULL(client_role,'client') = 'client';
+          UPDATE crm_deals
+          SET buyer_kind = CASE
+            WHEN length(replace(IFNULL(buyer_inn,''), ' ', '')) = 10 THEN 'legal'
+            WHEN length(replace(IFNULL(buyer_inn,''), ' ', '')) = 12 THEN 'ip'
+            WHEN IFNULL(is_legal_entity,0) = 1 THEN 'legal'
+            ELSE 'person'
+          END
+          WHERE lower(IFNULL(buyer_kind,'')) IN ('partner','partner_delay');
+          UPDATE crm_deals
+          SET is_legal_entity = 0
+          WHERE client_role IN ('partner','partner_delay') AND lower(IFNULL(buyer_kind,'')) = 'person';
+          UPDATE crm_deals
+          SET is_legal_entity = 1
+          WHERE client_role IN ('partner','partner_delay') AND lower(IFNULL(buyer_kind,'')) IN ('legal','ip');
+        `);
+        run(
+          `INSERT INTO meta (key, value) VALUES ('client_role_migrated_v1', datetime('now'))`
+        );
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   db.exec(`
@@ -939,6 +1059,15 @@ export function migrate(): void {
   }
   if (dealColsLock.length && !dealColsLock.includes('paid')) {
     db.exec(`ALTER TABLE crm_deals ADD COLUMN paid INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (dealColsLock.length && !dealColsLock.includes('money_refunded_at')) {
+    db.exec(`ALTER TABLE crm_deals ADD COLUMN money_refunded_at TEXT NOT NULL DEFAULT ''`);
+  }
+  if (dealColsLock.length && !dealColsLock.includes('money_refunded_by')) {
+    db.exec(`ALTER TABLE crm_deals ADD COLUMN money_refunded_by TEXT NOT NULL DEFAULT ''`);
+  }
+  if (dealColsLock.length && !dealColsLock.includes('money_refunded_by_name')) {
+    db.exec(`ALTER TABLE crm_deals ADD COLUMN money_refunded_by_name TEXT NOT NULL DEFAULT ''`);
   }
 
   db.exec(`
@@ -1339,6 +1468,10 @@ export function migrate(): void {
   if (!cpCols.includes('is_partner')) {
     db.exec(`ALTER TABLE counterparties ADD COLUMN is_partner INTEGER NOT NULL DEFAULT 0`);
   }
+  if (!cpCols.includes('is_main')) {
+    db.exec(`ALTER TABLE counterparties ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_counterparties_is_main ON counterparties(is_main)`);
   if (!cpCols.includes('director')) {
     db.exec(`ALTER TABLE counterparties ADD COLUMN director TEXT NOT NULL DEFAULT ''`);
   }
@@ -1376,6 +1509,17 @@ export function migrate(): void {
   }
   if (prodColsMin.length && !prodColsMin.includes('item_kind')) {
     db.exec(`ALTER TABLE products ADD COLUMN item_kind TEXT NOT NULL DEFAULT 'product'`);
+  }
+  if (prodColsMin.length && !prodColsMin.includes('is_main')) {
+    db.exec(`ALTER TABLE products ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (prodColsMin.length && !prodColsMin.includes('warehouse_sku')) {
+    db.exec(`ALTER TABLE products ADD COLUMN warehouse_sku TEXT NOT NULL DEFAULT ''`);
+  }
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_products_is_main ON products(is_main)`);
+  } catch {
+    /* ignore */
   }
   // Расходные — только товары; услуги не храним в stock_doc_lines out
   try {
@@ -1889,7 +2033,8 @@ export function migrate(): void {
 
     CREATE TABLE IF NOT EXISTS stock_reserves (
       id TEXT PRIMARY KEY,
-      payment_link_id TEXT NOT NULL,
+      payment_link_id TEXT NOT NULL DEFAULT '',
+      sales_doc_id TEXT NOT NULL DEFAULT '',
       deal_id TEXT NOT NULL,
       product_id TEXT NOT NULL,
       qty REAL NOT NULL,
@@ -1899,12 +2044,56 @@ export function migrate(): void {
       stock_doc_id TEXT NOT NULL DEFAULT '',
       return_doc_id TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      released_at TEXT,
-      FOREIGN KEY (payment_link_id) REFERENCES payment_links(id)
+      released_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_stock_reserves_link ON stock_reserves(payment_link_id, status);
     CREATE INDEX IF NOT EXISTS idx_stock_reserves_product ON stock_reserves(product_id, status);
   `);
+
+  // Старые БД: добавить sales_doc_id и снять FK на payment_links
+  {
+    const srCols = all<{ name: string }>('PRAGMA table_info(stock_reserves)').map((c) => c.name);
+    if (srCols.length && !srCols.includes('sales_doc_id')) {
+      db.exec(`
+        CREATE TABLE stock_reserves__mig (
+          id TEXT PRIMARY KEY,
+          payment_link_id TEXT NOT NULL DEFAULT '',
+          sales_doc_id TEXT NOT NULL DEFAULT '',
+          deal_id TEXT NOT NULL,
+          product_id TEXT NOT NULL,
+          qty REAL NOT NULL,
+          source_warehouse_id TEXT NOT NULL,
+          reserve_warehouse_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          stock_doc_id TEXT NOT NULL DEFAULT '',
+          return_doc_id TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          released_at TEXT
+        );
+        INSERT INTO stock_reserves__mig (
+          id, payment_link_id, sales_doc_id, deal_id, product_id, qty,
+          source_warehouse_id, reserve_warehouse_id, status, stock_doc_id, return_doc_id,
+          created_at, released_at
+        )
+        SELECT
+          id, IFNULL(payment_link_id,''), '', deal_id, product_id, qty,
+          source_warehouse_id, reserve_warehouse_id, status, stock_doc_id, return_doc_id,
+          created_at, released_at
+        FROM stock_reserves;
+        DROP TABLE stock_reserves;
+        ALTER TABLE stock_reserves__mig RENAME TO stock_reserves;
+        CREATE INDEX IF NOT EXISTS idx_stock_reserves_link ON stock_reserves(payment_link_id, status);
+        CREATE INDEX IF NOT EXISTS idx_stock_reserves_product ON stock_reserves(product_id, status);
+      `);
+    }
+    const srCols2 = all<{ name: string }>('PRAGMA table_info(stock_reserves)').map((c) => c.name);
+    if (srCols2.includes('sales_doc_id')) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_stock_reserves_doc ON stock_reserves(sales_doc_id, status);
+        CREATE INDEX IF NOT EXISTS idx_stock_reserves_deal ON stock_reserves(deal_id, status);
+      `);
+    }
+  }
 
   const waitWh = get<{ id: string }>(
     `SELECT id FROM warehouses WHERE code = 'WAIT-PAY' OR name = 'Ожидание оплаты' LIMIT 1`
@@ -1945,6 +2134,18 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_organizations_inn ON organizations(inn);
     CREATE INDEX IF NOT EXISTS idx_organizations_active ON organizations(is_active, is_default);
   `);
+  {
+    const orgColsEmail = all<{ name: string }>('PRAGMA table_info(organizations)').map((c) => c.name);
+    if (orgColsEmail.length && !orgColsEmail.includes('email')) {
+      db.exec(`ALTER TABLE organizations ADD COLUMN email TEXT NOT NULL DEFAULT ''`);
+    }
+    if (orgColsEmail.length && !orgColsEmail.includes('site_address')) {
+      db.exec(`ALTER TABLE organizations ADD COLUMN site_address TEXT NOT NULL DEFAULT ''`);
+    }
+    if (orgColsEmail.length && !orgColsEmail.includes('work_hours')) {
+      db.exec(`ALTER TABLE organizations ADD COLUMN work_hours TEXT NOT NULL DEFAULT ''`);
+    }
+  }
 
   // Контуры (Пневмоподвеска / Фогель): companies + company_id
   {
@@ -1979,6 +2180,23 @@ export function migrate(): void {
     if (whColsCo.length && !whColsCo.includes('updated_at')) {
       db.exec(`ALTER TABLE warehouses ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`);
     }
+    if (whColsCo.length && !whColsCo.includes('show_in_widget')) {
+      db.exec(`ALTER TABLE warehouses ADD COLUMN show_in_widget INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (whColsCo.length && !whColsCo.includes('allow_inbound')) {
+      db.exec(`ALTER TABLE warehouses ADD COLUMN allow_inbound INTEGER NOT NULL DEFAULT 0`);
+      // По умолчанию приходуем на Основной и «Отложено под СТО»
+      run(
+        `UPDATE warehouses SET allow_inbound = 1
+         WHERE IFNULL(code,'') = 'НФ-000032'
+            OR IFNULL(code,'') LIKE 'STO-RES-%'
+            OR lower(IFNULL(name,'')) LIKE 'филиал%москва%'
+            OR lower(IFNULL(name,'')) LIKE 'отложено%под%сто%'`
+      );
+    }
+    // Флаги show_in_widget в WMS — настраиваются на карточке склада.
+    // Виджет Amo · Москва (pnevmopodveska_2025) — whitelist в wms_picker_widget_store_columns.
+    // Краснодар (fogel_2025) — MySQL stores.show_in_widget, WMS-флаги не трогаем.
     db.exec(`CREATE INDEX IF NOT EXISTS idx_warehouses_company ON warehouses(company_id)`);
     const coCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM companies')?.c ?? 0;
     if (!coCount) {
@@ -2027,6 +2245,7 @@ export function migrate(): void {
     const salesBuyerCols: Array<[string, string]> = [
       ['buyer_phone', "TEXT NOT NULL DEFAULT ''"],
       ['buyer_email', "TEXT NOT NULL DEFAULT ''"],
+      ['buyer_passport', "TEXT NOT NULL DEFAULT ''"],
       ['buyer_kpp', "TEXT NOT NULL DEFAULT ''"],
       ['buyer_ogrn', "TEXT NOT NULL DEFAULT ''"],
       ['buyer_director', "TEXT NOT NULL DEFAULT ''"],
@@ -2034,6 +2253,9 @@ export function migrate(): void {
       ['buyer_bik', "TEXT NOT NULL DEFAULT ''"],
       ['buyer_rs', "TEXT NOT NULL DEFAULT ''"],
       ['buyer_ks', "TEXT NOT NULL DEFAULT ''"],
+      ['template_id', "TEXT NOT NULL DEFAULT ''"],
+      ['checklist_json', "TEXT NOT NULL DEFAULT ''"],
+      ['printed_at', "TEXT NOT NULL DEFAULT ''"],
     ];
     for (const [col, def] of salesBuyerCols) {
       if (!salesOrgCols.includes(col)) {
@@ -2216,7 +2438,10 @@ export function migrate(): void {
       kpp: '',
       ogrnip: '322237500133521',
       address: '350000, Краснодарский край, Селезнева, д. 84, кв. 73',
-      phone: '',
+      site_address: 'г. Москва, Можайское шоссе, вл. 167',
+      work_hours: 'понедельник — суббота с 9:00 до 19:00',
+      phone: '+7 (925) 160-80-31',
+      email: 'info@pnevmopodveska1.ru',
       bank: 'ООО "Банк Точка" г. Москва',
       bik: '044525104',
       rs: '40802810109500030587',
@@ -2240,10 +2465,10 @@ export function migrate(): void {
       )?.id || '00000000-0000-4000-8000-000000000001';
     run(
       `INSERT INTO organizations (
-         id, code, company_id, name, short_name, inn, kpp, ogrnip, address, phone,
-         bank, bik, rs, ks, director, accountant, master_title, vat_rate,
+         id, code, company_id, name, short_name, inn, kpp, ogrnip, address, site_address, work_hours,
+         phone, email, bank, bik, rs, ks, director, accountant, master_title, vat_rate,
          is_default, is_active, source
-       ) VALUES (?, 'MAIN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'seed')`,
+       ) VALUES (?, 'MAIN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'seed')`,
       [
         cryptoRandomId(),
         defCoId,
@@ -2253,7 +2478,10 @@ export function migrate(): void {
         seed.kpp,
         seed.ogrnip,
         seed.address,
+        seed.site_address || '',
+        seed.work_hours || '',
         seed.phone,
+        seed.email || '',
         seed.bank,
         seed.bik,
         seed.rs,
@@ -2298,6 +2526,42 @@ export function migrate(): void {
     if (stockCols.length && !stockCols.includes('mismatch')) {
       db.exec(`ALTER TABLE stock_docs ADD COLUMN mismatch INTEGER NOT NULL DEFAULT 0`);
     }
+    if (stockCols.length && !stockCols.includes('supply_number')) {
+      db.exec(`ALTER TABLE stock_docs ADD COLUMN supply_number TEXT NOT NULL DEFAULT ''`);
+    }
+    if (stockCols.length && !stockCols.includes('inbound_baseline_json')) {
+      db.exec(`ALTER TABLE stock_docs ADD COLUMN inbound_baseline_json TEXT NOT NULL DEFAULT ''`);
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_stock_docs_supply ON stock_docs(supply_number)`);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS purchase_discrepancy_acts (
+        id TEXT PRIMARY KEY,
+        number TEXT NOT NULL UNIQUE,
+        inbound_doc_id TEXT NOT NULL DEFAULT '',
+        supplier_order_id TEXT NOT NULL DEFAULT '',
+        supply_number TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'draft',
+        comment TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_pda_inbound ON purchase_discrepancy_acts(inbound_doc_id);
+      CREATE INDEX IF NOT EXISTS idx_pda_supply ON purchase_discrepancy_acts(supply_number);
+
+      CREATE TABLE IF NOT EXISTS purchase_discrepancy_lines (
+        id TEXT PRIMARY KEY,
+        act_id TEXT NOT NULL,
+        product_id TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL DEFAULT 'qty_diff',
+        qty_supply REAL NOT NULL DEFAULT 0,
+        qty_inbound REAL NOT NULL DEFAULT 0,
+        qty_diff REAL NOT NULL DEFAULT 0,
+        note TEXT NOT NULL DEFAULT '',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (act_id) REFERENCES purchase_discrepancy_acts(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_pdl_act ON purchase_discrepancy_lines(act_id);
+    `);
     db.exec(`
       CREATE TABLE IF NOT EXISTS barcode_sequences (
         prefix TEXT PRIMARY KEY,
@@ -2395,6 +2659,10 @@ export function migrate(): void {
     ensureWh('MAIN', 'Основной');
     ensureWh('STO', 'СТО');
     ensureWh('IN-TRANSIT', 'В пути');
+    // Виртуальные (не 1С · Подвеска): пол СТО, «Отложено» и отдельно «Резерв СТО» (сделки Amo)
+    ensureWh('STO-RES-MSK', 'Отложено под СТО');
+    ensureWh('STO-RES-STRELA', 'Отложено под СТО · Стрела');
+    ensureWh('STO-RSV-MSK', 'Резерв СТО');
   }
 
   // Операции по картам ↔ заказ / расходная
@@ -2431,6 +2699,7 @@ export function migrate(): void {
       car_owner_flat TEXT NOT NULL DEFAULT '',
       car_sts_date TEXT NOT NULL DEFAULT '',
       car_sts_number TEXT NOT NULL DEFAULT '',
+      car_mileage TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (counterparty_id) REFERENCES counterparties(id) ON DELETE CASCADE
@@ -2439,9 +2708,418 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_cp_vehicles_plate ON counterparty_vehicles(car_plate);
   `);
 
+  {
+    const cpVehCols = all<{ name: string }>('PRAGMA table_info(counterparty_vehicles)').map((c) => c.name);
+    if (cpVehCols.length && !cpVehCols.includes('car_mileage')) {
+      db.exec(`ALTER TABLE counterparty_vehicles ADD COLUMN car_mileage TEXT NOT NULL DEFAULT ''`);
+    }
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS purchase_price_imports (
+      id TEXT PRIMARY KEY,
+      supplier_id TEXT NOT NULL DEFAULT '',
+      supplier_name TEXT NOT NULL DEFAULT '',
+      filename TEXT NOT NULL DEFAULT '',
+      sheet_name TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'uploaded',
+      column_map_json TEXT NOT NULL DEFAULT '{}',
+      header_row INTEGER NOT NULL DEFAULT 1,
+      notes TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      parsed_at TEXT NOT NULL DEFAULT '',
+      row_count INTEGER NOT NULL DEFAULT 0,
+      new_count INTEGER NOT NULL DEFAULT 0,
+      changed_count INTEGER NOT NULL DEFAULT 0,
+      matched_count INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_ppi_created ON purchase_price_imports(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ppi_supplier ON purchase_price_imports(supplier_id);
+
+    CREATE TABLE IF NOT EXISTS purchase_price_rows (
+      id TEXT PRIMARY KEY,
+      import_id TEXT NOT NULL,
+      row_no INTEGER NOT NULL DEFAULT 0,
+      raw_json TEXT NOT NULL DEFAULT '[]',
+      article TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      brand TEXT NOT NULL DEFAULT '',
+      price REAL NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'RUB',
+      barcode TEXT NOT NULL DEFAULT '',
+      oem TEXT NOT NULL DEFAULT '',
+      crosses TEXT NOT NULL DEFAULT '',
+      applicability TEXT NOT NULL DEFAULT '',
+      qty REAL NOT NULL DEFAULT 0,
+      match_status TEXT NOT NULL DEFAULT 'pending',
+      match_product_id TEXT NOT NULL DEFAULT '',
+      match_sku TEXT NOT NULL DEFAULT '',
+      old_price REAL,
+      price_delta REAL,
+      picture_path TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (import_id) REFERENCES purchase_price_imports(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_ppr_import ON purchase_price_rows(import_id);
+    CREATE INDEX IF NOT EXISTS idx_ppr_status ON purchase_price_rows(import_id, match_status);
+
+    CREATE TABLE IF NOT EXISTS purchase_baskets (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      supplier_id TEXT NOT NULL DEFAULT '',
+      supplier_name TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'open',
+      notes TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_pb_updated ON purchase_baskets(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS purchase_basket_lines (
+      id TEXT PRIMARY KEY,
+      basket_id TEXT NOT NULL,
+      import_row_id TEXT NOT NULL DEFAULT '',
+      product_id TEXT NOT NULL DEFAULT '',
+      article TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      brand TEXT NOT NULL DEFAULT '',
+      price REAL NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'RUB',
+      qty REAL NOT NULL DEFAULT 1,
+      barcode TEXT NOT NULL DEFAULT '',
+      oem TEXT NOT NULL DEFAULT '',
+      crosses TEXT NOT NULL DEFAULT '',
+      applicability TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (basket_id) REFERENCES purchase_baskets(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_pbl_basket ON purchase_basket_lines(basket_id);
+  `);
+
+  // Дедуп номенклатуры: мастер / алиас (из Google Sheet «Закупка ТОП MRA…»)
+  {
+    const pcols = all<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
+    const addP = (name: string, ddl: string) => {
+      if (!pcols.includes(name)) db.exec(`ALTER TABLE products ADD COLUMN ${ddl}`);
+    };
+    addP('dedup_role', `dedup_role TEXT NOT NULL DEFAULT ''`);
+    addP('master_product_id', `master_product_id TEXT NOT NULL DEFAULT ''`);
+    addP('dedup_group', `dedup_group TEXT NOT NULL DEFAULT ''`);
+    addP('sheet_supplier', `sheet_supplier TEXT NOT NULL DEFAULT ''`);
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_dedup_groups (
+      group_no TEXT PRIMARY KEY,
+      master_product_id TEXT NOT NULL DEFAULT '',
+      master_sku TEXT NOT NULL DEFAULT '',
+      master_nf TEXT NOT NULL DEFAULT '',
+      master_article TEXT NOT NULL DEFAULT '',
+      merged_oe TEXT NOT NULL DEFAULT '',
+      member_count INTEGER NOT NULL DEFAULT 0,
+      matched_count INTEGER NOT NULL DEFAULT 0,
+      missing_count INTEGER NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'sheet',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS product_dedup_members (
+      id TEXT PRIMARY KEY,
+      group_no TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT '',
+      article TEXT NOT NULL DEFAULT '',
+      nf_code TEXT NOT NULL DEFAULT '',
+      supplier TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      oe_card TEXT NOT NULL DEFAULT '',
+      merged_oe TEXT NOT NULL DEFAULT '',
+      attrs_json TEXT NOT NULL DEFAULT '',
+      product_id TEXT NOT NULL DEFAULT '',
+      match_status TEXT NOT NULL DEFAULT 'pending',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_pdm_group ON product_dedup_members(group_no);
+    CREATE INDEX IF NOT EXISTS idx_pdm_product ON product_dedup_members(product_id);
+    CREATE INDEX IF NOT EXISTS idx_pdm_status ON product_dedup_members(match_status);
+    CREATE INDEX IF NOT EXISTS idx_prod_master ON products(master_product_id);
+    CREATE INDEX IF NOT EXISTS idx_prod_dedup_group ON products(dedup_group);
+
+    CREATE TABLE IF NOT EXISTS product_code_masters (
+      code TEXT PRIMARY KEY,
+      code_type TEXT NOT NULL DEFAULT '',
+      master_mraer TEXT NOT NULL DEFAULT '',
+      master_nf TEXT NOT NULL DEFAULT '',
+      master_name TEXT NOT NULL DEFAULT '',
+      master_product_id TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      conflict TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS nomen_catalog_sheet (
+      id TEXT PRIMARY KEY,
+      group_name TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      mraer TEXT NOT NULL DEFAULT '',
+      oem TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      code TEXT NOT NULL DEFAULT '',
+      articles TEXT NOT NULL DEFAULT '',
+      models TEXT NOT NULL DEFAULT '',
+      brand TEXT NOT NULL DEFAULT '',
+      supplier TEXT NOT NULL DEFAULT '',
+      attrs_json TEXT NOT NULL DEFAULT '',
+      product_id TEXT NOT NULL DEFAULT '',
+      match_status TEXT NOT NULL DEFAULT 'pending',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ncs_code ON nomen_catalog_sheet(code);
+    CREATE INDEX IF NOT EXISTS idx_ncs_status ON nomen_catalog_sheet(match_status);
+
+    CREATE TABLE IF NOT EXISTS integration_api_keys (
+      id TEXT PRIMARY KEY,
+      staff_id TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      key_hash TEXT NOT NULL UNIQUE,
+      key_prefix TEXT NOT NULL DEFAULT '',
+      key_hint TEXT NOT NULL DEFAULT '',
+      scopes TEXT NOT NULL DEFAULT 'all',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_used_at TEXT NOT NULL DEFAULT '',
+      revoked_at TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_iapik_active ON integration_api_keys(is_active);
+    CREATE INDEX IF NOT EXISTS idx_iapik_hash ON integration_api_keys(key_hash);
+  `);
+  {
+    const iak = all<{ name: string }>('PRAGMA table_info(integration_api_keys)').map((c) => c.name);
+    if (iak.length && !iak.includes('staff_id')) {
+      db.exec(`ALTER TABLE integration_api_keys ADD COLUMN staff_id TEXT NOT NULL DEFAULT ''`);
+    }
+    try {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_iapik_staff ON integration_api_keys(staff_id)`);
+    } catch {
+      /* ignore */
+    }
+  }
+  {
+    const ncs = all<{ name: string }>('PRAGMA table_info(nomen_catalog_sheet)').map((c) => c.name);
+    if (!ncs.includes('supplier')) {
+      db.exec(`ALTER TABLE nomen_catalog_sheet ADD COLUMN supplier TEXT NOT NULL DEFAULT ''`);
+    }
+    if (!ncs.includes('attrs_json')) {
+      db.exec(`ALTER TABLE nomen_catalog_sheet ADD COLUMN attrs_json TEXT NOT NULL DEFAULT ''`);
+    }
+  }
+  {
+    const pdm = all<{ name: string }>('PRAGMA table_info(product_dedup_members)').map((c) => c.name);
+    if (!pdm.includes('attrs_json')) {
+      db.exec(`ALTER TABLE product_dedup_members ADD COLUMN attrs_json TEXT NOT NULL DEFAULT ''`);
+    }
+  }
+
+  // Единица «услуга» для item_kind=service (не «шт»)
+  {
+    let svcUnit = get<{ id: string }>(
+      `SELECT id FROM units
+       WHERE lower(trim(short_name)) IN ('услуга', 'усл')
+          OR lower(trim(name)) IN ('услуга', 'услуги')
+       LIMIT 1`
+    )?.id;
+    if (!svcUnit) {
+      svcUnit = cryptoRandomId();
+      run(`INSERT INTO units (id, name, short_name) VALUES (?, 'Услуга', 'услуга')`, [
+        svcUnit,
+      ]);
+    }
+    run(
+      `UPDATE products SET unit_id = ?
+       WHERE IFNULL(item_kind, 'product') = 'service' AND IFNULL(unit_id, '') != ?`,
+      [svcUnit, svcUnit]
+    );
+  }
+
   // Не копить огромный WAL (на проде бывало 20+ МБ → тормоза SQLite)
   try {
     get('PRAGMA wal_checkpoint(TRUNCATE)');
+  } catch {
+    /* ignore */
+  }
+
+  // ПДн SMS-подпись (pdn.uchetn1.ru)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS pdn_sign_sessions (
+        id TEXT PRIMARY KEY,
+        token TEXT NOT NULL UNIQUE,
+        deal_id TEXT NOT NULL,
+        phone TEXT NOT NULL DEFAULT '',
+        buyer_name TEXT NOT NULL DEFAULT '',
+        org_name TEXT NOT NULL DEFAULT '',
+        org_inn TEXT NOT NULL DEFAULT '',
+        sender TEXT NOT NULL DEFAULT 'Pnevmo1',
+        status TEXT NOT NULL DEFAULT 'pending',
+        consent_text TEXT NOT NULL DEFAULT '',
+        consent_sha256 TEXT NOT NULL DEFAULT '',
+        link_url TEXT NOT NULL DEFAULT '',
+        link_sms_id TEXT NOT NULL DEFAULT '',
+        code_hash TEXT NOT NULL DEFAULT '',
+        code_salt TEXT NOT NULL DEFAULT '',
+        code_sms_id TEXT NOT NULL DEFAULT '',
+        code_sent_at TEXT NOT NULL DEFAULT '',
+        code_attempts INTEGER NOT NULL DEFAULT 0,
+        signed_at TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_by TEXT NOT NULL DEFAULT '',
+        expires_at TEXT NOT NULL DEFAULT '',
+        meta_json TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS idx_pdn_sign_deal ON pdn_sign_sessions(deal_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_pdn_sign_token ON pdn_sign_sessions(token);
+
+      CREATE TABLE IF NOT EXISTS pdn_sign_events (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        deal_id TEXT NOT NULL DEFAULT '',
+        event TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        ip TEXT NOT NULL DEFAULT '',
+        user_agent TEXT NOT NULL DEFAULT '',
+        os TEXT NOT NULL DEFAULT '',
+        browser TEXT NOT NULL DEFAULT '',
+        device TEXT NOT NULL DEFAULT '',
+        region TEXT NOT NULL DEFAULT '',
+        country TEXT NOT NULL DEFAULT '',
+        accept_language TEXT NOT NULL DEFAULT '',
+        meta_json TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS idx_pdn_sign_events_session ON pdn_sign_events(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_pdn_sign_events_deal ON pdn_sign_events(deal_id, created_at);
+    `);
+  } catch {
+    /* ignore */
+  }
+
+  // Производство: заказы сборки/разборки + склад PROD-WIP
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS production_jobs (
+        id TEXT PRIMARY KEY,
+        number TEXT NOT NULL UNIQUE,
+        doc_date TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'assemble',
+        status TEXT NOT NULL DEFAULT 'draft',
+        deal_id TEXT NOT NULL DEFAULT '',
+        warehouse_id TEXT NOT NULL DEFAULT '',
+        prod_warehouse_id TEXT NOT NULL DEFAULT '',
+        comment TEXT NOT NULL DEFAULT '',
+        send_transfer_id TEXT NOT NULL DEFAULT '',
+        receive_out_id TEXT NOT NULL DEFAULT '',
+        receive_in_id TEXT NOT NULL DEFAULT '',
+        send_task_id TEXT NOT NULL DEFAULT '',
+        receive_task_id TEXT NOT NULL DEFAULT '',
+        done_at TEXT NOT NULL DEFAULT '',
+        received_at TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_prod_jobs_status ON production_jobs(status, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_prod_jobs_deal ON production_jobs(deal_id);
+
+      CREATE TABLE IF NOT EXISTS production_job_lines (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        line_no INTEGER NOT NULL DEFAULT 1,
+        direction TEXT NOT NULL CHECK(direction IN ('consume','produce')),
+        product_id TEXT NOT NULL,
+        sku TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL DEFAULT '',
+        qty REAL NOT NULL DEFAULT 1,
+        FOREIGN KEY (job_id) REFERENCES production_jobs(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_prod_job_lines_job ON production_job_lines(job_id);
+
+      CREATE TABLE IF NOT EXISTS production_job_events (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        event TEXT NOT NULL,
+        actor_id TEXT NOT NULL DEFAULT '',
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_prod_job_events ON production_job_events(job_id, created_at);
+    `);
+    const ensureWh = (code: string, name: string) => {
+      const row = get<{ id: string }>(
+        `SELECT id FROM warehouses WHERE code = ? OR name = ? LIMIT 1`,
+        [code, name]
+      );
+      if (row?.id) return row.id;
+      const id = cryptoRandomId();
+      run(`INSERT INTO warehouses (id, name, code, is_active) VALUES (?, ?, ?, 1)`, [id, name, code]);
+      return id;
+    };
+    ensureWh('PROD-WIP', 'Производство (сборка/разбор)');
+  } catch {
+    /* ignore */
+  }
+
+  // Снять дедуп-мастера/алиасы — номенклатура только из 1С
+  try {
+    const purged = get<{ value: string }>(`SELECT value FROM meta WHERE key = 'dedup_purged_v1'`);
+    if (!purged?.value) {
+      run(
+        `UPDATE products SET is_active = 1
+         WHERE IFNULL(dedup_role,'') = 'alias'
+           AND NOT (
+             IFNULL(item_kind,'product') = 'service'
+             AND lower(IFNULL(sku,'')) NOT LIKE 'se-%'
+             AND lower(IFNULL(code,'')) NOT LIKE 'se-%'
+           )`
+      );
+      run(
+        `UPDATE products SET dedup_role = '', master_product_id = '', dedup_group = '', is_main = 1
+         WHERE IFNULL(dedup_role,'') != '' OR IFNULL(master_product_id,'') != '' OR IFNULL(dedup_group,'') != ''`
+      );
+      run(`DELETE FROM product_dedup_members`);
+      run(`DELETE FROM product_dedup_groups`);
+      run(`DELETE FROM product_code_masters`);
+      run(`DELETE FROM nomen_catalog_sheet`);
+      run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('dedup_purged_v1', datetime('now'))`);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Коррекции остатков (документы admin_only, журнал stock_adjustments)
+  try {
+    const docCols = all<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
+    if (!docCols.includes('admin_only')) {
+      run(`ALTER TABLE stock_docs ADD COLUMN admin_only INTEGER NOT NULL DEFAULT 0`);
+    }
+    run(`
+      CREATE TABLE IF NOT EXISTS stock_adjustments (
+        id TEXT PRIMARY KEY,
+        warehouse_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        qty_before REAL NOT NULL,
+        qty_delta REAL NOT NULL,
+        qty_after REAL NOT NULL,
+        comment TEXT NOT NULL DEFAULT '',
+        doc_id TEXT NOT NULL,
+        doc_number TEXT NOT NULL DEFAULT '',
+        doc_type TEXT NOT NULL DEFAULT '',
+        created_by_id TEXT NOT NULL DEFAULT '',
+        created_by_name TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    run(`CREATE INDEX IF NOT EXISTS idx_stock_adj_wh ON stock_adjustments(warehouse_id, created_at)`);
+    run(`CREATE INDEX IF NOT EXISTS idx_stock_adj_doc ON stock_adjustments(doc_id)`);
   } catch {
     /* ignore */
   }

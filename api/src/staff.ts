@@ -10,6 +10,56 @@ const DEFAULT_EXPORT =
   process.env.AMO1C_STAFF_EXPORT
   || '/root/amo1c_pnevmopodveska1_ru/public_html/bin/export_staff_for_wms.php';
 
+const META_AMO_USERS = 'amo_user_directory';
+
+/** Справочник Amo user id → ФИО (чтобы в селекте были имена даже без привязки staff). */
+export function getAmoUserDirectory(): Record<string, { name: string; email?: string; is_active?: boolean }> {
+  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_AMO_USERS]);
+  if (!row?.value) return {};
+  try {
+    const parsed = JSON.parse(row.value) as Record<string, { name: string; email?: string; is_active?: boolean }>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveAmoUserDirectory(
+  users: Array<{ id?: unknown; name?: unknown; email?: unknown; is_active?: unknown }>
+): number {
+  const cur = getAmoUserDirectory();
+  let n = 0;
+  for (const u of users || []) {
+    const id = String(u.id || '').trim();
+    if (!id) continue;
+    const name = String(u.name || '').trim();
+    if (!name) continue;
+    cur[id] = {
+      name,
+      email: String(u.email || '').trim() || undefined,
+      is_active: Number(u.is_active) !== 0 && u.is_active !== false,
+    };
+    n += 1;
+  }
+  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    META_AMO_USERS,
+    JSON.stringify(cur),
+  ]);
+  return n;
+}
+
+export function amoUserDisplayName(amoId: string): string {
+  const id = String(amoId || '').trim();
+  if (!id) return '';
+  const dir = getAmoUserDirectory()[id];
+  if (dir?.name) return dir.name;
+  const st = get<{ name: string }>(
+    `SELECT name FROM staff WHERE amo_id = ? AND IFNULL(name,'') != '' LIMIT 1`,
+    [id]
+  );
+  return String(st?.name || '').trim();
+}
+
 /** Практичные роли Учёт №1 (код → UI на русском через ROLE_META). */
 export const STAFF_ROLES = [
   'admin',
@@ -20,6 +70,7 @@ export const STAFF_ROLES = [
   'courier',
   'sales',
   'accountant',
+  'purchaser',
   'readonly',
   'none',
 ] as const;
@@ -42,6 +93,7 @@ export const STAFF_SECTIONS = [
   'production',
   'money',
   'kassa',
+  'tax',
   'reports',
   'staff',
   'chats',
@@ -62,7 +114,7 @@ export const SECTION_LABELS: Record<StaffSection, string> = {
   purchases: 'Закупки',
   warehouse: 'Склад',
   pick: 'Сборка (/pick)',
-  photo: 'Фотограф (/photo)',
+  photo: 'Фото / медиа',
   lift: 'Подъёмник (/lift)',
   reception: 'Приёмщик (/reception)',
   delivery: 'Доставка / СДЭК',
@@ -71,6 +123,7 @@ export const SECTION_LABELS: Record<StaffSection, string> = {
   production: 'Производство',
   money: 'Деньги',
   kassa: 'Касса',
+  tax: 'Налоги и зарплата',
   reports: 'Отчёты',
   staff: 'Персонал',
   chats: 'Чаты',
@@ -87,12 +140,16 @@ export type StaffRights = {
   can_edit_products: boolean;
   can_edit_prices: boolean;
   can_edit_docs: boolean;
+  can_tax: boolean;
+  can_payroll: boolean;
   /**
    * Контуры (companies.id), к которым есть доступ.
    * Пустой массив / отсутствует — все организации (как раньше).
    * Админ / системный — всегда все, поле игнорируется.
    */
   company_ids: string[];
+  /** Фиксированный склад /pick: strela | fogel | msk (пусто — все вкладки). */
+  pick_site_lock?: '' | 'strela' | 'fogel' | 'msk';
 };
 
 export type RoleMeta = {
@@ -104,8 +161,21 @@ export type RoleMeta = {
 
 const ALL_SECTIONS = [...STAFF_SECTIONS];
 
-function withCompanyIds(r: Omit<StaffRights, 'company_ids'>): StaffRights {
-  return { ...r, company_ids: [] };
+function withCompanyIds(
+  r: Omit<StaffRights, 'company_ids' | 'pick_site_lock'>,
+  extras?: Partial<Pick<StaffRights, 'pick_site_lock' | 'company_ids'>>
+): StaffRights {
+  return { ...r, company_ids: extras?.company_ids ?? [], pick_site_lock: extras?.pick_site_lock ?? '' };
+}
+
+function normPickSiteLock(raw: unknown): '' | 'strela' | 'fogel' | 'msk' {
+  const s = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (s === 'msk' || s === 'moscow' || s === 'москва') return 'msk';
+  if (s === 'fogel' || s === 'фогель') return 'fogel';
+  if (s === 'strela' || s === 'стрела') return 'strela';
+  return '';
 }
 
 const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
@@ -115,6 +185,8 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
     can_edit_products: true,
     can_edit_prices: true,
     can_edit_docs: true,
+    can_tax: true,
+    can_payroll: true,
   }),
   manager: withCompanyIds({
     sections: [
@@ -132,6 +204,7 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
       'works',
       'money',
       'kassa',
+      'tax',
       'reports',
       'chats',
       'company',
@@ -143,20 +216,29 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
     can_edit_products: true,
     can_edit_prices: true,
     can_edit_docs: true,
+    can_tax: true,
+    can_payroll: true,
   }),
-  warehouse: withCompanyIds({
-    sections: ['home', 'warehouse', 'pick', 'photo', 'chats', 'help'],
-    can_sync: false,
-    can_edit_products: false,
-    can_edit_prices: false,
-    can_edit_docs: true,
-  }),
+  warehouse: withCompanyIds(
+    {
+      sections: ['home', 'warehouse', 'pick', 'photo', 'chats', 'help'],
+      can_sync: false,
+      can_edit_products: false,
+      can_edit_prices: false,
+      can_edit_docs: true,
+      can_tax: false,
+      can_payroll: false,
+    },
+    { pick_site_lock: 'msk' }
+  ),
   photographer: withCompanyIds({
-    sections: ['home', 'photo', 'media', 'chats', 'help'],
+    sections: ['home', 'warehouse', 'photo', 'media', 'chats', 'help'],
     can_sync: false,
     can_edit_products: false,
     can_edit_prices: false,
     can_edit_docs: false,
+    can_tax: false,
+    can_payroll: false,
   }),
   sto: withCompanyIds({
     sections: [
@@ -175,6 +257,8 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
     can_edit_products: false,
     can_edit_prices: false,
     can_edit_docs: true,
+    can_tax: false,
+    can_payroll: false,
   }),
   courier: withCompanyIds({
     sections: ['home', 'warehouse', 'pick', 'delivery', 'chats', 'help'],
@@ -182,6 +266,8 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
     can_edit_products: false,
     can_edit_prices: false,
     can_edit_docs: false,
+    can_tax: false,
+    can_payroll: false,
   }),
   sales: withCompanyIds({
     sections: ['home', 'crm', 'sales', 'warehouse', 'delivery', 'money', 'kassa', 'chats', 'ideas', 'help'],
@@ -189,13 +275,45 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
     can_edit_products: false,
     can_edit_prices: false,
     can_edit_docs: true,
+    can_tax: false,
+    can_payroll: false,
   }),
   accountant: withCompanyIds({
-    sections: ['home', 'sales', 'purchases', 'money', 'kassa', 'reports', 'chats', 'company', 'help'],
+    sections: [
+      'home',
+      'sales',
+      'money',
+      'kassa',
+      'tax',
+      'reports',
+      'chats',
+      'company',
+      'help',
+    ],
     can_sync: false,
     can_edit_products: false,
     can_edit_prices: false,
     can_edit_docs: true,
+    can_tax: true,
+    can_payroll: true,
+  }),
+  purchaser: withCompanyIds({
+    sections: [
+      'home',
+      'purchases',
+      'warehouse',
+      'crm',
+      'chats',
+      'reports',
+      'company',
+      'help',
+    ],
+    can_sync: false,
+    can_edit_products: true,
+    can_edit_prices: true,
+    can_edit_docs: true,
+    can_tax: false,
+    can_payroll: false,
   }),
   readonly: withCompanyIds({
     sections: [
@@ -214,6 +332,8 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
     can_edit_products: false,
     can_edit_prices: false,
     can_edit_docs: false,
+    can_tax: false,
+    can_payroll: false,
   }),
   none: withCompanyIds({
     sections: [],
@@ -221,6 +341,8 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
     can_edit_products: false,
     can_edit_prices: false,
     can_edit_docs: false,
+    can_tax: false,
+    can_payroll: false,
   }),
 };
 
@@ -239,7 +361,7 @@ export const ROLE_META: Record<StaffRole, Omit<RoleMeta, 'id' | 'rights'>> = {
   },
   photographer: {
     label: 'Фотограф',
-    description: 'Экран /photo, медиа и очередь номенклатуры без фото.',
+    description: 'Главная, номенклатура и медиа / фото.',
   },
   sto: {
     label: 'СТО / мастер-приёмщик',
@@ -247,7 +369,7 @@ export const ROLE_META: Record<StaffRole, Omit<RoleMeta, 'id' | 'rights'>> = {
   },
   courier: {
     label: 'Курьер',
-    description: 'Складские задания и выдача/доставка. Без изменения номенклатуры и документов.',
+    description: 'Экран /courier: принято → забрал → сдал на склад. Задания из «Задание на СТО».',
   },
   sales: {
     label: 'Продажи',
@@ -255,7 +377,11 @@ export const ROLE_META: Record<StaffRole, Omit<RoleMeta, 'id' | 'rights'>> = {
   },
   accountant: {
     label: 'Бухгалтер',
-    description: 'Продажи, закупки, деньги (Точка), реквизиты компании.',
+    description: 'Продажи, деньги (Точка), касса, налоги / зарплата, реквизиты компании. Без закупок.',
+  },
+  purchaser: {
+    label: 'Закупщик',
+    description: 'Отдел закупки: прайсы, корзины, номенклатура и закупочные цены.',
   },
   readonly: {
     label: 'Наблюдатель',
@@ -353,8 +479,12 @@ export function parseRights(
         j.can_edit_prices !== undefined ? Boolean(j.can_edit_prices) : base.can_edit_prices,
       can_edit_docs:
         j.can_edit_docs !== undefined ? Boolean(j.can_edit_docs) : base.can_edit_docs,
+      can_tax: j.can_tax !== undefined ? Boolean(j.can_tax) : base.can_tax,
+      can_payroll: j.can_payroll !== undefined ? Boolean(j.can_payroll) : base.can_payroll,
       company_ids:
         j.company_ids !== undefined ? normCompanyIds(j.company_ids) : [...base.company_ids],
+      pick_site_lock:
+        j.pick_site_lock !== undefined ? normPickSiteLock(j.pick_site_lock) : base.pick_site_lock || '',
     };
   } catch {
     return structuredClone(base);
@@ -400,8 +530,18 @@ export function resolveListCompanyFilter(
 export type DeptRightsOverlay = {
   grant_sections: string[];
   revoke_sections: string[];
-  grant: Partial<Pick<StaffRights, 'can_sync' | 'can_edit_products' | 'can_edit_prices' | 'can_edit_docs'>>;
-  revoke: Partial<Pick<StaffRights, 'can_sync' | 'can_edit_products' | 'can_edit_prices' | 'can_edit_docs'>>;
+  grant: Partial<
+    Pick<
+      StaffRights,
+      'can_sync' | 'can_edit_products' | 'can_edit_prices' | 'can_edit_docs' | 'can_tax' | 'can_payroll'
+    >
+  >;
+  revoke: Partial<
+    Pick<
+      StaffRights,
+      'can_sync' | 'can_edit_products' | 'can_edit_prices' | 'can_edit_docs' | 'can_tax' | 'can_payroll'
+    >
+  >;
 };
 
 const EMPTY_OVERLAY: DeptRightsOverlay = {
@@ -416,6 +556,8 @@ const CAN_FLAGS = [
   'can_edit_products',
   'can_edit_prices',
   'can_edit_docs',
+  'can_tax',
+  'can_payroll',
 ] as const;
 
 function filterSections(list: unknown): string[] {
@@ -463,6 +605,8 @@ export function applyDeptOverlay(base: StaffRights, overlay: DeptRightsOverlay |
     can_edit_products: base.can_edit_products,
     can_edit_prices: base.can_edit_prices,
     can_edit_docs: base.can_edit_docs,
+    can_tax: base.can_tax,
+    can_payroll: base.can_payroll,
     company_ids: [...(base.company_ids || [])],
   };
   for (const f of CAN_FLAGS) {
@@ -493,6 +637,74 @@ export function normDepartmentName(name: string | null | undefined): string {
   if (!raw) return '';
   const key = raw.toLowerCase().replace(/ё/g, 'е');
   return DEPARTMENT_ALIASES[key] || raw;
+}
+
+/** Отделы для подписей в чек-листе СТО. */
+export const STO_CHECKLIST_STAFF_DEPTS = {
+  /** Мастер-приёмщик */
+  master: 'Мастера-приёмщики',
+  /** Слесарь / установщик (поле admin_name в JSON — историческое имя) */
+  admin: 'Механики',
+} as const;
+
+export const STO_CHECKLIST_STAFF_LABELS = {
+  master: 'Мастер-приёмщик',
+  admin: 'Слесарь / установщик',
+} as const;
+
+export type StoChecklistStaffPick = {
+  id: string;
+  name: string;
+  department: string;
+  role: string;
+};
+
+/** Активные сотрудники отдела для select в чек-листе ЗН. */
+export function listStoChecklistStaffPicks(): {
+  masters: StoChecklistStaffPick[];
+  admins: StoChecklistStaffPick[];
+  departments: { master: string; admin: string };
+  labels: { master: string; admin: string };
+} {
+  const rows = all<{
+    id: string;
+    name: string;
+    department: string;
+    role: string;
+  }>(
+    `SELECT id, name, COALESCE(department, '') AS department, role
+     FROM staff
+     WHERE can_login = 1
+       AND is_active = 1
+       AND role != 'none'
+       AND trim(COALESCE(name, '')) != ''
+     ORDER BY name COLLATE NOCASE`
+  );
+  const masterDept = STO_CHECKLIST_STAFF_DEPTS.master;
+  const adminDept = STO_CHECKLIST_STAFF_DEPTS.admin;
+  const masterKey = normDepartmentName(masterDept).toLowerCase();
+  const adminKey = normDepartmentName(adminDept).toLowerCase();
+  const mapPick = (r: (typeof rows)[number]): StoChecklistStaffPick => ({
+    id: r.id,
+    name: String(r.name || '').trim(),
+    department: normDepartmentName(r.department) || String(r.department || '').trim(),
+    role: String(r.role || ''),
+  });
+  const masters = rows
+    .filter((r) => normDepartmentName(r.department).toLowerCase() === masterKey)
+    .map(mapPick);
+  const admins = rows
+    .filter((r) => normDepartmentName(r.department).toLowerCase() === adminKey)
+    .map(mapPick);
+  return {
+    masters,
+    admins,
+    departments: { master: masterDept, admin: adminDept },
+    labels: {
+      master: STO_CHECKLIST_STAFF_LABELS.master,
+      admin: STO_CHECKLIST_STAFF_LABELS.admin,
+    },
+  };
 }
 
 /** Создать канонические отделы, если ещё нет; переименовать известные алиасы у сотрудников. */
@@ -660,6 +872,58 @@ export function canAccessPickScreen(
   return canAccessSection(actor, 'pick');
 }
 
+/**
+ * Налоги / отчётность — админ, бухгалтер, либо can_tax + раздел tax.
+ */
+export function canUseTax(
+  actor: {
+    role?: string;
+    isSystemAdmin?: boolean;
+    rights?: StaffRights;
+  } | null | undefined
+): boolean {
+  if (!actor) return false;
+  if (actor.isSystemAdmin || actor.role === 'admin') return true;
+  if (actor.role === 'accountant') return true;
+  if (actor.rights?.can_tax) return true;
+  return canAccessSection(actor, 'tax');
+}
+
+/** Зарплата и взносы — как can_tax, либо явное can_payroll. */
+export function canUsePayroll(
+  actor: {
+    role?: string;
+    isSystemAdmin?: boolean;
+    rights?: StaffRights;
+  } | null | undefined
+): boolean {
+  if (!actor) return false;
+  if (actor.isSystemAdmin || actor.role === 'admin') return true;
+  if (actor.role === 'accountant') return true;
+  if (actor.rights?.can_payroll) return true;
+  return canUseTax(actor);
+}
+
+/**
+ * Инструмент прайсов/корзин закупок — строго админ, роль purchaser
+ * или отдел с «закуп» в названии (+ раздел purchases).
+ */
+export function canUsePurchaseIntake(
+  actor: {
+    role?: string;
+    isSystemAdmin?: boolean;
+    department?: string;
+    rights?: StaffRights;
+  } | null | undefined
+): boolean {
+  if (!actor) return false;
+  if (actor.isSystemAdmin || actor.role === 'admin') return true;
+  if (actor.role === 'purchaser') return true;
+  const dept = String(actor.department || '').toLowerCase();
+  if (dept.includes('закуп') && canAccessSection(actor, 'purchases')) return true;
+  return false;
+}
+
 /** Экран фотографа /photo — роль photographer/admin + раздел photo/media; warehouse/sto — совместимость. */
 export function canAccessPhotoScreen(
   actor: { role?: string; isSystemAdmin?: boolean; rights?: StaffRights } | null | undefined
@@ -709,6 +973,7 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
   const needV5 = !ver || Number(ver) < 5;
   const needV6 = !ver || Number(ver) < 6;
   const needV7 = !ver || Number(ver) < 7;
+  const needV8 = !ver || Number(ver) < 8;
 
   for (const row of rows) {
     const role = isStaffRole(row.role) ? row.role : 'none';
@@ -722,8 +987,8 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
       filled += 1;
       continue;
     }
-    if (!needV4 && !needV5 && !needV6 && !needV7) continue;
-    if (role === 'admin' && (needV4 || needV6 || needV7)) {
+    if (!needV4 && !needV5 && !needV6 && !needV7 && !needV8) continue;
+    if (role === 'admin' && (needV4 || needV6 || needV7 || needV8)) {
       run('UPDATE staff SET rights_json = ? WHERE id = ?', [
         JSON.stringify(rightsForRole('admin')),
         row.id,
@@ -774,6 +1039,21 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
       have.add('chats');
       changed = true;
     }
+    // v8: налоги и зарплата
+    if (needV8) {
+      if (roleSecs.has('tax') && !have.has('tax')) {
+        have.add('tax');
+        changed = true;
+      }
+      if (rights.can_tax === undefined && roleSecs.has('tax')) {
+        rights.can_tax = true;
+        changed = true;
+      }
+      if (rights.can_payroll === undefined && roleSecs.has('tax')) {
+        rights.can_payroll = true;
+        changed = true;
+      }
+    }
     if (changed) {
       rights.sections = [...have].filter((s) =>
         (STAFF_SECTIONS as readonly string[]).includes(s)
@@ -786,7 +1066,7 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
     }
   }
   run(
-    `INSERT INTO meta (key, value) VALUES ('staff_roles_version', '7')
+    `INSERT INTO meta (key, value) VALUES ('staff_roles_version', '8')
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   );
   return { filled, migrated };
@@ -810,6 +1090,7 @@ export function accessMatrixSnapshot(): {
   const rows = all<Record<string, unknown>>(
     `SELECT id, name, role, rights_json, department, can_login
      FROM staff
+     WHERE IFNULL(is_active,1) = 1
      ORDER BY name COLLATE NOCASE`
   );
   const mapped: AccessMatrixRow[] = rows.map((row) => {
@@ -893,6 +1174,12 @@ export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncRes
   const users = exp.users || [];
   const relations = exp.relations || [];
   const authRows = exp.auth || [];
+
+  try {
+    saveAmoUserDirectory(users);
+  } catch {
+    /* справочник имён — не блокируем синк */
+  }
 
   const relByAmo = new Map<string, Array<Record<string, unknown>>>();
   for (const r of relations) {
@@ -1076,18 +1363,8 @@ export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncRes
         continue;
       }
 
-      const role: StaffRole = 'none';
-      const id = newGuid();
-      run(
-        `INSERT INTO staff (
-          id, amo_id, email, name, is_active, group_id,
-          one_c_guid, one_c_code, one_c_name, department,
-          auth_login, sto_location, is_admin_amo,
-          role, rights_json, can_login, source, notes, synced_at
-        ) VALUES (?, '', '', ?, 1, '', ?, ?, ?, '', '', '', 0, ?, ?, 0, '1c', '', datetime('now'))`,
-        [id, hs.name, hs.id, hs.code, hs.name, role, JSON.stringify(rightsForRole(role))]
-      );
-      upserted += 1;
+      // Не плодим в персонале «мёртвых» из 1С без Amo / роли — только линк к существующим.
+      // Новые записи: Amo-ветка выше или ручное «Добавить сотрудника».
     }
 
     run(

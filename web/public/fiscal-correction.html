@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
+  <title>Чек коррекции · Учёт №1</title>
+  <link rel="stylesheet" href="/styles.css?v=1002" />
+  <style>
+    body { margin: 0; background: var(--bg, #f3f1ec); color: var(--text, #0f172a); }
+    .fc-wrap { max-width: 640px; margin: 0 auto; padding: 20px 16px 40px; }
+    .fc-head { margin-bottom: 16px; }
+    .fc-head h1 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; }
+    .fc-head p { margin: 0; font-size: 13px; color: var(--muted, #64748b); line-height: 1.45; }
+    .fc-card {
+      background: #fff;
+      border: 1px solid var(--line, #e2e8f0);
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin-bottom: 12px;
+    }
+    .fc-card h2 { margin: 0 0 12px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #475569; }
+    .fc-grid { display: grid; gap: 12px; }
+    .fc-grid-2 { grid-template-columns: 1fr 1fr; }
+    @media (max-width: 560px) { .fc-grid-2 { grid-template-columns: 1fr; } }
+    label.fc-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: #334155; }
+    label.fc-field input, label.fc-field select, label.fc-field textarea {
+      font: inherit; font-weight: 500; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff;
+    }
+    label.fc-field textarea { min-height: 72px; resize: vertical; }
+    .fc-hint { font-size: 11px; font-weight: 500; color: #64748b; margin-top: 2px; }
+    .fc-status { font-size: 12px; padding: 10px 12px; border-radius: 8px; background: #f8fafc; border: 1px solid #e2e8f0; }
+    .fc-status.ok { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
+    .fc-status.bad { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+    .fc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .fc-actions button { padding: 10px 16px; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    .fc-actions button.primary { background: #0f172a; color: #fff; border-color: #0f172a; }
+    .fc-actions button:disabled { opacity: .55; cursor: not-allowed; }
+    .fc-result { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+    .fc-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; }
+    .fc-top a { color: #2563eb; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="fc-wrap">
+    <div class="fc-top">
+      <span id="who" class="muted">—</span>
+      <a href="/">← В Учёт</a>
+    </div>
+    <div class="fc-head">
+      <h1>Чек коррекции (АТОЛ)</h1>
+      <p>Для случая «расчёт был, чек не пробили» — по требованию ФНС. Это <strong>не</strong> обычный приход и <strong>не</strong> возврат.</p>
+    </div>
+
+    <div id="atol-status" class="fc-status">Проверка АТОЛ…</div>
+
+    <form id="fc-form" class="fc-card">
+      <h2>Данные коррекции</h2>
+      <div class="fc-grid">
+        <label class="fc-field">
+          Заказ (необязательно)
+          <input name="deal_id" id="deal_id" placeholder="amo id / #12345" autocomplete="off" />
+          <span class="fc-hint">Для журнала в Учёте. Можно оставить пустым.</span>
+        </label>
+        <label class="fc-field">
+          Сумма расчёта, ₽
+          <input name="amount" id="amount" type="number" min="1" step="1" required placeholder="1000" />
+        </label>
+        <label class="fc-field">
+          Дата расчёта (когда клиент платил)
+          <input name="base_date" id="base_date" type="date" required />
+          <span class="fc-hint">Не сегодня «как продажа», а день фактической оплаты.</span>
+        </label>
+        <label class="fc-field">
+          Номер требования / основания ФНС
+          <input name="base_number" id="base_number" required placeholder="№ из предписания" />
+        </label>
+        <label class="fc-field" style="grid-column:1/-1">
+          Наименование основания <span class="fc-hint">(необязательно)</span>
+          <input name="base_name" id="base_name" placeholder="Требование ФНС от …" />
+        </label>
+        <label class="fc-field">
+          Тип коррекции
+          <select name="correction_type" id="correction_type">
+            <option value="instruction" selected>По предписанию ФНС</option>
+            <option value="self">Самостоятельно</option>
+          </select>
+        </label>
+        <label class="fc-field">
+          Операция
+          <select name="operation" id="operation">
+            <option value="sell_correction" selected>Коррекция прихода (клиент заплатил)</option>
+            <option value="buy_correction">Коррекция расхода</option>
+          </select>
+        </label>
+        <label class="fc-field">
+          Оплата
+          <select name="payment_type" id="payment_type">
+            <option value="1" selected>Безнал / СБП / карта</option>
+            <option value="2">Наличные</option>
+          </select>
+        </label>
+        <label class="fc-field">
+          НДС в чеке <span class="fc-hint">(необязательно)</span>
+          <select name="vat_type" id="vat_type">
+            <option value="">Как в настройках организации</option>
+            <option value="none">Без НДС</option>
+            <option value="vat5">НДС 5%</option>
+            <option value="vat7">НДС 7%</option>
+            <option value="vat10">НДС 10%</option>
+            <option value="vat20">НДС 20%</option>
+            <option value="vat22">НДС 22%</option>
+          </select>
+        </label>
+        <label class="fc-field">
+          Телефон клиента <span class="fc-hint">(необязательно)</span>
+          <input name="client_phone" id="client_phone" placeholder="+7…" autocomplete="off" />
+          <span class="fc-hint">Можно оставить пустым.</span>
+        </label>
+        <label class="fc-field">
+          Email клиента <span class="fc-hint">(необязательно)</span>
+          <input name="client_email" id="client_email" type="email" placeholder="client@…" autocomplete="off" />
+          <span class="fc-hint">Можно не заполнять — на чек не влияет.</span>
+        </label>
+      </div>
+      <div class="fc-actions" style="margin-top:16px">
+        <button type="button" id="btn-preview">Черновик (без отправки)</button>
+        <button type="submit" class="primary" id="btn-send">Отправить в АТОЛ</button>
+      </div>
+    </form>
+
+    <div class="fc-card" id="result-box" hidden>
+      <h2>Результат</h2>
+      <div id="result" class="fc-result"></div>
+    </div>
+  </div>
+
+  <script>
+    async function api(path, opts) {
+      const r = await fetch('/api' + path, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        ...opts,
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || r.statusText || 'Ошибка');
+      return j;
+    }
+
+    function qs(name) {
+      return new URLSearchParams(location.search).get(name) || '';
+    }
+
+    function showResult(obj, ok) {
+      const box = document.getElementById('result-box');
+      const el = document.getElementById('result');
+      box.hidden = false;
+      el.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+      box.style.borderColor = ok ? '#a7f3d0' : '#fecaca';
+    }
+
+    function collectBody(send) {
+      const f = document.getElementById('fc-form');
+      const fd = new FormData(f);
+      return {
+        deal_id: String(fd.get('deal_id') || '').trim() || undefined,
+        amount: Number(fd.get('amount')),
+        base_date: String(fd.get('base_date') || ''),
+        base_number: String(fd.get('base_number') || '').trim(),
+        base_name: String(fd.get('base_name') || '').trim() || undefined,
+        correction_type: String(fd.get('correction_type') || 'instruction'),
+        operation: String(fd.get('operation') || 'sell_correction'),
+        payment_type: Number(fd.get('payment_type') || 1),
+        vat_type: String(fd.get('vat_type') || '').trim() || undefined,
+        client_phone: String(fd.get('client_phone') || '').trim() || undefined,
+        client_email: String(fd.get('client_email') || '').trim() || undefined,
+        send: !!send,
+      };
+    }
+
+    async function boot() {
+      const deal = qs('deal') || qs('deal_id');
+      if (deal) document.getElementById('deal_id').value = deal;
+
+      try {
+        const me = await api('/me');
+        document.getElementById('who').textContent =
+          (me.name || me.login || '') + (me.role ? ' · ' + me.role : '');
+      } catch (_) {
+        location.replace('/login?next=' + encodeURIComponent(location.pathname + location.search));
+        return;
+      }
+
+      const st = document.getElementById('atol-status');
+      try {
+        const s = await api('/fiscal/status');
+        if (s.configured) {
+          st.className = 'fc-status ok';
+          st.textContent =
+            'АТОЛ подключён · группа ' +
+            (s.group_code || '—') +
+            ' · ИНН ' +
+            (s.inn || '—');
+        } else {
+          st.className = 'fc-status bad';
+          st.textContent = 'АТОЛ не настроен — задайте credentials в Настройки → АТОЛ';
+        }
+      } catch (e) {
+        st.className = 'fc-status bad';
+        st.textContent = e.message || 'Не удалось проверить АТОЛ';
+      }
+
+      if (deal) {
+        try {
+          const d = await api('/crm/deals/' + encodeURIComponent(deal.replace(/^#/, '')));
+          if (d && d.price > 0 && !document.getElementById('amount').value) {
+            document.getElementById('amount').value = String(d.price);
+          }
+          if (d && d.buyer_phone && !document.getElementById('client_phone').value) {
+            document.getElementById('client_phone').value = d.buyer_phone;
+          }
+        } catch (_) {}
+      }
+    }
+
+    document.getElementById('btn-preview').onclick = async () => {
+      const btn = document.getElementById('btn-preview');
+      btn.disabled = true;
+      try {
+        const r = await api('/fiscal/correction', {
+          method: 'POST',
+          body: JSON.stringify(collectBody(false)),
+        });
+        showResult(r, true);
+      } catch (e) {
+        showResult(e.message, false);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    document.getElementById('fc-form').onsubmit = async (e) => {
+      e.preventDefault();
+      if (
+        !confirm(
+          'Отправить чек коррекции в АТОЛ / ОФД?\n\nПроверьте сумму, дату расчёта и номер требования ФНС.'
+        )
+      ) {
+        return;
+      }
+      const btn = document.getElementById('btn-send');
+      btn.disabled = true;
+      try {
+        const r = await api('/fiscal/correction', {
+          method: 'POST',
+          body: JSON.stringify(collectBody(true)),
+        });
+        const rec = r.receipt || {};
+        showResult(
+          {
+            ok: true,
+            receipt_id: rec.id,
+            status: rec.status,
+            atol_uuid: rec.atol_uuid,
+            amount: rec.amount,
+            external_id: rec.external_id,
+            error: rec.error || null,
+            atol: r.atol && r.atol.group_code,
+          },
+          rec.status !== 'error'
+        );
+      } catch (err) {
+        showResult(err.message, false);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    boot().catch((e) => {
+      document.getElementById('atol-status').className = 'fc-status bad';
+      document.getElementById('atol-status').textContent = e.message || 'Ошибка загрузки';
+    });
+  </script>
+</body>
+</html>

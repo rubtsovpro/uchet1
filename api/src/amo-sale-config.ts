@@ -7,6 +7,8 @@
  */
 import { all, get, run } from './db.js';
 import { newGuid } from './ids.js';
+import { getAmoUserDirectory } from './staff.js';
+import { describeSaleDocPack } from './deal-sale-rules.js';
 
 const META_CFG = 'amo_sale_rules_config';
 const META_ALERTS = 'amo_integration_alerts';
@@ -76,7 +78,7 @@ function defaults(): AmoSaleRulesConfig {
         name: 'ИНН',
         type: 'text',
         values: [],
-        effect: 'Юр / ИП; реквизиты; УПД',
+        effect: 'Юр / ИП только если 10 или 12 цифр с контрольной суммой. Мусор («я», телефон) = нет ИНН = физ',
         deal_column: 'buyer_inn',
       },
       {
@@ -85,16 +87,16 @@ function defaults(): AmoSaleRulesConfig {
         name: 'Партнёр',
         type: 'checkbox',
         values: ['да', 'нет'],
-        effect: 'Партнёр=да → кредит/отсрочка; нет → обычный клиент',
+        effect: 'Галочка на компании → роль партнёра (опт). Отсрочка — способ оплаты «Отсрочка»',
         deal_column: 'is_partner',
       },
       {
         id: '—',
         entity: 'uchet',
-        name: 'Партнёр (Учёт №1)',
+        name: 'Партнёр · зеркало в Учёте',
         type: 'да / нет',
         values: ['Нет', 'Да'],
-        effect: 'Тот же признак в контрагенте',
+        effect: 'Не поле Amo — тот же is_partner в карточке контрагента',
         deal_column: 'is_partner',
       },
       {
@@ -146,9 +148,33 @@ function defaults(): AmoSaleRulesConfig {
           'Курьер',
           'Прочие ТК',
           'Самовывоз',
+          'Озон БРП',
+          'Авито доставка',
         ],
-        effect: 'канал склада; наложка без предоплаты',
+        effect: 'канал склада; наложка/Авито без предоплаты и без нашего АТОЛ; маркетплейсы Озон/Авито',
         deal_column: 'amo_shipment',
+      },
+      {
+        id: '855167',
+        entity: 'lead',
+        name: 'Филиал',
+        type: 'select',
+        values: [
+          'Москва, Можайское ш, вл 167',
+          'Краснодар, СТО Стрела',
+          'Краснодар, СТО Фогель',
+        ],
+        effect: 'филиал → контур организации; СДЭК / склад',
+        deal_column: 'amo_branch',
+      },
+      {
+        id: '816977',
+        entity: 'lead',
+        name: 'Жалоба клиента',
+        type: 'multiselect',
+        values: [],
+        effect: 'ЗН §3.3 заявленные неисправности / цель обращения',
+        deal_column: 'amo_client_complaint',
       },
       {
         id: '853005',
@@ -160,7 +186,6 @@ function defaults(): AmoSaleRulesConfig {
           'Стрела Подвеска',
           'Фадеева',
           'Можайское',
-          'Научный',
         ],
         effect: 'признак СТО → заказ-наряд',
         deal_column: 'amo_sto',
@@ -170,12 +195,12 @@ function defaults(): AmoSaleRulesConfig {
       {
         role: 'Партнёр',
         how: 'Галочка «Партнёр» (862897) или воронка «Партнеры…»',
-        note: 'Может брать в кредит / отсрочку',
+        note: 'Опт B2B; отсрочка только если способ оплаты «Отсрочка»',
       },
       {
         role: 'Юрлицо',
-        how: 'Компания в сделке или ИНН 10 цифр',
-        note: 'Обычно счёт + УПД',
+        how: 'Компания в сделке с валидным ИНН 10 цифр',
+        note: 'Карточка компании в Amo сама по себе не делает юрлицо',
       },
       {
         role: 'ИП',
@@ -233,12 +258,12 @@ function defaults(): AmoSaleRulesConfig {
         who: 'Физлицо',
         channel: 'Отправка',
         pay_type: 'Постоплата',
-        pay_method: 'СДЭК Наложка',
-        shipment: 'СДЭК наложка',
-        fiscal: '1 чек',
-        when: 'При получен/вручен (статус СДЭК)',
+        pay_method: 'СДЭК Наложка / Авито',
+        shipment: 'СДЭК наложка · Авито доставка',
+        fiscal: '0 — без чека (агент)',
+        when: 'Деньги и чек у СДЭК / Авито',
         docs: 'Счёт',
-        stock: 'ДА (оплата при получении)',
+        stock: 'ДА (оплата при получении · →доставка)',
         enabled: true,
       },
     ],
@@ -266,35 +291,138 @@ function normVal(v: unknown): string {
     .replace(/\s+/g, ' ');
 }
 
+/** Значения, которые больше не предлагаем в селектах (закрытые точки и т.п.). */
+const OBSOLETE_FIELD_VALUES: Record<string, string[]> = {
+  '853005': ['Научный'],
+};
+
+function obsoleteNormSet(fieldId: string): Set<string> {
+  return new Set((OBSOLETE_FIELD_VALUES[fieldId] || []).map(normVal));
+}
+
+/** Убрать устаревшие enum из сохранённого списка правил. */
+function stripObsoleteFieldValues(cfg: AmoSaleRulesConfig): AmoSaleRulesConfig {
+  let changed = false;
+  const fields = cfg.fields.map((sf) => {
+    const gone = obsoleteNormSet(sf.id);
+    if (!gone.size || !sf.values?.length) return sf;
+    const nextVals = sf.values.filter((v) => !gone.has(normVal(v)));
+    if (nextVals.length === sf.values.length) return sf;
+    changed = true;
+    return { ...sf, values: nextVals };
+  });
+  if (!changed) return cfg;
+  const next: AmoSaleRulesConfig = {
+    ...cfg,
+    fields,
+    updated_at: new Date().toISOString(),
+  };
+  writeJson(META_CFG, next);
+  return next;
+}
+
+/** Дополнить сохранённый список enum значениями из defaults (новые каналы вроде Озон/Авито). */
+function mergeDefaultFieldValues(cfg: AmoSaleRulesConfig): AmoSaleRulesConfig {
+  const base = defaults();
+  let changed = false;
+  const fields = cfg.fields.map((sf) => {
+    const def = base.fields.find((d) => d.id === sf.id && d.entity === sf.entity);
+    if (!def?.values?.length) return sf;
+    const have = new Set((sf.values || []).map(normVal));
+    const add = def.values.filter((v) => !have.has(normVal(v)));
+    if (!add.length) return sf;
+    changed = true;
+    return {
+      ...sf,
+      values: [...(sf.values || []), ...add],
+      effect: sf.effect || def.effect,
+    };
+  });
+  if (!changed) return cfg;
+  const next: AmoSaleRulesConfig = {
+    ...cfg,
+    fields,
+    updated_at: new Date().toISOString(),
+  };
+  writeJson(META_CFG, next);
+  return next;
+}
+
+/** Скрыть алерты, у которых все «лишние» значения уже внесены в список. */
+function pruneResolvedAmoAlerts(cfg: AmoSaleRulesConfig): void {
+  const list = readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
+  if (!list.length) return;
+  let changed = false;
+  const next = list.map((a) => {
+    if (a.seen || !a.field_id) return a;
+    const f = cfg.fields.find((x) => x.id === a.field_id);
+    if (!f?.values?.length) return a;
+    const expected = new Set(f.values.map(normVal));
+    const m = String(a.detail || '').match(/списка\s*\([^)]+\):\s*([^.]+)/i);
+    if (!m) return a;
+    const vals = m[1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!vals.length) return a;
+    const stillBad = vals.some((v) => {
+      const n = normVal(v);
+      if (expected.has(n)) return false;
+      for (const exp of expected) {
+        if (n.includes(exp) || exp.includes(n)) return false;
+      }
+      return true;
+    });
+    if (!stillBad) {
+      changed = true;
+      return { ...a, seen: true };
+    }
+    return a;
+  });
+  if (changed) writeJson(META_ALERTS, next);
+}
+
 export function getAmoSaleRulesConfig(): AmoSaleRulesConfig {
   const stored = readJson<Partial<AmoSaleRulesConfig>>(META_CFG);
   const base = defaults();
-  if (!stored || typeof stored !== 'object') return base;
-  return {
-    updated_at: String(stored.updated_at || ''),
-    lock_fields: stored.lock_fields !== false,
-    fields: Array.isArray(stored.fields) && stored.fields.length ? stored.fields : base.fields,
-    buyer_roles:
-      Array.isArray(stored.buyer_roles) && stored.buyer_roles.length
-        ? stored.buyer_roles
-        : base.buyer_roles,
-    scenarios:
-      Array.isArray(stored.scenarios) && stored.scenarios.length
-        ? stored.scenarios
-        : base.scenarios,
-  };
+  if (!stored || typeof stored !== 'object') {
+    pruneResolvedAmoAlerts(base);
+    return base;
+  }
+  const merged = stripObsoleteFieldValues(
+    mergeDefaultFieldValues({
+      updated_at: String(stored.updated_at || ''),
+      lock_fields: stored.lock_fields !== false,
+      fields: Array.isArray(stored.fields) && stored.fields.length ? stored.fields : base.fields,
+      buyer_roles:
+        Array.isArray(stored.buyer_roles) && stored.buyer_roles.length
+          ? stored.buyer_roles
+          : base.buyer_roles,
+      scenarios:
+        Array.isArray(stored.scenarios) && stored.scenarios.length
+          ? stored.scenarios
+          : base.scenarios,
+    })
+  );
+  pruneResolvedAmoAlerts(merged);
+  return merged;
 }
 
 export function saveAmoSaleRulesConfig(
   patch: Partial<AmoSaleRulesConfig>
 ): AmoSaleRulesConfig {
   const cur = getAmoSaleRulesConfig();
+  const rawScenarios = Array.isArray(patch.scenarios) ? patch.scenarios : cur.scenarios;
+  const scenarios = rawScenarios.map((s) => {
+    const desc = describeSaleDocPack({ who: s.who, channel: s.channel });
+    return { ...s, docs: desc.docs };
+  });
   const next: AmoSaleRulesConfig = {
     updated_at: new Date().toISOString(),
     lock_fields: patch.lock_fields !== undefined ? Boolean(patch.lock_fields) : cur.lock_fields,
     fields: Array.isArray(patch.fields) ? patch.fields : cur.fields,
     buyer_roles: Array.isArray(patch.buyer_roles) ? patch.buyer_roles : cur.buyer_roles,
-    scenarios: Array.isArray(patch.scenarios) ? patch.scenarios : cur.scenarios,
+    scenarios,
   };
   writeJson(META_CFG, next);
   return next;
@@ -308,15 +436,18 @@ export function listAmoIntegrationAlerts(opts?: { includeSeen?: boolean }): AmoI
 
 function pushAlert(alert: Omit<AmoIntegrationAlert, 'id' | 'at' | 'seen'>): AmoIntegrationAlert {
   const list = readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
-  // дедуп по title+detail за сутки
+  // дедуп: тот же field_id (непрочит.) или title+detail за сутки
   const dayAgo = Date.now() - 24 * 3600 * 1000;
-  const dup = list.find(
-    (a) =>
+  const fid = String(alert.field_id || '').trim();
+  const dup = list.find((a) => {
+    if (a.seen) return false;
+    if (fid && String(a.field_id || '') === fid) return true;
+    return (
       a.title === alert.title &&
       a.detail === alert.detail &&
-      Date.parse(a.at) > dayAgo &&
-      !a.seen
-  );
+      Date.parse(a.at) > dayAgo
+    );
+  });
   if (dup) return dup;
   const row: AmoIntegrationAlert = {
     id: newGuid(),
@@ -336,6 +467,103 @@ function pushAlert(alert: Omit<AmoIntegrationAlert, 'id' | 'at' | 'seen'>): AmoI
     /* ignore if table missing */
   }
   return row;
+}
+
+/**
+ * Ответственные Amo без активного сотрудника в Учёте → уведомления.
+ * Уже привязанные (или архив «кикнут») — помечаем прочитанными.
+ */
+export function syncUnmappedAmoUserAlerts(
+  unmapped: Array<{ amo_id: string; deals?: number; name?: string }>
+): AmoIntegrationAlert[] {
+  const list = readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
+  const open = new Set(
+    (unmapped || [])
+      .map((u) => String(u.amo_id || '').trim())
+      .filter(Boolean)
+  );
+  let changed = false;
+  const next = list.map((a) => {
+    const fid = String(a.field_id || '');
+    if (!fid.startsWith('amo_user:') || a.seen) return a;
+    const id = fid.slice('amo_user:'.length);
+    if (open.has(id)) return a;
+    changed = true;
+    return { ...a, seen: true };
+  });
+  if (changed) writeJson(META_ALERTS, next);
+
+  const created: AmoIntegrationAlert[] = [];
+  for (const u of unmapped || []) {
+    const id = String(u.amo_id || '').trim();
+    if (!id) continue;
+    const deals = Number(u.deals) || 0;
+    const name = String(u.name || '').trim();
+    const who = name ? `${name} (id ${id})` : `Amo id ${id}`;
+    created.push(
+      pushAlert({
+        severity: 'warn',
+        title: 'Пользователь Amo без сотрудника в Учёте',
+        detail: `${who}${deals ? ` · ${deals} сделок` : ''}. Присвойте в Настройки → AmoCRM → Пользователи.`,
+        field_id: `amo_user:${id}`,
+        field_name: name || id,
+      })
+    );
+  }
+  return created;
+}
+
+/** Ответственные по сделкам без активного сотрудника с этим amo_id. */
+export function listUnmappedAmoUsers(): Array<{
+  amo_id: string;
+  name: string;
+  deals: number;
+}> {
+  const mapped = new Set(
+    all<{ amo_id: string }>(
+      `SELECT amo_id FROM staff
+       WHERE is_active = 1 AND IFNULL(amo_id,'') != ''`
+    ).map((r) => String(r.amo_id))
+  );
+  const dir = getAmoUserDirectory();
+  const fromDeals = all<{ amo_id: string; c: number }>(
+    `SELECT responsible_user_id AS amo_id, COUNT(*) AS c
+     FROM crm_deals
+     WHERE IFNULL(responsible_user_id,'') != ''
+     GROUP BY responsible_user_id
+     ORDER BY c DESC
+     LIMIT 200`
+  );
+  return fromDeals
+    .filter((r) => !mapped.has(String(r.amo_id)))
+    .map((r) => {
+      const id = String(r.amo_id);
+      const fromDir = dir[id]?.name || '';
+      const fromStaff =
+        fromDir ||
+        String(
+          get<{ name: string }>(
+            `SELECT name FROM staff WHERE amo_id = ? AND IFNULL(name,'') != '' LIMIT 1`,
+            [id]
+          )?.name || ''
+        );
+      return {
+        amo_id: id,
+        name: fromStaff,
+        deals: Number(r.c) || 0,
+      };
+    });
+}
+
+/** Алерты по непривязанным. Вызывать после синка сделок. */
+export function syncAmoUnmappedStaffAlerts(): number {
+  const unmapped = listUnmappedAmoUsers();
+  try {
+    syncUnmappedAmoUserAlerts(unmapped);
+  } catch {
+    /* не блокируем */
+  }
+  return unmapped.length;
 }
 
 export function markAmoIntegrationAlertSeen(id: string): void {
@@ -393,6 +621,7 @@ export function checkAmoSaleConfigDrift(): {
       continue;
     }
     const expected = new Set(f.values.map(normVal));
+    const obsolete = obsoleteNormSet(f.id);
     // допускаем подстрочные совпадения для «Р/с» ≈ «Расчётный счёт» и т.п. —
     // строгое: значение должно совпасть с одним из expected после norm,
     // либо expected содержит короткое слово внутри значения
@@ -401,6 +630,8 @@ export function checkAmoSaleConfigDrift(): {
       const raw = String(r.v || '').trim();
       if (!raw) continue;
       const n = normVal(raw);
+      // закрытые точки (Научный и т.п.) — не предлагаем, но и не орём алертом
+      if (obsolete.has(n)) continue;
       let ok = expected.has(n);
       if (!ok) {
         for (const exp of expected) {
@@ -446,18 +677,47 @@ export function checkAmoSaleConfigDrift(): {
   };
 }
 
-export function amoSaleRulesPublic() {
+export function amoSaleRulesPublic(extra?: {
+  unmapped_users_count?: number;
+  unmapped_amo_users?: Array<{ amo_id: string; deals?: number; name?: string }>;
+}) {
   const cfg = getAmoSaleRulesConfig();
-  const alerts = listAmoIntegrationAlerts({ includeSeen: false });
+  const alerts = listAmoIntegrationAlerts({ includeSeen: false }).filter(
+    (a) => !String(a.field_id || '').startsWith('amo_user:')
+  );
+  const unmappedN = Math.max(0, Number(extra?.unmapped_users_count) || 0);
+  const scenarios = (cfg.scenarios || []).map((s) => {
+    const desc = describeSaleDocPack({ who: s.who, channel: s.channel });
+    return {
+      ...s,
+      /** Автоиз resolveDocPack + бланки СТО — не править руками */
+      docs: desc.docs,
+      docs_note: desc.note,
+      docs_items: desc.items,
+    };
+  });
   return {
-    config: cfg,
+    config: { ...cfg, scenarios },
     alerts,
     alerts_count: alerts.length,
+    unmapped_users_count: unmappedN,
+    unmapped_amo_users: Array.isArray(extra?.unmapped_amo_users) ? extra!.unmapped_amo_users : [],
+    settings_alert_count: alerts.length,
     sheet_url:
       'https://docs.google.com/spreadsheets/d/1T2FEXnWBeFhfKI-Y7_8tVfWFxFDRwTdZtPHH_NeCfn4/edit#gid=678893116',
     note:
-      'Структура как на листе «Правила чеки/доки Amo». Селекты зафиксированы: правки в Amo → уведомление в Учёте №1.',
+      'Структура как на листе «Правила чеки/доки Amo». Колонка «Документы» — автоиз матрицы пакета (Шаблоны документов). Селекты зафиксированы: правки в Amo → уведомление в Учёте №1.',
+    docs_matrix_hint: 'Бланки и матрица пакета — Настройки → Шаблоны документов',
   };
+}
+
+/** Варианты селекта Amo по колонке crm_deals (канал / СТО…). */
+export function amoSaleFieldOptions(dealColumn: string): string[] {
+  const col = String(dealColumn || '').trim();
+  if (!col) return [];
+  const cfg = getAmoSaleRulesConfig();
+  const f = cfg.fields.find((x) => String(x.deal_column || '') === col);
+  return Array.isArray(f?.values) ? f!.values.map((v) => String(v)) : [];
 }
 
 /** Field id map for exporters / sync (lead/company CF). */
@@ -476,6 +736,7 @@ export function amoFieldIdMap(): Record<string, string> {
     if (/тип_оплат/.test(key)) byName.payment_type = f.id;
     if (/способ_оплат/.test(key)) byName.pay_method = f.id;
     if (/способ_отправ/.test(key)) byName.shipment = f.id;
+    if (/филиал/.test(key)) byName.branch = f.id;
     if (key === 'сто' || /^сто_/.test(key)) byName.sto = f.id;
   }
   return byName;

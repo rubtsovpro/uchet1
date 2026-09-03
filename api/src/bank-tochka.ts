@@ -167,3 +167,121 @@ export async function saveTochkaBankAppSettings(
 ): Promise<TochkaBankAppSettings> {
   return callBankSettings('POST', body);
 }
+
+export function bankApiUrlFromOverview(phpFile: string): string {
+  const file = String(phpFile || '').replace(/^\//, '');
+  const overview = bankOverviewUrl();
+  try {
+    const u = new URL(overview);
+    u.pathname = u.pathname.replace(/[^/]+$/, file);
+    if (!u.pathname.includes(file)) {
+      u.pathname = '/api/' + file;
+    }
+    return u.toString();
+  } catch {
+    return `https://bank.pnevmopodveska1.ru/api/${file}`;
+  }
+}
+
+async function postBankJson(
+  phpFile: string,
+  body: Record<string, unknown>
+): Promise<{ ok: boolean; error?: string; [k: string]: unknown }> {
+  const key = bankApiKey();
+  if (!key) {
+    return { ok: false, error: 'Не задан ключ Точка (Настройки → Интеграции → Точка Банк)' };
+  }
+  const res = await fetch(bankApiUrlFromOverview(phpFile), {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Wms-Key': key,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(90_000),
+  });
+  const raw = await res.text();
+  let data: { ok?: boolean; error?: string; [k: string]: unknown } = {};
+  try {
+    data = JSON.parse(raw) as typeof data;
+  } catch {
+    return { ok: false, error: `Банк: не JSON (${res.status}): ${raw.slice(0, 200)}` };
+  }
+  if (!res.ok || data.ok !== true) {
+    return {
+      ...data,
+      ok: false,
+      error: String(data.error || `Банк HTTP ${res.status}`),
+    };
+  }
+  return { ...data, ok: true };
+}
+
+/** Платёжное поручение Точки «на подпись». */
+export async function createTochkaPaymentForSign(input: {
+  account_code: string;
+  bank_code?: string;
+  counterparty_bank_bic: string;
+  counterparty_account_number: string;
+  counterparty_name: string;
+  counterparty_inn?: string;
+  counterparty_kpp?: string;
+  counterparty_bank_corr_account?: string;
+  payment_amount: number;
+  payment_purpose?: string;
+  payment_date?: string;
+  customer_code?: string;
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  redirect_url?: string;
+  request_id?: string;
+  raw?: unknown;
+}> {
+  return postBankJson('tochka_payment_for_sign.php', {
+    account_code: input.account_code,
+    bank_code: input.bank_code || '044525104',
+    counterparty_bank_bic: input.counterparty_bank_bic,
+    counterparty_account_number: input.counterparty_account_number,
+    counterparty_name: input.counterparty_name,
+    counterparty_inn: input.counterparty_inn || '',
+    counterparty_kpp: input.counterparty_kpp || '',
+    counterparty_bank_corr_account: input.counterparty_bank_corr_account || '',
+    payment_amount: input.payment_amount,
+    payment_purpose: input.payment_purpose || 'Возврат денежных средств',
+    payment_date: input.payment_date || '',
+    customer_code: input.customer_code || '',
+  });
+}
+
+/** Возврат СБП или эквайринга через bank-прокси. */
+export async function createTochkaRefund(input: {
+  channel: 'sbp' | 'acquiring';
+  operation_id?: string;
+  qrc_id?: string;
+  amount?: number;
+  account_code?: string;
+  bank_code?: string;
+  trx_id?: string;
+  purpose?: string;
+  customer_code?: string;
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  channel?: string;
+  raw?: unknown;
+  [k: string]: unknown;
+}> {
+  return postBankJson('tochka_refund.php', {
+    channel: input.channel,
+    operation_id: input.operation_id || '',
+    qrc_id: input.qrc_id || '',
+    amount: input.amount,
+    account_code: input.account_code || '',
+    bank_code: input.bank_code || '',
+    trx_id: input.trx_id || '',
+    purpose: input.purpose || 'Возврат денежных средств',
+    customer_code: input.customer_code || '',
+  });
+}

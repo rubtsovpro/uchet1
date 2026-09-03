@@ -9,7 +9,7 @@ export type PaymentCovers = 'goods' | 'services' | 'all';
 const PAID_STATUSES = new Set(['paid', 'confirmed', 'success', 'accepted']);
 
 function roundMoney(n: number): number {
-  return Math.round((Number(n) || 0) * 100) / 100;
+  return Math.round(Number(n) || 0);
 }
 
 function parsePaymentMeta(raw: unknown): Record<string, unknown> {
@@ -154,6 +154,26 @@ export function syncDealPaidStatus(dealId: string): {
       payment_status,
       dealId,
     ]);
+  }
+  const invoiceStatus = split.fully_paid ? 'paid' : split.partial ? 'partial' : 'issued';
+  try {
+    run(
+      `UPDATE sales_docs SET status = ? WHERE deal_id = ? AND doc_type = 'invoice'`,
+      [invoiceStatus, dealId]
+    );
+  } catch {
+    /* ignore */
+  }
+  if (split.fully_paid) {
+    try {
+      run(
+        `UPDATE payment_links SET status = 'cancelled', expired_at = datetime('now')
+         WHERE deal_id = ? AND status = 'pending'`,
+        [dealId]
+      );
+    } catch {
+      /* payment_links */
+    }
   }
   return { split, paid: !!paidFlag, payment_status };
 }
