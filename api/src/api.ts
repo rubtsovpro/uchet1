@@ -7697,8 +7697,7 @@ api.patch('/sales-docs/:id/counterparty-name', async (c) => {
 
 /** № и дата УПД (ручная правка без перегенерации строк). */
 api.patch('/sales-docs/:id/header', async (c) => {
-  const actor = actorFromContext(c);
-  if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
+  if (!salesDocsWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as {
