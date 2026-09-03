@@ -381,7 +381,8 @@ export const ROLE_META: Record<StaffRole, Omit<RoleMeta, 'id' | 'rights'>> = {
   },
   purchaser: {
     label: 'Закупщик',
-    description: 'Отдел закупки: прайсы, корзины, номенклатура и закупочные цены.',
+    description:
+      'Заказы поставщику (копипаст/Excel), цены, статус «В пути», черновики приходных для склада, анализ заказа. Без синхронизации и налогов.',
   },
   readonly: {
     label: 'Наблюдатель',

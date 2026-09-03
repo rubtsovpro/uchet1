@@ -1440,16 +1440,70 @@
             <strong>Заполнить из внешнего источника</strong>
             <button type="button" class="linkish" id="so-import-close">Свернуть</button>
           </div>
-          <p class="muted" style="margin:0 0 8px;font-size:12px">Скопируйте строки (Ctrl+C) и вставьте (Ctrl+V). Колонки по умолчанию: Артикул · Количество · Цена · Сумма. Опционально 5-я — старый артикул.</p>
+          <p class="muted" style="margin:0 0 8px;font-size:12px">
+            Скопируйте строки из Excel/пакинга (Ctrl+C) и вставьте ниже (Ctrl+V).
+            Как в 1С: сначала назначьте колонки, потом «Сопоставить» → «Загрузить данные».
+          </p>
+          <div class="so-import-map" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:8px;margin:0 0 10px">
+            <label>Кол. 1
+              <select id="so-map-c0">
+                <option value="article" selected>Артикул</option>
+                <option value="qty">Количество</option>
+                <option value="price">Цена</option>
+                <option value="amount">Сумма</option>
+                <option value="old_sku">Старый артикул</option>
+                <option value="skip">Не загружать</option>
+              </select>
+            </label>
+            <label>Кол. 2
+              <select id="so-map-c1">
+                <option value="article">Артикул</option>
+                <option value="qty" selected>Количество</option>
+                <option value="price">Цена</option>
+                <option value="amount">Сумма</option>
+                <option value="old_sku">Старый артикул</option>
+                <option value="skip">Не загружать</option>
+              </select>
+            </label>
+            <label>Кол. 3
+              <select id="so-map-c2">
+                <option value="article">Артикул</option>
+                <option value="qty">Количество</option>
+                <option value="price" selected>Цена</option>
+                <option value="amount">Сумма</option>
+                <option value="old_sku">Старый артикул</option>
+                <option value="skip">Не загружать</option>
+              </select>
+            </label>
+            <label>Кол. 4
+              <select id="so-map-c3">
+                <option value="article">Артикул</option>
+                <option value="qty">Количество</option>
+                <option value="price">Цена</option>
+                <option value="amount" selected>Сумма</option>
+                <option value="old_sku">Старый артикул</option>
+                <option value="skip">Не загружать</option>
+              </select>
+            </label>
+            <label>Кол. 5
+              <select id="so-map-c4">
+                <option value="article">Артикул</option>
+                <option value="qty">Количество</option>
+                <option value="price">Цена</option>
+                <option value="amount">Сумма</option>
+                <option value="old_sku">Старый артикул</option>
+                <option value="skip" selected>Не загружать</option>
+              </select>
+            </label>
+          </div>
           <label class="span-2">Вставка
-            <textarea id="so-import-paste" rows="8" placeholder="MRAE11305&#9;6&#9;6782&#9;40692&#9;MRAA11305" style="width:100%;font-family:ui-monospace,monospace;font-size:12px"></textarea>
+            <textarea id="so-import-paste" rows="8" placeholder="MRAE11305&#9;6&#9;6782&#9;40692" style="width:100%;font-family:ui-monospace,monospace;font-size:12px"></textarea>
           </label>
           <div class="form-grid" style="margin-top:8px">
             <label class="inline-label"><input type="checkbox" id="so-import-header" /> Первая строка — заголовок</label>
             <label class="inline-label"><input type="checkbox" id="so-import-create" checked /> Создавать новые карточки</label>
             <label class="inline-label"><input type="checkbox" id="so-import-minimal" /> Минимальные карточки (без кроссов/розницы)</label>
             <label class="inline-label"><input type="checkbox" id="so-import-append" /> Добавить к существующим строкам</label>
-            <label>Ст. артикул · колонка (0…)<input id="so-import-old-col" type="number" min="-1" step="1" value="-1" title="-1 = нет" /></label>
           </div>
           <div id="so-import-preview" class="muted" style="margin:8px 0;font-size:12px"></div>
           <div class="thin-add-panel-actions">
@@ -1671,8 +1725,6 @@
     if (key === 'supplier_orders') {
       const saveHeader = async (opts = {}) => {
         const msg = document.getElementById('so-header-msg');
-        const oldCol = Number(document.getElementById('so-import-old-col')?.value);
-        void oldCol;
         const body = {
           doc_date: document.getElementById('so-doc-date')?.value || undefined,
           invoice_number: document.getElementById('so-invoice-number')?.value || '',
@@ -1733,14 +1785,21 @@
       });
 
       const buildImportMap = () => {
-        const oldCol = Number(document.getElementById('so-import-old-col')?.value);
-        return {
-          article: 0,
-          qty: 1,
-          price: 2,
-          amount: 3,
-          old_sku: Number.isFinite(oldCol) && oldCol >= 0 ? oldCol : null,
-        };
+        const map = { article: 0, qty: 1, price: 2, amount: 3, old_sku: null };
+        const seen = Object.create(null);
+        for (let i = 0; i < 5; i++) {
+          const role = String(document.getElementById('so-map-c' + i)?.value || 'skip');
+          if (role === 'skip') continue;
+          if (seen[role] != null) continue;
+          seen[role] = i;
+          if (role === 'article') map.article = i;
+          else if (role === 'qty') map.qty = i;
+          else if (role === 'price') map.price = i;
+          else if (role === 'amount') map.amount = i;
+          else if (role === 'old_sku') map.old_sku = i;
+        }
+        if (map.old_sku == null) map.old_sku = null;
+        return map;
       };
       document.getElementById('so-import-preview-btn')?.addEventListener('click', async () => {
         const msg = document.getElementById('so-import-msg');
