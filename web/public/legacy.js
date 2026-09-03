@@ -9227,14 +9227,14 @@ async function renderWhTransfers() {
     .join('');
 
   body = `
-    <div class="toolbar-filter" style="margin-bottom:12px">
+    ${err ? `<p class="error">${esc(err)}</p>` : ''}
+    <div class="toolbar-filter" style="margin:0 0 14px">
       <span class="toolbar-filter-label">Тип</span>
       <button type="button" class="form-pagetab ${kind === 'warehouse' ? 'active' : ''}" data-tr-kind="warehouse">Между складами</button>
       <button type="button" class="form-pagetab ${kind === 'cell' ? 'active' : ''}" data-tr-kind="cell">Между ячейками</button>
     </div>
-    ${err ? `<p class="error">${esc(err)}</p>` : ''}
-    <div id="wh-tr-form"></div>
-    <p class="muted" id="wh-tr-msg" style="margin-top:10px"></p>
+    <div id="wh-tr-form" class="form-fields wh-tr-fields"></div>
+    <p class="muted" id="wh-tr-msg" style="margin-top:12px"></p>
   `;
 
   view.innerHTML = formChrome('Перемещения', body, {
@@ -9273,50 +9273,70 @@ async function renderWhTransfers() {
     if (!formEl) return;
     if (kind === 'warehouse') {
       formEl.innerHTML = `
-        <div class="grid-2" style="gap:12px;margin-bottom:12px">
-          <label>Откуда<select id="tr-from">${whOpts}</select></label>
-          <label>Куда<select id="tr-to"><option value="">Выберите склад…</option>${whOpts}</select></label>
+        <div class="field">
+          <span>Откуда</span>
+          <select id="tr-from">${whOpts}</select>
         </div>
-        <label style="display:block;margin-bottom:10px">Комментарий (обязательно)
+        <div class="field">
+          <span>Куда</span>
+          <select id="tr-to"><option value="">Выберите склад…</option>${whOpts}</select>
+        </div>
+        <div class="field span-2">
+          <span>Комментарий (обязательно)</span>
           <textarea id="tr-comment" rows="2" placeholder="Зачем перемещаем…"></textarea>
-        </label>
-        <div class="panel" style="padding:10px;margin-bottom:10px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
-            <label style="flex:1;min-width:180px">Товар
-              <input type="search" id="tr-prod-q" placeholder="Артикул или название" autocomplete="off" />
+        </div>
+        <div class="field span-2">
+          <span>Товар</span>
+          <div class="wh-tr-add-row">
+            <input type="search" id="tr-prod-q" placeholder="Артикул или название" autocomplete="off" />
+            <label class="wh-tr-qty">
+              <span>Кол-во</span>
+              <input type="number" id="tr-qty" min="0.001" step="any" value="1" />
             </label>
-            <label>Кол-во<input type="number" id="tr-qty" min="0.001" step="any" value="1" style="width:100px" /></label>
             <button type="button" id="tr-add-line">В список</button>
           </div>
-          <div id="tr-prod-sug" class="muted" style="margin-top:6px;font-size:12px"></div>
+          <div id="tr-prod-sug" class="muted wh-tr-sug"></div>
         </div>
-        <div class="table-scroll">
-          <table class="data-table is-dense" data-no-col-filter="1">
-            <thead><tr><th>Товар</th><th>Кол-во</th><th></th></tr></thead>
-            <tbody id="tr-lines-body">
-              <tr><td colspan="3" class="muted">Добавьте позиции</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="muted" style="font-size:12px;margin:8px 0 0">Создаётся заказ + задание кладовщику (/pick). Остатки спишутся после «Сделал».</p>`;
+        <div class="field span-2">
+          <div class="table-scroll">
+            <table class="data-table is-dense" data-no-col-filter="1">
+              <thead><tr><th>Товар</th><th style="width:5.5em">Кол-во</th><th style="width:2.5em"></th></tr></thead>
+              <tbody id="tr-lines-body">
+                <tr><td colspan="3" class="muted">Добавьте позиции</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="muted wh-tr-hint">Создаётся заказ + задание кладовщику (/pick). Остатки спишутся после «Сделал».</p>
+        </div>`;
     } else {
       formEl.innerHTML = `
-        <label style="display:block;margin-bottom:10px">Склад
+        <div class="field span-2">
+          <span>Склад</span>
           <select id="tr-cell-wh">${whOpts}</select>
-        </label>
-        <div class="grid-2" style="gap:12px;margin-bottom:12px">
-          <label>Ячейка откуда<input id="tr-cell-from" list="tr-cell-list" placeholder="A7.1" autocomplete="off" /></label>
-          <label>Ячейка куда<input id="tr-cell-to" list="tr-cell-list" placeholder="B2.3" autocomplete="off" /></label>
+        </div>
+        <div class="field">
+          <span>Ячейка откуда</span>
+          <input id="tr-cell-from" list="tr-cell-list" placeholder="A7.1" autocomplete="off" />
+        </div>
+        <div class="field">
+          <span>Ячейка куда</span>
+          <input id="tr-cell-to" list="tr-cell-list" placeholder="B2.3" autocomplete="off" />
         </div>
         <datalist id="tr-cell-list"></datalist>
-        <div class="panel" style="padding:10px;margin-bottom:10px">
-          <button type="button" id="tr-load-cell">Показать остаток в ячейке «откуда»</button>
-          <div id="tr-cell-stock" style="margin-top:8px"></div>
+        <div class="field span-2">
+          <span>Остаток в ячейке «откуда»</span>
+          <div>
+            <button type="button" id="tr-load-cell">Показать остаток</button>
+            <div id="tr-cell-stock" class="wh-tr-cell-stock"></div>
+          </div>
         </div>
-        <label style="display:block;margin-bottom:10px">Комментарий
+        <div class="field span-2">
+          <span>Комментарий</span>
           <input id="tr-cell-comment" placeholder="Опционально" />
-        </label>
-        <p class="muted" style="font-size:12px;margin:0">Остаток по адресу обновится сразу (без задания на /pick).</p>`;
+        </div>
+        <div class="field span-2">
+          <p class="muted wh-tr-hint">Остаток по адресу обновится сразу (без задания на /pick).</p>
+        </div>`;
     }
     bindFormActions();
   }
