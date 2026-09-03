@@ -4311,7 +4311,13 @@
       );
     }
 
-    function prodCellSelectHtml(selectedRaw) {
+    function normalizePickCellCode(raw) {
+      const v = String(raw || '').trim();
+      if (!v || v === '—' || v === '-' || v === '–') return '';
+      return v;
+    }
+
+    function pickMainCellSelectHtml(selectedRaw, dataAttr) {
       const selected = String(selectedRaw || '').trim();
       const noCell = !selected || selected === '—' || selected === '-' || selected === '–';
       const racks = Array.isArray(mainCellRacks) ? mainCellRacks : [];
@@ -4353,10 +4359,16 @@
         }
       }
       return (
-        '<select class="return-cell-select" data-prod-cell aria-label="Куда положим на Основной">' +
+        '<select class="return-cell-select" ' +
+        dataAttr +
+        ' aria-label="Куда положим на Основной">' +
         opts +
         '</select>'
       );
+    }
+
+    function prodCellSelectHtml(selectedRaw) {
+      return pickMainCellSelectHtml(selectedRaw, 'data-prod-cell');
     }
 
     function productionResultRowHtml(l, idx) {
@@ -6057,49 +6069,7 @@
     }
 
     function returnToCellSelectHtml(selectedRaw) {
-      const selected = String(selectedRaw || '').trim();
-      const racks = Array.isArray(mainCellRacks) ? mainCellRacks : [];
-      const allCodes = racks.flatMap((r) => r.cells);
-      let opts = '<option value="">— выбрать ячейку —</option>';
-      if (!racks.length) {
-        if (selected) {
-          opts +=
-            '<option value="' + esc(selected) + '" selected>' + esc(selected) + '</option>';
-        }
-        opts += '<option value="" disabled>Карта ячеек загружается…</option>';
-      } else {
-        for (const rack of racks) {
-          const label =
-            rack.kind === 'floor'
-              ? 'Стеллаж ' + rack.rack + ' · пол'
-              : 'Стеллаж ' + rack.rack;
-          opts += '<optgroup label="' + esc(label) + '">';
-          for (const code of rack.cells) {
-            opts +=
-              '<option value="' +
-              esc(code) +
-              '"' +
-              (code === selected ? ' selected' : '') +
-              '>' +
-              esc(code) +
-              '</option>';
-          }
-          opts += '</optgroup>';
-        }
-        if (selected && !allCodes.includes(selected)) {
-          opts +=
-            '<optgroup label="Из задачи"><option value="' +
-            esc(selected) +
-            '" selected>' +
-            esc(selected) +
-            '</option></optgroup>';
-        }
-      }
-      return (
-        '<select class="return-cell-select" data-ret-to-cell aria-label="Куда положим на Основной">' +
-        opts +
-        '</select>'
-      );
+      return pickMainCellSelectHtml(selectedRaw, 'data-ret-to-cell');
     }
 
     function renderStockReturns() {
@@ -6240,12 +6210,8 @@
             el.querySelector('[data-ret-from-cell]')?.value ||
             ''
         ).trim(),
-        to_cell_code: String(el.querySelector('[data-ret-to-cell]')?.value || '').trim(),
+        to_cell_code: normalizePickCellCode(el.querySelector('[data-ret-to-cell]')?.value),
       })).filter((l) => l.product_id);
-      if (lines.some((l) => !l.to_cell_code)) {
-        if (msg) msg.textContent = 'Выберите ячейку «Куда положим»';
-        return;
-      }
       if (btn) btn.disabled = true;
       if (msg) msg.textContent = 'Провожу…';
       try {

@@ -2188,9 +2188,13 @@ export async function completeStockReturnPick(input: {
     .map((l) => {
       const ov = lineOverrides.get(String(l.product_id));
       const fromCell =
-        String(ov?.from_cell_code || input.from_cell_code || l.from_cell_code || '').trim();
+        ov && Object.prototype.hasOwnProperty.call(ov, 'from_cell_code')
+          ? String(ov.from_cell_code || '').trim()
+          : String(input.from_cell_code || l.from_cell_code || '').trim();
       const toCell =
-        String(ov?.to_cell_code || input.to_cell_code || l.to_cell_code || l.origin_cell_code || '').trim();
+        ov && Object.prototype.hasOwnProperty.call(ov, 'to_cell_code')
+          ? String(ov.to_cell_code || '').trim()
+          : String(input.to_cell_code || l.to_cell_code || l.origin_cell_code || '').trim();
       const preferred =
         String(l.from_warehouse_id || headerFromHint).trim() || headerFromHint;
       const qty = Math.max(1, Number(l.qty) || 1);
