@@ -124,6 +124,133 @@ export function rowsFromTable(
   return out;
 }
 
+function normHeaderKey(s: string): string {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/["']/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Угадать роль колонки по тексту заголовка Excel/CSV. */
+export function guessHeaderRole(
+  header: string
+): 'article' | 'qty' | 'price' | 'amount' | 'old_sku' | 'skip' {
+  const h = normHeaderKey(header);
+  if (!h) return 'skip';
+  if (
+    /^(арт|артикул|sku|article|код|code|part|pn|p\/n)$/i.test(h) ||
+    /артикул|article|sku|part\s*no|part\s*number/.test(h)
+  ) {
+    return 'article';
+  }
+  if (
+    /^(qty|кол|колич|количество|кол-во|шт|pcs|qnt|quantity)$/i.test(h) ||
+    /количеств|quantity|^qty\b/.test(h)
+  ) {
+    return 'qty';
+  }
+  if (
+    /^(цена|price|cost|закуп|закупочн)/i.test(h) ||
+    /цена|price|unit\s*cost|закуп/.test(h)
+  ) {
+    if (/сумм|amount|total|итого/.test(h)) return 'amount';
+    return 'price';
+  }
+  if (
+    /^(сумма|amount|total|итого|сумма\s*ндс)$/i.test(h) ||
+    /сумма|amount|total|итого/.test(h)
+  ) {
+    return 'amount';
+  }
+  if (/стар(ый|ые).*арт|old.*sku|кросс|cross|предыдущ/.test(h)) {
+    return 'old_sku';
+  }
+  return 'skip';
+}
+
+export function suggestMapFromHeaders(headers: string[]): ColumnMap {
+  const map: ColumnMap = { ...DEFAULT_PACKING_MAP, amount: null, old_sku: null };
+  const seen = new Set<string>();
+  headers.forEach((h, i) => {
+    const role = guessHeaderRole(h);
+    if (role === 'skip' || seen.has(role)) return;
+    seen.add(role);
+    if (role === 'article') map.article = i;
+    else if (role === 'qty') map.qty = i;
+    else if (role === 'price') map.price = i;
+    else if (role === 'amount') map.amount = i;
+    else if (role === 'old_sku') map.old_sku = i;
+  });
+  return map;
+}
+
+/** Разобрать .xlsx / .xls / .csv / .txt в таблицу строк. */
+export async function parseImportSpreadsheet(
+  buf: Buffer,
+  fileName: string,
+  sheetName?: string
+): Promise<{ sheets: string[]; sheet: string; rows: string[][] }> {
+  const lower = String(fileName || '').toLowerCase();
+  if (lower.endsWith('.csv') || lower.endsWith('.txt')) {
+    const text = buf.toString('utf8').replace(/^\uFEFF/, '');
+    const rows = parsePasteTable(text.includes('\t') ? text : text.replace(/;/g, '\t'));
+    // CSV с запятыми — если нет табов, разберём через xlsx/csv fallback
+    if (!text.includes('\t') && text.includes(',')) {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.read(buf, { type: 'buffer', raw: false });
+      const sheet = (wb.SheetNames || [])[0] || 'CSV';
+      const aoa = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[sheet]!, {
+        header: 1,
+        defval: '',
+        raw: false,
+      }) as unknown as string[][];
+      const csvRows = (aoa || []).map((r) =>
+        (Array.isArray(r) ? r : []).map((c) => String(c ?? '').trim())
+      );
+      return { sheets: [sheet], sheet, rows: csvRows };
+    }
+    return { sheets: ['CSV'], sheet: 'CSV', rows };
+  }
+  const XLSX = await import('xlsx');
+  const wb = XLSX.read(buf, { type: 'buffer', cellDates: true, raw: false });
+  const sheets = wb.SheetNames || [];
+  if (!sheets.length) throw new Error('В файле нет листов');
+  const sheet = sheetName && sheets.includes(sheetName) ? sheetName : sheets[0]!;
+  const aoa = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[sheet]!, {
+    header: 1,
+    defval: '',
+    raw: false,
+    blankrows: false,
+  }) as unknown as string[][];
+  const rows = (aoa || [])
+    .map((r) => (Array.isArray(r) ? r : []).map((c) => String(c ?? '').trim()))
+    .filter((r) => r.some((c) => c));
+  return { sheets, sheet, rows };
+}
+
+function resolveImportRows(body: {
+  rows?: ImportSourceRow[];
+  paste?: string;
+  table?: string[][];
+  map?: ColumnMap;
+  has_header?: boolean;
+  map_mode?: 'columns' | 'headers';
+}): ImportSourceRow[] {
+  if (Array.isArray(body.rows) && body.rows.length) return body.rows;
+  let table: string[][] = Array.isArray(body.table) ? body.table : [];
+  if (!table.length && body.paste) table = parsePasteTable(body.paste);
+  if (!table.length) return [];
+  const mode = body.map_mode === 'headers' ? 'headers' : 'columns';
+  const hasHeader = mode === 'headers' ? true : !!body.has_header;
+  let map = body.map || DEFAULT_PACKING_MAP;
+  if (mode === 'headers' && (!body.map || body.map.article == null)) {
+    map = suggestMapFromHeaders(table[0] || []);
+  }
+  return rowsFromTable(table, map, { has_header: hasHeader });
+}
+
 export function matchImportRows(
   rows: ImportSourceRow[],
   opts?: { create_missing?: boolean; minimal_cards?: boolean }
@@ -284,21 +411,69 @@ export function applyImportToSupplierOrder(input: {
 }
 
 export function mountSupplierOrderImportRoutes(api: Hono): void {
+  /** Разобрать Excel/CSV → заголовки + превью + предложенный map. */
+  api.post('/purchases/supplier-orders/:id/import/parse-file', async (c) => {
+    try {
+      const body = (await c.req.json()) as {
+        filename?: string;
+        content_base64?: string;
+        sheet?: string;
+      };
+      const b64 = String(body.content_base64 || '').trim();
+      if (!b64) return c.json({ error: 'Нужен content_base64' }, 400);
+      const fileName = String(body.filename || 'packing.xlsx').slice(0, 180);
+      const buf = Buffer.from(b64, 'base64');
+      if (!buf.length) return c.json({ error: 'Пустой файл' }, 400);
+      if (buf.length > 15 * 1024 * 1024) {
+        return c.json({ error: 'Файл больше 15 МБ' }, 400);
+      }
+      const parsed = await parseImportSpreadsheet(buf, fileName, body.sheet);
+      const headers = (parsed.rows[0] || []).map((h, i) => h || `Кол. ${i + 1}`);
+      const suggested = suggestMapFromHeaders(headers);
+      const suggested_roles = headers.map((h) => guessHeaderRole(h));
+      return c.json({
+        ok: true,
+        filename: fileName,
+        sheets: parsed.sheets,
+        sheet: parsed.sheet,
+        headers,
+        suggested_map: suggested,
+        suggested_roles,
+        row_count: Math.max(0, parsed.rows.length - 1),
+        sample: parsed.rows.slice(0, 8),
+        table: parsed.rows,
+      });
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'parse error' }, 400);
+    }
+  });
+
   api.post('/purchases/supplier-orders/:id/import/preview', async (c) => {
     try {
       const body = (await c.req.json()) as {
         rows?: ImportSourceRow[];
         paste?: string;
+        table?: string[][];
         map?: ColumnMap;
         has_header?: boolean;
+        map_mode?: 'columns' | 'headers';
         create_missing?: boolean;
         minimal_cards?: boolean;
+        filename?: string;
+        content_base64?: string;
+        sheet?: string;
       };
-      let rows = Array.isArray(body.rows) ? body.rows : [];
-      if (!rows.length && body.paste) {
-        const table = parsePasteTable(body.paste);
-        rows = rowsFromTable(table, body.map || DEFAULT_PACKING_MAP, {
-          has_header: !!body.has_header,
+      let rows = resolveImportRows(body);
+      if (!rows.length && body.content_base64) {
+        const parsed = await parseImportSpreadsheet(
+          Buffer.from(body.content_base64, 'base64'),
+          String(body.filename || 'packing.xlsx'),
+          body.sheet
+        );
+        rows = resolveImportRows({
+          ...body,
+          table: parsed.rows,
+          has_header: body.map_mode === 'headers' ? true : !!body.has_header,
         });
       }
       const preview = matchImportRows(rows, {
@@ -322,18 +497,29 @@ export function mountSupplierOrderImportRoutes(api: Hono): void {
       const body = (await c.req.json()) as {
         rows?: ImportSourceRow[];
         paste?: string;
+        table?: string[][];
         map?: ColumnMap;
         has_header?: boolean;
+        map_mode?: 'columns' | 'headers';
         create_missing?: boolean;
         minimal_cards?: boolean;
         append?: boolean;
         allocate_marks?: boolean;
+        filename?: string;
+        content_base64?: string;
+        sheet?: string;
       };
-      let rows = Array.isArray(body.rows) ? body.rows : [];
-      if (!rows.length && body.paste) {
-        const table = parsePasteTable(body.paste);
-        rows = rowsFromTable(table, body.map || DEFAULT_PACKING_MAP, {
-          has_header: !!body.has_header,
+      let rows = resolveImportRows(body);
+      if (!rows.length && body.content_base64) {
+        const parsed = await parseImportSpreadsheet(
+          Buffer.from(body.content_base64, 'base64'),
+          String(body.filename || 'packing.xlsx'),
+          body.sheet
+        );
+        rows = resolveImportRows({
+          ...body,
+          table: parsed.rows,
+          has_header: body.map_mode === 'headers' ? true : !!body.has_header,
         });
       }
       if (!rows.length) return c.json({ error: 'Нет строк для загрузки' }, 400);

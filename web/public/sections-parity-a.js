@@ -1437,14 +1437,30 @@
             ? `<p class="muted" style="margin:0 0 8px;font-size:12px">Цены закупки обязательны для заказа. Дубли артикулов — отдельными строками. Импорт: копипаст из Excel/пакинга.</p>
         <div id="so-import-panel" class="thin-add-panel" hidden>
           <div class="thin-add-panel-head">
-            <strong>Заполнить из внешнего источника</strong>
+            <strong>Заполнить из Excel / CSV / копипаста</strong>
             <button type="button" class="linkish" id="so-import-close">Свернуть</button>
           </div>
           <p class="muted" style="margin:0 0 8px;font-size:12px">
-            Скопируйте строки из Excel/пакинга (Ctrl+C) и вставьте ниже (Ctrl+V).
-            Как в 1С: сначала назначьте колонки, потом «Сопоставить» → «Загрузить данные».
+            Загрузите файл пакинга (.xlsx / .xls / .csv) или вставьте таблицу (Ctrl+V).
+            Можно сопоставить <b>по заголовкам</b> Excel или <b>по номерам столбцов</b> (заголовки игнор).
           </p>
-          <div class="so-import-map" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:8px;margin:0 0 10px">
+          <div class="wh-tr-add-row" style="margin-bottom:10px;align-items:center">
+            <label class="inline-label" style="margin:0">
+              Файл
+              <input type="file" id="so-import-file" accept=".xlsx,.xls,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" />
+            </label>
+            <span class="muted" id="so-import-file-name" style="font-size:12px"></span>
+            <button type="button" id="so-import-clear-file" class="linkish" hidden>Убрать файл</button>
+          </div>
+          <div class="toolbar-filter" style="margin:0 0 10px">
+            <span class="toolbar-filter-label">Разбор</span>
+            <button type="button" class="form-pagetab active" data-so-map-mode="headers" id="so-mode-headers">По заголовкам</button>
+            <button type="button" class="form-pagetab" data-so-map-mode="columns" id="so-mode-columns">По столбцам</button>
+          </div>
+          <div id="so-map-headers-box" class="so-import-map" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:8px;margin:0 0 10px">
+            <p class="muted" style="grid-column:1/-1;margin:0;font-size:12px">Загрузите файл или вставьте таблицу с первой строкой-заголовком — появятся поля соответствия.</p>
+          </div>
+          <div id="so-map-columns-box" class="so-import-map" hidden style="display:none;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:8px;margin:0 0 10px">
             <label>Кол. 1
               <select id="so-map-c0">
                 <option value="article" selected>Артикул</option>
@@ -1496,11 +1512,11 @@
               </select>
             </label>
           </div>
-          <label class="span-2">Вставка
-            <textarea id="so-import-paste" rows="8" placeholder="MRAE11305&#9;6&#9;6782&#9;40692" style="width:100%;font-family:ui-monospace,monospace;font-size:12px"></textarea>
+          <label class="span-2">Вставка (если без файла)
+            <textarea id="so-import-paste" rows="6" placeholder="MRAE11305&#9;6&#9;6782&#9;40692" style="width:100%;font-family:ui-monospace,monospace;font-size:12px"></textarea>
           </label>
           <div class="form-grid" style="margin-top:8px">
-            <label class="inline-label"><input type="checkbox" id="so-import-header" /> Первая строка — заголовок</label>
+            <label class="inline-label" id="so-import-header-wrap"><input type="checkbox" id="so-import-header" /> Первая строка — заголовок (режим «По столбцам»)</label>
             <label class="inline-label"><input type="checkbox" id="so-import-create" checked /> Создавать новые карточки</label>
             <label class="inline-label"><input type="checkbox" id="so-import-minimal" /> Минимальные карточки (без кроссов/розницы)</label>
             <label class="inline-label"><input type="checkbox" id="so-import-append" /> Добавить к существующим строкам</label>
@@ -1642,7 +1658,7 @@
           <div class="grow"></div>`;
     const supplierToolbar = `
           <button type="button" class="primary" id="thin-add-line">Добавить номенклатуру</button>
-          <button type="button" id="so-import-open" title="Копипаст / Excel в заказ">Из внешнего источника</button>
+          <button type="button" id="so-import-open" title="Excel / CSV / копипаст в заказ">Excel / CSV</button>
           <button type="button" id="so-create-inbound" title="Черновик приходной на основании заказа">Создать приходную</button>
           <span class="muted" id="thin-line-msg"></span>
           <div class="grow"></div>
@@ -1784,13 +1800,88 @@
         if (panel) panel.hidden = true;
       });
 
+      let soImportFile = null; // { filename, content_base64, table, headers, sheet }
+      let soMapMode = 'headers';
+
+      const roleOptions = (selected) => {
+        const opts = [
+          ['article', 'Артикул'],
+          ['qty', 'Количество'],
+          ['price', 'Цена'],
+          ['amount', 'Сумма'],
+          ['old_sku', 'Старый артикул'],
+          ['skip', 'Не загружать'],
+        ];
+        return opts
+          .map(
+            ([v, lab]) =>
+              `<option value="${v}" ${v === selected ? 'selected' : ''}>${lab}</option>`
+          )
+          .join('');
+      };
+
+      const setMapMode = (mode) => {
+        soMapMode = mode === 'columns' ? 'columns' : 'headers';
+        document.getElementById('so-mode-headers')?.classList.toggle('active', soMapMode === 'headers');
+        document.getElementById('so-mode-columns')?.classList.toggle('active', soMapMode === 'columns');
+        const hb = document.getElementById('so-map-headers-box');
+        const cb = document.getElementById('so-map-columns-box');
+        if (hb) {
+          hb.hidden = soMapMode !== 'headers';
+          hb.style.display = soMapMode === 'headers' ? 'grid' : 'none';
+        }
+        if (cb) {
+          cb.hidden = soMapMode !== 'columns';
+          cb.style.display = soMapMode === 'columns' ? 'grid' : 'none';
+        }
+        const hw = document.getElementById('so-import-header-wrap');
+        if (hw) hw.style.display = soMapMode === 'columns' ? '' : 'none';
+      };
+      document.querySelectorAll('[data-so-map-mode]').forEach((btn) => {
+        btn.addEventListener('click', () => setMapMode(btn.getAttribute('data-so-map-mode')));
+      });
+      setMapMode('headers');
+
+      const paintHeaderMap = (headers, suggestedRoles) => {
+        const box = document.getElementById('so-map-headers-box');
+        if (!box) return;
+        if (!headers || !headers.length) {
+          box.innerHTML =
+            '<p class="muted" style="grid-column:1/-1;margin:0;font-size:12px">Загрузите файл или вставьте таблицу с первой строкой-заголовком — появятся поля соответствия.</p>';
+          return;
+        }
+        box.innerHTML = headers
+          .map((h, i) => {
+            const role = (suggestedRoles && suggestedRoles[i]) || 'skip';
+            return `<label title="${esc(h)}">«${esc(String(h).slice(0, 28))}»
+              <select id="so-map-h${i}" data-col="${i}">${roleOptions(role)}</select>
+            </label>`;
+          })
+          .join('');
+      };
+
       const buildImportMap = () => {
-        const map = { article: 0, qty: 1, price: 2, amount: 3, old_sku: null };
+        const map = { article: 0, qty: 1, price: 2, amount: null, old_sku: null };
         const seen = Object.create(null);
+        if (soMapMode === 'headers') {
+          const box = document.getElementById('so-map-headers-box');
+          const sels = box ? [...box.querySelectorAll('select[data-col]')] : [];
+          sels.forEach((sel) => {
+            const i = Number(sel.getAttribute('data-col'));
+            const role = String(sel.value || 'skip');
+            if (role === 'skip' || !Number.isFinite(i) || seen[role] != null) return;
+            seen[role] = i;
+            if (role === 'article') map.article = i;
+            else if (role === 'qty') map.qty = i;
+            else if (role === 'price') map.price = i;
+            else if (role === 'amount') map.amount = i;
+            else if (role === 'old_sku') map.old_sku = i;
+          });
+          return map;
+        }
         for (let i = 0; i < 5; i++) {
           const role = String(document.getElementById('so-map-c' + i)?.value || 'skip');
-          if (role === 'skip') continue;
-          if (seen[role] != null) continue;
+          if (role === 'skip' || seen[role] != null) continue;
           seen[role] = i;
           if (role === 'article') map.article = i;
           else if (role === 'qty') map.qty = i;
@@ -1798,27 +1889,99 @@
           else if (role === 'amount') map.amount = i;
           else if (role === 'old_sku') map.old_sku = i;
         }
-        if (map.old_sku == null) map.old_sku = null;
         return map;
       };
+
+      const clearImportFile = () => {
+        soImportFile = null;
+        const inp = document.getElementById('so-import-file');
+        if (inp) inp.value = '';
+        const nm = document.getElementById('so-import-file-name');
+        if (nm) nm.textContent = '';
+        const clr = document.getElementById('so-import-clear-file');
+        if (clr) clr.hidden = true;
+        paintHeaderMap([], []);
+      };
+      document.getElementById('so-import-clear-file')?.addEventListener('click', clearImportFile);
+
+      document.getElementById('so-import-file')?.addEventListener('change', async (ev) => {
+        const file = ev.target?.files?.[0];
+        const msg = document.getElementById('so-import-msg');
+        if (!file) return;
+        if (msg) msg.textContent = 'Читаю файл…';
+        try {
+          const buf = await file.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let binary = '';
+          const chunk = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+          }
+          const content_base64 = btoa(binary);
+          const r = await leg.api(
+            '/purchases/supplier-orders/' + encodeURIComponent(id) + '/import/parse-file',
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                filename: file.name,
+                content_base64,
+              }),
+            }
+          );
+          soImportFile = {
+            filename: file.name,
+            content_base64,
+            table: r.table || [],
+            headers: r.headers || [],
+            sheet: r.sheet || '',
+          };
+          const nm = document.getElementById('so-import-file-name');
+          if (nm) {
+            nm.textContent = `${file.name} · ${r.row_count || 0} строк · лист «${r.sheet || ''}»`;
+          }
+          const clr = document.getElementById('so-import-clear-file');
+          if (clr) clr.hidden = false;
+          paintHeaderMap(r.headers || [], r.suggested_roles || []);
+          setMapMode('headers');
+          if (msg) msg.textContent = 'Файл разобран — проверьте соответствие колонок';
+        } catch (e) {
+          clearImportFile();
+          if (msg) msg.textContent = e.message || String(e);
+        }
+      });
+
+      const importPayload = () => {
+        const paste = document.getElementById('so-import-paste')?.value || '';
+        const body = {
+          map: buildImportMap(),
+          map_mode: soMapMode,
+          has_header:
+            soMapMode === 'headers' ? true : !!document.getElementById('so-import-header')?.checked,
+          create_missing: !!document.getElementById('so-import-create')?.checked,
+          minimal_cards: !!document.getElementById('so-import-minimal')?.checked,
+        };
+        if (soImportFile?.table?.length) {
+          body.table = soImportFile.table;
+          body.filename = soImportFile.filename;
+        } else if (paste.trim()) {
+          body.paste = paste;
+        }
+        return body;
+      };
+
       document.getElementById('so-import-preview-btn')?.addEventListener('click', async () => {
         const msg = document.getElementById('so-import-msg');
         const box = document.getElementById('so-import-preview');
-        const paste = document.getElementById('so-import-paste')?.value || '';
+        const body = importPayload();
+        if (!body.table && !body.paste) {
+          if (msg) msg.textContent = 'Загрузите файл или вставьте таблицу';
+          return;
+        }
         if (msg) msg.textContent = 'Сопоставление…';
         try {
           const r = await leg.api(
             '/purchases/supplier-orders/' + encodeURIComponent(id) + '/import/preview',
-            {
-              method: 'POST',
-              body: JSON.stringify({
-                paste,
-                map: buildImportMap(),
-                has_header: !!document.getElementById('so-import-header')?.checked,
-                create_missing: !!document.getElementById('so-import-create')?.checked,
-                minimal_cards: !!document.getElementById('so-import-minimal')?.checked,
-              }),
-            }
+            { method: 'POST', body: JSON.stringify(body) }
           );
           if (box) {
             const errRows = (r.rows || []).filter((x) => x.status === 'error').slice(0, 8);
@@ -1848,23 +2011,18 @@
       });
       document.getElementById('so-import-apply-btn')?.addEventListener('click', async () => {
         const msg = document.getElementById('so-import-msg');
-        const paste = document.getElementById('so-import-paste')?.value || '';
+        const body = importPayload();
+        if (!body.table && !body.paste) {
+          if (msg) msg.textContent = 'Загрузите файл или вставьте таблицу';
+          return;
+        }
+        body.append = !!document.getElementById('so-import-append')?.checked;
+        body.allocate_marks = false;
         if (msg) msg.textContent = 'Загрузка…';
         try {
           const r = await leg.api(
             '/purchases/supplier-orders/' + encodeURIComponent(id) + '/import/apply',
-            {
-              method: 'POST',
-              body: JSON.stringify({
-                paste,
-                map: buildImportMap(),
-                has_header: !!document.getElementById('so-import-header')?.checked,
-                create_missing: !!document.getElementById('so-import-create')?.checked,
-                minimal_cards: !!document.getElementById('so-import-minimal')?.checked,
-                append: !!document.getElementById('so-import-append')?.checked,
-                allocate_marks: false,
-              }),
-            }
+            { method: 'POST', body: JSON.stringify(body) }
           );
           if (msg) {
             msg.textContent =
