@@ -3780,7 +3780,11 @@ export function markTaskDone(input: { id: string; actor_id?: string }) {
   if (['handed', 'cancelled'].includes(String(task.status))) {
     throw new Error('Задание уже закрыто');
   }
-  assertStoTaskSerialsReady(input.id);
+  const ch = String(task.channel || '');
+  // Производство: перемещение на/с PROD-WIP без обязательных марок (serials_optional).
+  if (ch !== 'production_send' && ch !== 'production_receive') {
+    assertStoTaskSerialsReady(input.id);
+  }
   const status: TaskStatus = canHandToCourier(task) ? 'handed' : 'ready';
   // sto_parts: сначала перемещение (иначе handed без остатка на складе курьера)
   let sto_execute: Record<string, unknown> | undefined;
