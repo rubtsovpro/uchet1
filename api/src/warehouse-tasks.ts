@@ -199,7 +199,23 @@ export function getTask(id: string): Record<string, unknown> | null {
     `SELECT * FROM warehouse_task_lines WHERE task_id = ? ORDER BY line_no, name`,
     [id]
   ) as Array<Record<string, unknown>>;
-  const lines = enrichTaskLines(rawLines);
+  let lines = enrichTaskLines(rawLines);
+  const channel = String(task.channel || '');
+  let production_produce: Array<Record<string, unknown>> | undefined;
+  let production_kind_label: string | undefined;
+  let production_number: string | undefined;
+  if (channel === 'production_send' || channel === 'production_receive') {
+    const prod = loadProductionPickLines({
+      task_id: id,
+      channel,
+      stock_doc_id: String(task.stock_doc_id || ''),
+      deal_id: String(task.deal_id || ''),
+    });
+    if (!lines.length && prod.lines.length) lines = prod.lines;
+    production_produce = prod.production_produce;
+    production_kind_label = prod.production_kind_label;
+    production_number = prod.production_number;
+  }
   const events = all(
     `SELECT * FROM warehouse_task_events WHERE task_id = ? ORDER BY datetime(created_at) DESC LIMIT 30`,
     [id]
@@ -287,6 +303,13 @@ export function getTask(id: string): Record<string, unknown> | null {
       : String((task as { amo_shipment?: string }).amo_shipment || ''),
     amo_payment_type: deal ? String(deal.amo_payment_type || '') : '',
     payment_label: deal ? String(deal.payment_label || '') : paid ? 'Оплачено' : 'Не оплачено',
+    ...(production_produce
+      ? {
+          production_produce,
+          production_kind_label,
+          production_number,
+        }
+      : {}),
   };
 }
 
@@ -1372,6 +1395,15 @@ function enrichPickRow(t: Record<string, unknown>) {
     else if (/курьер/i.test(channel_label)) city = 'Курьер';
   }
   const dealCtx = dealId ? dealPickContext(dealId) : null;
+  const productionExtra =
+    ch === 'production_send' || ch === 'production_receive'
+      ? loadProductionPickLines({
+          task_id: String(t.id || ''),
+          channel: ch,
+          stock_doc_id: String(t.stock_doc_id || ''),
+          deal_id: dealId,
+        })
+      : null;
   return {
     ...t,
     deal_id: dealId,
@@ -1391,6 +1423,160 @@ function enrichPickRow(t: Record<string, unknown>) {
     ...route,
     ...(dealCtx && !dealCtx.missing ? dealCtx : {}),
     deal: dealCtx,
+    ...(productionExtra
+      ? {
+          lines: productionExtra.lines,
+          lines_count: productionExtra.lines.length,
+          production_produce: productionExtra.production_produce,
+          production_kind_label: productionExtra.production_kind_label,
+          production_number: productionExtra.production_number,
+        }
+      : {}),
+  };
+}
+
+/**
+ * Строки для карточки производства — всегда из БД:
+ * 1) warehouse_task_lines
+ * 2) иначе consume/produce заказа производства (production_job_lines)
+ * 3) иначе товарные позиции заказа покупателя (crm_deal_items / Amo)
+ */
+function loadProductionPickLines(input: {
+  task_id?: string;
+  channel: string;
+  stock_doc_id?: string;
+  deal_id?: string;
+}): {
+  lines: Array<Record<string, unknown>>;
+  production_produce: Array<Record<string, unknown>>;
+  production_kind_label: string;
+  production_number: string;
+} {
+  const taskId = String(input.task_id || '').trim();
+  const jobId = String(input.stock_doc_id || '').trim();
+  const dealId = String(input.deal_id || '').trim();
+  const ch = String(input.channel || '');
+  const wantDir = ch === 'production_receive' ? 'produce' : 'consume';
+
+  let lines: Array<Record<string, unknown>> = [];
+  if (taskId) {
+    lines = enrichTaskLines(
+      all(
+        `SELECT * FROM warehouse_task_lines WHERE task_id = ? ORDER BY line_no, name`,
+        [taskId]
+      ) as Array<Record<string, unknown>>
+    );
+  }
+
+  let production_produce: Array<Record<string, unknown>> = [];
+  let production_kind_label = 'Произвести';
+  let production_number = '';
+
+  if (jobId) {
+    const job = get<{ number: string; kind: string }>(
+      `SELECT IFNULL(number,'') AS number, IFNULL(kind,'') AS kind FROM production_jobs WHERE id = ?`,
+      [jobId]
+    );
+    if (job) {
+      production_number = String(job.number || '').trim();
+      production_kind_label = 'Произвести';
+    }
+    const jobLines = all<{
+      product_id: string;
+      sku: string;
+      name: string;
+      qty: number;
+      cell_code: string;
+      direction: string;
+    }>(
+      `SELECT product_id,
+              IFNULL(sku,'') AS sku,
+              IFNULL(name,'') AS name,
+              qty,
+              IFNULL(cell_code,'') AS cell_code,
+              direction
+       FROM production_job_lines
+       WHERE job_id = ?
+       ORDER BY line_no, name`,
+      [jobId]
+    );
+    production_produce = jobLines
+      .filter((l) => String(l.direction) === 'produce')
+      .map((l) => ({
+        product_id: l.product_id,
+        sku: l.sku,
+        name: l.name,
+        qty: l.qty,
+        cell_code: l.cell_code || '',
+      }));
+    if (!lines.length) {
+      const fromJob = jobLines.filter((l) => String(l.direction) === wantDir);
+      if (fromJob.length) {
+        lines = enrichTaskLines(
+          fromJob.map((l, i) => ({
+            id: `jobline:${jobId}:${wantDir}:${i}`,
+            product_id: l.product_id,
+            sku: l.sku,
+            name: l.name,
+            qty: l.qty,
+            cell_code: l.cell_code || '',
+            line_no: i + 1,
+          }))
+        );
+      }
+    }
+  }
+
+  if (!lines.length && dealId) {
+    const dealItems = all<{
+      product_guid: string;
+      sku: string;
+      code: string;
+      name: string;
+      qty: number;
+      auto_service: number;
+      item_kind: string;
+    }>(
+      `SELECT IFNULL(i.product_guid,'') AS product_guid,
+              IFNULL(i.sku,'') AS sku,
+              IFNULL(i.code,'') AS code,
+              IFNULL(i.name,'') AS name,
+              IFNULL(i.qty,0) AS qty,
+              IFNULL(i.auto_service,0) AS auto_service,
+              IFNULL(p.item_kind, 'product') AS item_kind
+       FROM crm_deal_items i
+       LEFT JOIN products p ON p.id = i.product_guid
+       WHERE i.deal_id = ?
+       ORDER BY i.line_no, i.rowid`,
+      [dealId]
+    );
+    const goods = dealItems.filter((it) => {
+      if (Number(it.auto_service) === 1) return false;
+      if (String(it.item_kind || '') === 'service') return false;
+      const pid = String(it.product_guid || '').trim();
+      const qty = Number(it.qty) || 0;
+      return !!pid && qty > 0;
+    });
+    if (goods.length) {
+      lines = enrichTaskLines(
+        goods.map((it, i) => ({
+          id: `dealitem:${dealId}:${i}`,
+          product_id: it.product_guid,
+          sku: it.sku || it.code || '',
+          name: it.name,
+          qty: it.qty,
+          cell_code: '',
+          line_no: i + 1,
+        }))
+      );
+    }
+  }
+
+  return {
+    lines,
+    production_produce,
+    production_kind_label,
+    production_number,
   };
 }
 

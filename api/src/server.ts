@@ -685,7 +685,7 @@ app.get('/', async (c, next) => {
 });
 app.get('/legacy.js', (c) => sendLegacyJs(c));
 app.get('/styles.css', (c) => sendLegacyCss(c));
-const PICK_UI_REV = 'pc64';
+const PICK_UI_REV = 'pc65';
 const PICK_UI_SIG = 'pick-return-stops-production-20260903';
 
 function sendPickHtml(c: Context, opts?: { screen?: 'pick' | 'production' }) {
