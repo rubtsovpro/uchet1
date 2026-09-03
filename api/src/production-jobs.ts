@@ -7,7 +7,8 @@ import { all, get, run } from './db.js';
 import { newGuid, nextCode } from './ids.js';
 import { actorFromContext, type Actor } from './auth.js';
 import { auditFromContext } from './audit.js';
-import { createDocument } from './stock.js';
+import { createDocument, postDocument } from './stock.js';
+import { insertLinePlacements } from './warehouse-cells.js';
 import { ensureWarehouseByCode } from './supply-chain.js';
 import { getTask, logTask } from './warehouse-tasks.js';
 import { notifyAmoWarehousePacked } from './amo-pick-handoff.js';
@@ -573,19 +574,40 @@ export function executeProductionReceiveFromTask(input: { task_id: string; actor
     serials_optional: true,
   });
 
+  const produceLines = (job.produce as ProductionLine[]) || [];
   const inId = createDocument({
     doc_type: 'in',
     warehouse_id: mainWh,
     deal_id: dealId,
     comment: `Производство ${job.number} · приход готового · ${summary}`,
-    lines: (job.produce as ProductionLine[]).map((l) => ({
+    lines: produceLines.map((l) => ({
       product_id: l.product_id,
       qty: l.qty,
       warehouse_id: mainWh,
     })),
-    post: true,
+    post: false,
     serials_optional: true,
   });
+  const inDocLines = all<{ id: string; product_id: string; qty: number }>(
+    `SELECT id, product_id, qty FROM stock_doc_lines WHERE doc_id = ? ORDER BY line_no`,
+    [inId]
+  );
+  for (const pl of produceLines) {
+    const cellCode = String(pl.cell_code || '').trim();
+    if (!cellCode || cellCode === '—' || cellCode === '-' || cellCode === '–') continue;
+    const docLine = inDocLines.find((d) => d.product_id === pl.product_id);
+    if (!docLine) continue;
+    const plQty = Number(pl.qty) || Number(docLine.qty) || 0;
+    if (!(plQty > 0)) continue;
+    insertLinePlacements({
+      doc_id: inId,
+      line_id: docLine.id,
+      warehouse_id: mainWh,
+      product_id: pl.product_id,
+      placements: [{ cell_code: cellCode, qty: plQty, warehouse_id: mainWh }],
+    });
+  }
+  postDocument(inId, { serialsOptional: true });
 
   run(
     `UPDATE production_jobs

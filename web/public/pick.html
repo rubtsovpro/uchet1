@@ -1367,6 +1367,21 @@
     .handoff-lines-tbl .qty-zero { color: var(--muted); }
     .handoff-lines-tbl .qty-need { color: #b91c1c; font-weight: 900; }
     .handoff-cells { color: var(--muted); font-weight: 600; font-size: 11px; display: block; margin-top: 2px; }
+    .handoffs-list.is-refreshing { opacity: 0.92; transition: opacity 0.2s ease; }
+    .handoff-row.prod-card-enter {
+      animation: prod-card-enter 0.38s ease-out;
+    }
+    @keyframes prod-card-enter {
+      from { opacity: 0; transform: translateY(-14px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .handoff-row.prod-card-leaving {
+      animation: prod-card-leave 0.22s ease-in forwards;
+      pointer-events: none;
+    }
+    @keyframes prod-card-leave {
+      to { opacity: 0; transform: translateY(-10px); max-height: 0; margin: 0; padding: 0; overflow: hidden; }
+    }
     .handoff-lines-tbl th.pick-col,
     .handoff-lines-tbl td.pick-col {
       width: 2.4rem;
@@ -2793,6 +2808,8 @@
     /** Черновик формы результата производства: taskId -> lines[] */
     let prodResultDrafts = {};
     let prodCardsBound = false;
+    /** @type {Map<string, { stamp: string }>} */
+    let prodCardsCache = new Map();
     /** Заказы уже на участке (склад отдал) — иначе пропадают с /production после handed. */
     let prodAtJobs = [];
     let handoffTab = 'active';
@@ -4734,6 +4751,122 @@
       });
     }
 
+    function prodCardStamp(t) {
+      return [
+        String((t && t.id) || ''),
+        String((t && t.updated_at) || ''),
+        String((t && t.status) || ''),
+        String((t && t.channel) || ''),
+        String((t && t.stock_doc_id) || ''),
+      ].join('|');
+    }
+
+    function insertProdCardAt(root, el, index) {
+      const cards = root.querySelectorAll(':scope > article.handoff-row');
+      if (index >= cards.length) {
+        root.appendChild(el);
+      } else {
+        root.insertBefore(el, cards[index]);
+      }
+    }
+
+    function activeProdTaskId() {
+      try {
+        const ae = document.activeElement;
+        if (ae && ae.closest) {
+          const article = ae.closest('[data-prod-task]');
+          if (article) return String(article.getAttribute('data-prod-task') || '').trim();
+        }
+      } catch (_) {}
+      return '';
+    }
+
+    async function enrichProductionCard(t0) {
+      if (String(t0.channel || '') === 'production_at') return t0;
+      try {
+        return await attachProductionResultLines(
+          await api('/warehouse/tasks/' + encodeURIComponent(t0.id))
+        );
+      } catch (_) {
+        return t0;
+      }
+    }
+
+    function mountProductionCardHtml(html, opts) {
+      const wrap = document.createElement('div');
+      wrap.innerHTML = html;
+      const el = wrap.firstElementChild;
+      if (!el) return null;
+      if (opts && opts.enter) el.classList.add('prod-card-enter');
+      return el;
+    }
+
+    async function renderProductionCards(allProd) {
+      const box = document.getElementById('groups');
+      if (!box) return;
+      await ensureMainCellRacks();
+      let root = document.getElementById('prod-cards');
+      if (!root) {
+        box.innerHTML = '<div class="handoffs-list" id="prod-cards"></div>';
+        root = document.getElementById('prod-cards');
+      }
+      root.classList.add('is-refreshing');
+      const sorted = allProd.slice().sort((a, b) => {
+        const ta = Date.parse(String(a.created_at || '')) || 0;
+        const tb = Date.parse(String(b.created_at || '')) || 0;
+        return tb - ta;
+      });
+      const desiredIds = sorted.map((t) => String(t.id || '').trim()).filter(Boolean);
+      const activeId = activeProdTaskId();
+      root.querySelectorAll(':scope > article.handoff-row').forEach((el) => {
+        const id = String(el.getAttribute('data-prod-task') || '').trim();
+        if (id && !desiredIds.includes(id)) {
+          el.classList.add('prod-card-leaving');
+          prodCardsCache.delete(id);
+          setTimeout(() => {
+            if (el.parentNode) el.remove();
+          }, 240);
+        }
+      });
+      for (let i = 0; i < sorted.length; i++) {
+        const t0 = sorted[i];
+        const taskId = String(t0.id || '').trim();
+        if (!taskId) continue;
+        const stamp = prodCardStamp(t0);
+        const cached = prodCardsCache.get(taskId);
+        let existing = root.querySelector('[data-prod-task="' + CSS.escape(taskId) + '"]');
+        if (existing && cached && cached.stamp === stamp) {
+          insertProdCardAt(root, existing, i);
+          continue;
+        }
+        if (existing && activeId === taskId) {
+          insertProdCardAt(root, existing, i);
+          prodCardsCache.set(taskId, { stamp });
+          continue;
+        }
+        const full = await enrichProductionCard(t0);
+        const html = productionCardHtml(full);
+        prodCardsCache.set(taskId, { stamp: prodCardStamp(full) });
+        const nextEl = mountProductionCardHtml(html, { enter: !existing });
+        if (!nextEl) continue;
+        if (existing) {
+          existing.replaceWith(nextEl);
+          existing = nextEl;
+        } else {
+          existing = nextEl;
+          root.appendChild(existing);
+        }
+        insertProdCardAt(root, existing, i);
+      }
+      root.classList.remove('is-refreshing');
+      prodCardsBound = false;
+      bindProductionCardActions(root);
+      root.querySelectorAll('[data-prod-result-row]').forEach((row) => {
+        const sku = String((row.querySelector('[data-prod-sku]') || {}).value || '').trim();
+        if (sku.length >= 2) lookupProdSkuWhere(row);
+      });
+    }
+
     async function renderGroups() {
       const box = document.getElementById('groups');
       if (!box) return;
@@ -4759,31 +4892,7 @@
         if (productionFormBusy() && document.getElementById('prod-cards')) {
           return;
         }
-        await ensureMainCellRacks();
-        box.innerHTML = '<div class="handoffs-list" id="prod-cards">Загрузка…</div>';
-        const root = document.getElementById('prod-cards');
-        const enriched = [];
-        for (const t0 of allProd) {
-          if (String(t0.channel || '') === 'production_at') {
-            enriched.push(t0);
-            continue;
-          }
-          try {
-            const full = await attachProductionResultLines(
-              await api('/warehouse/tasks/' + encodeURIComponent(t0.id))
-            );
-            enriched.push(full);
-          } catch (_) {
-            enriched.push(t0);
-          }
-        }
-        root.innerHTML = enriched.map((t) => productionCardHtml(t)).join('');
-        prodCardsBound = false;
-        bindProductionCardActions(root);
-        root.querySelectorAll('[data-prod-result-row]').forEach((row) => {
-          const sku = String((row.querySelector('[data-prod-sku]') || {}).value || '').trim();
-          if (sku.length >= 2) lookupProdSkuWhere(row);
-        });
+        await renderProductionCards(allProd);
         return;
       }
 
