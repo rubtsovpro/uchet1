@@ -9212,15 +9212,27 @@ async function renderWhTransfers() {
     err = e.message || String(e);
   }
   const mainWh =
-    warehouses.find((w) => /основн/i.test(String(w.name || '')) || w.code === 'НФ-000032') ||
+    warehouses.find(
+      (w) =>
+        whIsActive(w) &&
+        !whIsEmptyJunk(w) &&
+        (/основн/i.test(String(w.name || '')) || w.code === 'НФ-000032')
+    ) ||
+    warehouses.find((w) => whIsActive(w) && !whIsEmptyJunk(w) && !whIsAutoSys(w)) ||
     warehouses[0];
   const defaultWhId = String(mainWh?.id || '');
 
-  const whOpts = warehouses
-    .filter((w) => whIsActive(w))
+  const whPickList = warehouses.filter(
+    (w) =>
+      whIsActive(w) &&
+      !whIsEmptyJunk(w) &&
+      !whIsMainSynthDuplicate(w, warehouses) &&
+      !whIsAutoSys(w)
+  );
+  const whOpts = whPickList
     .map(
       (w) =>
-        `<option value="${esc(w.id)}">${esc(whDisplayName(w))}${
+        `<option value="${esc(w.id)}">${esc(whDisplayName(w) || whUiTitle(w) || w.name)}${
           w.code ? ' · ' + esc(w.code) : ''
         }</option>`
     )
@@ -9271,6 +9283,10 @@ async function renderWhTransfers() {
     if (!formEl) return;
     if (kind === 'warehouse') {
       formEl.innerHTML = `
+        <p class="muted wh-tr-intro" style="margin:0 0 12px;grid-column:1/-1;font-size:12px">
+          Нужны оба склада: <b>откуда</b> списать и <b>куда</b> принять.
+          В задании /pick кладовщик выбирает только <b>ячейки</b> на складе-источнике — склад назначения уже задан этим заказом.
+        </p>
         <div class="field">
           <span>Откуда</span>
           <select id="tr-from">${whOpts}</select>
@@ -9284,16 +9300,16 @@ async function renderWhTransfers() {
           <textarea id="tr-comment" rows="2" placeholder="Зачем перемещаем…"></textarea>
         </div>
         <div class="field span-2">
-          <span>Добавить товар</span>
+          <span>Товар со склада «откуда»</span>
           <div class="wh-tr-add-row">
-            <input type="search" id="tr-prod-q" placeholder="Артикул или название — выберите из подсказки" autocomplete="off" />
+            <input type="search" id="tr-prod-q" placeholder="Артикул или название" autocomplete="off" />
             <label class="wh-tr-qty">
               <span>Кол-во</span>
               <input type="number" id="tr-qty" min="0.001" step="any" value="1" />
             </label>
             <button type="button" id="tr-add-line" title="Добавить выбранный товар в таблицу ниже">Добавить</button>
           </div>
-          <div id="tr-prod-sug" class="muted wh-tr-sug"></div>
+          <div id="tr-prod-sug" class="wh-tr-sug"></div>
         </div>
         <div class="field span-2 wh-tr-lines-block">
           <span>Позиции <span class="muted" id="tr-lines-count">(0)</span></span>
@@ -9310,7 +9326,7 @@ async function renderWhTransfers() {
               </tbody>
             </table>
           </div>
-          <p class="muted wh-tr-hint">После «Создать заказ» появится задание кладовщику (/pick). Остатки спишутся, когда кладовщик нажмёт «Сделал».</p>
+          <p class="muted wh-tr-hint">После «Создать заказ» — задание кладовщику (/pick). Остатки спишутся после «Сделал».</p>
           <div class="wh-tr-actions">
             <button type="button" class="primary" id="wh-tr-submit">Создать заказ</button>
           </div>
@@ -9464,70 +9480,176 @@ async function renderWhTransfers() {
       if (from && defaultWhId) from.value = defaultWhId;
       const sug = document.getElementById('tr-prod-sug');
       let t = null;
-      document.getElementById('tr-prod-q')?.addEventListener('input', () => {
-        clearTimeout(t);
-        t = setTimeout(async () => {
-          const q = String(document.getElementById('tr-prod-q')?.value || '').trim();
-          if (q.length < 2) {
-            if (sug) sug.textContent = '';
-            pickedProd = null;
+      const runProdSearch = async () => {
+        const q = String(document.getElementById('tr-prod-q')?.value || '').trim();
+        const fromId = String(document.getElementById('tr-from')?.value || '').trim();
+        if (q.length < 2) {
+          if (sug) sug.innerHTML = '';
+          pickedProd = null;
+          return;
+        }
+        if (!fromId) {
+          if (sug) sug.innerHTML = '<p class="muted" style="margin:0">Сначала выберите склад «откуда»</p>';
+          return;
+        }
+        try {
+          const prodQs = new URLSearchParams();
+          prodQs.set('q', q);
+          prodQs.set('limit', '15');
+          prodQs.set('item_kind', 'product');
+          withCompanyId(prodQs);
+          const balQs = new URLSearchParams();
+          balQs.set('q', q);
+          balQs.set('warehouse_id', fromId);
+          balQs.set('limit', '50');
+          withCompanyId(balQs);
+          const [prodData, balData] = await Promise.all([
+            api('/products?' + prodQs.toString()),
+            api('/balances?' + balQs.toString()),
+          ]);
+          const fromByPid = Object.create(null);
+          for (const b of balData.items || []) {
+            const pid = String(b.product_id || '');
+            if (!pid) continue;
+            fromByPid[pid] = Number(b.qty) || 0;
+          }
+          const items = (prodData.items || prodData || [])
+            .map((p) => {
+              const pid = String(p.id || p.product_id || '');
+              return {
+                product_id: pid,
+                sku: stripDeptSkuSuffix(p.sku || p.warehouse_sku || '') || '—',
+                name: p.name || '',
+                warehouse_sku: p.warehouse_sku || '',
+                from_qty: fromByPid[pid] || 0,
+                stock_places: String(p.stock_places || '').trim(),
+                stock_qty: Number(p.stock_qty) || 0,
+              };
+            })
+            .sort((a, b) => (b.from_qty > 0) - (a.from_qty > 0) || b.from_qty - a.from_qty);
+          if (!sug) return;
+          if (!items.length) {
+            sug.innerHTML = '<p class="muted" style="margin:0">Ничего не найдено по запросу</p>';
             return;
           }
-          try {
-            const data = await api(
-              withCompanyId('/products?q=' + encodeURIComponent(q) + '&limit=12')
-            );
-            const items = data.items || data || [];
-            if (!sug) return;
-            if (!items.length) {
-              sug.textContent = 'Ничего не найдено';
-              return;
+          sug.innerHTML = `<div class="table-scroll"><table class="data-table is-dense wh-tr-sug-table" data-no-col-filter="1">
+            <thead><tr>
+              <th>Артикул</th>
+              <th>Наименование</th>
+              <th class="num" title="Остаток на складе «откуда»">Откуда</th>
+              <th>На складах</th>
+              <th></th>
+            </tr></thead>
+            <tbody>
+              ${items
+                .map((p) => {
+                  const olds = oldSkuLine(p);
+                  const places =
+                    p.stock_places ||
+                    (p.stock_qty > 0 ? String(p.stock_qty) : '');
+                  const canPick = p.from_qty > 0;
+                  return `<tr class="${canPick ? 'clickable' : 'is-muted'}" data-pid="${esc(
+                    p.product_id
+                  )}" data-sku="${esc(p.sku)}" data-name="${esc(p.name)}" data-qty="${esc(
+                    p.from_qty
+                  )}" data-can="${canPick ? '1' : '0'}">
+                    <td class="mono">${esc(p.sku)}${
+                      olds ? `<div class="muted" style="font-size:11px">старые: ${esc(olds)}</div>` : ''
+                    }</td>
+                    <td>${esc(p.name)}</td>
+                    <td class="mono num">${
+                      canPick ? esc(p.from_qty) : '<span class="muted">0</span>'
+                    }</td>
+                    <td class="muted wh-tr-sug-places">${
+                      places ? esc(places) : '<span class="muted">нет</span>'
+                    }</td>
+                    <td>${
+                      canPick
+                        ? '<button type="button" class="linkish tr-sug-pick">Выбрать</button>'
+                        : '<span class="muted">нет на «откуда»</span>'
+                    }</td>
+                  </tr>`;
+                })
+                .join('')}
+            </tbody>
+          </table></div>`;
+          const pickRow = (row) => {
+            if (!row || row.getAttribute('data-can') !== '1') return;
+            pickedProd = {
+              product_id: row.getAttribute('data-pid'),
+              sku: row.getAttribute('data-sku') || '',
+              name: row.getAttribute('data-name') || '',
+              avail: Number(row.getAttribute('data-qty')) || 0,
+            };
+            const inp = document.getElementById('tr-prod-q');
+            if (inp) inp.value = `${pickedProd.sku} ${pickedProd.name}`.trim();
+            const qtyInp = document.getElementById('tr-qty');
+            if (qtyInp && pickedProd.avail > 0) {
+              const cur = Number(qtyInp.value);
+              if (!(cur > 0) || cur > pickedProd.avail) {
+                qtyInp.value = String(Math.min(1, pickedProd.avail));
+              }
+              qtyInp.max = String(pickedProd.avail);
             }
-            sug.innerHTML = items
-              .map(
-                (p) =>
-                  `<button type="button" class="linkish" data-pid="${esc(p.id)}" data-sku="${esc(
-                    p.sku || ''
-                  )}" data-name="${esc(p.name || '')}">${esc(p.sku || '')} · ${esc(
-                    p.name || ''
-                  )}</button>`
-              )
-              .join(' · ');
-            sug.querySelectorAll('[data-pid]').forEach((b) => {
-              b.onclick = () => {
-                pickedProd = {
-                  product_id: b.getAttribute('data-pid'),
-                  sku: b.getAttribute('data-sku') || '',
-                  name: b.getAttribute('data-name') || '',
-                };
-                const inp = document.getElementById('tr-prod-q');
-                if (inp) inp.value = `${pickedProd.sku} ${pickedProd.name}`.trim();
-                sug.textContent = 'Выбрано: ' + (pickedProd.sku || pickedProd.name);
-              };
-            });
-          } catch (e) {
-            if (sug) sug.textContent = e.message || 'ошибка поиска';
-          }
-        }, 220);
+            sug.innerHTML = `<p class="muted" style="margin:0">Выбрано: <b class="mono">${esc(
+              pickedProd.sku
+            )}</b> · на «откуда» ${esc(pickedProd.avail)}</p>`;
+          };
+          sug.querySelectorAll('tr[data-pid]').forEach((row) => {
+            row.onclick = () => pickRow(row);
+          });
+          sug.querySelectorAll('.tr-sug-pick').forEach((btn) => {
+            btn.onclick = (e) => {
+              e.stopPropagation();
+              pickRow(btn.closest('tr'));
+            };
+          });
+        } catch (e) {
+          if (sug) sug.innerHTML = `<p class="error" style="margin:0">${esc(e.message || 'ошибка поиска')}</p>`;
+        }
+      };
+      document.getElementById('tr-prod-q')?.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(runProdSearch, 220);
+      });
+      document.getElementById('tr-from')?.addEventListener('change', () => {
+        pickedProd = null;
+        const q = String(document.getElementById('tr-prod-q')?.value || '').trim();
+        if (q.length >= 2) runProdSearch();
+        else if (sug) sug.innerHTML = '';
       });
       document.getElementById('tr-add-line')?.addEventListener('click', () => {
         const qty = Number(document.getElementById('tr-qty')?.value);
         if (!pickedProd?.product_id) {
-          if (msgEl) msgEl.textContent = 'Сначала выберите товар из подсказки';
+          if (msgEl) msgEl.textContent = 'Сначала выберите товар из таблицы подсказки';
           return;
         }
         if (!(qty > 0)) {
           if (msgEl) msgEl.textContent = 'Укажите количество';
           return;
         }
-        lines.push({ ...pickedProd, qty });
+        if (pickedProd.avail > 0 && qty > pickedProd.avail + 1e-9) {
+          if (msgEl) {
+            msgEl.textContent =
+              'Нельзя больше остатка на складе «откуда»: ' + pickedProd.avail;
+          }
+          return;
+        }
+        lines.push({
+          product_id: pickedProd.product_id,
+          sku: pickedProd.sku,
+          name: pickedProd.name,
+          qty,
+        });
         pickedProd = null;
         const inp = document.getElementById('tr-prod-q');
         if (inp) inp.value = '';
-        const sq = document.getElementById('tr-prod-sug');
-        if (sq) sq.textContent = '';
+        if (sug) sug.innerHTML = '';
         const qtyInp = document.getElementById('tr-qty');
-        if (qtyInp) qtyInp.value = '1';
+        if (qtyInp) {
+          qtyInp.value = '1';
+          qtyInp.removeAttribute('max');
+        }
         paintLines();
         if (msgEl) msgEl.textContent = '';
       });

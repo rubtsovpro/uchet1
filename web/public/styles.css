@@ -4632,9 +4632,30 @@ button.toolbar-ico.doc-in-rm-line svg {
   white-space: nowrap;
 }
 .wh-tr-sug {
-  margin-top: 6px;
+  margin-top: 8px;
   font-size: 12px;
   line-height: 1.45;
+  width: 100%;
+}
+.wh-tr-sug-table {
+  width: 100%;
+}
+.wh-tr-sug-table td.num,
+.wh-tr-sug-table th.num {
+  text-align: right;
+  white-space: nowrap;
+}
+.wh-tr-sug-table tr.is-muted {
+  opacity: 0.72;
+}
+.wh-tr-sug-places {
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+  max-width: 28em;
+}
+.wh-tr-intro {
+  color: var(--taxi-muted, #64748b);
 }
 .wh-tr-lines-block {
   width: 100%;
