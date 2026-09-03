@@ -9,17 +9,12 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
   <title>Склад · задачи · Учёт №1</title>
-  <!-- pick-ui rev=pick-production-screen-20260903a -->
+  <!-- pick-ui rev=pick-production-queue-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc54';
+    window.__PICK_UI_REV = 'pc56';
   </script>
   <script>
-    (function () {
-      try {
-        var t = localStorage.getItem('uchet1_pick_theme');
-        if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
-      } catch (_) {}
-    })();
+    document.documentElement.setAttribute('data-theme', 'light');
   </script>
   <style>
     :root, [data-theme="light"] {
@@ -2580,10 +2575,6 @@
       <div class="toolbar">
         <span class="who" id="who"></span>
         <a class="btn-tool warehouses-link" href="/warehouses" title="Список складов и остатки">Склады</a>
-        <button type="button" class="btn-tool" id="theme-btn" title="Тема: светлая / тёмная" aria-pressed="false" aria-label="Переключить тему">
-          <span class="theme-switch" aria-hidden="true"></span>
-          <span class="theme-lbl">Тёмная</span>
-        </button>
         <span class="auto-live muted" id="auto-live" title="Очередь обновляется сама">авто · —</span>
         <button type="button" class="btn-tool" id="logout">Выйти</button>
       </div>
@@ -2692,8 +2683,6 @@
       String(window.__PICK_SCREEN || '').toLowerCase() === 'production' ||
       /^\/production(\.html)?\/?$/.test(String(location.pathname || ''));
     let me = null;
-    let prodJobs = [];
-    let prodTab = 'active';
     let selectedId = null;
     let pendingTaskId = '';
     try {
@@ -2846,30 +2835,16 @@
     let lastCamCode = '';
     let lastCamAt = 0;
 
-    function applyTheme(theme) {
-      const t = theme === 'dark' ? 'dark' : 'light';
-      document.documentElement.setAttribute('data-theme', t);
-      try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
-      const btn = document.getElementById('theme-btn');
-      if (btn) {
-        const dark = t === 'dark';
-        btn.setAttribute('aria-pressed', dark ? 'true' : 'false');
-        btn.title = dark ? 'Тема: тёмная (нажмите для светлой)' : 'Тема: светлая (нажмите для тёмной)';
-        btn.setAttribute('aria-label', dark ? 'Включить светлую тему' : 'Включить тёмную тему');
-        const lbl = btn.querySelector('.theme-lbl');
-        if (lbl) lbl.textContent = dark ? 'Светлая' : 'Тёмная';
-      }
+    function applyTheme() {
+      document.documentElement.setAttribute('data-theme', 'light');
+      try { localStorage.setItem(THEME_KEY, 'light'); } catch (_) {}
       const logo = document.querySelector('.brand-logo');
-      if (logo) logo.src = t === 'dark' ? '/logo-uchet1-on-dark.svg' : '/logo-uchet1.svg';
+      if (logo) logo.src = '/logo-uchet1.svg';
       const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.setAttribute('content', t === 'dark' ? '#0c1414' : '#0d7377');
+      if (meta) meta.setAttribute('content', '#0d7377');
     }
 
-    (function initTheme() {
-      let t = 'light';
-      try { t = localStorage.getItem(THEME_KEY) || 'light'; } catch (_) {}
-      applyTheme(t);
-    })();
+    applyTheme();
 
     function fmtTime(d) {
       const x = d instanceof Date ? d : new Date(d);
@@ -4220,8 +4195,8 @@
     function boardGroupsForUi() {
       const groups = (board && board.groups) || [];
       const pickerOnly = !!(me && me.picker_only);
-      if (!pickerOnly) return groups;
-      // Склад/курьер: в «Очереди» только производство (остальное — в Расходных).
+      // /production и picker_only: только задания производства
+      if (!pickerOnly && !IS_PROD_SCREEN) return groups;
       return groups
         .map((g) => {
           const items = (g.items || []).filter(isProductionTask);
@@ -4777,115 +4752,24 @@
       document.title = 'Производство · Учёт №1';
       const h1 = document.querySelector('header .brand-text h1');
       if (h1) h1.textContent = 'Производство';
-      const sub = document.querySelector('header .brand-text .sub');
-      if (sub && !sub.id) sub.textContent = 'участок · PROD-WIP';
       ['returns-panel', 'handoffs-panel', 'handoff-deal-find', 'site-switch', 'pick-push-box', 'urg'].forEach(
         (id) => {
           const el = document.getElementById(id);
           if (el) el.hidden = true;
         }
       );
+      const counts = document.getElementById('counts');
+      if (counts) {
+        counts.hidden = false;
+        counts.className = 'counts';
+      }
       const openPanel = document.getElementById('open-panel');
       if (openPanel) {
         openPanel.hidden = false;
         openPanel.classList.add('is-production');
         const h2 = openPanel.querySelector(':scope > h2');
-        if (h2) h2.textContent = 'Заказы на участке';
+        if (h2) h2.textContent = 'На производство';
       }
-    }
-
-    function renderProductionTabs(activeN, closedN) {
-      const el = document.getElementById('counts');
-      if (!el) return;
-      el.className = 'counts pick-tabs';
-      el.innerHTML =
-        '<button type="button" class="pick-tab' +
-        (prodTab === 'active' ? ' is-active' : '') +
-        '" data-prod-tab="active">На участке<b>' +
-        activeN +
-        '</b></button>' +
-        '<button type="button" class="pick-tab' +
-        (prodTab === 'closed' ? ' is-active' : '') +
-        '" data-prod-tab="closed">Готово / склад<b>' +
-        closedN +
-        '</b></button>';
-      el.querySelectorAll('[data-prod-tab]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          prodTab = String(btn.getAttribute('data-prod-tab') || 'active');
-          renderProductionJobsBoard();
-          renderProductionTabs(
-            (prodJobs || []).filter((j) => j.status === 'at_production').length,
-            (prodJobs || []).filter((j) => j.status === 'await_receive').length
-          );
-        });
-      });
-    }
-
-    function renderProductionJobsBoard() {
-      const groups = document.getElementById('groups');
-      if (!groups) return;
-      const active = (prodJobs || []).filter((j) => j.status === 'at_production');
-      const waiting = (prodJobs || []).filter((j) => j.status === 'await_receive');
-      const list = prodTab === 'closed' ? waiting : active;
-      if (!list.length) {
-        groups.innerHTML =
-          '<div class="empty muted" style="padding:28px 12px;text-align:center">' +
-          (prodTab === 'closed'
-            ? 'Нет заказов, ожидающих оприходование склада.'
-            : 'Нет заказов на участке. Ждём передачу со склада (статус «В производстве»).') +
-          '</div>';
-        return;
-      }
-      groups.innerHTML =
-        '<div class="list">' +
-        list
-          .map((j) => {
-            const canDone = j.status === 'at_production';
-            const deal = j.deal_id
-              ? '<div class="meta">Сделка Amo · <span class="mono">' + esc(j.deal_id) + '</span></div>'
-              : '';
-            return (
-              '<article class="handoff-row is-production" data-prod-job="' +
-              esc(j.id) +
-              '">' +
-              '<div class="handoff-main">' +
-              '<div class="handoff-title"><strong class="mono">' +
-              esc(j.number) +
-              '</strong> <span class="badge normal">' +
-              esc(j.kind_label || j.kind || '') +
-              '</span></div>' +
-              '<div class="meta">' +
-              esc(j.status_label || j.status) +
-              '</div>' +
-              deal +
-              '<div class="handoff-sum">' +
-              esc(j.summary || '') +
-              '</div>' +
-              '</div>' +
-              (canDone
-                ? '<button type="button" class="handoff-complete-btn is-production" data-prod-job-done="' +
-                  esc(j.id) +
-                  '">Готово</button>'
-                : '<div class="muted" style="padding:10px 12px;font-size:13px">Ждём склад</div>') +
-              '</article>'
-            );
-          })
-          .join('') +
-        '</div>';
-      groups.querySelectorAll('[data-prod-job-done]').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          const id = btn.getAttribute('data-prod-job-done');
-          if (!id) return;
-          btn.disabled = true;
-          try {
-            await api('/production/jobs/' + encodeURIComponent(id) + '/done', { method: 'POST' });
-            await loadProductionScreen();
-          } catch (e) {
-            showErr((e && e.message) || 'ошибка');
-            btn.disabled = false;
-          }
-        });
-      });
     }
 
     async function loadProductionScreen() {
@@ -4895,7 +4779,7 @@
           me = await api('/me');
           const who = document.getElementById('who');
           if (who && me) {
-            who.textContent = (me.name || me.login || '') + (me.role ? ' · ' + me.role : '');
+            who.textContent = me.name || me.login || '';
           }
         } catch (_) {}
       }
@@ -4914,22 +4798,34 @@
         showErr('Недостаточно прав для экрана производства.');
         return;
       }
-      const data = await api('/production/jobs?limit=80');
-      prodJobs = Array.isArray(data.items) ? data.items : [];
-      const activeN = prodJobs.filter((j) => j.status === 'at_production').length;
-      const closedN = prodJobs.filter((j) => j.status === 'await_receive').length;
+      applyPickSiteLock();
+      // Та же доска, что /pick, но только карточки «На производство»
+      const data = await api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite));
+      board = data;
+      handoffs = [];
+      stockReturns = [];
       lastRefreshAt = new Date();
       updateAutoLabel();
       const dayEl = document.getElementById('day');
-      if (dayEl) {
-        dayEl.textContent = new Date().toLocaleDateString('ru-RU', {
-          weekday: 'short',
-          day: 'numeric',
-          month: 'short',
-        });
+      if (dayEl) dayEl.textContent = data.day || '—';
+      const prodN = productionOpenCount();
+      const countsEl = document.getElementById('counts');
+      if (countsEl) {
+        countsEl.hidden = false;
+        countsEl.innerHTML =
+          '<span style="font-size:14px;font-weight:700;color:var(--accent)">На производство · ' +
+          prodN +
+          '</span>';
       }
-      renderProductionTabs(activeN, closedN);
-      renderProductionJobsBoard();
+      applyProductionChrome();
+      await renderGroups();
+      if (!productionOpenCount()) {
+        const box = document.getElementById('groups');
+        if (box && !box.querySelector('.handoff-row, .row, .group')) {
+          box.innerHTML =
+            '<div class="muted" style="padding:28px 12px;text-align:center">Нет заданий на производство.</div>';
+        }
+      }
     }
 
     async function load() {
@@ -4945,7 +4841,7 @@
           me = await api('/me');
           const who = document.getElementById('who');
           if (who && me) {
-            who.textContent = (me.name || me.login || '') + (me.role ? ' · ' + me.role : '');
+            who.textContent = me.name || me.login || '';
           }
         } catch (_) {}
       }
@@ -5748,6 +5644,10 @@
     }
 
     function syncPickTabPanels() {
+      if (IS_PROD_SCREEN) {
+        applyProductionChrome();
+        return;
+      }
       const openPanel = document.getElementById('open-panel');
       const handoffsPanel = document.getElementById('handoffs-panel');
       const returnsPanel = document.getElementById('returns-panel');
@@ -7393,11 +7293,6 @@
       else if (dir === 'next' && closedPage < closedPages) loadClosedHandoffs(closedPage + 1);
     });
     syncSiteSwitch();
-
-    document.getElementById('theme-btn').onclick = () => {
-      const cur = document.documentElement.getAttribute('data-theme') || 'light';
-      applyTheme(cur === 'dark' ? 'light' : 'dark');
-    };
 
     document.getElementById('logout').onclick = () => {
       const next = '/login?next=' + encodeURIComponent((location.pathname || '/pick') + (location.search || ''));
