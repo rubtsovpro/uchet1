@@ -224,6 +224,13 @@ function applyPartyToCounterparty(id: string, party: DadataParty, opts?: { overw
   if (opts?.overwriteName && name) run('UPDATE counterparties SET name = ? WHERE id = ?', [name, id]);
   if (nameFull) run('UPDATE counterparties SET name_full = ? WHERE id = ?', [nameFull, id]);
   if (inn) run('UPDATE counterparties SET inn = ? WHERE id = ?', [inn, id]);
+  const partyKind =
+    String(party.type || '').toUpperCase() === 'INDIVIDUAL'
+      ? 'ip'
+      : String(party.type || '').toUpperCase() === 'LEGAL'
+        ? 'legal'
+        : '';
+  if (partyKind) run('UPDATE counterparties SET party_kind = ? WHERE id = ?', [partyKind, id]);
   run('UPDATE counterparties SET kpp = ? WHERE id = ?', [kpp, id]);
   run('UPDATE counterparties SET ogrn = ? WHERE id = ?', [ogrn, id]);
   run('UPDATE counterparties SET address = ? WHERE id = ?', [address, id]);

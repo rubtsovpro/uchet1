@@ -70,20 +70,30 @@ function normTag(s: string): string {
     .replace(/[^a-zа-я\-]/gi, '');
 }
 
-/** Контакт Amo вида «Павел Москва» / «Сергей Москва СТО» / «Павел Зеленоград». */
+/** Контакт Amo вида «Павел Москва» / «Сергей Москва СТО» / «Андрей … Краснодар …». */
 export function looksLikeAmoNameCityLabel(name: string): boolean {
   const parts = String(name || '')
     .trim()
     .split(/\s+/)
     .filter(Boolean);
-  if (parts.length < 2 || parts.length > 4) return false;
-  if (/^(ооо|ао|пао|зао|ип|общество)\b/i.test(parts[0])) return false;
+  if (parts.length < 2) return false;
+  if (/^(ооо|ао|пао|зао|ип|общество|индивидуальный)\b/i.test(parts[0])) return false;
   const tags = parts.map(normTag);
-  const last = tags[tags.length - 1];
-  const penult = tags.length >= 2 ? tags[tags.length - 2] : '';
-  if (last === 'сто' && AMO_CITY_TAGS.has(penult)) return true;
-  if (AMO_CITY_TAGS.has(last)) return true;
+  // Город в любом токене после первого (и длинные ярлыки с улицей)
+  for (let i = 1; i < tags.length; i++) {
+    if (AMO_CITY_TAGS.has(tags[i])) return true;
+    if (tags[i] === 'сто' && AMO_CITY_TAGS.has(tags[i - 1] || '')) return true;
+  }
   return false;
+}
+
+/** В наименовании уже есть ОПФ (ООО / ИП / …) — можно печатать в счёте / УПД. */
+export function buyerDocNameHasOpf(name: string): boolean {
+  const n = String(name || '').trim();
+  if (!n) return false;
+  return /^(ооо|ооо\s|ао\b|пао\b|зао\b|ип\b|общество\b|индивидуальный\s+предприниматель\b)/i.test(
+    n
+  );
 }
 
 /** Заглушка Amo / тестовая компания — не подставлять в печатные формы как покупателя. */
@@ -93,7 +103,39 @@ export function isWeakBuyerDocName(name: string): boolean {
   if (looksLikeAmoNameCityLabel(n)) return true;
   if (/^тестов/i.test(n)) return true;
   if (/^(клиент|заказчик|покупатель|контрагент|компания)$/i.test(n)) return true;
+  // «Андрей АВД Моторс…» без ОПФ — не юрлицо для бланка
+  if (!buyerDocNameHasOpf(n) && /\b(авд|сто|моторс)\b/i.test(n) && /\s/.test(n)) return true;
   return false;
+}
+
+/**
+ * Юр. наименование для счёта / УПД: с ОПФ.
+ * ИП → «Индивидуальный предприниматель …» или «ИП …»; ООО и т.п. — как есть с ОПФ.
+ */
+export function formatBuyerLegalDocName(input: {
+  name?: string;
+  inn?: string;
+  party_kind?: string;
+}): string {
+  const raw = String(input.name || '').trim();
+  if (!raw || isWeakBuyerDocName(raw)) return '';
+  const inn = String(input.inn || '').replace(/\D/g, '');
+  const pk = String(input.party_kind || '').toLowerCase();
+  const isIp =
+    pk === 'ip' ||
+    inn.length === 12 ||
+    /^ип\b/i.test(raw) ||
+    /^индивидуальный\s+предприниматель\b/i.test(raw);
+  if (isIp) {
+    if (/^индивидуальный\s+предприниматель\b/i.test(raw)) return raw;
+    if (/^ип\b/i.test(raw)) {
+      const fio = raw.replace(/^ип\s+/i, '').trim();
+      return fio ? `Индивидуальный предприниматель ${fio}` : raw;
+    }
+    if (looksLikePersonFio(raw)) return `Индивидуальный предприниматель ${raw}`;
+    return raw;
+  }
+  return raw;
 }
 
 /** Похоже на настоящее ФИО (не ярлык «Имя Город»). */

@@ -32,6 +32,8 @@ import { catalogArticleOf, mergeSalesDocLines, salesDocLineDisplayName } from '.
 import { orgSignHtml, orgStampHtml } from './org-stamp.js';
 import { orgLogoHtml } from './org-logo.js';
 import {
+  buyerDocNameHasOpf,
+  formatBuyerLegalDocName,
   isWeakBuyerDocName,
   looksLikeAmoNameCityLabel,
   looksLikePersonFio,
@@ -432,14 +434,58 @@ function findCounterpartyByInn(inn: string): Row | null {
 function findCounterpartyForDeal(deal: Row | null | undefined): Row | null {
   if (!deal) return null;
   const companyId = String(deal.company_id || '').trim();
+  const amoCo =
+    companyId.replace(/^amo:company:/i, '').trim() ||
+    String((deal as { amo_company_id?: string }).amo_company_id || '').trim();
+
+  // Юрлицо из виджета «Документы»: брать карточку с «Полное наименование» (ОПФ), не ярлык Amo
+  if (amoCo) {
+    const candidates = all(
+      `SELECT * FROM counterparties
+       WHERE amo_company_id = ? OR id = ? OR id = ?`,
+      [amoCo, amoCo, `amo:company:${amoCo}`]
+    ) as Row[];
+    const scored = candidates
+      .map((row) => {
+        const full = String(row.name_full || '').trim();
+        const name = String(row.name || '').trim();
+        const inn = String(row.inn || '').replace(/\D/g, '');
+        const hasOpf = buyerDocNameHasOpf(full) || buyerDocNameHasOpf(name);
+        const weak = isWeakBuyerDocName(full || name);
+        let score = 0;
+        if (hasOpf) score += 100;
+        if (full && !weak) score += 50;
+        if (inn.length === 10 || inn.length === 12) score += 20;
+        if (String(row.party_kind || '') === 'ip' || String(row.party_kind || '') === 'legal') {
+          score += 10;
+        }
+        return { row, score };
+      })
+      .sort((a, b) => b.score - a.score);
+    if (scored[0] && scored[0].score > 0) return scored[0].row;
+    if (candidates[0]) return candidates[0];
+  }
+
   if (companyId) {
     const byId = get('SELECT * FROM counterparties WHERE id = ?', [companyId]);
-    if (byId) return byId;
-    const byAmo = get(
-      `SELECT * FROM counterparties WHERE amo_company_id = ? ORDER BY name LIMIT 1`,
-      [companyId]
-    );
-    if (byAmo) return byAmo;
+    if (byId) {
+      const nm = String((byId as { name?: string }).name || '').trim();
+      const full = String((byId as { name_full?: string }).name_full || '').trim();
+      if (nm && (!full || isWeakBuyerDocName(full) || !buyerDocNameHasOpf(full))) {
+        const richer = get(
+          `SELECT * FROM counterparties
+           WHERE name = ?
+             AND IFNULL(TRIM(name_full),'') != ''
+             AND length(replace(IFNULL(inn,''), ' ', '')) IN (10, 12)
+           ORDER BY CASE WHEN IFNULL(party_kind,'') = 'ip' THEN 0 ELSE 1 END,
+                    length(name_full) DESC
+           LIMIT 1`,
+          [nm]
+        );
+        if (richer) return richer;
+      }
+      return byId;
+    }
   }
   const inn = String(deal.buyer_inn || '').replace(/\D/g, '');
   if (inn.length === 10 || inn.length === 12) {
@@ -464,7 +510,15 @@ export function resolveContractBuyerFromDeal(
   const companyName = String(deal?.company_name || '').trim();
   const contactName = String(deal?.buyer_name || '').trim();
   const isLegal = dealIsLegalEntity(deal as Record<string, unknown> | null | undefined);
-  const nameFromCp = String(cp?.name_full || cp?.name || '').trim();
+  const nameFromCpRaw = String(cp?.name_full || cp?.name || '').trim();
+  const nameFromCp =
+    nameFromCpRaw && !isWeakBuyerDocName(nameFromCpRaw)
+      ? formatBuyerLegalDocName({
+          name: nameFromCpRaw,
+          inn: String(cp?.inn || '').replace(/\D/g, ''),
+          party_kind: String((cp as { party_kind?: string } | null)?.party_kind || ''),
+        }) || nameFromCpRaw
+      : '';
   // Физлицо: не подставлять ярлык Amo «Имя Город» — ФИО из поля / ПДн.
   const dealId = String(deal?.id || '').trim();
   let pdnFio = '';
@@ -482,22 +536,45 @@ export function resolveContractBuyerFromDeal(
   const personFio = !isLegal
     ? resolvePersonDocFio(deal as Record<string, unknown> | null | undefined) ||
       pdnFio ||
-      (looksLikePersonFio(nameFromCp) && !looksLikeAmoNameCityLabel(nameFromCp) ? nameFromCp : '')
+      (looksLikePersonFio(nameFromCpRaw) && !looksLikeAmoNameCityLabel(nameFromCpRaw)
+        ? nameFromCpRaw
+        : '')
     : '';
   const inn =
     String(overrides.inn || '').replace(/\D/g, '') ||
     String(cp?.inn || '').replace(/\D/g, '') ||
     String(deal?.buyer_inn || '').replace(/\D/g, '');
-  const officialBuyerName = nameFromCp && !isWeakBuyerDocName(nameFromCp) ? nameFromCp : '';
-  const overrideName = String(overrides.name || '').trim();
+  const officialBuyerName = nameFromCp;
+  const overrideNameRaw = String(overrides.name || '').trim();
+  const overrideName =
+    overrideNameRaw && !isWeakBuyerDocName(overrideNameRaw) && buyerDocNameHasOpf(overrideNameRaw)
+      ? overrideNameRaw
+      : overrideNameRaw && !isWeakBuyerDocName(overrideNameRaw)
+        ? formatBuyerLegalDocName({
+            name: overrideNameRaw,
+            inn,
+            party_kind: String((cp as { party_kind?: string } | null)?.party_kind || ''),
+          })
+        : '';
   const legalDealName = (raw: string) => {
     const v = String(raw || '').trim();
-    return v && !isWeakBuyerDocName(v) ? v : '';
+    if (!v || isWeakBuyerDocName(v)) return '';
+    if (buyerDocNameHasOpf(v)) return v;
+    return (
+      formatBuyerLegalDocName({
+        name: v,
+        inn,
+        party_kind: String((cp as { party_kind?: string } | null)?.party_kind || ''),
+      }) || ''
+    );
   };
+  // Юрлицо / ИП по ИНН даже если сделка помечена как person (Amo)
+  const treatAsLegal =
+    isLegal || inn.length === 10 || inn.length === 12 || Boolean(officialBuyerName && buyerDocNameHasOpf(officialBuyerName));
   const name =
-    (!isWeakBuyerDocName(overrideName) ? overrideName : '') ||
+    overrideName ||
     ((inn.length === 10 || inn.length === 12) && officialBuyerName ? officialBuyerName : '') ||
-    (isLegal
+    (treatAsLegal
       ? officialBuyerName || legalDealName(companyName) || legalDealName(contactName)
       : personFio) ||
     officialBuyerName ||
@@ -644,6 +721,8 @@ function mergeSalesDocBuyerName(cur: unknown, next: string | undefined): string 
   const resolved = String(next || '').trim();
   if (!resolved) return stored;
   if (!stored || isWeakBuyerDocName(stored)) return resolved;
+  if (!buyerDocNameHasOpf(stored) && buyerDocNameHasOpf(resolved)) return resolved;
+  if (isWeakBuyerDocName(resolved)) return stored;
   return stored;
 }
 
@@ -844,23 +923,35 @@ export function fillSalesDocBuyerFromDeal(docId: string): ReturnType<typeof getS
   const dealId = String(doc.deal_id || '').trim();
   if (!dealId) return getSalesDoc(id);
   const deal = getDeal(dealId) as Row | null;
+  const storedName = String(doc.counterparty_name || '').trim();
+  const storedInn = String(doc.counterparty_inn || '').replace(/\D/g, '');
   const resolved = resolveContractBuyerFromDeal(deal, {
-    name: String(doc.counterparty_name || ''),
-    inn: String(doc.counterparty_inn || ''),
+    // Не закреплять ярлык Amo без ОПФ — иначе fill никогда не обновит бланк
+    name:
+      buyerDocNameHasOpf(storedName) && !isWeakBuyerDocName(storedName) ? storedName : '',
+    inn: storedInn,
     address: String(doc.buyer_address || ''),
     phone: String(doc.buyer_phone || ''),
     email: String(doc.buyer_email || ''),
   });
   const merged: ContractBuyerFields = {
     name: mergeSalesDocBuyerName(doc.counterparty_name, resolved.name),
-    inn: pickSalesDocBuyerField(doc.counterparty_inn, resolved.inn),
+    inn: (() => {
+      const nextInn = String(resolved.inn || '').replace(/\D/g, '');
+      // Фейковый ИНН с ярлыка Amo — заменить на ИНН из карточки с ОПФ
+      if (nextInn && (nextInn.length === 10 || nextInn.length === 12)) {
+        if (!storedInn || storedInn === nextInn) return nextInn;
+        if (isWeakBuyerDocName(storedName) || !buyerDocNameHasOpf(storedName)) return nextInn;
+      }
+      return pickSalesDocBuyerField(doc.counterparty_inn, resolved.inn);
+    })(),
     address: pickSalesDocBuyerField(doc.buyer_address, resolved.address),
     phone: pickSalesDocBuyerField(doc.buyer_phone, resolved.phone),
     email: pickSalesDocBuyerField(doc.buyer_email, resolved.email),
     passport: '',
-    kpp: '',
-    ogrn: '',
-    director: '',
+    kpp: String(resolved.kpp || '').replace(/\D/g, ''),
+    ogrn: String(resolved.ogrn || '').replace(/\D/g, ''),
+    director: String(resolved.director || '').trim(),
     bank: '',
     bik: '',
     rs: '',
@@ -1811,13 +1902,16 @@ export function createSalesDocFromDeal(input: {
   const companyName = String(deal.company_name || '').trim();
   const contactName = String(deal.buyer_name || '').trim();
   const isLegalDeal = dealIsLegalEntity(deal as Record<string, unknown>);
+  const safeFallback = (v: string) => {
+    const s = String(v || '').trim();
+    return s && !isWeakBuyerDocName(s) ? s : '';
+  };
   const buyerName =
     buyerResolved.name ||
-    (input.buyerName || '').trim() ||
-    (isLegalDeal ? companyName || contactName : contactName || companyName) ||
-    String(deal.name || '')
-      .replace(/\s+mraer$/i, '')
-      .trim() ||
+    safeFallback((input.buyerName || '').trim()) ||
+    (isLegalDeal
+      ? safeFallback(companyName) || safeFallback(contactName)
+      : safeFallback(contactName) || safeFallback(companyName)) ||
     `Покупатель (заказ ${dealIdStr})`;
   const buyerInn =
     buyerResolved.inn ||
