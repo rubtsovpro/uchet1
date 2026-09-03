@@ -63,6 +63,10 @@ const state = {
   whShowArchived: false,
   /** Хаб раздела Склад: warehouses | requests */
   whHubTab: 'warehouses',
+  /** Перемещения: journal | create */
+  whTransfersPage: 'journal',
+  /** create kind: warehouse | cell */
+  whTransfersKind: 'warehouse',
   warehousesCreateOpen: false,
   staffQ: '',
   /** on | off | all — фильтр доступа в списке персонала */
@@ -174,6 +178,7 @@ const VIEW_TITLES = {
   marking: 'Маркировка / партии',
   'wh-tasks': 'Задания склада',
   'wh-cells': 'Адресные ячейки',
+  'wh-transfers': 'Перемещения',
   'wh-inbound': 'Новая приходная',
   'sto-parts': 'Заказы покупателей',
   'courier-runs': 'Курьер',
@@ -276,6 +281,7 @@ const TAB_PATHS = {
   marking: '/marking',
   'wh-tasks': '/warehouse/tasks',
   'wh-cells': '/warehouse/cells',
+  'wh-transfers': '/warehouse/transfers',
   'wh-inbound': '/warehouse/inbound',
   'sto-parts': '/crm/deals',
   'courier-runs': '/courier',
@@ -630,6 +636,7 @@ const TAB_SECTION_MAP = {
   marking: 'warehouse',
   'wh-tasks': 'warehouse',
   'wh-cells': 'warehouse',
+  'wh-transfers': 'warehouse',
   'wh-inbound': 'warehouse',
   'sto-parts': 'crm',
   'courier-runs': 'warehouse',
@@ -682,6 +689,7 @@ function applyAppPath(pathname, replace) {
           tab === 'balances' ||
           tab === 'wh-tasks' ||
           tab === 'wh-cells' ||
+          tab === 'wh-transfers' ||
           tab === 'wh-inbound' ||
           tab === 'courier-runs' ||
           tab === 'stock-valuation' ||
@@ -816,6 +824,7 @@ const SECTIONS = {
           title: 'Склад',
           links: [
             { view: 'warehouses', label: 'Склады', whHubTab: 'warehouses' },
+            { view: 'wh-transfers', label: 'Перемещения' },
             { view: 'warehouses', label: 'Заказы на перемещение', whHubTab: 'requests' },
             { view: 'balances', label: 'Остатки' },
             { view: 'wh-cells', label: 'Адресные ячейки' },
@@ -9059,6 +9068,514 @@ function saveWhView(mode) {
     /* ignore */
   }
   return next;
+}
+
+async function renderWhTransfers() {
+  const statusRuThin = (s) => {
+    const m = {
+      new: 'Новое',
+      draft: 'Черновик',
+      done: 'Выполнен',
+      posted: 'Проведён',
+      cancelled: 'Отменён',
+    };
+    return m[String(s || '').toLowerCase()] || s || '—';
+  };
+  const page = state.whTransfersPage === 'create' ? 'create' : 'journal';
+  state.whTransfersPage = page;
+  const kind = state.whTransfersKind === 'cell' ? 'cell' : 'warehouse';
+  state.whTransfersKind = kind;
+
+  let body = '';
+  let err = '';
+
+  if (page === 'journal') {
+    let whItems = [];
+    let cellItems = [];
+    try {
+      const [tr, cells] = await Promise.all([
+        api('/stock/transfers?limit=150'),
+        api('/parity/journals/cell_transfers?limit=100').catch(() => ({ items: [] })),
+      ]);
+      whItems = tr.items || [];
+      cellItems = cells.items || [];
+    } catch (e) {
+      err = e.message || String(e);
+    }
+    const rows = [
+      ...whItems.map((r) => ({
+        kind: 'warehouse',
+        id: r.id,
+        date: String(r.doc_date || '').slice(0, 10),
+        number: r.number || '',
+        route: `${r.warehouse_from || '—'} → ${r.warehouse_to || '—'}`,
+        status: r.posted ? 'Проведён' : 'Черновик',
+        comment: r.comment || '',
+        open: () => openTab('doc:' + r.id, (r.number || 'TR').slice(0, 40)),
+      })),
+      ...cellItems.map((r) => {
+        let payload = {};
+        try {
+          payload = r.payload_json ? JSON.parse(r.payload_json) : {};
+        } catch (_) {}
+        const route =
+          r.counterparty_name ||
+          `${payload.from_cell || '?'} → ${payload.to_cell || '?'}`;
+        return {
+          kind: 'cell',
+          id: r.id,
+          date: String(r.doc_date || '').slice(0, 10),
+          number: r.number || '',
+          route,
+          status: r.status === 'posted' ? 'Проведён' : statusRuThin(r.status),
+          comment: r.comment || '',
+          open: null,
+        };
+      }),
+    ].sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.number).localeCompare(String(a.number)));
+
+    body = err
+      ? `<p class="error">${esc(err)}</p>`
+      : `
+    <p class="muted" style="margin:0 0 10px;font-size:12px">
+      Журнал перемещений между складами и между ячейками. Создать — вкладка выше.
+      Заказы с заданием кладовщику также в «Заказы на перемещение».
+    </p>
+    <div class="table-tools" style="margin-bottom:8px">
+      <button type="button" id="wh-tr-reload">Обновить</button>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table is-dense" data-table-key="wh-transfers" data-no-col-filter="1">
+        <thead><tr>
+          <th>Дата</th><th>Тип</th><th>Номер</th><th>Откуда → Куда</th><th>Статус</th><th>Комментарий</th>
+        </tr></thead>
+        <tbody>
+          ${
+            rows.length
+              ? rows
+                  .map(
+                    (r, i) => `<tr class="${r.open ? 'clickable' : ''}" data-wh-tr-idx="${i}">
+              <td>${esc(r.date || '—')}</td>
+              <td>${esc(r.kind === 'cell' ? 'Ячейки' : 'Склады')}</td>
+              <td class="mono">${esc(r.number || '—')}</td>
+              <td>${esc(r.route)}</td>
+              <td>${esc(r.status)}</td>
+              <td title="${esc(r.comment)}">${esc(
+                      String(r.comment || '').length > 70
+                        ? String(r.comment).slice(0, 70) + '…'
+                        : r.comment || '—'
+                    )}</td>
+            </tr>`
+                  )
+                  .join('')
+              : '<tr><td colspan="6" class="muted">Пока пусто. Создайте перемещение на вкладке «Создать».</td></tr>'
+          }
+        </tbody>
+      </table>
+    </div>`;
+    view.innerHTML = formChrome('Перемещения', body, {
+      sectionId: 'warehouse',
+      entityKind: 'warehouse',
+      parentTab: 'warehouses',
+      parentLabel: 'Склады',
+      pageTabs: [
+        { id: 'journal', label: 'Журнал' },
+        { id: 'create', label: 'Создать' },
+      ],
+      activePageTab: 'journal',
+    });
+    bindFormChrome(() => showSection('warehouse'));
+    view.querySelectorAll('[data-pagetab]').forEach((btn) => {
+      btn.onclick = () => {
+        state.whTransfersPage = btn.getAttribute('data-pagetab') === 'create' ? 'create' : 'journal';
+        renderWhTransfers();
+      };
+    });
+    document.getElementById('wh-tr-reload')?.addEventListener('click', () => renderWhTransfers());
+    view.querySelectorAll('[data-wh-tr-idx]').forEach((row) => {
+      row.onclick = () => {
+        const idx = Number(row.getAttribute('data-wh-tr-idx'));
+        const item = rows[idx];
+        if (item && typeof item.open === 'function') item.open();
+      };
+    });
+    return;
+  }
+
+  // —— Создать ——
+  let warehouses = [];
+  try {
+    warehouses = await api(withCompanyId('/warehouses?archived=0'));
+    if (!Array.isArray(warehouses)) warehouses = [];
+  } catch (e) {
+    err = e.message || String(e);
+  }
+  const mainWh =
+    warehouses.find((w) => /основн/i.test(String(w.name || '')) || w.code === 'НФ-000032') ||
+    warehouses[0];
+  const defaultWhId = String(mainWh?.id || '');
+
+  const whOpts = warehouses
+    .filter((w) => whIsActive(w))
+    .map(
+      (w) =>
+        `<option value="${esc(w.id)}">${esc(whDisplayName(w))}${
+          w.code ? ' · ' + esc(w.code) : ''
+        }</option>`
+    )
+    .join('');
+
+  body = `
+    <div class="toolbar-filter" style="margin-bottom:12px">
+      <span class="toolbar-filter-label">Тип</span>
+      <button type="button" class="form-pagetab ${kind === 'warehouse' ? 'active' : ''}" data-tr-kind="warehouse">Между складами</button>
+      <button type="button" class="form-pagetab ${kind === 'cell' ? 'active' : ''}" data-tr-kind="cell">Между ячейками</button>
+    </div>
+    ${err ? `<p class="error">${esc(err)}</p>` : ''}
+    <div id="wh-tr-form"></div>
+    <p class="muted" id="wh-tr-msg" style="margin-top:10px"></p>
+  `;
+
+  view.innerHTML = formChrome('Перемещения', body, {
+    sectionId: 'warehouse',
+    entityKind: 'warehouse',
+    parentTab: 'warehouses',
+    parentLabel: 'Склады',
+    pageTabs: [
+      { id: 'journal', label: 'Журнал' },
+      { id: 'create', label: 'Создать' },
+    ],
+    activePageTab: 'create',
+    toolbar: `<button type="button" class="primary" id="wh-tr-submit">${
+      kind === 'cell' ? 'Переместить' : 'Создать заказ'
+    }</button>`,
+  });
+  bindFormChrome(() => showSection('warehouse'));
+  view.querySelectorAll('[data-pagetab]').forEach((btn) => {
+    btn.onclick = () => {
+      state.whTransfersPage = btn.getAttribute('data-pagetab') === 'create' ? 'create' : 'journal';
+      renderWhTransfers();
+    };
+  });
+  view.querySelectorAll('[data-tr-kind]').forEach((btn) => {
+    btn.onclick = () => {
+      state.whTransfersKind = btn.getAttribute('data-tr-kind') === 'cell' ? 'cell' : 'warehouse';
+      renderWhTransfers();
+    };
+  });
+
+  const formEl = document.getElementById('wh-tr-form');
+  const msgEl = document.getElementById('wh-tr-msg');
+  const lines = [];
+
+  function renderForm() {
+    if (!formEl) return;
+    if (kind === 'warehouse') {
+      formEl.innerHTML = `
+        <div class="grid-2" style="gap:12px;margin-bottom:12px">
+          <label>Откуда<select id="tr-from">${whOpts}</select></label>
+          <label>Куда<select id="tr-to"><option value="">Выберите склад…</option>${whOpts}</select></label>
+        </div>
+        <label style="display:block;margin-bottom:10px">Комментарий (обязательно)
+          <textarea id="tr-comment" rows="2" placeholder="Зачем перемещаем…"></textarea>
+        </label>
+        <div class="panel" style="padding:10px;margin-bottom:10px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+            <label style="flex:1;min-width:180px">Товар
+              <input type="search" id="tr-prod-q" placeholder="Артикул или название" autocomplete="off" />
+            </label>
+            <label>Кол-во<input type="number" id="tr-qty" min="0.001" step="any" value="1" style="width:100px" /></label>
+            <button type="button" id="tr-add-line">В список</button>
+          </div>
+          <div id="tr-prod-sug" class="muted" style="margin-top:6px;font-size:12px"></div>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table is-dense" data-no-col-filter="1">
+            <thead><tr><th>Товар</th><th>Кол-во</th><th></th></tr></thead>
+            <tbody id="tr-lines-body">
+              <tr><td colspan="3" class="muted">Добавьте позиции</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted" style="font-size:12px;margin:8px 0 0">Создаётся заказ + задание кладовщику (/pick). Остатки спишутся после «Сделал».</p>`;
+    } else {
+      formEl.innerHTML = `
+        <label style="display:block;margin-bottom:10px">Склад
+          <select id="tr-cell-wh">${whOpts}</select>
+        </label>
+        <div class="grid-2" style="gap:12px;margin-bottom:12px">
+          <label>Ячейка откуда<input id="tr-cell-from" list="tr-cell-list" placeholder="A7.1" autocomplete="off" /></label>
+          <label>Ячейка куда<input id="tr-cell-to" list="tr-cell-list" placeholder="B2.3" autocomplete="off" /></label>
+        </div>
+        <datalist id="tr-cell-list"></datalist>
+        <div class="panel" style="padding:10px;margin-bottom:10px">
+          <button type="button" id="tr-load-cell">Показать остаток в ячейке «откуда»</button>
+          <div id="tr-cell-stock" style="margin-top:8px"></div>
+        </div>
+        <label style="display:block;margin-bottom:10px">Комментарий
+          <input id="tr-cell-comment" placeholder="Опционально" />
+        </label>
+        <p class="muted" style="font-size:12px;margin:0">Остаток по адресу обновится сразу (без задания на /pick).</p>`;
+    }
+    bindFormActions();
+  }
+
+  function paintLines() {
+    const tb = document.getElementById('tr-lines-body');
+    if (!tb) return;
+    if (!lines.length) {
+      tb.innerHTML = '<tr><td colspan="3" class="muted">Добавьте позиции</td></tr>';
+      return;
+    }
+    tb.innerHTML = lines
+      .map(
+        (l, i) => `<tr>
+        <td>${esc(l.name || l.sku || l.product_id)}${
+          l.sku ? `<div class="muted mono">${esc(l.sku)}</div>` : ''
+        }</td>
+        <td class="mono">${esc(l.qty)}</td>
+        <td><button type="button" data-tr-del="${i}">×</button></td>
+      </tr>`
+      )
+      .join('');
+    tb.querySelectorAll('[data-tr-del]').forEach((btn) => {
+      btn.onclick = () => {
+        lines.splice(Number(btn.getAttribute('data-tr-del')), 1);
+        paintLines();
+      };
+    });
+  }
+
+  let pickedProd = null;
+  function bindFormActions() {
+    if (kind === 'warehouse') {
+      const from = document.getElementById('tr-from');
+      if (from && defaultWhId) from.value = defaultWhId;
+      const sug = document.getElementById('tr-prod-sug');
+      let t = null;
+      document.getElementById('tr-prod-q')?.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(async () => {
+          const q = String(document.getElementById('tr-prod-q')?.value || '').trim();
+          if (q.length < 2) {
+            if (sug) sug.textContent = '';
+            pickedProd = null;
+            return;
+          }
+          try {
+            const data = await api(
+              withCompanyId('/products?q=' + encodeURIComponent(q) + '&limit=12')
+            );
+            const items = data.items || data || [];
+            if (!sug) return;
+            if (!items.length) {
+              sug.textContent = 'Ничего не найдено';
+              return;
+            }
+            sug.innerHTML = items
+              .map(
+                (p) =>
+                  `<button type="button" class="linkish" data-pid="${esc(p.id)}" data-sku="${esc(
+                    p.sku || ''
+                  )}" data-name="${esc(p.name || '')}">${esc(p.sku || '')} · ${esc(
+                    p.name || ''
+                  )}</button>`
+              )
+              .join(' · ');
+            sug.querySelectorAll('[data-pid]').forEach((b) => {
+              b.onclick = () => {
+                pickedProd = {
+                  product_id: b.getAttribute('data-pid'),
+                  sku: b.getAttribute('data-sku') || '',
+                  name: b.getAttribute('data-name') || '',
+                };
+                const inp = document.getElementById('tr-prod-q');
+                if (inp) inp.value = `${pickedProd.sku} ${pickedProd.name}`.trim();
+                sug.textContent = 'Выбрано: ' + (pickedProd.sku || pickedProd.name);
+              };
+            });
+          } catch (e) {
+            if (sug) sug.textContent = e.message || 'ошибка поиска';
+          }
+        }, 220);
+      });
+      document.getElementById('tr-add-line')?.addEventListener('click', () => {
+        const qty = Number(document.getElementById('tr-qty')?.value);
+        if (!pickedProd?.product_id) {
+          if (msgEl) msgEl.textContent = 'Выберите товар из подсказки';
+          return;
+        }
+        if (!(qty > 0)) {
+          if (msgEl) msgEl.textContent = 'Укажите количество';
+          return;
+        }
+        lines.push({ ...pickedProd, qty });
+        pickedProd = null;
+        const inp = document.getElementById('tr-prod-q');
+        if (inp) inp.value = '';
+        const sq = document.getElementById('tr-prod-sug');
+        if (sq) sq.textContent = '';
+        paintLines();
+        if (msgEl) msgEl.textContent = '';
+      });
+      paintLines();
+    } else {
+      const whSel = document.getElementById('tr-cell-wh');
+      if (whSel && defaultWhId) whSel.value = defaultWhId;
+      async function loadCellList() {
+        const wid = String(whSel?.value || '').trim();
+        const list = document.getElementById('tr-cell-list');
+        if (!list || !wid) return;
+        try {
+          const map = await api('/warehouse/cells/map?warehouse_id=' + encodeURIComponent(wid));
+          const codes = [];
+          for (const rack of map.racks || []) {
+            for (const c of rack.cells || []) {
+              if (c.code) codes.push(c.code);
+            }
+          }
+          list.innerHTML = codes.map((c) => `<option value="${esc(c)}"></option>`).join('');
+        } catch (_) {
+          list.innerHTML = '';
+        }
+      }
+      whSel?.addEventListener('change', loadCellList);
+      loadCellList();
+      document.getElementById('tr-load-cell')?.addEventListener('click', async () => {
+        const wid = String(whSel?.value || '').trim();
+        const code = String(document.getElementById('tr-cell-from')?.value || '').trim();
+        const box = document.getElementById('tr-cell-stock');
+        if (!wid || !code) {
+          if (msgEl) msgEl.textContent = 'Укажите склад и ячейку «откуда»';
+          return;
+        }
+        if (box) box.innerHTML = 'Загрузка…';
+        try {
+          const data = await api(
+            '/warehouse/cells/' +
+              encodeURIComponent(code) +
+              '?warehouse_id=' +
+              encodeURIComponent(wid)
+          );
+          const items = (data.lines || []).filter((it) => Number(it.qty) > 0);
+          if (!items.length) {
+            box.innerHTML = '<p class="muted">В ячейке пусто</p>';
+            return;
+          }
+          box.innerHTML = `<table class="data-table is-dense" data-no-col-filter="1"><thead><tr><th>Товар</th><th>Остаток</th><th>Кол-во</th><th></th></tr></thead><tbody>${items
+            .map((it) => {
+              const pid = it.product_id || '';
+              const sku = it.sku || '';
+              const name = it.catalog_name || it.product_name || it.name || sku;
+              const q = it.qty;
+              return `<tr>
+                <td>${esc(name)}${sku ? `<div class="muted mono">${esc(sku)}</div>` : ''}</td>
+                <td class="mono">${esc(q)}</td>
+                <td><input type="number" class="tr-cell-qty mono" min="0.001" step="any" max="${esc(
+                  q
+                )}" value="${esc(q)}" data-pid="${esc(pid)}" data-sku="${esc(sku)}" style="width:88px" /></td>
+                <td><button type="button" class="primary tr-cell-pick" data-pid="${esc(
+                  pid
+                )}" data-sku="${esc(sku)}" data-name="${esc(name)}">Взять</button></td>
+              </tr>`;
+            })
+            .join('')}</tbody></table>`;
+          box.querySelectorAll('.tr-cell-pick').forEach((btn) => {
+            btn.onclick = () => {
+              const row = btn.closest('tr');
+              const qtyInp = row?.querySelector('.tr-cell-qty');
+              state._whTrCellPick = {
+                product_id: btn.getAttribute('data-pid') || '',
+                sku: btn.getAttribute('data-sku') || '',
+                name: btn.getAttribute('data-name') || '',
+                qty: Number(qtyInp?.value) || 0,
+              };
+              if (msgEl) {
+                msgEl.textContent = `Выбрано: ${state._whTrCellPick.sku || state._whTrCellPick.name} × ${state._whTrCellPick.qty}`;
+              }
+            };
+          });
+        } catch (e) {
+          if (box) box.innerHTML = `<p class="error">${esc(e.message || 'ошибка')}</p>`;
+        }
+      });
+    }
+  }
+
+  renderForm();
+
+  document.getElementById('wh-tr-submit')?.addEventListener('click', async () => {
+    const btn = document.getElementById('wh-tr-submit');
+    if (btn) btn.disabled = true;
+    if (msgEl) msgEl.textContent = 'Сохранение…';
+    try {
+      if (kind === 'warehouse') {
+        const fromId = String(document.getElementById('tr-from')?.value || '').trim();
+        const toId = String(document.getElementById('tr-to')?.value || '').trim();
+        const comment = String(document.getElementById('tr-comment')?.value || '').trim();
+        if (!fromId || !toId) throw new Error('Укажите склады «откуда» и «куда»');
+        if (fromId === toId) throw new Error('Склады совпадают');
+        if (!comment) throw new Error('Укажите комментарий');
+        if (!lines.length) throw new Error('Добавьте хотя бы одну позицию');
+        const r = await api('/stock/transfer-request', {
+          method: 'POST',
+          body: JSON.stringify({
+            warehouse_from_id: fromId,
+            warehouse_to_id: toId,
+            comment,
+            post: false,
+            lines: lines.map((l) => ({ product_id: l.product_id, qty: l.qty })),
+          }),
+        });
+        if (msgEl) {
+          msgEl.textContent =
+            `Заказ ${r.history?.number || r.number || ''} создан` +
+            (r.warehouse_task?.number ? ` · задание ${r.warehouse_task.number}` : '');
+        }
+        if (r.history?.id) {
+          openTab('xfer:' + r.history.id, r.history.number || 'Заказ на перемещение');
+        } else {
+          state.whTransfersPage = 'journal';
+          setTimeout(() => renderWhTransfers(), 400);
+        }
+      } else {
+        const wid = String(document.getElementById('tr-cell-wh')?.value || '').trim();
+        const from = String(document.getElementById('tr-cell-from')?.value || '').trim();
+        const to = String(document.getElementById('tr-cell-to')?.value || '').trim();
+        const comment = String(document.getElementById('tr-cell-comment')?.value || '').trim();
+        const pick = state._whTrCellPick;
+        if (!wid) throw new Error('Укажите склад');
+        if (!from || !to) throw new Error('Укажите ячейки');
+        if (!pick || !(pick.qty > 0)) {
+          throw new Error('Нажмите «Взять» у товара в ячейке «откуда»');
+        }
+        const r = await api('/warehouse/cells/move', {
+          method: 'POST',
+          body: JSON.stringify({
+            warehouse_id: wid,
+            from_cell: from,
+            to_cell: to,
+            product_id: pick.product_id,
+            sku: pick.sku,
+            qty: pick.qty,
+            comment,
+          }),
+        });
+        state._whTrCellPick = null;
+        if (msgEl) {
+          msgEl.textContent = `Готово: ${r.from_cell} → ${r.to_cell} · ${r.sku || ''} × ${r.qty}${
+            r.history?.number ? ' · ' + r.history.number : ''
+          }`;
+        }
+        state.whTransfersPage = 'journal';
+        setTimeout(() => renderWhTransfers(), 500);
+      }
+    } catch (e) {
+      if (msgEl) msgEl.textContent = e.message || String(e);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
 }
 
 async function renderWarehouseRequestsHub() {
@@ -39760,6 +40277,7 @@ const routes = {
   marking: renderMarking,
   'wh-tasks': renderWarehouseTasks,
   'wh-cells': renderWarehouseCellsMap,
+  'wh-transfers': renderWhTransfers,
   'wh-inbound': renderWhInbound,
   'wh-kpd': renderWarehouseKpd,
   'ops-dash': renderOpsDash,

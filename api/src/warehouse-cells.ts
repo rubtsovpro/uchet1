@@ -1,7 +1,6 @@
 /**
  * Адресный учёт · ячейки склада.
- * MVP: справочник ячеек + остатки по адресу (снэпшот из Google «Март. Ячейки») + карта стеллажей.
- * Операции put/move /pick — следующим этапом (см. docs/PLAN-addressable-storage.md).
+ * Справочник ячеек + остатки по адресу + карта стеллажей + POST /warehouse/cells/move.
  */
 import type { Hono } from 'hono';
 import fs from 'node:fs';
@@ -1394,6 +1393,119 @@ export function getPlacementSummariesForDocs(docIds: string[]): Record<string, s
   return result;
 }
 
+/** Перемещение qty между ячейками одного склада (адресный остаток). */
+export function moveStockBetweenCells(input: {
+  warehouse_id: string;
+  from_cell: string;
+  to_cell: string;
+  product_id?: string;
+  sku?: string;
+  qty: number;
+}): {
+  warehouse_id: string;
+  from_cell: string;
+  to_cell: string;
+  product_id: string;
+  sku: string;
+  product_name: string;
+  qty: number;
+  from_qty_after: number;
+  to_qty_after: number;
+} {
+  ensureWarehouseCellsSchema();
+  const warehouseId = String(input.warehouse_id || '').trim();
+  if (!warehouseId) throw new Error('Укажите склад');
+  const qty = Number(input.qty);
+  if (!(qty > 0)) throw new Error('Количество должно быть больше 0');
+  const fromCode = normalizeCellCode(String(input.from_cell || ''));
+  const toCode = normalizeCellCode(String(input.to_cell || ''));
+  if (!fromCode || !parseCellCode(fromCode)) throw new Error('Неверная ячейка «откуда»');
+  if (!toCode || !parseCellCode(toCode)) throw new Error('Неверная ячейка «куда»');
+  if (fromCode === toCode) throw new Error('Ячейки «откуда» и «куда» совпадают');
+
+  let sku = String(input.sku || '').trim();
+  let productId = String(input.product_id || '').trim();
+  let productName = '';
+  if (productId) {
+    const p = get<{ sku: string; name: string }>(
+      `SELECT IFNULL(sku,'') AS sku, IFNULL(name,'') AS name FROM products WHERE id = ?`,
+      [productId]
+    );
+    if (!p) throw new Error('Товар не найден');
+    if (!sku) sku = String(p.sku || '').trim();
+    productName = String(p.name || '').trim();
+  }
+  if (!sku && !productId) throw new Error('Укажите товар');
+
+  const fromParts = parseCellCode(fromCode)!;
+  const fromCellId = upsertCell(warehouseId, fromParts);
+  const bal =
+    (sku
+      ? get<{ qty: number; product_id: string; product_name: string; sku: string }>(
+          `SELECT qty, IFNULL(product_id,'') AS product_id, IFNULL(product_name,'') AS product_name,
+                  IFNULL(sku,'') AS sku
+           FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
+          [warehouseId, fromCellId, sku]
+        )
+      : null) ||
+    (productId
+      ? get<{ qty: number; product_id: string; product_name: string; sku: string }>(
+          `SELECT qty, IFNULL(product_id,'') AS product_id, IFNULL(product_name,'') AS product_name,
+                  IFNULL(sku,'') AS sku
+           FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND product_id = ?`,
+          [warehouseId, fromCellId, productId]
+        )
+      : null);
+  if (!bal || !(Number(bal.qty) > 0)) {
+    throw new Error(`В ячейке ${fromCode} нет остатка этого товара`);
+  }
+  const avail = Number(bal.qty) || 0;
+  if (qty > avail + 1e-9) {
+    throw new Error(`Недостаточно в ячейке ${fromCode}: есть ${avail}, нужно ${qty}`);
+  }
+  if (!productId) productId = String(bal.product_id || '').trim();
+  if (!sku) sku = String(bal.sku || '').trim();
+  if (!productName) productName = String(bal.product_name || '').trim();
+
+  applyCellIssueDelta({
+    warehouse_id: warehouseId,
+    cell_code: fromCode,
+    product_id: productId,
+    sku,
+    qty,
+  });
+  applyCellReceiveDelta({
+    warehouse_id: warehouseId,
+    cell_code: toCode,
+    product_id: productId,
+    sku,
+    product_name: productName,
+    qty,
+  });
+
+  const toParts = parseCellCode(toCode)!;
+  const toCellId = upsertCell(warehouseId, toParts);
+  const fromAfter = get<{ qty: number }>(
+    `SELECT qty FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
+    [warehouseId, fromCellId, sku]
+  );
+  const toAfter = get<{ qty: number }>(
+    `SELECT qty FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
+    [warehouseId, toCellId, sku]
+  );
+  return {
+    warehouse_id: warehouseId,
+    from_cell: fromCode,
+    to_cell: toCode,
+    product_id: productId,
+    sku,
+    product_name: productName,
+    qty,
+    from_qty_after: Number(fromAfter?.qty) || 0,
+    to_qty_after: Number(toAfter?.qty) || 0,
+  };
+}
+
 export function mountWarehouseCellsRoutes(api: Hono): void {
   api.get('/warehouse/cells/meta', (c) => {
     try {
@@ -1486,6 +1598,58 @@ export function mountWarehouseCellsRoutes(api: Hono): void {
     try {
       const result = importCellsFromCacheFile();
       return c.json({ ok: true, ...result });
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+    }
+  });
+
+  api.post('/warehouse/cells/move', async (c) => {
+    try {
+      const body = (await c.req.json().catch(() => ({}))) as {
+        warehouse_id?: string;
+        from_cell?: string;
+        to_cell?: string;
+        product_id?: string;
+        sku?: string;
+        qty?: number;
+        comment?: string;
+      };
+      const moved = moveStockBetweenCells({
+        warehouse_id: String(body.warehouse_id || ''),
+        from_cell: String(body.from_cell || ''),
+        to_cell: String(body.to_cell || ''),
+        product_id: body.product_id,
+        sku: body.sku,
+        qty: Number(body.qty) || 0,
+      });
+      let history: Record<string, unknown> | null = null;
+      try {
+        const { createThinJournalDoc } = await import('./parity-batch-a.js');
+        const whName =
+          get<{ name: string }>(
+            `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
+            [moved.warehouse_id]
+          )?.name || '';
+        const comment = String(body.comment || '').trim();
+        history = createThinJournalDoc('cell_transfers', {
+          counterparty_name: `${moved.from_cell} → ${moved.to_cell}`,
+          comment:
+            comment ||
+            `${moved.sku || moved.product_name} × ${moved.qty}` +
+              (whName ? ` · ${whName}` : ''),
+          status: 'posted',
+          amount: 0,
+          payload_json: JSON.stringify({
+            kind: 'cell_move',
+            ...moved,
+            warehouse_name: whName,
+            user_comment: comment,
+          }),
+        }) as Record<string, unknown> | null;
+      } catch (e) {
+        console.warn('cell_transfers thin', e instanceof Error ? e.message : e);
+      }
+      return c.json({ ok: true, ...moved, history }, 201);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
