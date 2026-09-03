@@ -128,11 +128,19 @@ function resolveProductBySkuOrId(raw: string) {
     `SELECT id, IFNULL(sku,'') AS sku, IFNULL(name,'') AS name
      FROM products
      WHERE sku = ? OR code = ? OR REPLACE(IFNULL(sku,''),' ','') = REPLACE(?,' ','')
+        OR lower(REPLACE(IFNULL(sku,''),' ','')) = lower(REPLACE(?,' ',''))
+        OR lower(REPLACE(IFNULL(sku,''),' ','')) LIKE lower(REPLACE(?,' ','')) || '@%'
+     ORDER BY
+       CASE WHEN sku = ? THEN 0
+            WHEN code = ? THEN 1
+            WHEN instr(IFNULL(sku,''), '@') = 0 THEN 2
+            ELSE 3 END,
+       length(IFNULL(sku,''))
      LIMIT 1`,
-    [key, key, key]
+    [key, key, key, key, key, key, key]
   );
   if (bySku?.id) return bySku;
-  throw new Error(`Товар не найден: ${key}`);
+  throw new Error(`Товар не найден в номенклатуре: ${key}`);
 }
 
 /** Кладовщик указывает, какие детали получились и в какую ячейку положили. */

@@ -9,9 +9,9 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
   <title>Склад · задачи · Учёт №1</title>
-  <!-- pick-ui rev=pick-production-at-jobs-20260903 -->
+  <!-- pick-ui rev=pick-production-nom-check-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc57';
+    window.__PICK_UI_REV = 'pc58';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -1810,7 +1810,11 @@
       line-height: 1.45;
       color: var(--muted);
     }
+    .prod-where.is-ok { color: #166534; }
+    .prod-where.is-bad { color: #b91c1c; font-weight: 600; }
     .prod-where b { color: #1e40af; }
+    .prod-where.is-ok b { color: #166534; }
+    .prod-where.is-bad b { color: #991b1b; }
     .lines li {
       display: flex;
       flex-direction: column;
@@ -4350,7 +4354,7 @@
       return (
         '<div class="prod-result">' +
         '<div class="prod-result-title">Какие детали после производства получились</div>' +
-        '<p class="muted" style="margin:0 0 6px;font-size:12px">Артикул обязателен. Ячейка — по желанию («— без ячейки —»).</p>' +
+        '<p class="muted" style="margin:0 0 6px;font-size:12px">Артикул должен быть в номенклатуре. Ячейка — по желанию («— без ячейки —»).</p>' +
         '<table class="handoff-lines-tbl prod-result-tbl"><thead><tr>' +
         '<th>Артикул</th><th>Кол-во</th><th>Ячейка</th><th></th>' +
         '</tr></thead><tbody data-prod-result-form>' +
@@ -4481,50 +4485,72 @@
       const whereEl =
         (article && article.querySelector('[data-prod-where="' + idx + '"]')) ||
         null;
-      if (!whereEl) return;
+      if (!whereEl) return { ok: false, sku };
+      whereEl.classList.remove('is-ok', 'is-bad');
+      whereEl.removeAttribute('data-nom');
       if (sku.length < 2) {
         whereEl.textContent = '';
-        return;
+        return { ok: false, sku };
       }
-      whereEl.textContent = 'Ищу на складе…';
+      whereEl.textContent = 'Проверяю номенклатуру…';
       try {
         const r = await api(
-          '/warehouse/cells/balances?q=' + encodeURIComponent(sku) + '&limit=40'
+          '/products?q=' + encodeURIComponent(sku) + '&limit=20&archived=0'
         );
-        const items = Array.isArray(r.rows)
-          ? r.rows
-          : Array.isArray(r.items)
-            ? r.items
+        const items = Array.isArray(r.items)
+          ? r.items
+          : Array.isArray(r.rows)
+            ? r.rows
             : Array.isArray(r)
               ? r
               : [];
         const q = sku.toLowerCase();
-        const hits = items
-          .filter((it) => {
-            const s = String(it.sku || '').trim().toLowerCase();
-            if (!s) return Number(it.qty || 0) > 0;
-            return s === q || s.includes(q) || q.includes(s);
+        const qBase = q.replace(/@.*$/, '');
+        const scored = items
+          .map((it) => {
+            const s = String(it.sku || '')
+              .trim()
+              .toLowerCase();
+            const code = String(it.code || '')
+              .trim()
+              .toLowerCase();
+            let score = 0;
+            if (s === q || code === q) score = 100;
+            else if (s === qBase || s.replace(/@.*$/, '') === qBase) score = 90;
+            else if (s.startsWith(q) || s.startsWith(qBase)) score = 50;
+            else if (s.includes(q) || code.includes(q)) score = 20;
+            // клоны @podveska / @fogel — ниже приоритет при равном match
+            if (s.includes('@')) score -= 5;
+            return { it, score, s };
           })
-          .slice(0, 12);
-        if (!hits.length) {
-          whereEl.innerHTML = 'На складе по «' + esc(sku) + '» пока не найдено';
-          return;
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score);
+        const hit = scored[0] && scored[0].score >= 90 ? scored[0].it : null;
+        if (!hit) {
+          whereEl.classList.add('is-bad');
+          whereEl.setAttribute('data-nom', '0');
+          whereEl.innerHTML =
+            'Нет в номенклатуре «' +
+            esc(sku) +
+            '» — <b>нельзя произвести</b>. Заведите карточку товара или укажите другой артикул.';
+          return { ok: false, sku };
         }
-        const parts = hits.map((it) => {
-          const cell = String(it.cell_code || it.cell || '—');
-          const qty = Number(it.qty || 0) || 0;
-          const name = String(it.product_name || '').trim();
-          return (
-            '<b>' +
-            esc(cell) +
-            '</b> ×' +
-            esc(qty) +
-            (name ? ' · ' + esc(name) : '')
-          );
-        });
-        whereEl.innerHTML = 'На складе такие же: ' + parts.join('; ');
+        const name = String(hit.name || '').trim();
+        const hitSku = String(hit.sku || sku).trim();
+        whereEl.classList.add('is-ok');
+        whereEl.setAttribute('data-nom', '1');
+        whereEl.setAttribute('data-product-id', String(hit.id || ''));
+        whereEl.innerHTML =
+          'В номенклатуре: <b>' +
+          esc(hitSku) +
+          '</b>' +
+          (name ? ' — ' + esc(name) : '');
+        return { ok: true, sku: hitSku, product_id: hit.id, name };
       } catch (e) {
-        whereEl.textContent = (e && e.message) || 'Не удалось проверить склад';
+        whereEl.classList.add('is-bad');
+        whereEl.setAttribute('data-nom', '0');
+        whereEl.textContent = (e && e.message) || 'Не удалось проверить номенклатуру';
+        return { ok: false, sku };
       }
     }
 
@@ -4623,6 +4649,27 @@
           for (const l of lines) {
             if (!l.sku) {
               alert('Заполните артикул по каждой детали');
+              return;
+            }
+          }
+          // Проверка номенклатуры до отправки — нельзя произвести «левый» артикул.
+          const resultRows = article.querySelectorAll('[data-prod-result-row]');
+          for (const row of resultRows) {
+            const skuVal = String((row.querySelector('[data-prod-sku]') || {}).value || '').trim();
+            if (!skuVal) continue;
+            const idx = row.getAttribute('data-prod-result-row');
+            const whereEl = article.querySelector('[data-prod-where="' + idx + '"]');
+            let nom = whereEl && whereEl.getAttribute('data-nom');
+            if (nom !== '1' && nom !== '0') {
+              await lookupProdSkuWhere(row);
+              nom = whereEl && whereEl.getAttribute('data-nom');
+            }
+            if (nom !== '1') {
+              alert(
+                'Артикул «' +
+                  skuVal +
+                  '» нет в номенклатуре — нельзя произвести. Заведите карточку или укажите существующий артикул.'
+              );
               return;
             }
           }
