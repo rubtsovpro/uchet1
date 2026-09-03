@@ -11935,10 +11935,12 @@ api.get('/docs', (c) => {
   }
   if (q) {
     where.push(
-      '(d.number LIKE ? OR IFNULL(c.name,"") LIKE ? OR IFNULL(w.name,"") LIKE ? OR IFNULL(d.supply_number,"") LIKE ? OR IFNULL(d.comment,"") LIKE ?)'
+      `(d.number LIKE ? OR IFNULL(c.name,"") LIKE ? OR IFNULL(w.name,"") LIKE ? OR IFNULL(d.supply_number,"") LIKE ? OR IFNULL(d.comment,"") LIKE ?
+        OR IFNULL(d.deal_id,"") LIKE ? OR IFNULL(d.basis_order_id,"") LIKE ?
+        OR IFNULL(dl.buyer_name,"") LIKE ? OR IFNULL(dl.company_name,"") LIKE ? OR IFNULL(dl.name,"") LIKE ?)`
     );
     const like = `%${q}%`;
-    params.push(like, like, like, like, like);
+    params.push(like, like, like, like, like, like, like, like, like, like);
   }
   if (!isAdminActor(actorFromContext(c))) {
     where.push('IFNULL(d.admin_only, 0) = 0');
@@ -11948,12 +11950,13 @@ api.get('/docs', (c) => {
     number: `d.number ${dir}`,
     type: `d.doc_type ${dir}, d.doc_date DESC`,
     date: `d.doc_date ${dir}, d.number ${dir}`,
-    counterparty: `IFNULL(c.name,'') ${dir}, d.doc_date DESC`,
+    counterparty: `IFNULL(NULLIF(TRIM(IFNULL(c.name,'')),''), IFNULL(NULLIF(TRIM(IFNULL(dl.company_name,'')),''), IFNULL(dl.buyer_name,''))) ${dir}, d.doc_date DESC`,
     warehouse: `IFNULL(w.name,'') ${dir}, d.doc_date DESC`,
-    amount: `d.amount ${dir}, d.doc_date DESC`,
+    amount: `CASE WHEN IFNULL(d.amount,0) > 0 THEN d.amount ELSE IFNULL(dl.price,0) END ${dir}, d.doc_date DESC`,
     status: `d.posted ${dir}, d.doc_date DESC`,
     supply: `IFNULL(d.supply_number,'') ${dir}, d.doc_date DESC`,
     placement: `d.doc_date ${dir}`,
+    deal: `IFNULL(NULLIF(d.deal_id,''), IFNULL(d.basis_order_id,'')) ${dir}, d.doc_date DESC`,
   };
   const orderBy = orderMap[sort] || orderMap.date;
   const docsFrom = `
@@ -11962,12 +11965,25 @@ api.get('/docs', (c) => {
        LEFT JOIN warehouses wt ON wt.id = d.warehouse_to_id
        LEFT JOIN counterparties c ON c.id = d.counterparty_id
        LEFT JOIN organizations o ON o.id = d.organization_id
+       LEFT JOIN crm_deals dl ON dl.id = COALESCE(
+         NULLIF(TRIM(IFNULL(d.deal_id, '')), ''),
+         NULLIF(TRIM(IFNULL(d.basis_order_id, '')), '')
+       )
        ${whereSql}`;
   const total =
     get<{ c: number }>(`SELECT COUNT(*) AS c ${docsFrom}`, params)?.c ?? 0;
   const items = all(
-    `SELECT d.*, w.name AS warehouse, wt.name AS warehouse_to, c.name AS counterparty,
-            IFNULL(o.name,'') AS organization_name
+    `SELECT d.*, w.name AS warehouse, wt.name AS warehouse_to,
+            IFNULL(c.name,'') AS counterparty_doc,
+            IFNULL(o.name,'') AS organization_name,
+            COALESCE(
+              NULLIF(TRIM(IFNULL(d.deal_id, '')), ''),
+              NULLIF(TRIM(IFNULL(d.basis_order_id, '')), '')
+            ) AS deal_id_resolved,
+            IFNULL(dl.name,'') AS deal_name,
+            IFNULL(dl.buyer_name,'') AS deal_buyer_name,
+            IFNULL(dl.company_name,'') AS deal_company_name,
+            IFNULL(dl.price, 0) AS deal_price
      ${docsFrom}
      ORDER BY ${orderBy}
      LIMIT ? OFFSET ?`,
@@ -11983,8 +11999,25 @@ api.get('/docs', (c) => {
       );
       if (m) supply = m[1];
     }
+    const dealIdResolved = String(
+      (d as { deal_id_resolved?: string }).deal_id_resolved || ''
+    ).trim();
+    const fromCp = String((d as { counterparty_doc?: string }).counterparty_doc || '').trim();
+    const fromDeal =
+      String((d as { deal_company_name?: string }).deal_company_name || '').trim() ||
+      String((d as { deal_buyer_name?: string }).deal_buyer_name || '').trim() ||
+      String((d as { deal_name?: string }).deal_name || '').trim();
+    const counterparty = fromCp || fromDeal || '';
+    const docAmount = Number((d as { amount?: number }).amount) || 0;
+    const dealPrice = Number((d as { deal_price?: number }).deal_price) || 0;
+    const amount = docAmount > 0 ? docAmount : dealPrice > 0 ? dealPrice : docAmount;
     return {
       ...d,
+      deal_id: dealIdResolved || (d as { deal_id?: string }).deal_id || '',
+      deal_name: String((d as { deal_name?: string }).deal_name || '').trim(),
+      counterparty,
+      amount,
+      amount_from_deal: docAmount <= 0 && dealPrice > 0,
       supply_number: supply,
       placement_summary: placementMap[String(d.id || '')] || '',
     };

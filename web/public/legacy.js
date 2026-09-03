@@ -13348,18 +13348,21 @@ async function renderDocs() {
   const amountCol =
     type === 'in' ? 'Сумма закупки' : type === 'return' ? 'Сумма возврата' : type === 'out' ? 'Сумма' : 'Сумма';
   const placementCol = type === 'in';
+  const dealCol = type === 'out' || !type;
   const cpCol =
-    type === 'in' ? 'Поставщик' : type === 'return' ? 'Покупатель' : 'Контрагент';
+    type === 'in' ? 'Поставщик' : type === 'return' || type === 'out' ? 'Покупатель' : 'Контрагент';
   const listHint =
     type === 'in'
       ? 'Журнал приходных. «Создать» — приход с размещением по ячейкам. Колонка «Поставка» — номер поставки; «Размещение» — ячейки. Клик — карточка.'
       : type === 'return'
         ? 'Возвраты от покупателей (приходная на основании списания). В комментарии — номер списания.'
         : type === 'out'
-          ? 'Списания. Клик — состав списанных товаров.'
+          ? 'Списания по заказам покупателей. Заказ / покупатель / сумма — из заказа, если в документе пусто. Клик по строке — карточка списания.'
           : 'Журнал локальных документов (приход/расход/возврат). Колонка «Тип» — вид документа.';
   const showTypeCol = !type;
   const supplyCol = type === 'in';
+  const colSpan =
+    6 + (showTypeCol ? 1 : 0) + (placementCol ? 1 : 0) + (supplyCol ? 1 : 0) + (dealCol ? 1 : 0);
   view.innerHTML = formChrome(
     title,
     `
@@ -13370,6 +13373,7 @@ async function renderDocs() {
         ${th('status', 'Статус')}
         ${th('date', 'Дата')}
         ${th('number', 'Номер')}
+        ${dealCol ? th('deal', 'Заказ') : ''}
         ${supplyCol ? th('supply', 'Поставка') : ''}
         ${showTypeCol ? th('type', 'Тип') : ''}
         ${th('counterparty', cpCol)}
@@ -13380,12 +13384,28 @@ async function renderDocs() {
       <tbody>
         ${
           list
-            .map(
-              (d) => `
+            .map((d) => {
+              const dealId = String(d.deal_id || '').trim();
+              const dealLabel = dealId
+                ? esc(d.deal_name ? `${dealId} · ${d.deal_name}` : dealId)
+                : '';
+              const amtTitle = d.amount_from_deal
+                ? 'title="Сумма из заказа покупателя (в документе не была заполнена)"'
+                : '';
+              return `
           <tr class="clickable" data-doc="${esc(d.id)}">
             <td><span class="badge ${d.posted ? '' : 'draft'}">${d.posted ? 'Проведён' : 'Черновик'}${d.source === '1c' ? ' · 1С' : ''}</span></td>
             <td>${esc(String(d.doc_date || '').slice(0, 10))}</td>
             <td class="mono">${esc(d.number)}</td>
+            ${
+              dealCol
+                ? `<td class="mono">${
+                    dealId
+                      ? `<a href="#deal" data-deal-link="${esc(dealId)}" onclick="event.stopPropagation()" title="${dealLabel}">${esc(dealId)}</a>`
+                      : '—'
+                  }</td>`
+                : ''
+            }
             ${
               supplyCol
                 ? `<td class="mono">${esc(String(d.supply_number || '').trim() || '—')}</td>`
@@ -13401,13 +13421,13 @@ async function renderDocs() {
             <td>${esc(d.counterparty || '—')}</td>
             <td>${esc(d.warehouse || '—')}${d.warehouse_to ? ' → ' + esc(d.warehouse_to) : ''}</td>
             ${placementCol ? `<td class="mono">${esc(String(d.placement_summary || '').trim() || '—')}</td>` : ''}
-            <td class="mono">${d.amount != null ? formatMoney(d.amount) : '—'}</td>
-          </tr>`
-            )
+            <td class="mono" ${amtTitle}>${
+              Number(d.amount) > 0 || d.amount_from_deal ? formatMoney(d.amount) : formatMoney(0)
+            }</td>
+          </tr>`;
+            })
             .join('') ||
-            `<tr><td colspan="${
-              (showTypeCol ? 1 : 0) + (placementCol ? 1 : 0) + (supplyCol ? 1 : 0) + 6
-            }" class="muted">Документов пока нет</td></tr>`
+            `<tr><td colspan="${colSpan}" class="muted">Документов пока нет</td></tr>`
         }
       </tbody>
     </table>
@@ -13434,7 +13454,9 @@ async function renderDocs() {
         </div>
         <div class="grow"></div>
         <div class="find">
-          <input id="docs-q" placeholder="Номер / поставка / контрагент" value="${esc(q)}" />
+          <input id="docs-q" placeholder="${
+            type === 'out' ? 'Номер / заказ / покупатель' : 'Номер / поставка / контрагент'
+          }" value="${esc(q)}" />
           <button type="button" class="find-go" id="docs-search">Найти</button>
         </div>`,
     }
@@ -13482,6 +13504,14 @@ async function renderDocs() {
   });
   view.querySelectorAll('[data-doc]').forEach((tr) => {
     tr.onclick = () => openTab('doc:' + tr.dataset.doc);
+  });
+  view.querySelectorAll('[data-deal-link]').forEach((a) => {
+    a.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = a.getAttribute('data-deal-link');
+      if (id) openTab('deal:' + id, ('Заказ ' + id).slice(0, 40));
+    };
   });
   bindListPager(['docspager', 'docspager2'], 'docs', 'docsPage', () => renderDocs());
 }
