@@ -2841,6 +2841,7 @@
     let pendingStockReturnByDeal = new Map();
     /** Заказы уже на участке (склад отдал) — иначе пропадают с /production после handed. */
     let prodAtJobs = [];
+    let prodSendJobs = [];
     let handoffTab = 'active';
     let closedHandoffs = [];
     let closedPage = 1;
@@ -3428,23 +3429,62 @@
         </div>`;
     }
 
+    function productionConsumeAsLines(consume) {
+      return (Array.isArray(consume) ? consume : []).map((l) => ({
+        sku: l.sku,
+        name: l.name,
+        qty: l.qty,
+        code: l.code || '',
+        cell_code: l.cell_code || '',
+        product_id: l.product_id || '',
+      }));
+    }
+
+    function applyProductionJobToCard(t, job) {
+      if (!t || !job) return t;
+      t.production_produce = Array.isArray(job.produce) ? job.produce : [];
+      t.production_number = job.number || t.production_number || '';
+      if (job.kind_label || job.kind) {
+        t.production_kind_label = job.kind_label || t.production_kind_label || job.kind;
+      }
+      const consume = Array.isArray(job.consume) ? job.consume : [];
+      if ((!Array.isArray(t.lines) || !t.lines.length) && consume.length) {
+        t.lines = productionConsumeAsLines(consume);
+      }
+      return t;
+    }
+
     async function attachProductionResultLines(t) {
       if (!t) return t;
       const ch = String(t.channel || '');
       if (ch !== 'production_send' && ch !== 'production_receive') return t;
-      if (Array.isArray(t.production_produce)) return t;
       const dealId = String(t.deal_id || '').trim();
       const jobId = String(t.stock_doc_id || '').trim();
-      if (!dealId) return t;
+      const hasProduce = Array.isArray(t.production_produce);
+      const hasLines = Array.isArray(t.lines) && t.lines.length;
+      if (hasProduce && hasLines) return t;
+      if (jobId && !hasProduce) {
+        const fromList =
+          (Array.isArray(prodSendJobs) ? prodSendJobs : [])
+            .concat(Array.isArray(prodAtJobs) ? prodAtJobs : [])
+            .find((j) => String(j.id || '') === jobId) || null;
+        if (fromList) applyProductionJobToCard(t, fromList);
+      }
+      if (Array.isArray(t.production_produce) && Array.isArray(t.lines) && t.lines.length) {
+        return t;
+      }
+      if (!dealId && !jobId) return t;
       try {
-        const r = await api('/crm/deals/' + encodeURIComponent(dealId) + '/production');
-        const jobs = Array.isArray(r && r.jobs) ? r.jobs : [];
-        const job =
-          (jobId && jobs.find((j) => String(j.id) === jobId)) || jobs[0] || null;
-        if (job) {
-          t.production_produce = Array.isArray(job.produce) ? job.produce : [];
-          t.production_number = job.number || '';
+        const r = jobId
+          ? await api('/production/jobs/' + encodeURIComponent(jobId)).catch(() => null)
+          : null;
+        let job = r && r.id ? r : null;
+        if (!job && dealId) {
+          const pack = await api('/crm/deals/' + encodeURIComponent(dealId) + '/production');
+          const jobs = Array.isArray(pack && pack.jobs) ? pack.jobs : [];
+          job = (jobId && jobs.find((j) => String(j.id) === jobId)) || jobs[0] || null;
         }
+        if (job) applyProductionJobToCard(t, job);
       } catch (_) {}
       return t;
     }
@@ -4823,7 +4863,7 @@
       });
     }
 
-    function prodCardStamp(t) {
+    function prodCardCoreStamp(t) {
       return [
         String((t && t.id) || ''),
         String((t && t.updated_at) || ''),
@@ -4831,6 +4871,33 @@
         String((t && t.channel) || ''),
         String((t && t.stock_doc_id) || ''),
       ].join('|');
+    }
+
+    function prodLinesStamp(t) {
+      const lines = Array.isArray(t && t.lines) ? t.lines : [];
+      if (!lines.length) {
+        return String((t && t.lines_count) || 0);
+      }
+      return (
+        String(lines.length) +
+        ':' +
+        lines
+          .map(
+            (l) =>
+              String(l.product_id || l.sku || '') +
+              '×' +
+              String(l.qty != null ? l.qty : 1)
+          )
+          .join(',')
+      );
+    }
+
+    function prodCardStamp(t) {
+      return prodCardCoreStamp(t) + '|' + prodLinesStamp(t);
+    }
+
+    function prodCardHasLinesTable(el) {
+      return !!(el && el.querySelector && el.querySelector('.handoff-lines-tbl'));
     }
 
     function insertProdCardAt(root, el, index) {
@@ -4884,21 +4951,23 @@
       return root;
     }
 
-    function buildJobProduceMap() {
+    function buildJobByIdMap() {
       const m = new Map();
-      (Array.isArray(prodAtJobs) ? prodAtJobs : []).forEach((j) => {
-        const id = String(j.id || '').trim();
-        if (id && Array.isArray(j.produce)) m.set(id, j.produce);
-      });
+      []
+        .concat(Array.isArray(prodAtJobs) ? prodAtJobs : [])
+        .concat(Array.isArray(prodSendJobs) ? prodSendJobs : [])
+        .forEach((j) => {
+          const id = String(j.id || '').trim();
+          if (id) m.set(id, j);
+        });
       return m;
     }
 
-    function seedProductionCard(t0, jobProduceMap) {
+    function seedProductionCard(t0, jobById) {
       const t = Object.assign({}, t0);
       const jobId = String(t.stock_doc_id || '').trim();
-      if (!Array.isArray(t.production_produce) && jobId && jobProduceMap.has(jobId)) {
-        t.production_produce = jobProduceMap.get(jobId);
-      }
+      const job = jobId && jobById && jobById.get ? jobById.get(jobId) : null;
+      if (job) applyProductionJobToCard(t, job);
       return t;
     }
 
@@ -4921,7 +4990,7 @@
       });
       const desiredIds = sorted.map((t) => String(t.id || '').trim()).filter(Boolean);
       const activeId = activeProdTaskId();
-      const jobProduceMap = buildJobProduceMap();
+      const jobById = buildJobByIdMap();
       const cellsPromise = ensureMainCellRacks();
       const toEnrich = [];
 
@@ -4940,19 +5009,38 @@
         const t0 = sorted[i];
         const taskId = String(t0.id || '').trim();
         if (!taskId) continue;
-        const stamp = prodCardStamp(t0);
+        const seeded = seedProductionCard(t0, jobById);
+        const stamp = prodCardStamp(seeded);
+        const core = prodCardCoreStamp(seeded);
         const cached = prodCardsCache.get(taskId);
         let existing = root.querySelector('[data-prod-task="' + CSS.escape(taskId) + '"]');
         if (existing && cached && cached.stamp === stamp) {
           insertProdCardAt(root, existing, i);
           continue;
         }
-        if (existing && activeId === taskId) {
+        if (
+          existing &&
+          cached &&
+          cached.core === core &&
+          prodCardHasLinesTable(existing) &&
+          activeId === taskId
+        ) {
           insertProdCardAt(root, existing, i);
-          prodCardsCache.set(taskId, { stamp });
           continue;
         }
-        const seeded = seedProductionCard(t0, jobProduceMap);
+        if (
+          existing &&
+          cached &&
+          cached.core === core &&
+          prodCardHasLinesTable(existing) &&
+          !(Array.isArray(seeded.lines) && seeded.lines.length)
+        ) {
+          insertProdCardAt(root, existing, i);
+          if (String(t0.channel || '') !== 'production_at') {
+            toEnrich.push({ taskId, index: i, t0: seeded, el: existing });
+          }
+          continue;
+        }
         const html = productionCardHtml(seeded);
         const nextEl = mountProductionCardHtml(html, { enter: !existing });
         if (!nextEl) continue;
@@ -4964,9 +5052,9 @@
           root.appendChild(existing);
         }
         insertProdCardAt(root, existing, i);
-        prodCardsCache.set(taskId, { stamp: prodCardStamp(seeded) });
+        prodCardsCache.set(taskId, { stamp, core });
         if (String(t0.channel || '') !== 'production_at') {
-          toEnrich.push({ taskId, index: i, t0, el: existing });
+          toEnrich.push({ taskId, index: i, t0: seeded, el: existing });
         }
       }
 
@@ -4981,21 +5069,33 @@
         toEnrich.map(async (item) => {
           try {
             const full = await enrichProductionCard(item.t0);
-            const newStamp = prodCardStamp(full);
-            if (activeProdTaskId() === item.taskId) {
-              prodCardsCache.set(item.taskId, { stamp: newStamp });
+            if (activeProdTaskId() === item.taskId && prodCardHasLinesTable(item.el)) {
+              prodCardsCache.set(item.taskId, {
+                stamp: prodCardStamp(full),
+                core: prodCardCoreStamp(full),
+              });
               return;
             }
             const cur = root.querySelector('[data-prod-task="' + CSS.escape(item.taskId) + '"]');
             if (!cur) return;
+            const newStamp = prodCardStamp(full);
             const cachedNow = prodCardsCache.get(item.taskId);
-            if (cachedNow && cachedNow.stamp === newStamp) return;
+            if (
+              cachedNow &&
+              cachedNow.stamp === newStamp &&
+              prodCardHasLinesTable(cur)
+            ) {
+              return;
+            }
             const html = productionCardHtml(full);
             const nextEl = mountProductionCardHtml(html, { enter: false });
             if (!nextEl) return;
             cur.replaceWith(nextEl);
             insertProdCardAt(root, nextEl, item.index);
-            prodCardsCache.set(item.taskId, { stamp: newStamp });
+            prodCardsCache.set(item.taskId, {
+              stamp: newStamp,
+              core: prodCardCoreStamp(full),
+            });
           } catch (_) {}
         })
       );
@@ -5159,15 +5259,17 @@
       }
       applyPickSiteLock();
       ensureProdCardsRoot();
-      const [data, jobsRes] = await Promise.all([
+      const [data, jobsRes, sendJobsRes] = await Promise.all([
         api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)),
         api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
+        api('/production/jobs?status=await_send&limit=80').catch(() => ({ items: [] })),
       ]);
       board = data;
       handoffs = [];
       stockReturns = Array.isArray(data.returns) ? data.returns : [];
       rebuildPendingStockReturnMap();
       prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
+      prodSendJobs = Array.isArray(sendJobsRes && sendJobsRes.items) ? sendJobsRes.items : [];
       lastRefreshAt = new Date();
       updateAutoLabel();
       const dayEl = document.getElementById('day');
