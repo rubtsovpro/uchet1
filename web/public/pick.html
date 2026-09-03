@@ -9,9 +9,9 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
   <title>Склад · задачи · Учёт №1</title>
-  <!-- pick-ui rev=pick-production-queue-20260903 -->
+  <!-- pick-ui rev=pick-production-at-jobs-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc56';
+    window.__PICK_UI_REV = 'pc57';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -2789,6 +2789,8 @@
     /** Черновик формы результата производства: taskId -> lines[] */
     let prodResultDrafts = {};
     let prodCardsBound = false;
+    /** Заказы уже на участке (склад отдал) — иначе пропадают с /production после handed. */
+    let prodAtJobs = [];
     let handoffTab = 'active';
     let closedHandoffs = [];
     let closedPage = 1;
@@ -4189,7 +4191,36 @@
 
     function productionOpenCount() {
       const open = (board && board.open) || [];
-      return open.filter(isProductionTask).length;
+      return open.filter(isProductionTask).length + (Array.isArray(prodAtJobs) ? prodAtJobs.length : 0);
+    }
+
+    /** Карточка для job со статусом at_production (задание склада уже закрыто). */
+    function productionJobAsCard(job) {
+      const j = job || {};
+      const id = String(j.id || '').trim();
+      const consume = Array.isArray(j.consume) ? j.consume : [];
+      const produce = Array.isArray(j.produce) ? j.produce : [];
+      return {
+        id: 'job:' + id,
+        stock_doc_id: id,
+        number: j.number || '',
+        deal_id: j.deal_id || '',
+        channel: 'production_at',
+        production_phase: 'at_production',
+        production_kind_label: j.kind_label || j.kind || '',
+        production_produce: produce,
+        lines: consume.map((l) => ({
+          sku: l.sku,
+          name: l.name,
+          qty: l.qty,
+          code: l.code || '',
+          cell_code: l.cell_code || '',
+        })),
+        created_at: j.updated_at || j.created_at || '',
+        route_from: 'Производство',
+        route_to: 'Основной',
+        title: j.deal_id ? 'Заказ №' + j.deal_id : j.number || 'Производство',
+      };
     }
 
     function boardGroupsForUi() {
@@ -4352,8 +4383,11 @@
       const num = String(t.number || t.barcode || '').trim() || '—';
       const dealId = String(t.deal_id || '').trim();
       const when = formatArrivedAt(t.created_at) || '';
-      const from = String(t.route_from || 'Основной').trim() || 'Основной';
-      const to = String(t.route_to || 'Производство').trim() || 'Производство';
+      const atProd =
+        String(t.production_phase || t.channel || '') === 'at_production' ||
+        String(t.channel || '') === 'production_at';
+      const from = String(t.route_from || (atProd ? 'Производство' : 'Основной')).trim() || 'Основной';
+      const to = String(t.route_to || (atProd ? 'Основной' : 'Производство')).trim() || 'Производство';
       const consume = Array.isArray(t.lines) ? t.lines : [];
       const deal = t.deal && typeof t.deal === 'object' ? t.deal : null;
       const kindLbl =
@@ -4375,18 +4409,32 @@
         dest_warehouse_name: to,
         route_label: from + ' → ' + to,
       };
+      const badge = atProd
+        ? '<span class="handoff-reserve-badge" style="background:#fef3c7;color:#92400e">В производстве</span>'
+        : '<span class="handoff-reserve-badge" style="background:#dbeafe;color:#1e40af">На производство</span>';
+      const sendTitle = atProd
+        ? '<div class="prod-send-title">Уже на участке · что ушло</div>'
+        : '<div class="prod-send-title">Уходит на производство</div>';
+      const printBtn = atProd
+        ? ''
+        : '<div class="handoff-actionbar-secondary">' +
+          '<button type="button" class="handoff-secondary is-print" data-prod-print="' +
+          esc(id) +
+          '">Расходная</button></div>';
       return (
         '<article class="handoff-row is-production" data-prod-task="' +
         esc(id) +
         '" data-prod-job="' +
         esc(jobId) +
-        '">' +
+        '"' +
+        (atProd ? ' data-prod-phase="at_production"' : '') +
+        '>' +
         handoffRouteBarHtml(routeFake) +
         '<div class="handoff-head">' +
         '<div class="handoff-head-main"><strong>' +
         esc(title) +
-        '</strong>' +
-        ' <span class="handoff-reserve-badge" style="background:#dbeafe;color:#1e40af">На производство</span>' +
+        '</strong> ' +
+        badge +
         handoffSaleChipsHtml(deal, { is_to_sto: true }) +
         '<span class="handoff-purpose">' +
         esc(kindLbl) +
@@ -4397,16 +4445,12 @@
         (dealId ? (when ? '<br>' : '') + '<strong class="handoff-meta-deal">' + esc(dealId) + '</strong>' : '') +
         (num ? (when || dealId ? ' · ' : '') + esc(num) : '') +
         '</div></div></div>' +
-        '<div class="prod-send-title">Уходит на производство</div>' +
+        sendTitle +
         productionLinesTableHtml(consume) +
         '<hr class="prod-result-hr" />' +
         productionResultFormHtml(t) +
         '<div class="handoff-actionbar">' +
-        '<div class="handoff-actionbar-secondary">' +
-        '<button type="button" class="handoff-secondary is-print" data-prod-print="' +
-        esc(id) +
-        '">Расходная</button>' +
-        '</div>' +
+        printBtn +
         '<div class="handoff-actionbar-main">' +
         '<button type="button" class="handoff-complete-btn is-production" data-prod-done="' +
         esc(id) +
@@ -4570,6 +4614,7 @@
           if (!article) return;
           const taskId = String(article.getAttribute('data-prod-task') || '').trim();
           const jobId = String(article.getAttribute('data-prod-job') || '').trim();
+          const phase = String(article.getAttribute('data-prod-phase') || '').trim();
           const lines = collectProductionResultLines(article);
           if (!lines.length) {
             alert('Укажите артикулы деталей, которые получились');
@@ -4591,10 +4636,19 @@
                 body: JSON.stringify({ lines }),
               });
             }
-            await api('/warehouse/tasks/' + encodeURIComponent(taskId) + '/done', {
-              method: 'POST',
-              body: '{}',
-            });
+            if (phase === 'at_production') {
+              // Деталь уже на участке — закрываем производство → задание складу на приход.
+              if (!jobId) throw new Error('Нет заказа производства');
+              await api('/production/jobs/' + encodeURIComponent(jobId) + '/done', {
+                method: 'POST',
+                body: '{}',
+              });
+            } else {
+              await api('/warehouse/tasks/' + encodeURIComponent(taskId) + '/done', {
+                method: 'POST',
+                body: '{}',
+              });
+            }
             delete prodResultDrafts[taskId];
             selectedId = null;
             await load();
@@ -4646,8 +4700,15 @@
         prod.forEach((t) => prodItems.push(t));
         if (rest.length) otherGroups.push({ ...g, items: rest, count: rest.length });
       });
+      const atCards = (Array.isArray(prodAtJobs) ? prodAtJobs : []).map(productionJobAsCard);
+      // Не дублировать job, если ещё висит открытое задание склада на этот же job.
+      const openJobIds = new Set(
+        prodItems.map((t) => String(t.stock_doc_id || '').trim()).filter(Boolean)
+      );
+      const atOnly = atCards.filter((t) => !openJobIds.has(String(t.stock_doc_id || '').trim()));
+      const allProd = prodItems.concat(atOnly);
 
-      if (prodItems.length && !otherGroups.length) {
+      if (allProd.length && (!otherGroups.length || IS_PROD_SCREEN)) {
         if (productionFormBusy() && document.getElementById('prod-cards')) {
           return;
         }
@@ -4655,7 +4716,11 @@
         box.innerHTML = '<div class="handoffs-list" id="prod-cards">Загрузка…</div>';
         const root = document.getElementById('prod-cards');
         const enriched = [];
-        for (const t0 of prodItems) {
+        for (const t0 of allProd) {
+          if (String(t0.channel || '') === 'production_at') {
+            enriched.push(t0);
+            continue;
+          }
           try {
             const full = await attachProductionResultLines(
               await api('/warehouse/tasks/' + encodeURIComponent(t0.id))
@@ -4675,7 +4740,7 @@
         return;
       }
 
-      if (!groups.length) {
+      if (!groups.length && !atOnly.length) {
         box.innerHTML = '<div class="muted">Очередь пуста — можно передохнуть.</div>';
         return;
       }
@@ -4799,11 +4864,17 @@
         return;
       }
       applyPickSiteLock();
-      // Та же доска, что /pick, но только карточки «На производство»
+      // Та же доска, что /pick, но только карточки «На производство» + уже «В производстве».
       const data = await api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite));
       board = data;
       handoffs = [];
       stockReturns = [];
+      try {
+        const jobsRes = await api('/production/jobs?status=at_production&limit=80');
+        prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
+      } catch (_) {
+        prodAtJobs = [];
+      }
       lastRefreshAt = new Date();
       updateAutoLabel();
       const dayEl = document.getElementById('day');
