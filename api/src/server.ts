@@ -685,10 +685,12 @@ app.get('/', async (c, next) => {
 });
 app.get('/legacy.js', (c) => sendLegacyJs(c));
 app.get('/styles.css', (c) => sendLegacyCss(c));
-const PICK_UI_REV = 'pc41';
-const PICK_UI_SIG = 'pick-deal-search-20260826b';
+const PICK_UI_REV = 'pc54';
+const PICK_UI_SIG = 'pick-production-screen-20260903';
 
-function sendPickHtml(c: Context) {
+function sendPickHtml(c: Context, opts?: { screen?: 'pick' | 'production' }) {
+  const screen = opts?.screen === 'production' ? 'production' : 'pick';
+  const basePath = screen === 'production' ? '/production' : '/pick';
   if (c.req.query('v') !== PICK_UI_REV) {
     const q = new URLSearchParams();
     const raw = c.req.query();
@@ -698,16 +700,27 @@ function sendPickHtml(c: Context) {
       else if (val != null) q.set(k, String(val));
     }
     q.set('v', PICK_UI_REV);
-    return c.redirect('/pick?' + q.toString(), 302);
+    return c.redirect(basePath + '?' + q.toString(), 302);
   }
   const pickPath = path.join(webPublicDir, 'pick.html');
-  const html = readPublicHtml('pick.html');
+  let html = readPublicHtml('pick.html');
   if (!html) return c.text('pick.html missing', 404);
+  if (screen === 'production') {
+    html = html
+      .replace(
+        '<head>',
+        `<head><script>window.__PICK_SCREEN='production';</script>`
+      )
+      .replace(
+        /<title>[^<]*<\/title>/,
+        '<title>Производство · Учёт №1</title>'
+      );
+  }
   const mtime = statSync(pickPath).mtimeMs;
   c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   c.header('Pragma', 'no-cache');
   c.header('Expires', '0');
-  c.header('ETag', `"pick-${PICK_UI_REV}-${Math.floor(mtime)}"`);
+  c.header('ETag', `"${screen}-${PICK_UI_REV}-${Math.floor(mtime)}"`);
   c.header('Content-Type', 'text/html; charset=utf-8');
   return c.body(html);
 }
@@ -738,18 +751,9 @@ function sendCourierHtml(c: Context) {
 }
 app.get('/courier', (c) => sendCourierHtml(c));
 app.get('/courier.html', (c) => sendCourierHtml(c));
-/** Экран производства — HTML из web/public (как /pick, /courier) */
-function sendProductionHtml(c: Context) {
-  const html = readPublicHtml('production.html');
-  if (!html) return c.text('production.html missing', 404);
-  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-  c.header('Pragma', 'no-cache');
-  c.header('Expires', '0');
-  c.header('Content-Type', 'text/html; charset=utf-8');
-  return c.body(html);
-}
-app.get('/production', (c) => sendProductionHtml(c));
-app.get('/production.html', (c) => sendProductionHtml(c));
+/** Экран производства — тот же chrome, что /pick (режим production) */
+app.get('/production', (c) => sendPickHtml(c, { screen: 'production' }));
+app.get('/production.html', (c) => sendPickHtml(c, { screen: 'production' }));
 /** Приёмка поставок по Data Matrix */
 app.get('/in/scan', async (c) => {
   // Сброс кэша старой страницы «ШК»

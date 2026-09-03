@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Ставит защиту на tech35: .protect-prod, blocked post-receive, бэкап кода.
 # Запуск с Mac: ./deploy/install-prod-guards.sh
+# Снять защиту (автодеплой снова): ./deploy/unlock-auto-deploy.sh
 set -euo pipefail
 
 REMOTE="${WMS_DEPLOY_HOST:-bank-vps}"

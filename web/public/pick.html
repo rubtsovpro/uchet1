@@ -9,9 +9,9 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
   <title>Склад · задачи · Учёт №1</title>
-  <!-- pick-ui rev=pick-production-deal-title-20260902i -->
+  <!-- pick-ui rev=pick-production-screen-20260903a -->
   <script>
-    window.__PICK_UI_REV = 'pc53';
+    window.__PICK_UI_REV = 'pc54';
   </script>
   <script>
     (function () {
@@ -2688,7 +2688,12 @@
   <script>
     const THEME_KEY = 'uchet1_pick_theme';
     const SITE_KEY = 'uchet1_pick_site';
+    const IS_PROD_SCREEN =
+      String(window.__PICK_SCREEN || '').toLowerCase() === 'production' ||
+      /^\/production(\.html)?\/?$/.test(String(location.pathname || ''));
     let me = null;
+    let prodJobs = [];
+    let prodTab = 'active';
     let selectedId = null;
     let pendingTaskId = '';
     try {
@@ -4767,10 +4772,174 @@
         .join('');
     }
 
+    function applyProductionChrome() {
+      if (!IS_PROD_SCREEN) return;
+      document.title = 'Производство · Учёт №1';
+      const h1 = document.querySelector('header .brand-text h1');
+      if (h1) h1.textContent = 'Производство';
+      const sub = document.querySelector('header .brand-text .sub');
+      if (sub && !sub.id) sub.textContent = 'участок · PROD-WIP';
+      ['returns-panel', 'handoffs-panel', 'handoff-deal-find', 'site-switch', 'pick-push-box', 'urg'].forEach(
+        (id) => {
+          const el = document.getElementById(id);
+          if (el) el.hidden = true;
+        }
+      );
+      const openPanel = document.getElementById('open-panel');
+      if (openPanel) {
+        openPanel.hidden = false;
+        openPanel.classList.add('is-production');
+        const h2 = openPanel.querySelector(':scope > h2');
+        if (h2) h2.textContent = 'Заказы на участке';
+      }
+    }
+
+    function renderProductionTabs(activeN, closedN) {
+      const el = document.getElementById('counts');
+      if (!el) return;
+      el.className = 'counts pick-tabs';
+      el.innerHTML =
+        '<button type="button" class="pick-tab' +
+        (prodTab === 'active' ? ' is-active' : '') +
+        '" data-prod-tab="active">На участке<b>' +
+        activeN +
+        '</b></button>' +
+        '<button type="button" class="pick-tab' +
+        (prodTab === 'closed' ? ' is-active' : '') +
+        '" data-prod-tab="closed">Готово / склад<b>' +
+        closedN +
+        '</b></button>';
+      el.querySelectorAll('[data-prod-tab]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          prodTab = String(btn.getAttribute('data-prod-tab') || 'active');
+          renderProductionJobsBoard();
+          renderProductionTabs(
+            (prodJobs || []).filter((j) => j.status === 'at_production').length,
+            (prodJobs || []).filter((j) => j.status === 'await_receive').length
+          );
+        });
+      });
+    }
+
+    function renderProductionJobsBoard() {
+      const groups = document.getElementById('groups');
+      if (!groups) return;
+      const active = (prodJobs || []).filter((j) => j.status === 'at_production');
+      const waiting = (prodJobs || []).filter((j) => j.status === 'await_receive');
+      const list = prodTab === 'closed' ? waiting : active;
+      if (!list.length) {
+        groups.innerHTML =
+          '<div class="empty muted" style="padding:28px 12px;text-align:center">' +
+          (prodTab === 'closed'
+            ? 'Нет заказов, ожидающих оприходование склада.'
+            : 'Нет заказов на участке. Ждём передачу со склада (статус «В производстве»).') +
+          '</div>';
+        return;
+      }
+      groups.innerHTML =
+        '<div class="list">' +
+        list
+          .map((j) => {
+            const canDone = j.status === 'at_production';
+            const deal = j.deal_id
+              ? '<div class="meta">Сделка Amo · <span class="mono">' + esc(j.deal_id) + '</span></div>'
+              : '';
+            return (
+              '<article class="handoff-row is-production" data-prod-job="' +
+              esc(j.id) +
+              '">' +
+              '<div class="handoff-main">' +
+              '<div class="handoff-title"><strong class="mono">' +
+              esc(j.number) +
+              '</strong> <span class="badge normal">' +
+              esc(j.kind_label || j.kind || '') +
+              '</span></div>' +
+              '<div class="meta">' +
+              esc(j.status_label || j.status) +
+              '</div>' +
+              deal +
+              '<div class="handoff-sum">' +
+              esc(j.summary || '') +
+              '</div>' +
+              '</div>' +
+              (canDone
+                ? '<button type="button" class="handoff-complete-btn is-production" data-prod-job-done="' +
+                  esc(j.id) +
+                  '">Готово</button>'
+                : '<div class="muted" style="padding:10px 12px;font-size:13px">Ждём склад</div>') +
+              '</article>'
+            );
+          })
+          .join('') +
+        '</div>';
+      groups.querySelectorAll('[data-prod-job-done]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = btn.getAttribute('data-prod-job-done');
+          if (!id) return;
+          btn.disabled = true;
+          try {
+            await api('/production/jobs/' + encodeURIComponent(id) + '/done', { method: 'POST' });
+            await loadProductionScreen();
+          } catch (e) {
+            showErr((e && e.message) || 'ошибка');
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    async function loadProductionScreen() {
+      applyProductionChrome();
+      if (!me) {
+        try {
+          me = await api('/me');
+          const who = document.getElementById('who');
+          if (who && me) {
+            who.textContent = (me.name || me.login || '') + (me.role ? ' · ' + me.role : '');
+          }
+        } catch (_) {}
+      }
+      if (me && (me.photographer_only || me.role === 'photographer')) {
+        location.replace('/');
+        return;
+      }
+      const secs = (me && me.rights && me.rights.sections) || [];
+      const okProd =
+        !me ||
+        me.isSystemAdmin ||
+        me.role === 'admin' ||
+        secs.includes('production') ||
+        secs.includes('pick');
+      if (me && !okProd) {
+        showErr('Недостаточно прав для экрана производства.');
+        return;
+      }
+      const data = await api('/production/jobs?limit=80');
+      prodJobs = Array.isArray(data.items) ? data.items : [];
+      const activeN = prodJobs.filter((j) => j.status === 'at_production').length;
+      const closedN = prodJobs.filter((j) => j.status === 'await_receive').length;
+      lastRefreshAt = new Date();
+      updateAutoLabel();
+      const dayEl = document.getElementById('day');
+      if (dayEl) {
+        dayEl.textContent = new Date().toLocaleDateString('ru-RU', {
+          weekday: 'short',
+          day: 'numeric',
+          month: 'short',
+        });
+      }
+      renderProductionTabs(activeN, closedN);
+      renderProductionJobsBoard();
+    }
+
     async function load() {
       showErr('');
       const verEl = document.getElementById('pick-ui-ver');
       if (verEl) verEl.textContent = window.__PICK_UI_REV ? '· v' + window.__PICK_UI_REV : '';
+      if (IS_PROD_SCREEN) {
+        await loadProductionScreen();
+        return;
+      }
       if (!me) {
         try {
           me = await api('/me');
@@ -8302,10 +8471,13 @@
     });
 
     updateAutoLabel();
+    if (IS_PROD_SCREEN) applyProductionChrome();
     load()
       .then(() => {
-        startChatWidget();
-        ensurePickPush().catch(() => {});
+        if (!IS_PROD_SCREEN) {
+          startChatWidget();
+          ensurePickPush().catch(() => {});
+        }
         if (pendingTaskId && selectedId === pendingTaskId) {
           const detail = document.querySelector('.row.open .detail');
           if (detail && !detail.dataset.loaded) openTask(pendingTaskId);
@@ -8313,7 +8485,7 @@
       })
       .catch((e) => {
         showErr(e.message);
-        startChatWidget();
+        if (!IS_PROD_SCREEN) startChatWidget();
       });
     scheduleBoardAutoRefresh();
   </script>

@@ -1,27 +1,70 @@
-# Deploy prod — ЗАБЛОКИРОВАН (запрет отката).
-# Не включать workflow_run и не делать git reset --hard на VPS,
-# пока origin/main не = актуальный прод (после полного sync-коммита).
-# Пользователь: «ничего нельзя откатывать».
+# Автодеплой на tech35 (bank-vps) после успешного CI на main.
+# Secrets: см. docs/GITHUB-ACTIONS.md
+# Разблокирован 2026-09-03: origin/main = живой прод (sync a9e4b02+).
 name: Deploy prod
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      confirm:
-        description: 'Введите NO-ROLLBACK только для проверки (деплой всё равно не катит код)'
-        required: true
-        default: ''
 
 concurrency:
   group: deploy-prod
   cancel-in-progress: true
 
 jobs:
-  blocked:
-    name: Deploy blocked (no rollback)
+  deploy:
+    name: Pull + build + restart
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
-      - name: Refuse any prod reset
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 30m
+          script: |
+            set -euo pipefail
+            APP=/root/1c_pnevmopodveska1_ru/warehouse
+            cd "$APP"
+            git fetch origin
+            git reset --hard origin/main
+            # Убрать хвосты от старых scp (иначе гибрид old tracked + untracked new → tsc падает)
+            git clean -fd \
+              -e data \
+              -e .env \
+              -e '.env.*' \
+              -e api/node_modules \
+              -e web/node_modules \
+              -e api/dist \
+              -e web/dist \
+              -e deploy/ocr-local
+            NODE_ENV= npm ci --prefix api
+            NODE_ENV= npm install --prefix web
+            NODE_ENV= npm run build --prefix api
+            NODE_ENV= npm run build --prefix web
+            if [[ -d web/public && -d web/dist ]]; then
+              rsync -a --exclude 'assets/' web/public/ web/dist/ || true
+            fi
+            npm prune --omit=dev --prefix api
+            systemctl restart warehouse-wms
+            sleep 2
+            code=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:3101/api/health || true)
+            echo "health $code"
+            test "$code" = "200"
+            echo "OK $(git rev-parse --short HEAD)"
+
+      - name: Telegram · deploy OK
+        if: success()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_NOTIFY_CHAT_ID }}
@@ -29,17 +72,37 @@ jobs:
           TELEGRAM_WORKER_SECRET: ${{ secrets.TELEGRAM_WORKER_SECRET }}
         run: |
           set -euo pipefail
-          MSG='🚫 uchet1 Deploy prod ЗАБЛОКИРОВАН: запрещён git reset/clean на VPS (откат кода). Сначала sync всего дерева в main, потом явно разблокировать.'
-          echo "$MSG"
-          if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]]; then
-            BODY=$(jq -n --arg t "$TELEGRAM_BOT_TOKEN" --arg c "$TELEGRAM_CHAT_ID" --arg x "$MSG" \
-              '{token:$t, method:"sendMessage", params:{chat_id:$c, text:$x, disable_web_page_preview:true}}')
-            if [[ -n "${TELEGRAM_WORKER_URL:-}" ]]; then
-              [[ -n "${TELEGRAM_WORKER_SECRET:-}" ]] && BODY=$(echo "$BODY" | jq --arg s "$TELEGRAM_WORKER_SECRET" '. + {secret:$s}')
-              curl -sS -X POST "${TELEGRAM_WORKER_URL%/}/tg-api" -H 'Content-Type: application/json' -d "$BODY" >/dev/null || true
-            else
-              curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                -d "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${MSG}" >/dev/null || true
-            fi
+          [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]] && exit 0
+          TEXT=$(printf '✅ <b>uchet1 deploy OK</b>\n<a href="%s">actions</a> · main' \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          BODY=$(jq -n --arg t "$TELEGRAM_BOT_TOKEN" --arg c "$TELEGRAM_CHAT_ID" --arg x "$TEXT" \
+            '{token:$t, method:"sendMessage", params:{chat_id:$c, text:$x, parse_mode:"HTML", disable_web_page_preview:true}}')
+          if [[ -n "${TELEGRAM_WORKER_URL:-}" ]]; then
+            [[ -n "${TELEGRAM_WORKER_SECRET:-}" ]] && BODY=$(echo "$BODY" | jq --arg s "$TELEGRAM_WORKER_SECRET" '. + {secret:$s}')
+            curl -sS -X POST "${TELEGRAM_WORKER_URL%/}/tg-api" -H 'Content-Type: application/json' -d "$BODY" >/dev/null
+          else
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${TEXT}" -d parse_mode=HTML >/dev/null
           fi
-          exit 1
+
+      - name: Telegram · deploy FAILED
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_NOTIFY_CHAT_ID }}
+          TELEGRAM_WORKER_URL: ${{ secrets.TELEGRAM_WORKER_URL }}
+          TELEGRAM_WORKER_SECRET: ${{ secrets.TELEGRAM_WORKER_SECRET }}
+        run: |
+          set -euo pipefail
+          [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]] && exit 0
+          TEXT=$(printf '❌ <b>uchet1 deploy FAILED</b>\n<a href="%s">run</a>\nПроверь сборку / git fetch / warehouse-wms' \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          BODY=$(jq -n --arg t "$TELEGRAM_BOT_TOKEN" --arg c "$TELEGRAM_CHAT_ID" --arg x "$TEXT" \
+            '{token:$t, method:"sendMessage", params:{chat_id:$c, text:$x, parse_mode:"HTML", disable_web_page_preview:true}}')
+          if [[ -n "${TELEGRAM_WORKER_URL:-}" ]]; then
+            [[ -n "${TELEGRAM_WORKER_SECRET:-}" ]] && BODY=$(echo "$BODY" | jq --arg s "$TELEGRAM_WORKER_SECRET" '. + {secret:$s}')
+            curl -sS -X POST "${TELEGRAM_WORKER_URL%/}/tg-api" -H 'Content-Type: application/json' -d "$BODY" >/dev/null || true
+          else
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${TEXT}" -d parse_mode=HTML >/dev/null || true
+          fi
