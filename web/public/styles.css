@@ -4610,9 +4610,10 @@ button.toolbar-ico.doc-in-rm-line svg {
 }
 .wh-tr-add-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(12rem, 1fr) auto auto;
   gap: 8px;
   align-items: end;
+  width: 100%;
 }
 .wh-tr-add-row .wh-tr-qty {
   display: flex;
@@ -4628,15 +4629,37 @@ button.toolbar-ico.doc-in-rm-line svg {
 .wh-tr-add-row #tr-add-line {
   height: 34px;
   align-self: end;
+  white-space: nowrap;
 }
 .wh-tr-sug {
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.45;
 }
+.wh-tr-lines-block {
+  width: 100%;
+}
+.wh-tr-lines-scroll {
+  width: 100%;
+  margin-top: 4px;
+}
+.wh-tr-lines-table {
+  width: 100%;
+  table-layout: auto;
+}
+.wh-tr-lines-table th.num,
+.wh-tr-lines-table td.num {
+  text-align: right;
+}
 .wh-tr-hint {
-  margin: 8px 0 0;
+  margin: 10px 0 0;
   font-size: 12px;
+}
+.wh-tr-actions {
+  margin-top: 14px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
 }
 .wh-tr-cell-stock {
   margin-top: 8px;

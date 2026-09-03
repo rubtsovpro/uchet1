@@ -9228,11 +9228,6 @@ async function renderWhTransfers() {
 
   body = `
     ${err ? `<p class="error">${esc(err)}</p>` : ''}
-    <div class="toolbar-filter" style="margin:0 0 14px">
-      <span class="toolbar-filter-label">Тип</span>
-      <button type="button" class="form-pagetab ${kind === 'warehouse' ? 'active' : ''}" data-tr-kind="warehouse">Между складами</button>
-      <button type="button" class="form-pagetab ${kind === 'cell' ? 'active' : ''}" data-tr-kind="cell">Между ячейками</button>
-    </div>
     <div id="wh-tr-form" class="form-fields wh-tr-fields"></div>
     <p class="muted" id="wh-tr-msg" style="margin-top:12px"></p>
   `;
@@ -9247,9 +9242,12 @@ async function renderWhTransfers() {
       { id: 'create', label: 'Создать' },
     ],
     activePageTab: 'create',
-    toolbar: `<button type="button" class="primary" id="wh-tr-submit">${
-      kind === 'cell' ? 'Переместить' : 'Создать заказ'
-    }</button>`,
+    toolbar: `
+      <div class="toolbar-filter">
+        <span class="toolbar-filter-label">Тип</span>
+        <button type="button" class="form-pagetab ${kind === 'warehouse' ? 'active' : ''}" data-tr-kind="warehouse">Между складами</button>
+        <button type="button" class="form-pagetab ${kind === 'cell' ? 'active' : ''}" data-tr-kind="cell">Между ячейками</button>
+      </div>`,
   });
   bindFormChrome(() => showSection('warehouse'));
   view.querySelectorAll('[data-pagetab]').forEach((btn) => {
@@ -9286,27 +9284,36 @@ async function renderWhTransfers() {
           <textarea id="tr-comment" rows="2" placeholder="Зачем перемещаем…"></textarea>
         </div>
         <div class="field span-2">
-          <span>Товар</span>
+          <span>Добавить товар</span>
           <div class="wh-tr-add-row">
-            <input type="search" id="tr-prod-q" placeholder="Артикул или название" autocomplete="off" />
+            <input type="search" id="tr-prod-q" placeholder="Артикул или название — выберите из подсказки" autocomplete="off" />
             <label class="wh-tr-qty">
               <span>Кол-во</span>
               <input type="number" id="tr-qty" min="0.001" step="any" value="1" />
             </label>
-            <button type="button" id="tr-add-line">В список</button>
+            <button type="button" id="tr-add-line" title="Добавить выбранный товар в таблицу ниже">Добавить</button>
           </div>
           <div id="tr-prod-sug" class="muted wh-tr-sug"></div>
         </div>
-        <div class="field span-2">
-          <div class="table-scroll">
-            <table class="data-table is-dense" data-no-col-filter="1">
-              <thead><tr><th>Товар</th><th style="width:5.5em">Кол-во</th><th style="width:2.5em"></th></tr></thead>
+        <div class="field span-2 wh-tr-lines-block">
+          <span>Позиции <span class="muted" id="tr-lines-count">(0)</span></span>
+          <div class="table-scroll wh-tr-lines-scroll">
+            <table class="data-table is-dense wh-tr-lines-table" data-no-col-filter="1">
+              <thead><tr>
+                <th style="width:9em">Артикул</th>
+                <th>Наименование</th>
+                <th class="num" style="width:6em">Кол-во</th>
+                <th style="width:3em"></th>
+              </tr></thead>
               <tbody id="tr-lines-body">
-                <tr><td colspan="3" class="muted">Добавьте позиции</td></tr>
+                <tr><td colspan="4" class="muted">Пока пусто — найдите товар выше и нажмите «Добавить»</td></tr>
               </tbody>
             </table>
           </div>
-          <p class="muted wh-tr-hint">Создаётся заказ + задание кладовщику (/pick). Остатки спишутся после «Сделал».</p>
+          <p class="muted wh-tr-hint">После «Создать заказ» появится задание кладовщику (/pick). Остатки спишутся, когда кладовщик нажмёт «Сделал».</p>
+          <div class="wh-tr-actions">
+            <button type="button" class="primary" id="wh-tr-submit">Создать заказ</button>
+          </div>
         </div>`;
     } else {
       formEl.innerHTML = `
@@ -9336,26 +9343,32 @@ async function renderWhTransfers() {
         </div>
         <div class="field span-2">
           <p class="muted wh-tr-hint">Остаток по адресу обновится сразу (без задания на /pick).</p>
+          <div class="wh-tr-actions">
+            <button type="button" class="primary" id="wh-tr-submit">Переместить</button>
+          </div>
         </div>`;
     }
     bindFormActions();
+    bindSubmit();
   }
 
   function paintLines() {
     const tb = document.getElementById('tr-lines-body');
+    const cnt = document.getElementById('tr-lines-count');
+    if (cnt) cnt.textContent = `(${lines.length})`;
     if (!tb) return;
     if (!lines.length) {
-      tb.innerHTML = '<tr><td colspan="3" class="muted">Добавьте позиции</td></tr>';
+      tb.innerHTML =
+        '<tr><td colspan="4" class="muted">Пока пусто — найдите товар выше и нажмите «Добавить»</td></tr>';
       return;
     }
     tb.innerHTML = lines
       .map(
         (l, i) => `<tr>
-        <td>${esc(l.name || l.sku || l.product_id)}${
-          l.sku ? `<div class="muted mono">${esc(l.sku)}</div>` : ''
-        }</td>
-        <td class="mono">${esc(l.qty)}</td>
-        <td><button type="button" data-tr-del="${i}">×</button></td>
+        <td class="mono">${esc(l.sku || '—')}</td>
+        <td>${esc(l.name || l.product_id || '—')}</td>
+        <td class="mono num">${esc(l.qty)}</td>
+        <td><button type="button" class="linkish" data-tr-del="${i}" title="Убрать">×</button></td>
       </tr>`
       )
       .join('');
@@ -9365,6 +9378,83 @@ async function renderWhTransfers() {
         paintLines();
       };
     });
+  }
+
+  function bindSubmit() {
+    document.getElementById('wh-tr-submit')?.addEventListener('click', onWhTrSubmit);
+  }
+
+  async function onWhTrSubmit() {
+    const btn = document.getElementById('wh-tr-submit');
+    if (btn) btn.disabled = true;
+    if (msgEl) msgEl.textContent = 'Сохранение…';
+    try {
+      if (kind === 'warehouse') {
+        const fromId = String(document.getElementById('tr-from')?.value || '').trim();
+        const toId = String(document.getElementById('tr-to')?.value || '').trim();
+        const comment = String(document.getElementById('tr-comment')?.value || '').trim();
+        if (!fromId || !toId) throw new Error('Укажите склады «откуда» и «куда»');
+        if (fromId === toId) throw new Error('Склады совпадают');
+        if (!comment) throw new Error('Укажите комментарий');
+        if (!lines.length) throw new Error('Добавьте хотя бы одну позицию');
+        const r = await api('/stock/transfer-request', {
+          method: 'POST',
+          body: JSON.stringify({
+            warehouse_from_id: fromId,
+            warehouse_to_id: toId,
+            comment,
+            post: false,
+            lines: lines.map((l) => ({ product_id: l.product_id, qty: l.qty })),
+          }),
+        });
+        if (msgEl) {
+          msgEl.textContent =
+            `Заказ ${r.history?.number || r.number || ''} создан` +
+            (r.warehouse_task?.number ? ` · задание ${r.warehouse_task.number}` : '');
+        }
+        if (r.history?.id) {
+          openTab('xfer:' + r.history.id, r.history.number || 'Заказ на перемещение');
+        } else {
+          state.whTransfersPage = 'journal';
+          setTimeout(() => renderWhTransfers(), 400);
+        }
+      } else {
+        const wid = String(document.getElementById('tr-cell-wh')?.value || '').trim();
+        const from = String(document.getElementById('tr-cell-from')?.value || '').trim();
+        const to = String(document.getElementById('tr-cell-to')?.value || '').trim();
+        const comment = String(document.getElementById('tr-cell-comment')?.value || '').trim();
+        const pick = state._whTrCellPick;
+        if (!wid) throw new Error('Укажите склад');
+        if (!from || !to) throw new Error('Укажите ячейки');
+        if (!pick || !(pick.qty > 0)) {
+          throw new Error('Нажмите «Взять» у товара в ячейке «откуда»');
+        }
+        const r = await api('/warehouse/cells/move', {
+          method: 'POST',
+          body: JSON.stringify({
+            warehouse_id: wid,
+            from_cell: from,
+            to_cell: to,
+            product_id: pick.product_id,
+            sku: pick.sku,
+            qty: pick.qty,
+            comment,
+          }),
+        });
+        state._whTrCellPick = null;
+        if (msgEl) {
+          msgEl.textContent = `Готово: ${r.from_cell} → ${r.to_cell} · ${r.sku || ''} × ${r.qty}${
+            r.history?.number ? ' · ' + r.history.number : ''
+          }`;
+        }
+        state.whTransfersPage = 'journal';
+        setTimeout(() => renderWhTransfers(), 500);
+      }
+    } catch (e) {
+      if (msgEl) msgEl.textContent = e.message || String(e);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   let pickedProd = null;
@@ -9423,7 +9513,7 @@ async function renderWhTransfers() {
       document.getElementById('tr-add-line')?.addEventListener('click', () => {
         const qty = Number(document.getElementById('tr-qty')?.value);
         if (!pickedProd?.product_id) {
-          if (msgEl) msgEl.textContent = 'Выберите товар из подсказки';
+          if (msgEl) msgEl.textContent = 'Сначала выберите товар из подсказки';
           return;
         }
         if (!(qty > 0)) {
@@ -9436,8 +9526,16 @@ async function renderWhTransfers() {
         if (inp) inp.value = '';
         const sq = document.getElementById('tr-prod-sug');
         if (sq) sq.textContent = '';
+        const qtyInp = document.getElementById('tr-qty');
+        if (qtyInp) qtyInp.value = '1';
         paintLines();
         if (msgEl) msgEl.textContent = '';
+      });
+      document.getElementById('tr-prod-q')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          document.getElementById('tr-add-line')?.click();
+        }
       });
       paintLines();
     } else {
@@ -9524,79 +9622,6 @@ async function renderWhTransfers() {
   }
 
   renderForm();
-
-  document.getElementById('wh-tr-submit')?.addEventListener('click', async () => {
-    const btn = document.getElementById('wh-tr-submit');
-    if (btn) btn.disabled = true;
-    if (msgEl) msgEl.textContent = 'Сохранение…';
-    try {
-      if (kind === 'warehouse') {
-        const fromId = String(document.getElementById('tr-from')?.value || '').trim();
-        const toId = String(document.getElementById('tr-to')?.value || '').trim();
-        const comment = String(document.getElementById('tr-comment')?.value || '').trim();
-        if (!fromId || !toId) throw new Error('Укажите склады «откуда» и «куда»');
-        if (fromId === toId) throw new Error('Склады совпадают');
-        if (!comment) throw new Error('Укажите комментарий');
-        if (!lines.length) throw new Error('Добавьте хотя бы одну позицию');
-        const r = await api('/stock/transfer-request', {
-          method: 'POST',
-          body: JSON.stringify({
-            warehouse_from_id: fromId,
-            warehouse_to_id: toId,
-            comment,
-            post: false,
-            lines: lines.map((l) => ({ product_id: l.product_id, qty: l.qty })),
-          }),
-        });
-        if (msgEl) {
-          msgEl.textContent =
-            `Заказ ${r.history?.number || r.number || ''} создан` +
-            (r.warehouse_task?.number ? ` · задание ${r.warehouse_task.number}` : '');
-        }
-        if (r.history?.id) {
-          openTab('xfer:' + r.history.id, r.history.number || 'Заказ на перемещение');
-        } else {
-          state.whTransfersPage = 'journal';
-          setTimeout(() => renderWhTransfers(), 400);
-        }
-      } else {
-        const wid = String(document.getElementById('tr-cell-wh')?.value || '').trim();
-        const from = String(document.getElementById('tr-cell-from')?.value || '').trim();
-        const to = String(document.getElementById('tr-cell-to')?.value || '').trim();
-        const comment = String(document.getElementById('tr-cell-comment')?.value || '').trim();
-        const pick = state._whTrCellPick;
-        if (!wid) throw new Error('Укажите склад');
-        if (!from || !to) throw new Error('Укажите ячейки');
-        if (!pick || !(pick.qty > 0)) {
-          throw new Error('Нажмите «Взять» у товара в ячейке «откуда»');
-        }
-        const r = await api('/warehouse/cells/move', {
-          method: 'POST',
-          body: JSON.stringify({
-            warehouse_id: wid,
-            from_cell: from,
-            to_cell: to,
-            product_id: pick.product_id,
-            sku: pick.sku,
-            qty: pick.qty,
-            comment,
-          }),
-        });
-        state._whTrCellPick = null;
-        if (msgEl) {
-          msgEl.textContent = `Готово: ${r.from_cell} → ${r.to_cell} · ${r.sku || ''} × ${r.qty}${
-            r.history?.number ? ' · ' + r.history.number : ''
-          }`;
-        }
-        state.whTransfersPage = 'journal';
-        setTimeout(() => renderWhTransfers(), 500);
-      }
-    } catch (e) {
-      if (msgEl) msgEl.textContent = e.message || String(e);
-    } finally {
-      if (btn) btn.disabled = false;
-    }
-  });
 }
 
 async function renderWarehouseRequestsHub() {
@@ -13279,6 +13304,7 @@ async function renderDocs() {
   const qs = new URLSearchParams();
   if (type) qs.set('type', type);
   if (q) qs.set('q', q);
+  qs.set('source', 'local');
   qs.set('sort', sort);
   qs.set('dir', dir);
   qs.set('page', String(page));
@@ -13326,12 +13352,12 @@ async function renderDocs() {
     type === 'in' ? 'Поставщик' : type === 'return' ? 'Покупатель' : 'Контрагент';
   const listHint =
     type === 'in'
-      ? 'Журнал приходных. «Создать» — приход с размещением по ячейкам. «По основанию» — из заказа/закупки. Колонка «Поставка» — номер поставки; «Размещение» — ячейки. Клик — карточка.'
+      ? 'Журнал приходных. «Создать» — приход с размещением по ячейкам. Колонка «Поставка» — номер поставки; «Размещение» — ячейки. Клик — карточка.'
       : type === 'return'
         ? 'Возвраты от покупателей (приходная на основании списания). В комментарии — номер списания.'
         : type === 'out'
           ? 'Списания. Клик — состав списанных товаров.'
-          : 'Журнал из 1С (приход/расход/возврат) и локальные. Колонка «Тип» — вид документа.';
+          : 'Журнал локальных документов (приход/расход/возврат). Колонка «Тип» — вид документа.';
   const showTypeCol = !type;
   const supplyCol = type === 'in';
   view.innerHTML = formChrome(
@@ -13381,7 +13407,7 @@ async function renderDocs() {
             .join('') ||
             `<tr><td colspan="${
               (showTypeCol ? 1 : 0) + (placementCol ? 1 : 0) + (supplyCol ? 1 : 0) + 6
-            }" class="muted">Документов пока нет — кнопка «Документы 1С» на главной</td></tr>`
+            }" class="muted">Документов пока нет</td></tr>`
         }
       </tbody>
     </table>
@@ -13392,8 +13418,8 @@ async function renderDocs() {
           type === 'out'
             ? ''
             : type === 'in'
-              ? '<button type="button" class="primary" id="goto-wh-inbound" title="Новая приходная с размещением по ячейкам">Создать</button><button type="button" id="goto-in" title="Создать приходную по основанию (заказ / закупка)">По основанию</button>'
-              : '<button type="button" class="primary" id="goto-in" title="Создать приходную — выбрать основание">Создать приход</button>'
+              ? '<button type="button" class="primary" id="goto-wh-inbound" title="Новая приходная с размещением по ячейкам">Создать</button>'
+              : '<button type="button" class="primary" id="goto-wh-inbound" title="Новая приходная с размещением по ячейкам">Создать приход</button>'
         }
         ${
           type === 'out' || !type
@@ -13414,13 +13440,6 @@ async function renderDocs() {
     }
   );
   bindFormChrome(() => showSection(backSection));
-  const gotoIn = document.getElementById('goto-in');
-  if (gotoIn) {
-    gotoIn.onclick = () => {
-      state.inCreateBasis = '';
-      openTab('in-new');
-    };
-  }
   const gotoWhInbound = document.getElementById('goto-wh-inbound');
   if (gotoWhInbound) gotoWhInbound.onclick = () => openTab('wh-inbound');
   const gotoOut = document.getElementById('goto-out');

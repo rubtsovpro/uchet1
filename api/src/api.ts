@@ -11895,6 +11895,8 @@ api.get('/docs', (c) => {
   const q = (c.req.query('q') || '').trim();
   const dealId = (c.req.query('deal_id') || '').trim();
   const companyId = (c.req.query('company_id') || '').trim();
+  /** local (по умолчанию) | 1c | all — проводки из 1С в журнале не нужны */
+  const source = (c.req.query('source') || 'local').trim().toLowerCase();
   const sort = (c.req.query('sort') || 'date').trim();
   const dir = (c.req.query('dir') || 'desc').trim().toLowerCase() === 'asc' ? 'ASC' : 'DESC';
   const { page, limit, offset } = parsePage(c, 50);
@@ -11903,6 +11905,11 @@ api.get('/docs', (c) => {
   if (type === 'in' || type === 'out' || type === 'transfer' || type === 'return') {
     where.push('d.doc_type = ?');
     params.push(type);
+  }
+  if (source === '1c') {
+    where.push(`IFNULL(d.source,'') = '1c'`);
+  } else if (source !== 'all') {
+    where.push(`IFNULL(d.source,'') != '1c'`);
   }
   if (dealId) {
     where.push(`(IFNULL(d.deal_id,'') = ? OR IFNULL(d.basis_order_id,'') = ?)`);

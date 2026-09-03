@@ -359,7 +359,10 @@ export function productPurchaseHistory(productId: string, limit = 50) {
     `SELECT COUNT(*) AS c
      FROM stock_doc_lines l
      INNER JOIN stock_docs d ON d.id = l.doc_id
-     WHERE d.doc_type = 'in' AND l.product_id = ? AND IFNULL(l.qty, 0) != 0`,
+     WHERE d.doc_type = 'in'
+       AND IFNULL(d.source,'') != '1c'
+       AND l.product_id = ?
+       AND IFNULL(l.qty, 0) != 0`,
     [productId]
   );
   const total = Number(totalRow?.c) || 0;
@@ -402,6 +405,7 @@ export function productPurchaseHistory(productId: string, limit = 50) {
      LEFT JOIN warehouses w ON w.id = d.warehouse_id
      LEFT JOIN gtd_numbers g ON g.id = l.gtd_key
      WHERE d.doc_type = 'in'
+       AND IFNULL(d.source,'') != '1c'
        AND l.product_id = ?
        AND IFNULL(l.qty, 0) != 0
      ORDER BY d.doc_date DESC, d.number DESC, l.line_no DESC
@@ -426,7 +430,7 @@ export function productPurchaseHistory(productId: string, limit = 50) {
   }));
   return {
     product_id: productId,
-    note: 'Все приходные накладные с этой номенклатурой (кто / когда / сколько / цена / ГТД / срок ожидания поставщика). Не только остаток FIFO.',
+    note: 'Приходные Учёта №1 по этой номенклатуре (без проводок из 1С).',
     total,
     limit: lim,
     items,
