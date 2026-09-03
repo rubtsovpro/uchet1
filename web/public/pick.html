@@ -2701,6 +2701,12 @@
     const IS_PROD_SCREEN =
       String(window.__PICK_SCREEN || '').toLowerCase() === 'production' ||
       /^\/production(\.html)?\/?$/.test(String(location.pathname || ''));
+    if (IS_PROD_SCREEN) {
+      try {
+        const g = document.getElementById('groups');
+        if (g) g.innerHTML = '<div class="handoffs-list" id="prod-cards"></div>';
+      } catch (_) {}
+    }
     let me = null;
     let selectedId = null;
     let pendingTaskId = '';
@@ -4801,16 +4807,46 @@
       return el;
     }
 
-    async function renderProductionCards(allProd) {
+    function ensureProdCardsRoot() {
       const box = document.getElementById('groups');
-      if (!box) return;
-      await ensureMainCellRacks();
+      if (!box) return null;
       let root = document.getElementById('prod-cards');
       if (!root) {
         box.innerHTML = '<div class="handoffs-list" id="prod-cards"></div>';
         root = document.getElementById('prod-cards');
       }
-      root.classList.add('is-refreshing');
+      return root;
+    }
+
+    function buildJobProduceMap() {
+      const m = new Map();
+      (Array.isArray(prodAtJobs) ? prodAtJobs : []).forEach((j) => {
+        const id = String(j.id || '').trim();
+        if (id && Array.isArray(j.produce)) m.set(id, j.produce);
+      });
+      return m;
+    }
+
+    function seedProductionCard(t0, jobProduceMap) {
+      const t = Object.assign({}, t0);
+      const jobId = String(t.stock_doc_id || '').trim();
+      if (!Array.isArray(t.production_produce) && jobId && jobProduceMap.has(jobId)) {
+        t.production_produce = jobProduceMap.get(jobId);
+      }
+      return t;
+    }
+
+    function bindProductionCardLookups(root) {
+      if (!root) return;
+      root.querySelectorAll('[data-prod-result-row]').forEach((row) => {
+        const sku = String((row.querySelector('[data-prod-sku]') || {}).value || '').trim();
+        if (sku.length >= 2) lookupProdSkuWhere(row);
+      });
+    }
+
+    async function renderProductionCards(allProd) {
+      const root = ensureProdCardsRoot();
+      if (!root) return;
       const sorted = allProd.slice().sort((a, b) => {
         const ta = Date.parse(String(a.created_at || '')) || 0;
         const tb = Date.parse(String(b.created_at || '')) || 0;
@@ -4818,6 +4854,10 @@
       });
       const desiredIds = sorted.map((t) => String(t.id || '').trim()).filter(Boolean);
       const activeId = activeProdTaskId();
+      const jobProduceMap = buildJobProduceMap();
+      const cellsPromise = ensureMainCellRacks();
+      const toEnrich = [];
+
       root.querySelectorAll(':scope > article.handoff-row').forEach((el) => {
         const id = String(el.getAttribute('data-prod-task') || '').trim();
         if (id && !desiredIds.includes(id)) {
@@ -4828,6 +4868,7 @@
           }, 240);
         }
       });
+
       for (let i = 0; i < sorted.length; i++) {
         const t0 = sorted[i];
         const taskId = String(t0.id || '').trim();
@@ -4844,9 +4885,8 @@
           prodCardsCache.set(taskId, { stamp });
           continue;
         }
-        const full = await enrichProductionCard(t0);
-        const html = productionCardHtml(full);
-        prodCardsCache.set(taskId, { stamp: prodCardStamp(full) });
+        const seeded = seedProductionCard(t0, jobProduceMap);
+        const html = productionCardHtml(seeded);
         const nextEl = mountProductionCardHtml(html, { enter: !existing });
         if (!nextEl) continue;
         if (existing) {
@@ -4857,14 +4897,45 @@
           root.appendChild(existing);
         }
         insertProdCardAt(root, existing, i);
+        prodCardsCache.set(taskId, { stamp: prodCardStamp(seeded) });
+        if (String(t0.channel || '') !== 'production_at') {
+          toEnrich.push({ taskId, index: i, t0, el: existing });
+        }
       }
-      root.classList.remove('is-refreshing');
+
+      await cellsPromise;
       prodCardsBound = false;
       bindProductionCardActions(root);
-      root.querySelectorAll('[data-prod-result-row]').forEach((row) => {
-        const sku = String((row.querySelector('[data-prod-sku]') || {}).value || '').trim();
-        if (sku.length >= 2) lookupProdSkuWhere(row);
-      });
+      bindProductionCardLookups(root);
+
+      if (!toEnrich.length) return;
+
+      await Promise.all(
+        toEnrich.map(async (item) => {
+          try {
+            const full = await enrichProductionCard(item.t0);
+            const newStamp = prodCardStamp(full);
+            if (activeProdTaskId() === item.taskId) {
+              prodCardsCache.set(item.taskId, { stamp: newStamp });
+              return;
+            }
+            const cur = root.querySelector('[data-prod-task="' + CSS.escape(item.taskId) + '"]');
+            if (!cur) return;
+            const cachedNow = prodCardsCache.get(item.taskId);
+            if (cachedNow && cachedNow.stamp === newStamp) return;
+            const html = productionCardHtml(full);
+            const nextEl = mountProductionCardHtml(html, { enter: false });
+            if (!nextEl) return;
+            cur.replaceWith(nextEl);
+            insertProdCardAt(root, nextEl, item.index);
+            prodCardsCache.set(item.taskId, { stamp: newStamp });
+          } catch (_) {}
+        })
+      );
+
+      prodCardsBound = false;
+      bindProductionCardActions(root);
+      bindProductionCardLookups(root);
     }
 
     async function renderGroups() {
@@ -5020,17 +5091,15 @@
         return;
       }
       applyPickSiteLock();
-      // Та же доска, что /pick, но только карточки «На производство» + уже «В производстве».
-      const data = await api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite));
+      ensureProdCardsRoot();
+      const [data, jobsRes] = await Promise.all([
+        api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)),
+        api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
+      ]);
       board = data;
       handoffs = [];
       stockReturns = [];
-      try {
-        const jobsRes = await api('/production/jobs?status=at_production&limit=80');
-        prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
-      } catch (_) {
-        prodAtJobs = [];
-      }
+      prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
       lastRefreshAt = new Date();
       updateAutoLabel();
       const dayEl = document.getElementById('day');
