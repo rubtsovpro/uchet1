@@ -4602,11 +4602,22 @@ button.toolbar-ico.doc-in-rm-line svg {
 }
 
 /* Перемещения · форма создания */
+.form-fields.wh-tr-fields {
+  max-width: none;
+}
 .form-fields.wh-tr-fields .field.span-2 {
   align-items: start;
 }
 .form-fields.wh-tr-fields .field.span-2 > span {
   padding-top: 8px;
+}
+.wh-tr-prod-block,
+.wh-tr-lines-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
 }
 .wh-tr-add-row {
   display: grid;
@@ -4632,37 +4643,76 @@ button.toolbar-ico.doc-in-rm-line svg {
   white-space: nowrap;
 }
 .wh-tr-sug {
-  margin-top: 8px;
-  font-size: 12px;
-  line-height: 1.45;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
   width: 100%;
+  min-width: 0;
+}
+.wh-tr-sug-scroll {
+  max-height: 340px;
+  overflow: auto;
+  margin-bottom: 0;
 }
 .wh-tr-sug-table {
   width: 100%;
+  min-width: 640px;
+  table-layout: fixed;
+}
+.wh-tr-sug-col-sku {
+  width: 9.5em;
+}
+.wh-tr-sug-col-name {
+  width: auto;
+}
+.wh-tr-sug-col-qty {
+  width: 5.5em;
+}
+.wh-tr-sug-col-places {
+  width: 34%;
+}
+.wh-tr-sug-col-act {
+  width: 5.5em;
+}
+.wh-tr-sug-table th,
+.wh-tr-sug-table td {
+  max-width: none !important;
+  vertical-align: top;
 }
 .wh-tr-sug-table td.num,
 .wh-tr-sug-table th.num {
   text-align: right;
   white-space: nowrap;
 }
+.wh-tr-sug-table td.mono {
+  white-space: nowrap;
+}
+.wh-tr-sug-name {
+  white-space: normal !important;
+  word-break: break-word;
+}
+.wh-tr-sug-places {
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: normal !important;
+  word-break: break-word;
+}
+.wh-tr-sug-act {
+  white-space: nowrap;
+  text-align: right;
+}
 .wh-tr-sug-table tr.is-muted {
   opacity: 0.72;
 }
-.wh-tr-sug-places {
-  font-size: 11px;
-  line-height: 1.35;
-  white-space: normal;
-  max-width: 28em;
+.wh-tr-sug-table tr.clickable:hover {
+  background: var(--taxi-row-hover, #f8fafc);
 }
 .wh-tr-intro {
   color: var(--taxi-muted, #64748b);
 }
-.wh-tr-lines-block {
-  width: 100%;
-}
 .wh-tr-lines-scroll {
   width: 100%;
-  margin-top: 4px;
+  margin: 0;
 }
 .wh-tr-lines-table {
   width: 100%;
@@ -4673,11 +4723,11 @@ button.toolbar-ico.doc-in-rm-line svg {
   text-align: right;
 }
 .wh-tr-hint {
-  margin: 10px 0 0;
+  margin: 2px 0 0;
   font-size: 12px;
 }
 .wh-tr-actions {
-  margin-top: 14px;
+  margin-top: 6px;
   display: flex;
   gap: 10px;
   align-items: center;

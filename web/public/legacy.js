@@ -9310,34 +9310,38 @@ async function renderWhTransfers() {
         </div>
         <div class="field span-2">
           <span>Товар со склада «откуда»</span>
-          <div class="wh-tr-add-row">
-            <input type="search" id="tr-prod-q" placeholder="Артикул или название" autocomplete="off" />
-            <label class="wh-tr-qty">
-              <span>Кол-во</span>
-              <input type="number" id="tr-qty" min="0.001" step="any" value="1" />
-            </label>
-            <button type="button" id="tr-add-line" title="Добавить выбранный товар в таблицу ниже">Добавить</button>
+          <div class="wh-tr-prod-block">
+            <div class="wh-tr-add-row">
+              <input type="search" id="tr-prod-q" placeholder="Артикул или название" autocomplete="off" />
+              <label class="wh-tr-qty">
+                <span>Кол-во</span>
+                <input type="number" id="tr-qty" min="0.001" step="any" value="1" />
+              </label>
+              <button type="button" id="tr-add-line" title="Добавить выбранный товар в таблицу ниже">Добавить</button>
+            </div>
+            <div id="tr-prod-sug" class="wh-tr-sug"></div>
           </div>
-          <div id="tr-prod-sug" class="wh-tr-sug"></div>
         </div>
-        <div class="field span-2 wh-tr-lines-block">
+        <div class="field span-2">
           <span>Позиции <span class="muted" id="tr-lines-count">(0)</span></span>
-          <div class="table-scroll wh-tr-lines-scroll">
-            <table class="data-table is-dense wh-tr-lines-table" data-no-col-filter="1">
-              <thead><tr>
-                <th style="width:9em">Артикул</th>
-                <th>Наименование</th>
-                <th class="num" style="width:6em">Кол-во</th>
-                <th style="width:3em"></th>
-              </tr></thead>
-              <tbody id="tr-lines-body">
-                <tr><td colspan="4" class="muted">Пока пусто — найдите товар выше и нажмите «Добавить»</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="muted wh-tr-hint">После «Создать заказ» — задание кладовщику (/pick). Остатки спишутся после «Сделал».</p>
-          <div class="wh-tr-actions">
-            <button type="button" class="primary" id="wh-tr-submit">Создать заказ</button>
+          <div class="wh-tr-lines-block">
+            <div class="table-scroll wh-tr-lines-scroll">
+              <table class="data-table is-dense wh-tr-lines-table" data-no-col-filter="1">
+                <thead><tr>
+                  <th style="width:9em">Артикул</th>
+                  <th>Наименование</th>
+                  <th class="num" style="width:6em">Кол-во</th>
+                  <th style="width:3em"></th>
+                </tr></thead>
+                <tbody id="tr-lines-body">
+                  <tr><td colspan="4" class="muted">Пока пусто — найдите товар выше и нажмите «Добавить»</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="muted wh-tr-hint">После «Создать заказ» — задание кладовщику (/pick). Остатки спишутся после «Сделал».</p>
+            <div class="wh-tr-actions">
+              <button type="button" class="primary" id="wh-tr-submit">Создать заказ</button>
+            </div>
           </div>
         </div>`;
     bindFormActions();
@@ -9474,11 +9478,18 @@ async function renderWhTransfers() {
           sug.innerHTML = '<p class="muted" style="margin:0">Ничего не найдено по запросу</p>';
           return;
         }
-        sug.innerHTML = `<div class="table-scroll"><table class="data-table is-dense wh-tr-sug-table" data-no-col-filter="1">
+        sug.innerHTML = `<div class="table-scroll wh-tr-sug-scroll"><table class="data-table is-dense is-wrap wh-tr-sug-table" data-no-col-filter="1">
+            <colgroup>
+              <col class="wh-tr-sug-col-sku" />
+              <col class="wh-tr-sug-col-name" />
+              <col class="wh-tr-sug-col-qty" />
+              <col class="wh-tr-sug-col-places" />
+              <col class="wh-tr-sug-col-act" />
+            </colgroup>
             <thead><tr>
               <th>Артикул</th>
               <th>Наименование</th>
-              <th class="num" title="Остаток на складе «откуда»">Откуда</th>
+              <th class="num">Откуда</th>
               <th>На складах</th>
               <th></th>
             </tr></thead>
@@ -9498,17 +9509,17 @@ async function renderWhTransfers() {
                     <td class="mono">${esc(p.sku)}${
                       olds ? `<div class="muted" style="font-size:11px">старые: ${esc(olds)}</div>` : ''
                     }</td>
-                    <td>${esc(p.name)}</td>
+                    <td class="wh-tr-sug-name">${esc(p.name)}</td>
                     <td class="mono num">${
                       canPick ? esc(p.from_qty) : '<span class="muted">0</span>'
                     }</td>
                     <td class="muted wh-tr-sug-places">${
-                      places ? esc(places) : '<span class="muted">нет</span>'
+                      places ? esc(places) : '—'
                     }</td>
-                    <td>${
+                    <td class="wh-tr-sug-act">${
                       canPick
                         ? '<button type="button" class="linkish tr-sug-pick">Выбрать</button>'
-                        : '<span class="muted">нет на «откуда»</span>'
+                        : '<span class="muted">нет</span>'
                     }</td>
                   </tr>`;
                 })
