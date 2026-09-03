@@ -24827,14 +24827,8 @@ function openDealProductionLightbox(dealId, goodsItems) {
     submitLabel: 'Отправить в производство',
     bodyHtml: `
       <p class="muted" style="margin:0 0 12px;font-size:13px;line-height:1.45">
-        Сначала кладовщик отнесёт детали на участок (PROD-WIP). Списание и оприходование — когда производство нажмёт «Готово» и склад примет результат.
+        Переделать на участке. Кладовщик отнесёт детали (PROD-WIP). Списание и оприходование — когда производство нажмёт «Готово» и склад примет результат.
       </p>
-      <label style="display:block;margin-bottom:12px">Тип операции
-        <select id="prod-kind" style="margin-top:4px;max-width:320px">
-          <option value="disassemble">Разбор — 1 деталь → несколько</option>
-          <option value="assemble">Сборка — несколько → 1 готовая</option>
-        </select>
-      </label>
       <h4 style="margin:0 0 6px;font-size:13px;color:#1d4ed8">Списать · уходит на производство</h4>
       <table class="data-table is-dense" style="margin-bottom:14px">
         <thead><tr><th>Артикул</th><th>Наименование</th><th style="width:80px">Кол-во</th></tr></thead>
@@ -24850,10 +24844,6 @@ function openDealProductionLightbox(dealId, goodsItems) {
     onMount(root) {
       const tbody = root.querySelector('#prod-produce-body');
       const addBtn = root.querySelector('#prod-add-produce');
-      const kindSel = root.querySelector('#prod-kind');
-      if (kindSel && consumeRows.length === 1) {
-        kindSel.value = 'disassemble';
-      }
 
       const addProduceRow = (prefill) => {
         if (!tbody) return;
@@ -24937,7 +24927,6 @@ function openDealProductionLightbox(dealId, goodsItems) {
       }
     },
     async onSubmit(root, setMsg) {
-      const kind = (root.querySelector('#prod-kind') || {}).value || 'disassemble';
       const consume_lines = [];
       root.querySelectorAll('.prod-consume-qty').forEach((inp) => {
         const pid = inp.getAttribute('data-pid') || '';
@@ -24956,7 +24945,7 @@ function openDealProductionLightbox(dealId, goodsItems) {
       setMsg('Отправка…');
       const r = await api('/crm/deals/' + encodeURIComponent(dealId) + '/production', {
         method: 'POST',
-        body: JSON.stringify({ kind, consume_lines, produce_lines, queue_send: true }),
+        body: JSON.stringify({ consume_lines, produce_lines, queue_send: true }),
       });
       closeCreateLightbox();
       const msg = document.getElementById('deal-scan-msg') || document.getElementById('deal-msg');

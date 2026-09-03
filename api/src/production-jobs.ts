@@ -53,8 +53,8 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const KIND_LABELS: Record<string, string> = {
-  assemble: 'Сборка',
-  disassemble: 'Разбор',
+  assemble: 'Переделка',
+  disassemble: 'Переделка',
 };
 
 function denyProduction(c: { json: (b: unknown, s?: number) => Response }, actor: Actor | null) {
@@ -71,12 +71,15 @@ export function postProductionDealNote(
   const dealId = String(job?.deal_id || '').replace(/\D/g, '');
   if (!dealId) return;
   const number = String(job?.number || '—');
-  const kind = String(
-    job?.kind_label || KIND_LABELS[String(job?.kind || '')] || job?.kind || ''
-  );
   const summary = String(job?.summary || '').trim();
   const lines: Record<string, string> = {
-    created: `🏭 Производство · заказ ${number}\n${kind}${summary ? ': ' + summary : ''}`,
+    created: `🏭 Производство · заказ ${number}\nПеределать${summary ? ': ' + summary : ''}`,
+    queued_send: `🏭 Производство · ${number}\nЗадание кладовщику: отнести на участок.\n${summary}`,
+    sent_to_production: `🏭 Производство · ${number}\nНа участке (PROD-WIP).\n${summary}`,
+    production_done: `🏭 Производство · ${number}\nГотово — ждём оприходование склада.\n${summary}`,
+    received_from_production: `🏭 Производство · ${number}\nЗакрыто — результат на основном складе.\n${summary}`,
+    cancelled: `🏭 Производство · ${number}\nОтменено.`,
+  };
     queued_send: `🏭 Производство · ${number}\nЗадание кладовщику: отнести на участок.\n${summary}`,
     sent_to_production: `🏭 Производство · ${number}\nНа участке (PROD-WIP).\n${summary}`,
     production_done: `🏭 Производство · ${number}\nГотово — ждём оприходование склада.\n${summary}`,
@@ -235,8 +238,7 @@ export function formatJobSummary(
     rows.map((r) => `${r.qty}× ${r.sku || r.name}`.trim()).join(' + ');
   const inS = fmt(consume) || '—';
   const outS = fmt(produce) || '—';
-  if (kind === 'disassemble') return `${inS} → ${outS}`;
-  return `${inS} ⇒ ${outS}`;
+  return `${inS} → ${outS}`;
 }
 
 export function getProductionJob(id: string): Record<string, unknown> | null {

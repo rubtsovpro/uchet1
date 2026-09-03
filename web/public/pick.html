@@ -4508,13 +4508,7 @@
       const to = String(t.route_to || (atProd ? 'Основной' : 'Производство')).trim() || 'Производство';
       const consume = Array.isArray(t.lines) ? t.lines : [];
       const deal = t.deal && typeof t.deal === 'object' ? t.deal : null;
-      const kindLbl =
-        String(t.production_kind_label || t.kind_label || '').trim() ||
-        (/разбор/i.test(String(t.buyer_name || ''))
-          ? 'Разбор'
-          : /сбор/i.test(String(t.buyer_name || ''))
-            ? 'Сборка'
-            : 'Разбор / сборка');
+      const kindLbl = 'Произвести';
       // buyer_name у production_send раньше писали как маршрут — не использовать как шапку
       const title =
         String((deal && (deal.title || deal.name)) || '').trim() ||
