@@ -4320,16 +4320,23 @@
     function pickMainCellSelectHtml(selectedRaw, dataAttr) {
       const selected = String(selectedRaw || '').trim();
       const noCell = !selected || selected === '—' || selected === '-' || selected === '–';
-      const racks = Array.isArray(mainCellRacks) ? mainCellRacks : [];
+      const racksLoaded = Array.isArray(mainCellRacks);
+      const racks = racksLoaded ? mainCellRacks : [];
       const allCodes = racks.flatMap((r) => r.cells || []);
       let opts =
         '<option value="—"' + (noCell ? ' selected' : '') + '>— без ячейки —</option>';
-      if (!racks.length) {
+      if (!racksLoaded || mainCellRacksLoading) {
         if (selected && !noCell) {
           opts +=
             '<option value="' + esc(selected) + '" selected>' + esc(selected) + '</option>';
         }
         opts += '<option value="" disabled>Карта ячеек загружается…</option>';
+      } else if (!racks.length) {
+        if (selected && !noCell) {
+          opts +=
+            '<option value="' + esc(selected) + '" selected>' + esc(selected) + '</option>';
+        }
+        opts += '<option value="" disabled>Карта ячеек недоступна</option>';
       } else {
         for (const rack of racks) {
           const label =
@@ -5224,7 +5231,7 @@
         : (await api('/warehouse/pick/handoffs?site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] }))).items || [];
       noteNewAlerts(data, handoffs);
       stockReturns = Array.isArray(data.returns) ? data.returns : [];
-      if (stockReturns.length) ensureMainCellRacks();
+      ensureMainCellRacks();
       handoffsCompletedTotal = Number(data.handoffs_completed_total) || handoffsCompletedTotal || 0;
       syncSiteSwitch();
       loadHandoffFilterFacets();
@@ -6063,6 +6070,7 @@
         .catch(() => {
           mainCellRacks = [];
           mainCellRacksLoading = null;
+          renderStockReturns();
           return mainCellRacks;
         });
       return mainCellRacksLoading;
