@@ -80,12 +80,6 @@ export function postProductionDealNote(
     received_from_production: `🏭 Производство · ${number}\nЗакрыто — результат на основном складе.\n${summary}`,
     cancelled: `🏭 Производство · ${number}\nОтменено.`,
   };
-    queued_send: `🏭 Производство · ${number}\nЗадание кладовщику: отнести на участок.\n${summary}`,
-    sent_to_production: `🏭 Производство · ${number}\nНа участке (PROD-WIP).\n${summary}`,
-    production_done: `🏭 Производство · ${number}\nГотово — ждём оприходование склада.\n${summary}`,
-    received_from_production: `🏭 Производство · ${number}\nЗакрыто — результат на основном складе.\n${summary}`,
-    cancelled: `🏭 Производство · ${number}\nОтменено.`,
-  };
   let text = lines[step] || `🏭 Производство · ${number}\n${step}`;
   if (extra) text += `\n${extra}`;
   void notifyAmoWarehousePacked({ dealId, text }).catch(() => {});
