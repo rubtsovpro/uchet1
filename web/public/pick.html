@@ -11,7 +11,7 @@
   <title>Склад · задачи · Учёт №1</title>
   <!-- pick-ui rev=pick-production-nom-check-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc58';
+    window.__PICK_UI_REV = 'pc59';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -4408,7 +4408,9 @@
       return (
         '<select class="return-cell-select" ' +
         dataAttr +
-        ' aria-label="Куда положим на Основной">' +
+        '="' +
+        esc(selected || '—') +
+        '" aria-label="Куда положим на Основной">' +
         opts +
         '</select>'
       );
@@ -5371,7 +5373,9 @@
         await renderGroups();
       }
       renderHandoffPager();
-      renderStockReturns();
+      if (!returnCellBusy()) {
+        renderStockReturns();
+      }
       if (!handoffCancelEditing()) {
         if (handoffTab === 'closed') {
           if (closedLoading) {
@@ -5669,6 +5673,45 @@
       if (handoffCancelOpen.size > 0) return true;
       const ae = document.activeElement;
       return !!(ae && ae.closest && ae.closest('.handoff-cancel-panel:not(.hidden)'));
+    }
+
+    /** dealId::productId → выбранная ячейка «Куда положим» (черновик, переживает auto-refresh). */
+    const returnCellDrafts = new Map();
+
+    function returnCellDraftKey(dealId, productId) {
+      return String(dealId || '').trim() + '::' + String(productId || '').trim();
+    }
+
+    function snapshotReturnCellDrafts() {
+      const root = document.getElementById('returns-list');
+      if (!root) return;
+      root.querySelectorAll('article[data-return-deal]').forEach((card) => {
+        const dealId = String(card.getAttribute('data-return-deal') || '').trim();
+        if (!dealId) return;
+        card.querySelectorAll('.return-line').forEach((row) => {
+          const pid = String(row.getAttribute('data-product-id') || '').trim();
+          const sel = row.querySelector('[data-ret-to-cell]');
+          if (!pid || !sel) return;
+          const v = normalizePickCellCode(sel.value);
+          returnCellDrafts.set(returnCellDraftKey(dealId, pid), v || '—');
+        });
+      });
+    }
+
+    function returnCellDraftFor(dealId, productId, fallback) {
+      const key = returnCellDraftKey(dealId, productId);
+      if (returnCellDrafts.has(key)) {
+        return String(returnCellDrafts.get(key) || '').trim();
+      }
+      return String(fallback || '').trim();
+    }
+
+    function returnCellBusy() {
+      const ae = document.activeElement;
+      if (ae && ae.matches && ae.matches('select.return-cell-select, select[data-ret-to-cell]')) {
+        return true;
+      }
+      return !!(ae && ae.closest && ae.closest('#returns-list select.return-cell-select'));
     }
 
     function snapshotHandoffCancelDrafts() {
@@ -6160,13 +6203,13 @@
             .filter((row) => row.cells.length)
             .sort((a, b) => rank(a.rack).localeCompare(rank(b.rack), 'ru'));
           mainCellRacksLoading = null;
-          renderStockReturns();
+          if (!returnCellBusy()) renderStockReturns();
           return mainCellRacks;
         })
         .catch(() => {
           mainCellRacks = [];
           mainCellRacksLoading = null;
-          renderStockReturns();
+          if (!returnCellBusy()) renderStockReturns();
           return mainCellRacks;
         });
       return mainCellRacksLoading;
@@ -6205,6 +6248,7 @@
       }
       panel.hidden = false;
       if (!mainCellRacks && !mainCellRacksLoading) ensureMainCellRacks();
+      snapshotReturnCellDrafts();
       root.innerHTML = items
         .map((h) => {
           const dealId = String(h.deal_id || '').trim();
@@ -6229,7 +6273,8 @@
                 <th>Где была</th><th>Куда положим</th><th>Брали с</th>
               </tr></thead><tbody>${lines
                 .map((l) => {
-                  const pid = esc(String(l.product_id || ''));
+                  const pidRaw = String(l.product_id || '').trim();
+                  const pid = esc(pidRaw);
                   const sku = esc(String(l.sku || l.article || '').trim());
                   const nameRaw = String(l.name || '').trim();
                   const name = esc(nameRaw ? nameRaw.slice(0, 100) : (sku ? '' : '—'));
@@ -6238,7 +6283,8 @@
                     : (nameRaw ? '' : '<span class="art">—</span>');
                   const qty = esc(String(l.qty || 1));
                   const fromCell = String(l.from_cell_code || '').trim();
-                  const toCell = String(l.to_cell_code || l.origin_cell_code || fromCell || '').trim();
+                  const apiTo = String(l.to_cell_code || l.origin_cell_code || fromCell || '').trim();
+                  const toCell = returnCellDraftFor(dealId, pidRaw, apiTo);
                   const origin = esc(String(l.origin_label || '—'));
                   const fromHtml = fromCell
                     ? '<span class="return-cell-now">' + esc(fromCell) + '</span>'
@@ -6327,6 +6373,9 @@
           }),
         });
         if (msg) msg.textContent = 'Готово';
+        [...returnCellDrafts.keys()]
+          .filter((k) => k.startsWith(dealId + '::'))
+          .forEach((k) => returnCellDrafts.delete(k));
         stockReturns = stockReturns.filter((r) => String(r.deal_id) !== dealId);
         renderStockReturns();
         await load();
@@ -8723,15 +8772,31 @@
         if (document.visibilityState === 'hidden') return;
         if (scanBusy || camWanted || handoffCancelEditing()) return;
         if (productionFormBusy()) return;
+        if (returnCellBusy()) return;
         // даже при наборе — soft load (без wipe детали); isEditing только как доп. защита
         load().catch(() => {});
       }, TICK_MS);
       document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible' && !handoffCancelEditing()) {
+        if (document.visibilityState === 'visible' && !handoffCancelEditing() && !returnCellBusy()) {
           load().catch(() => {});
         }
       });
     }
+
+    document.getElementById('returns-panel')?.addEventListener('change', (e) => {
+      const sel =
+        e.target && e.target.matches && e.target.matches('select[data-ret-to-cell], select.return-cell-select')
+          ? e.target
+          : null;
+      if (!sel) return;
+      const row = sel.closest('.return-line');
+      const card = sel.closest('[data-return-deal]');
+      const dealId = String((card && card.getAttribute('data-return-deal')) || '').trim();
+      const pid = String((row && row.getAttribute('data-product-id')) || '').trim();
+      if (!dealId || !pid) return;
+      const v = normalizePickCellCode(sel.value);
+      returnCellDrafts.set(returnCellDraftKey(dealId, pid), v || '—');
+    });
 
     document.getElementById('returns-panel')?.addEventListener('click', (e) => {
       const btn = e.target && e.target.closest && e.target.closest('[data-return-done]');
