@@ -495,10 +495,63 @@ export function handoffLineDoneCell(
 
 export function parseCellFromDocComment(comment: string): string {
   const m = String(comment || '').match(
-    /яч[.:]\s*([A-Za-zА-ЯЁ]\d*(?:\.[\dA-Za-z]+)?)/iu
+    /яч[.:]\s*([A-Za-zА-ЯЁа-яё]\d*(?:\.[\dA-Za-zА-ЯЁа-яё]+)?)/iu
   );
   if (!m?.[1]) return '';
   return String(m[1]).trim().replace(/^А/u, 'A').replace(/^а/u, 'A');
+}
+
+/** Ячейка списания с Основного по picks кладовщика (если сохраняли). */
+function handoffPickCellForProduct(docId: string, productId: string): string {
+  const did = String(docId || '').trim();
+  const pid = String(productId || '').trim();
+  if (!did || !pid) return '';
+  const raw = get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [
+    `handoff_picks:${did}`,
+  ])?.value;
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(String(raw)) as {
+      picks?: Array<{ product_id?: string; cell_code?: string }>;
+    };
+    const picks = Array.isArray(parsed?.picks) ? parsed.picks : [];
+    for (const p of picks) {
+      if (String(p.product_id || '').trim() !== pid) continue;
+      const cell = String(p.cell_code || '').trim();
+      if (cell && cell !== '—' && cell !== '-' && cell !== '–') return cell;
+    }
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
+
+/**
+ * Ячейка, с которой ушло с Основного (для «Куда положим» при возврате).
+ * Берём: picks → комментарий «яч: …» → stage с маршрутом с Основного.
+ */
+function resolveOriginMainCell(
+  productId: string,
+  stages: DealMovedLineStage[] | undefined
+): { cell: string; stage: DealMovedLineStage | null } {
+  const list = Array.isArray(stages) ? stages : [];
+  const fromMain = (s: DealMovedLineStage) =>
+    /^основн/i.test(String(s.route || '').split('→')[0] || '') ||
+    s.label === 'На резерве' ||
+    s.label === 'Перемещено';
+
+  for (const s of list) {
+    if (!fromMain(s)) continue;
+    const fromPicks = handoffPickCellForProduct(s.doc_id, productId);
+    if (fromPicks) return { cell: fromPicks, stage: s };
+    if (s.cell_code) return { cell: String(s.cell_code), stage: s };
+  }
+  for (const s of list) {
+    const fromPicks = handoffPickCellForProduct(s.doc_id, productId);
+    if (fromPicks) return { cell: fromPicks, stage: s };
+    if (s.cell_code) return { cell: String(s.cell_code), stage: s };
+  }
+  return { cell: '', stage: null };
 }
 
 function classifyPostedHandoffDoc(row: {
@@ -981,7 +1034,12 @@ export function enrichStockReturnLineLocation(
   const moved = getDealAlreadyMovedLines(id).find((l) => l.product_id === pid);
   const reserveStage = [...(moved?.stages || [])].reverse().find((s) => s.label === 'На резерве');
   const stoStage = [...(moved?.stages || [])].reverse().find((s) => s.label === 'На СТО');
-  const originStage = (moved?.stages || []).find((s) => s.label === 'На резерве') || reserveStage;
+  const { cell: resolvedOriginCell, stage: originStage } = resolveOriginMainCell(
+    pid,
+    moved?.stages
+  );
+  const reserveOrStoOrigin =
+    (moved?.stages || []).find((s) => s.label === 'На резерве') || reserveStage;
 
   let fromCell = String(line.from_cell_code || '').trim();
   if (!fromCell && from) {
@@ -992,16 +1050,23 @@ export function enrichStockReturnLineLocation(
 
   const originCell =
     String(line.origin_cell_code || '').trim() ||
-    String(originStage?.cell_code || '').trim() ||
+    resolvedOriginCell ||
+    String(reserveOrStoOrigin?.cell_code || '').trim() ||
     '';
+  const labelStage = originStage || reserveOrStoOrigin;
   const originLabel =
     String(line.origin_label || '').trim() ||
-    (originStage
-      ? `${originStage.route || 'Основной → Резерв'}${
-          originStage.cell_code ? ` · яч. ${originStage.cell_code}` : ''
+    (labelStage
+      ? `${labelStage.route || 'Основной'}${
+          originCell || labelStage.cell_code
+            ? ` · яч. ${originCell || labelStage.cell_code}`
+            : ''
         }`
-      : 'Основной');
+      : originCell
+        ? `Основной · яч. ${originCell}`
+        : 'Основной');
 
+  // «Куда положим» = ячейка списания с Основного (авто), иначе текущая «где была»
   const toCell =
     String(line.to_cell_code || '').trim() || originCell || fromCell || '';
 
