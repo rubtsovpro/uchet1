@@ -41,14 +41,56 @@ export type MatchedImportRow = {
   create_from_sku?: string;
 };
 
-function num(v: unknown): number {
+/**
+ * Числа из Excel/пакинга: пробелы/NBSP как тысячи, `1.250` / `1,250` = 1250,
+ * `1.250,50` / `1,250.50` = 1250.5. Раньше `1.250` → 1.25 и сумма заказа «схлопывалась».
+ */
+export function parseImportNumber(v: unknown): number {
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-  const s = String(v ?? '')
+  let s = String(v ?? '')
     .trim()
+    .replace(/[\u00A0\u202F\u2009\u2007]/g, ' ')
     .replace(/\s+/g, '')
-    .replace(',', '.');
+    .replace(/[₽$€]/g, '')
+    .replace(/руб\.?/gi, '');
+  if (!s) return 0;
+  const neg = s.startsWith('-') || s.startsWith('(');
+  s = s.replace(/^[-(]+|[)]+$/g, '');
+  if (!s) return 0;
+
+  const lastComma = s.lastIndexOf(',');
+  const lastDot = s.lastIndexOf('.');
+  if (lastComma >= 0 && lastDot >= 0) {
+    // Последний разделитель — десятичный, остальные тысячи.
+    if (lastComma > lastDot) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  } else if (lastComma >= 0) {
+    const frac = s.slice(lastComma + 1);
+    if (/^\d{3}$/.test(frac) && s.indexOf(',') === lastComma) {
+      s = s.replace(/,/g, ''); // 1,250 → 1250
+    } else {
+      s = s.replace(/,/g, '.');
+    }
+  } else if (lastDot >= 0) {
+    const frac = s.slice(lastDot + 1);
+    const dots = (s.match(/\./g) || []).length;
+    if (dots > 1) {
+      s = s.replace(/\./g, ''); // 1.250.000
+    } else if (/^\d{3}$/.test(frac)) {
+      s = s.replace(/\./g, ''); // 1.250 → 1250 (разрядность, не копейки)
+    }
+  }
+
   const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
+  if (!Number.isFinite(n)) return 0;
+  return neg ? -Math.abs(n) : n;
+}
+
+function num(v: unknown): number {
+  return parseImportNumber(v);
 }
 
 /** Парсинг TSV/CSV из буфера (вставка из Excel). */
@@ -98,6 +140,19 @@ export const DEFAULT_PACKING_MAP: ColumnMap = {
   old_sku: null,
 };
 
+/** Первая строка похожа на заголовок (Артикул/Кол-во/Цена), а не на данные. */
+export function tableLooksLikeHeader(row: string[] | undefined): boolean {
+  if (!row?.length) return false;
+  let hits = 0;
+  for (const cell of row) {
+    const role = guessHeaderRole(String(cell ?? ''));
+    if (role === 'article' || role === 'qty' || role === 'price' || role === 'amount') {
+      hits++;
+    }
+  }
+  return hits >= 1;
+}
+
 export function rowsFromTable(
   table: string[][],
   map: ColumnMap,
@@ -109,17 +164,30 @@ export function rowsFromTable(
     const cells = table[i] || [];
     const article = String(cells[map.article] ?? '').trim();
     if (!article) continue;
+    // Строка-заголовок внутри данных (повтор шапки) — пропуск
+    if (guessHeaderRole(article) === 'article' && /^(арт|артикул|sku|article)$/i.test(article)) {
+      continue;
+    }
     const qty = num(cells[map.qty]);
     let price = num(cells[map.price]);
     const amountIdx = map.amount;
-    if (!(price > 0) && amountIdx != null && amountIdx >= 0) {
+    if (amountIdx != null && amountIdx >= 0) {
       const amount = num(cells[amountIdx]);
-      if (amount > 0 && qty > 0) price = Math.round((amount / qty) * 100) / 100;
+      if (amount > 0 && qty > 0) {
+        const fromAmount = Math.round((amount / qty) * 100) / 100;
+        // Если цена пустая/нулевая — берём из суммы; если цена есть, но сумма
+        // сильно больше (часто цена битая из-за разрядности) — доверяем сумме.
+        if (!(price > 0)) {
+          price = fromAmount;
+        } else if (amount > price * qty * 1.5 + 1) {
+          price = fromAmount;
+        }
+      }
     }
     const oldIdx = map.old_sku;
     const old_sku =
       oldIdx != null && oldIdx >= 0 ? String(cells[oldIdx] ?? '').trim() : '';
-    out.push({ article, qty, price, old_sku });
+    out.push({ article, qty, price, amount: amountIdx != null ? num(cells[amountIdx]) : undefined, old_sku });
   }
   return out;
 }
@@ -140,31 +208,31 @@ export function guessHeaderRole(
   const h = normHeaderKey(header);
   if (!h) return 'skip';
   if (
-    /^(арт|артикул|sku|article|код|code|part|pn|p\/n)$/i.test(h) ||
-    /артикул|article|sku|part\s*no|part\s*number/.test(h)
+    /^(арт|артикул|sku|article|код|code|part|pn|p\/n|oem|арт\.|art)$/i.test(h) ||
+    /артикул|article|part\s*no|part\s*number|part\s*#|номер\s*дет|номенклатур/.test(h) ||
+    (/\bsku\b/.test(h) && !/old|стар/.test(h))
   ) {
     return 'article';
   }
   if (
-    /^(qty|кол|колич|количество|кол-во|шт|pcs|qnt|quantity)$/i.test(h) ||
-    /количеств|quantity|^qty\b/.test(h)
+    /^(qty|кол|колич|количество|кол-во|колво|шт|pcs|qnt|quantity|qty\.)$/i.test(h) ||
+    /количеств|quantity|^qty\b|число\s*шт/.test(h)
   ) {
     return 'qty';
   }
   if (
-    /^(цена|price|cost|закуп|закупочн)/i.test(h) ||
-    /цена|price|unit\s*cost|закуп/.test(h)
-  ) {
-    if (/сумм|amount|total|итого/.test(h)) return 'amount';
-    return 'price';
-  }
-  if (
-    /^(сумма|amount|total|итого|сумма\s*ндс)$/i.test(h) ||
-    /сумма|amount|total|итого/.test(h)
+    /^(сумма|amount|total|итого|сумма\s*ндс|line\s*total|сумма\s*строк)/i.test(h) ||
+    /сумма|amount|total|итого|line\s*total/.test(h)
   ) {
     return 'amount';
   }
-  if (/стар(ый|ые).*арт|old.*sku|кросс|cross|предыдущ/.test(h)) {
+  if (
+    /^(цена|price|cost|закуп|закупочн|цена\s*ед|unit\s*price|unit\s*cost)/i.test(h) ||
+    /цена|price|unit\s*cost|закуп|cost/.test(h)
+  ) {
+    return 'price';
+  }
+  if (/стар(ый|ые).*арт|old.*sku|кросс|cross|предыдущ|oem\s*старый/.test(h)) {
     return 'old_sku';
   }
   return 'skip';
@@ -218,14 +286,19 @@ export async function parseImportSpreadsheet(
   const sheets = wb.SheetNames || [];
   if (!sheets.length) throw new Error('В файле нет листов');
   const sheet = sheetName && sheets.includes(sheetName) ? sheetName : sheets[0]!;
-  const aoa = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[sheet]!, {
+  const aoa = XLSX.utils.sheet_to_json<(string | number | boolean | null)[]>(wb.Sheets[sheet]!, {
     header: 1,
     defval: '',
-    raw: false,
+    raw: true,
     blankrows: false,
-  }) as unknown as string[][];
+  }) as unknown as (string | number | boolean | null)[][];
   const rows = (aoa || [])
-    .map((r) => (Array.isArray(r) ? r : []).map((c) => String(c ?? '').trim()))
+    .map((r) =>
+      (Array.isArray(r) ? r : []).map((c) => {
+        if (typeof c === 'number' && Number.isFinite(c)) return String(c);
+        return String(c ?? '').trim();
+      })
+    )
     .filter((r) => r.some((c) => c));
   return { sheets, sheet, rows };
 }
@@ -243,9 +316,17 @@ function resolveImportRows(body: {
   if (!table.length && body.paste) table = parsePasteTable(body.paste);
   if (!table.length) return [];
   const mode = body.map_mode === 'headers' ? 'headers' : 'columns';
-  const hasHeader = mode === 'headers' ? true : !!body.has_header;
+  let hasHeader: boolean;
+  if (mode === 'headers') {
+    // Жёлтый диапазон без шапки: не выкидываем первую строку данных.
+    hasHeader = tableLooksLikeHeader(table[0]);
+  } else if (body.has_header == null) {
+    hasHeader = tableLooksLikeHeader(table[0]);
+  } else {
+    hasHeader = !!body.has_header;
+  }
   let map = body.map || DEFAULT_PACKING_MAP;
-  if (mode === 'headers' && (!body.map || body.map.article == null)) {
+  if (mode === 'headers' && hasHeader && (!body.map || body.map.article == null)) {
     map = suggestMapFromHeaders(table[0] || []);
   }
   return rowsFromTable(table, map, { has_header: hasHeader });
@@ -260,8 +341,9 @@ export function matchImportRows(
   matched: number;
   will_create: number;
   errors: number;
+  total_sum: number;
 } {
-  const createMissing = opts?.create_missing !== false;
+  const createMissing = !!opts?.create_missing;
   const matchedRows: MatchedImportRow[] = [];
   let matched = 0;
   let willCreate = 0;
@@ -274,6 +356,8 @@ export function matchImportRows(
     let price = num(src.price);
     const amount = num(src.amount);
     if (!(price > 0) && amount > 0 && qty > 0) {
+      price = Math.round((amount / qty) * 100) / 100;
+    } else if (price > 0 && amount > 0 && qty > 0 && amount > price * qty * 1.5 + 1) {
       price = Math.round((amount / qty) * 100) / 100;
     }
     const oldRaw = String(src.old_sku || src.old || '').trim();
@@ -342,6 +426,7 @@ export function matchImportRows(
     matched,
     will_create: willCreate,
     errors,
+    total_sum: matchedRows.reduce((s, r) => s + (r.qty > 0 && r.price > 0 ? r.qty * r.price : 0), 0),
   };
 }
 
@@ -356,6 +441,7 @@ export function applyImportToSupplierOrder(input: {
   order: NonNullable<ReturnType<typeof getThinJournalDoc>>;
   preview: ReturnType<typeof matchImportRows>;
   created_products: Array<{ sku: string; id: string; created: boolean }>;
+  skipped_unmatched: Array<{ article: string; error?: string }>;
 } {
   const orderId = String(input.order_id || '').trim();
   if (!orderId) throw new Error('order_id обязателен');
@@ -363,19 +449,17 @@ export function applyImportToSupplierOrder(input: {
   if (!existing) throw new Error('Заказ поставщику не найден');
 
   const preview = matchImportRows(input.rows, {
-    create_missing: input.create_missing !== false,
+    create_missing: !!input.create_missing,
     minimal_cards: !!input.minimal_cards,
   });
-  if (preview.errors) {
-    throw new Error(
-      `Нельзя загрузить: ${preview.errors} строк с ошибками. Исправьте сопоставление.`
-    );
-  }
+
+  const usable = preview.rows.filter((r) => r.status === 'matched' || r.status === 'will_create');
+  const skipped = preview.rows.filter((r) => r.status === 'error');
 
   const created_products: Array<{ sku: string; id: string; created: boolean }> = [];
   const lines: ThinOrderLineInput[] = [];
 
-  for (const row of preview.rows) {
+  for (const row of usable) {
     let productId = row.product_id;
     let name = row.product_name || row.name || row.article;
     if (!productId && row.status === 'will_create') {
@@ -402,12 +486,41 @@ export function applyImportToSupplierOrder(input: {
     });
   }
 
+  // Не найденные артикулы — тоже в черновик (без product_id), чтобы видеть и блокировать проведение
+  for (const row of skipped) {
+    if (!(row.qty > 0) || !String(row.article || '').trim()) continue;
+    lines.push({
+      product_id: '',
+      qty: row.qty,
+      price: row.price,
+      article: row.article || row.source_article,
+      name: `Не найден: ${row.article || row.source_article}`,
+      old_sku: row.old_sku || undefined,
+    });
+  }
+
+  if (!lines.length) {
+    throw new Error(
+      skipped.length
+        ? `Ни одного артикула не удалось разобрать (${skipped.length} стр.). Заказ остаётся черновиком.`
+        : 'Нет строк для загрузки'
+    );
+  }
+
   const order = replaceThinSupplierOrderLines(orderId, lines, {
     append: !!input.append,
     allocate_marks: !!input.allocate_marks,
   });
   if (!order) throw new Error('Не удалось сохранить строки заказа');
-  return { order, preview, created_products };
+  return {
+    order,
+    preview,
+    created_products,
+    skipped_unmatched: skipped.map((r) => ({
+      article: r.article || r.source_article || '',
+      error: r.error,
+    })),
+  };
 }
 
 export function mountSupplierOrderImportRoutes(api: Hono): void {
@@ -428,9 +541,16 @@ export function mountSupplierOrderImportRoutes(api: Hono): void {
         return c.json({ error: 'Файл больше 15 МБ' }, 400);
       }
       const parsed = await parseImportSpreadsheet(buf, fileName, body.sheet);
-      const headers = (parsed.rows[0] || []).map((h, i) => h || `Кол. ${i + 1}`);
-      const suggested = suggestMapFromHeaders(headers);
-      const suggested_roles = headers.map((h) => guessHeaderRole(h));
+      const hasHdr = tableLooksLikeHeader(parsed.rows[0]);
+      const headers = hasHdr
+        ? (parsed.rows[0] || []).map((h, i) => h || `Кол. ${i + 1}`)
+        : (parsed.rows[0] || []).map((_, i) => `Кол. ${i + 1}`);
+      const suggested = hasHdr
+        ? suggestMapFromHeaders(parsed.rows[0] || [])
+        : { ...DEFAULT_PACKING_MAP };
+      const suggested_roles = hasHdr
+        ? headers.map((h) => guessHeaderRole(h))
+        : headers.map(() => 'skip' as const);
       return c.json({
         ok: true,
         filename: fileName,
@@ -439,9 +559,11 @@ export function mountSupplierOrderImportRoutes(api: Hono): void {
         headers,
         suggested_map: suggested,
         suggested_roles,
-        row_count: Math.max(0, parsed.rows.length - 1),
-        sample: parsed.rows.slice(0, 8),
+        has_header: hasHdr,
         table: parsed.rows,
+        row_count: parsed.rows.length,
+        preview_rows: parsed.rows.slice(0, 8),
+        sample: parsed.rows.slice(0, 8),
       });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'parse error' }, 400);
@@ -477,8 +599,8 @@ export function mountSupplierOrderImportRoutes(api: Hono): void {
         });
       }
       const preview = matchImportRows(rows, {
-        create_missing: body.create_missing !== false,
-        minimal_cards: !!body.minimal_cards,
+        create_missing: false,
+        minimal_cards: false,
       });
       return c.json({
         ok: true,
@@ -526,8 +648,9 @@ export function mountSupplierOrderImportRoutes(api: Hono): void {
       const r = applyImportToSupplierOrder({
         order_id: id,
         rows,
-        create_missing: body.create_missing !== false,
-        minimal_cards: !!body.minimal_cards,
+        // Из заказа поставщику номенклатуру не создаём — только существующие артикулы.
+        create_missing: false,
+        minimal_cards: false,
         append: !!body.append,
         allocate_marks: !!body.allocate_marks,
       });
@@ -538,6 +661,9 @@ export function mountSupplierOrderImportRoutes(api: Hono): void {
         received: r.preview.received,
         matched: r.preview.matched,
         created: r.created_products.filter((x) => x.created).length,
+        skipped_unmatched: r.skipped_unmatched,
+        skipped_count: r.skipped_unmatched.length,
+        status: 'draft',
       });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);

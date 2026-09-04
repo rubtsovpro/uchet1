@@ -1334,6 +1334,9 @@
         </div>`
       : '';
     const isTransferReq = key === 'transfer_orders';
+    const linesEditable =
+      key !== 'supplier_orders' || d.lines_editable !== false;
+    const linesLockReason = String(d.lines_lock_reason || '').trim();
     const thinEntity =
       key === 'supplier_orders'
         ? 'Заказ поставщику'
@@ -1433,8 +1436,18 @@
       <div class="product-pane hidden" data-pane="lines">
         <h3 class="form-section-title">Номенклатура (<span id="thin-lines-shown">${lines.length}</span>)</h3>
         ${
-          key === 'supplier_orders'
-            ? `<p class="muted" style="margin:0 0 8px;font-size:12px">Цены закупки обязательны для заказа. Дубли артикулов — отдельными строками. Импорт: копипаст из Excel/пакинга.</p>
+          key === 'supplier_orders' && lines.some((l) => !String(l.product_id || '').trim())
+            ? `<p class="error" style="margin:0 0 8px;font-size:12px">Есть строки без номенклатуры (⚠) — заказ остаётся черновиком, «Провести» недоступно, пока не найдёте артикулы или не удалите эти строки.</p>`
+            : ''
+        }
+        ${
+          key === 'supplier_orders' && !linesEditable && linesLockReason
+            ? `<p class="muted" style="margin:0 0 8px;font-size:12px">${esc(linesLockReason)}. Добавление и удаление строк недоступны.</p>`
+            : ''
+        }
+        ${
+          key === 'supplier_orders' && linesEditable
+            ? `<p class="muted" style="margin:0 0 8px;font-size:12px">Цены закупки обязательны. Дубли артикулов — отдельными строками. Номенклатура уже должна быть в Учёте (из заказа карточки не создаются). В черновике: галочки → удалить позиции; qty/цену правите прямо в таблице; «Добавить номенклатуру» — поиск существующего товара.</p>
         <div id="so-import-panel" class="thin-add-panel" hidden>
           <div class="thin-add-panel-head">
             <strong>Заполнить из Excel / CSV / копипаста</strong>
@@ -1442,7 +1455,10 @@
           </div>
           <p class="muted" style="margin:0 0 8px;font-size:12px">
             Загрузите файл пакинга (.xlsx / .xls / .csv) или вставьте таблицу (Ctrl+V).
-            Можно сопоставить <b>по заголовкам</b> Excel или <b>по номерам столбцов</b> (заголовки игнор).
+            Можно сопоставить <b>по заголовкам</b> Excel или <b>по номерам столбцов</b>.
+            Жёлтый диапазон без шапки — можно вставлять как есть (первая строка не срежется, если это артикул).
+            Цены с разрядностью вида <code>1.250</code> / <code>1 250</code> читаются как 1250.
+            Номенклатура должна уже быть в Учёте — из заказа карточки <b>не создаются</b>; ненайденные артикулы попадут с ⚠, провести заказ нельзя.
           </p>
           <div class="wh-tr-add-row" style="margin-bottom:10px;align-items:center">
             <label class="inline-label" style="margin:0">
@@ -1517,8 +1533,6 @@
           </label>
           <div class="form-grid" style="margin-top:8px">
             <label class="inline-label" id="so-import-header-wrap"><input type="checkbox" id="so-import-header" /> Первая строка — заголовок (режим «По столбцам»)</label>
-            <label class="inline-label"><input type="checkbox" id="so-import-create" checked /> Создавать новые карточки</label>
-            <label class="inline-label"><input type="checkbox" id="so-import-minimal" /> Минимальные карточки (без кроссов/розницы)</label>
             <label class="inline-label"><input type="checkbox" id="so-import-append" /> Добавить к существующим строкам</label>
           </div>
           <div id="so-import-preview" class="muted" style="margin:8px 0;font-size:12px"></div>
@@ -1573,8 +1587,22 @@
         ${catFilterHtml}
         ${
           lines.length
-            ? `<div class="table-scroll"><table class="data-table is-dense" data-table-key="thin-lines" data-no-col-filter="1">
+            ? `${
+                key === 'supplier_orders' && linesEditable
+                  ? `<div class="table-tools" style="margin:0 0 8px;gap:8px;align-items:center">
+              <label class="inline-label" style="margin:0"><input type="checkbox" id="so-lines-check-all" /> Выделить все</label>
+              <button type="button" id="so-lines-del-selected" disabled>Удалить выбранные</button>
+              <span class="muted" id="so-lines-sel-msg" style="font-size:12px"></span>
+            </div>`
+                  : ''
+              }
+            <div class="table-scroll"><table class="data-table is-dense" data-table-key="thin-lines" data-no-col-filter="1">
           <thead><tr>
+            ${
+              key === 'supplier_orders' && linesEditable
+                ? '<th class="thin-prod-check" style="width:2.2rem"></th>'
+                : ''
+            }
             <th>Артикул</th>
             <th>Номенклатура</th>
             <th>Категория</th>
@@ -1600,15 +1628,32 @@
                       )
                       .join('')}</div>`
                   : '<span class="muted">—</span>';
-                return `<tr class="${l.product_id ? 'clickable' : ''}" ${
+                const checkCell =
+                  key === 'supplier_orders' && linesEditable
+                    ? `<td class="thin-prod-check" onclick="event.stopPropagation()"><input type="checkbox" class="so-line-cb" data-line-idx="${idx}" /></td>`
+                    : '';
+                return `<tr class="${l.product_id ? 'clickable' : 'thin-line-unmatched'}" ${
                   l.product_id ? `data-product="${esc(l.product_id)}"` : ''
-                } data-cat="${esc(cat || '__none__')}" data-line-idx="${idx}">
-                <td class="mono">${esc(l.article || '')}</td>
+                } data-cat="${esc(cat || '__none__')}" data-line-idx="${idx}" ${
+                  !l.product_id ? 'style="background:#fff4f0"' : ''
+                }>
+                ${checkCell}
+                <td class="mono">${esc(l.article || '')}${
+                  !l.product_id ? ' <span class="muted" title="Нет в номенклатуре">⚠</span>' : ''
+                }</td>
                 <td>${esc(l.name || '—')}</td>
                 <td>${esc(cat || '—')}</td>
-                <td class="mono">${esc(l.qty)}</td>
-                <td class="mono">${money(l.price)}</td>
-                <td class="mono">${money(l.amount != null ? l.amount : Number(l.qty) * Number(l.price))}</td>
+                <td class="mono">${
+                  key === 'supplier_orders' && linesEditable
+                    ? `<input class="mono so-line-qty" type="number" min="0.001" step="any" value="${esc(String(l.qty ?? ''))}" data-line-idx="${idx}" style="width:5.5rem" aria-label="Количество" onclick="event.stopPropagation()" />`
+                    : esc(l.qty)
+                }</td>
+                <td class="mono">${
+                  key === 'supplier_orders' && linesEditable
+                    ? `<input class="mono so-line-price" type="number" min="0" step="any" value="${esc(String(l.price ?? ''))}" data-line-idx="${idx}" style="width:7rem" aria-label="Цена" onclick="event.stopPropagation()" />`
+                    : money(l.price)
+                }</td>
+                <td class="mono so-line-amount" data-line-idx="${idx}">${money(l.amount != null ? l.amount : Number(l.qty) * Number(l.price))}</td>
                 <td class="thin-dm-cell" onclick="event.stopPropagation()">${dmCell}</td>
               </tr>`;
               })
@@ -1616,7 +1661,7 @@
           </tbody>
           <tfoot>
             <tr>
-              <td colspan="5" style="text-align:right"><strong>Итого</strong></td>
+              <td colspan="${key === 'supplier_orders' && linesEditable ? 6 : 5}" style="text-align:right"><strong>Итого</strong></td>
               <td class="mono"><strong id="thin-lines-sum">${money(d.amount || linesSum)}</strong></td>
               <td></td>
             </tr>
@@ -1657,10 +1702,16 @@
           <span class="muted">${esc(d.user_comment || d.comment || '')}</span>
           <div class="grow"></div>`;
     const supplierToolbar = `
-          <button type="button" class="primary" id="thin-add-line">Добавить номенклатуру</button>
-          <button type="button" id="so-import-open" title="Excel / CSV / копипаст в заказ">Excel / CSV</button>
+          <button type="button" class="primary" id="thin-add-line" ${
+            key === 'supplier_orders' && !linesEditable ? 'disabled title="' + esc(linesLockReason || 'Строки заблокированы') + '"' : ''
+          }>Добавить номенклатуру</button>
+          <button type="button" id="so-import-open" title="Excel / CSV / копипаст в заказ" ${
+            key === 'supplier_orders' && !linesEditable ? 'disabled' : ''
+          }>Excel / CSV</button>
           <button type="button" id="so-create-inbound" title="Черновик приходной на основании заказа">Создать приходную</button>
-          <span class="muted" id="thin-line-msg"></span>
+          <span class="muted" id="thin-line-msg">${
+            key === 'supplier_orders' && !linesEditable ? esc(linesLockReason) : ''
+          }</span>
           <div class="grow"></div>
           <button type="button" class="toolbar-ico" id="thin-dm-gen" ${lines.length ? '' : 'disabled'} title="Сгенерировать марки" data-tip="Сгенерировать марки" aria-label="Сгенерировать марки">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 2.2h4.2v4.2H2.2zM9.6 2.2h4.2v4.2H9.6zM2.2 9.6h4.2v4.2H2.2z" fill="none" stroke="currentColor" stroke-width="1.35"/><path d="M3.4 3.4h1.8v1.8H3.4zM10.8 3.4h1.8v1.8h-1.8zM3.4 10.8h1.8v1.8H3.4z" fill="currentColor"/><path d="M9.6 9.6h1.4v1.4H9.6zM12.4 9.6h1.4v1.4h-1.4zM9.6 12.4h1.4v1.4H9.6zM11.4 11.4h1v1h-1zM13.2 11.4h.6v.6h-.6zM11.4 13.2h.6v.6h-.6zM12.8 12.8h1.2v1.2h-1.2z" fill="currentColor"/></svg>
@@ -1767,6 +1818,16 @@
       document.getElementById('so-post-transit')?.addEventListener('click', async () => {
         if (!lines.length) {
           alert('Добавьте номенклатуру перед проведением');
+          return;
+        }
+        const noProduct = lines.filter((l) => !String(l.product_id || '').trim());
+        if (noProduct.length) {
+          alert(
+            `Нельзя провести: ${noProduct.length} строк без найденной номенклатуры (${noProduct
+              .slice(0, 5)
+              .map((l) => l.article || '?')
+              .join(', ')}${noProduct.length > 5 ? '…' : ''}). Заказ остаётся черновиком.`
+          );
           return;
         }
         const bad = lines.find((l) => !(Number(l.price) > 0));
@@ -1942,8 +2003,12 @@
           const clr = document.getElementById('so-import-clear-file');
           if (clr) clr.hidden = false;
           paintHeaderMap(r.headers || [], r.suggested_roles || []);
-          setMapMode('headers');
-          if (msg) msg.textContent = 'Файл разобран — проверьте соответствие колонок';
+          setMapMode(r.has_header === false ? 'columns' : 'headers');
+          if (msg) {
+            msg.textContent = r.has_header === false
+              ? 'Файл без шапки — режим «По столбцам». Проверьте колонки и сумму после «Сопоставить».'
+              : `Файл разобран: заголовки узнали сами (${(r.suggested_roles || []).filter((x) => x && x !== 'skip').length} колонок). Проверьте соответствие и нажмите «Сопоставить».`;
+          }
         } catch (e) {
           clearImportFile();
           if (msg) msg.textContent = e.message || String(e);
@@ -1957,8 +2022,8 @@
           map_mode: soMapMode,
           has_header:
             soMapMode === 'headers' ? true : !!document.getElementById('so-import-header')?.checked,
-          create_missing: !!document.getElementById('so-import-create')?.checked,
-          minimal_cards: !!document.getElementById('so-import-minimal')?.checked,
+          create_missing: false,
+          minimal_cards: false,
         };
         if (soImportFile?.table?.length) {
           body.table = soImportFile.table;
@@ -1989,6 +2054,7 @@
               .filter((x) => x.status === 'will_create')
               .slice(0, 8);
             box.innerHTML = `<b>${r.received || 0}</b> строк получено · <b>${r.matched || 0}</b> сопоставлено · <b>${r.will_create || 0}</b> будет создано · <b>${r.errors || 0}</b> невозможно
+              · сумма ≈ <b>${Number(r.total_sum || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 })}</b> ₽
               ${
                 createRows.length
                   ? `<div style="margin-top:6px">Создать: ${createRows
@@ -2025,10 +2091,14 @@
             { method: 'POST', body: JSON.stringify(body) }
           );
           if (msg) {
+            const skipped = Number(r.skipped_count || (r.skipped_unmatched || []).length || 0);
             msg.textContent =
               'Загружено ' +
               (r.received || 0) +
-              (r.created ? ', создано карточек: ' + r.created : '');
+              (r.created ? ', создано карточек: ' + r.created : '') +
+              (skipped
+                ? `. Не найдено артикулов: ${skipped} — заказ черновик, проведение будет недоступно, пока не исправите`
+                : '');
           }
           await renderThinDetail(viewId, id);
         } catch (e) {
@@ -2290,6 +2360,11 @@
       });
     };
     const openAddPanel = () => {
+      if (key === 'supplier_orders' && !linesEditable) {
+        const msg = document.getElementById('thin-line-msg');
+        if (msg) msg.textContent = linesLockReason || 'Строки заказа нельзя менять';
+        return;
+      }
       // Сначала вкладка «Номенклатура»
       const linesTab = leg.view.querySelector('[data-pagetab="lines"]');
       if (linesTab) linesTab.click();
@@ -2310,6 +2385,104 @@
     document.getElementById('thin-add-line').onclick = openAddPanel;
     document.getElementById('thin-add-close')?.addEventListener('click', closeAddPanel);
     document.getElementById('thin-add-cancel')?.addEventListener('click', closeAddPanel);
+    if (key === 'supplier_orders' && linesEditable) {
+      const syncSelBtn = () => {
+        const n = leg.view.querySelectorAll('.so-line-cb:checked').length;
+        const btn = document.getElementById('so-lines-del-selected');
+        const msg = document.getElementById('so-lines-sel-msg');
+        if (btn) btn.disabled = n === 0;
+        if (msg) msg.textContent = n ? `Выбрано: ${n}` : '';
+      };
+      document.getElementById('so-lines-check-all')?.addEventListener('change', (ev) => {
+        const on = !!ev.target?.checked;
+        leg.view.querySelectorAll('.so-line-cb').forEach((cb) => {
+          cb.checked = on;
+        });
+        syncSelBtn();
+      });
+      leg.view.querySelectorAll('.so-line-cb').forEach((cb) => {
+        cb.addEventListener('change', syncSelBtn);
+      });
+      document.getElementById('so-lines-del-selected')?.addEventListener('click', async () => {
+        const indices = [...leg.view.querySelectorAll('.so-line-cb:checked')]
+          .map((cb) => Number(cb.getAttribute('data-line-idx')))
+          .filter((n) => Number.isFinite(n) && n >= 0);
+        if (!indices.length) return;
+        if (
+          !confirm(
+            `Удалить из заказа выбранные позиции (${indices.length})?\nСам заказ не удаляется.`
+          )
+        ) {
+          return;
+        }
+        const msg = document.getElementById('thin-line-msg');
+        if (msg) msg.textContent = 'Удаляю позиции…';
+        try {
+          await leg.api(
+            '/parity/journals/' +
+              encodeURIComponent(key) +
+              '/' +
+              encodeURIComponent(id) +
+              '/lines/delete',
+            { method: 'POST', body: JSON.stringify({ indices }) }
+          );
+          await renderThinDetail(viewId, id);
+        } catch (e) {
+          if (msg) msg.textContent = e.message || String(e);
+          else alert(e.message || String(e));
+        }
+      });
+
+      const saveLineCell = async (idx, patch) => {
+        const msg = document.getElementById('thin-line-msg');
+        try {
+          const r = await leg.api(
+            '/parity/journals/' +
+              encodeURIComponent(key) +
+              '/' +
+              encodeURIComponent(id) +
+              '/lines/' +
+              encodeURIComponent(String(idx)),
+            { method: 'PATCH', body: JSON.stringify(patch) }
+          );
+          const line = (r.lines || [])[idx];
+          const amountEl = leg.view.querySelector(`.so-line-amount[data-line-idx="${idx}"]`);
+          if (amountEl && line) {
+            amountEl.textContent = money(
+              line.amount != null ? line.amount : Number(line.qty) * Number(line.price)
+            );
+          }
+          const sumEl = document.getElementById('thin-lines-sum');
+          if (sumEl && r.amount != null) sumEl.textContent = money(r.amount);
+          if (msg) msg.textContent = '';
+        } catch (e) {
+          if (msg) msg.textContent = e.message || String(e);
+          await renderThinDetail(viewId, id);
+        }
+      };
+      leg.view.querySelectorAll('.so-line-qty').forEach((inp) => {
+        inp.addEventListener('change', () => {
+          const idx = Number(inp.getAttribute('data-line-idx'));
+          const qty = Number(inp.value);
+          if (!Number.isFinite(idx) || !(qty > 0)) {
+            alert('Количество должно быть > 0');
+            return;
+          }
+          saveLineCell(idx, { qty });
+        });
+      });
+      leg.view.querySelectorAll('.so-line-price').forEach((inp) => {
+        inp.addEventListener('change', () => {
+          const idx = Number(inp.getAttribute('data-line-idx'));
+          const price = Number(inp.value);
+          if (!Number.isFinite(idx) || !(price >= 0)) {
+            alert('Цена некорректна');
+            return;
+          }
+          saveLineCell(idx, { price });
+        });
+      });
+    }
     document.getElementById('thin-add-submit')?.addEventListener('click', async () => {
       const root = document.getElementById('thin-add-body');
       const msg = document.getElementById('thin-add-msg');

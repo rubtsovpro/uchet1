@@ -956,7 +956,111 @@ export function getThinJournalDoc(journalKey: string, id: string) {
     warehouse_task_number: String(payload.warehouse_task_number || ''),
     lines,
     lines_count: lines.length,
+    ...(journalKey === 'supplier_orders'
+      ? (() => {
+          const edit = supplierOrderLinesEditability(row.id, row.status);
+          return {
+            lines_editable: edit.ok,
+            lines_lock_reason: edit.reason || '',
+            inbound_draft_id: edit.inbound_id || '',
+            inbound_draft_number: edit.inbound_number || '',
+            inbound_draft_posted: !!edit.inbound_posted,
+          };
+        })()
+      : {}),
   };
+}
+
+/** Статусы заказа, после которых состав строк нельзя менять. */
+const SUPPLIER_ORDER_LINES_LOCKED_STATUSES = new Set([
+  'posted',
+  'confirmed',
+  'in_transit',
+  'partial',
+  'received',
+  'done',
+  'closed',
+  'sent',
+  'paid',
+]);
+
+export function findInboundLinkedToSupplierOrder(orderId: string): {
+  id: string;
+  number: string;
+  posted: boolean;
+} | null {
+  const id = String(orderId || '').trim();
+  if (!id) return null;
+  const row = get<{ id: string; number: string; posted: number }>(
+    `SELECT id, IFNULL(number,'') AS number, IFNULL(posted,0) AS posted
+     FROM stock_docs
+     WHERE doc_type = 'in' AND IFNULL(source_supplier_order_id,'') = ?
+     ORDER BY posted DESC, created_at DESC
+     LIMIT 1`,
+    [id]
+  );
+  if (!row) return null;
+  return {
+    id: row.id,
+    number: row.number || row.id,
+    posted: Number(row.posted) === 1,
+  };
+}
+
+export function supplierOrderLinesEditability(
+  orderId: string,
+  status?: string
+): {
+  ok: boolean;
+  reason: string;
+  inbound_id?: string;
+  inbound_number?: string;
+  inbound_posted?: boolean;
+} {
+  const st = String(status || '').trim().toLowerCase();
+  if (SUPPLIER_ORDER_LINES_LOCKED_STATUSES.has(st)) {
+    return {
+      ok: false,
+      reason: `Заказ уже проведён (статус «${thinStatusLabel(st)}») — строки нельзя менять`,
+    };
+  }
+  const inbound = findInboundLinkedToSupplierOrder(orderId);
+  if (inbound) {
+    return {
+      ok: false,
+      reason: inbound.posted
+        ? `Есть проведённая приходная ${inbound.number} — строки заказа нельзя менять`
+        : `Создан черновик приходной ${inbound.number} — строки заказа нельзя менять`,
+      inbound_id: inbound.id,
+      inbound_number: inbound.number,
+      inbound_posted: inbound.posted,
+    };
+  }
+  return { ok: true, reason: '' };
+}
+
+function thinStatusLabel(st: string): string {
+  const map: Record<string, string> = {
+    posted: 'Проведён',
+    confirmed: 'Проведён',
+    in_transit: 'В пути',
+    partial: 'Частично получен',
+    received: 'Получен',
+    done: 'Выполнен',
+    closed: 'Завершён',
+  };
+  return map[st] || st || '—';
+}
+
+export function assertSupplierOrderLinesEditable(orderId: string): void {
+  const row = get<{ status: string }>(
+    `SELECT IFNULL(status,'') AS status FROM thin_journal_docs
+     WHERE id = ? AND journal_key = 'supplier_orders'`,
+    [orderId]
+  );
+  if (!row) throw new Error('Заказ поставщику не найден');
+  const edit = supplierOrderLinesEditability(orderId, row.status);
+  if (!edit.ok) throw new Error(edit.reason);
 }
 
 /** Заменить/дописать строки заказа поставщику (без авто-марок по умолчанию). */
@@ -966,6 +1070,7 @@ export function replaceThinSupplierOrderLines(
   opts?: { append?: boolean; allocate_marks?: boolean }
 ) {
   const journalKey = 'supplier_orders';
+  assertSupplierOrderLinesEditable(id);
   const row = get<{ id: string; payload_json: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
@@ -977,19 +1082,36 @@ export function replaceThinSupplierOrderLines(
   let maxNo = lines.reduce((m, l) => Math.max(m, Number(l.line_no) || 0), 0);
   for (const input of inputLines) {
     const productId = String(input.product_id || '').trim();
-    if (!productId) throw new Error('product_id required');
-    const product = get<{ id: string; sku: string; name: string; code: string }>(
-      `SELECT id, IFNULL(sku,'') AS sku, IFNULL(name,'') AS name, IFNULL(code,'') AS code
-       FROM products WHERE id = ?`,
-      [productId]
-    );
-    if (!product) throw new Error('product not found: ' + productId);
+    const article = String(input.article || '').trim();
     const qty = Number(input.qty);
     const qtySafe = Number.isFinite(qty) && qty > 0 ? qty : 1;
     const priceIn = Number(input.price);
     const price = Number.isFinite(priceIn) && priceIn >= 0 ? priceIn : 0;
     const amount = Math.round(qtySafe * price);
     maxNo += 1;
+    if (!productId) {
+      if (!article) throw new Error('Нужен product_id или артикул');
+      lines.push({
+        product_id: '',
+        name: String(input.name || article || 'Не найден'),
+        article,
+        qty: qtySafe,
+        price,
+        amount,
+        line_no: maxNo,
+        category: '',
+        category_id: '',
+        serials: [],
+        old_sku: String(input.old_sku || '').trim(),
+      });
+      continue;
+    }
+    const product = get<{ id: string; sku: string; name: string; code: string }>(
+      `SELECT id, IFNULL(sku,'') AS sku, IFNULL(name,'') AS name, IFNULL(code,'') AS code
+       FROM products WHERE id = ?`,
+      [productId]
+    );
+    if (!product) throw new Error('product not found: ' + productId);
     lines.push({
       product_id: product.id,
       name: String(input.name || product.name || product.sku || 'Товар'),
@@ -1159,6 +1281,7 @@ export function addThinJournalLine(
 ) {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
+  if (journalKey === 'supplier_orders') assertSupplierOrderLinesEditable(id);
   const row = get<{ id: string; payload_json: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
@@ -1546,6 +1669,7 @@ export async function thinJournalDmLabelsPdf(journalKey: string, id: string): Pr
 export function removeThinJournalLine(journalKey: string, id: string, lineIndex: number) {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
+  if (journalKey === 'supplier_orders') assertSupplierOrderLinesEditable(id);
   const row = get<{ id: string; payload_json: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
@@ -1557,6 +1681,72 @@ export function removeThinJournalLine(journalKey: string, id: string, lineIndex:
   const lines = parsePayloadLines(row.payload_json);
   if (idx < 0 || idx >= lines.length) throw new Error('line not found');
   lines.splice(idx, 1);
+  lines.forEach((l, i) => {
+    l.line_no = i + 1;
+  });
+  saveThinPayload(id, payload, lines);
+  return getThinJournalDoc(journalKey, id);
+}
+
+/** Удалить несколько позиций заказа (не весь документ). Индексы — как в UI. */
+export function removeThinJournalLines(journalKey: string, id: string, lineIndexes: number[]) {
+  const meta = getThinJournalMeta(journalKey);
+  if (!meta) throw new Error('unknown journal');
+  if (journalKey === 'supplier_orders') assertSupplierOrderLinesEditable(id);
+  const row = get<{ id: string; payload_json: string }>(
+    `SELECT id, IFNULL(payload_json,'') AS payload_json
+     FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
+    [id, journalKey]
+  );
+  if (!row) return null;
+  const payload = readPayloadObject(row.payload_json);
+  const lines = parsePayloadLines(row.payload_json);
+  const drop = new Set(
+    (Array.isArray(lineIndexes) ? lineIndexes : [])
+      .map((n) => Math.floor(Number(n)))
+      .filter((n) => Number.isFinite(n) && n >= 0 && n < lines.length)
+  );
+  if (!drop.size) throw new Error('Не выбраны строки для удаления');
+  const next = lines.filter((_, i) => !drop.has(i));
+  next.forEach((l, i) => {
+    l.line_no = i + 1;
+  });
+  saveThinPayload(id, payload, next);
+  return getThinJournalDoc(journalKey, id);
+}
+
+/** Правка qty/цены одной позиции заказа поставщику (черновик). */
+export function patchThinJournalLine(
+  journalKey: string,
+  id: string,
+  lineIndex: number,
+  patch: { qty?: number; price?: number }
+) {
+  const meta = getThinJournalMeta(journalKey);
+  if (!meta) throw new Error('unknown journal');
+  if (journalKey === 'supplier_orders') assertSupplierOrderLinesEditable(id);
+  const row = get<{ id: string; payload_json: string }>(
+    `SELECT id, IFNULL(payload_json,'') AS payload_json
+     FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
+    [id, journalKey]
+  );
+  if (!row) return null;
+  const idx = Math.floor(Number(lineIndex));
+  const payload = readPayloadObject(row.payload_json);
+  const lines = parsePayloadLines(row.payload_json);
+  if (idx < 0 || idx >= lines.length) throw new Error('line not found');
+  const line = lines[idx]!;
+  if (patch.qty != null) {
+    const qty = Number(patch.qty);
+    if (!(Number.isFinite(qty) && qty > 0)) throw new Error('Количество должно быть > 0');
+    line.qty = qty;
+  }
+  if (patch.price != null) {
+    const price = Number(patch.price);
+    if (!(Number.isFinite(price) && price >= 0)) throw new Error('Цена некорректна');
+    line.price = price;
+  }
+  line.amount = Math.round((Number(line.qty) || 0) * (Number(line.price) || 0));
   lines.forEach((l, i) => {
     l.line_no = i + 1;
   });
@@ -1619,6 +1809,10 @@ export function patchThinJournalDoc(
 export function deleteThinJournalDoc(journalKey: string, id: string): boolean {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
+  // Заказ поставщику целиком никогда не удаляем — только позиции (строки).
+  if (journalKey === 'supplier_orders') {
+    throw new Error('Удаление заказа поставщику запрещено. Можно удалять только позиции.');
+  }
   const row = get<{ id: string }>(
     `SELECT id FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
     [id, journalKey]

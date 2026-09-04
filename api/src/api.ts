@@ -726,6 +726,8 @@ import {
   purchasesInboundReport,
   purchasesReportsHub,
   removeThinJournalLine,
+  removeThinJournalLines,
+  patchThinJournalLine,
   thinJournalDmExcelCsv,
   thinJournalDmLabelsHtml,
   thinJournalDmLabelsPdf,
@@ -16049,6 +16051,39 @@ api.delete('/parity/journals/:key/:id/lines/:idx', (c) => {
       c.req.param('key'),
       c.req.param('id'),
       Number(c.req.param('idx'))
+    );
+    if (!row) return c.json({ error: 'not found' }, 404);
+    return c.json(row);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+/** Удалить выбранные позиции (не весь заказ). */
+api.post('/parity/journals/:key/:id/lines/delete', async (c) => {
+  try {
+    if (!getThinJournalMeta(c.req.param('key'))) {
+      return c.json({ error: 'unknown journal' }, 404);
+    }
+    const body = (await c.req.json()) as { indices?: number[] };
+    const indices = Array.isArray(body.indices) ? body.indices : [];
+    const row = removeThinJournalLines(c.req.param('key'), c.req.param('id'), indices);
+    if (!row) return c.json({ error: 'not found' }, 404);
+    return c.json(row);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
+  }
+});
+api.patch('/parity/journals/:key/:id/lines/:idx', async (c) => {
+  try {
+    if (!getThinJournalMeta(c.req.param('key'))) {
+      return c.json({ error: 'unknown journal' }, 404);
+    }
+    const body = (await c.req.json()) as { qty?: number; price?: number };
+    const row = patchThinJournalLine(
+      c.req.param('key'),
+      c.req.param('id'),
+      Number(c.req.param('idx')),
+      { qty: body.qty, price: body.price }
     );
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
