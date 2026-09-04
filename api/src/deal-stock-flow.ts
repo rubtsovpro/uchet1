@@ -1054,21 +1054,18 @@ export function enrichStockReturnLineLocation(
     String(reserveOrStoOrigin?.cell_code || '').trim() ||
     '';
   const labelStage = originStage || reserveOrStoOrigin;
-  const originLabel =
-    String(line.origin_label || '').trim() ||
-    (labelStage
-      ? `${labelStage.route || 'Основной'}${
-          originCell || labelStage.cell_code
-            ? ` · яч. ${originCell || labelStage.cell_code}`
-            : ''
-        }`
-      : originCell
-        ? `Основной · яч. ${originCell}`
-        : 'Основной');
+  // Всегда показываем ячейку списания с Основного (не застреваем на голом «Основной» из заявки)
+  const originLabel = originCell
+    ? `${(labelStage?.route || 'Основной').split('→')[0]?.trim() || 'Основной'} · яч. ${originCell}`
+    : String(line.origin_label || '').trim() ||
+      (labelStage ? String(labelStage.route || 'Основной') : 'Основной');
 
-  // «Куда положим» = ячейка списания с Основного (авто), иначе текущая «где была»
+  // «Куда положим» = ячейка, с которой брали с Основного (не «где лежала» на резерве/курьере)
   const toCell =
-    String(line.to_cell_code || '').trim() || originCell || fromCell || '';
+    originCell ||
+    String(line.to_cell_code || '').trim() ||
+    fromCell ||
+    '';
 
   return {
     ...line,
