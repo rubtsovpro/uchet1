@@ -528,30 +528,59 @@ function handoffPickCellForProduct(docId: string, productId: string): string {
 
 /**
  * Ячейка, с которой ушло с Основного (для «Куда положим» при возврате).
- * Берём: picks → комментарий «яч: …» → stage с маршрутом с Основного.
+ * 1) picks кладовщика по product_id
+ * 2) где сейчас лежит такой же SKU на Основном (остаток в ячейках)
+ * 3) общая «яч: …» из комментария документа — только если на Основном нет своей ячейки
  */
 function resolveOriginMainCell(
   productId: string,
   stages: DealMovedLineStage[] | undefined
 ): { cell: string; stage: DealMovedLineStage | null } {
+  const pid = String(productId || '').trim();
   const list = Array.isArray(stages) ? stages : [];
   const fromMain = (s: DealMovedLineStage) =>
     /^основн/i.test(String(s.route || '').split('→')[0] || '') ||
     s.label === 'На резерве' ||
     s.label === 'Перемещено';
 
+  let stageHint: DealMovedLineStage | null = null;
+  let multiProductDoc = false;
   for (const s of list) {
     if (!fromMain(s)) continue;
-    const fromPicks = handoffPickCellForProduct(s.doc_id, productId);
+    stageHint = s;
+    const fromPicks = handoffPickCellForProduct(s.doc_id, pid);
     if (fromPicks) return { cell: fromPicks, stage: s };
-    if (s.cell_code) return { cell: String(s.cell_code), stage: s };
+    const nProd = Number(
+      get<{ c: number }>(
+        `SELECT COUNT(DISTINCT product_id) AS c FROM stock_doc_lines WHERE doc_id = ?`,
+        [s.doc_id]
+      )?.c || 0
+    );
+    if (nProd > 1) multiProductDoc = true;
   }
-  for (const s of list) {
-    const fromPicks = handoffPickCellForProduct(s.doc_id, productId);
-    if (fromPicks) return { cell: fromPicks, stage: s };
-    if (s.cell_code) return { cell: String(s.cell_code), stage: s };
+  if (!stageHint) {
+    for (const s of list) {
+      const fromPicks = handoffPickCellForProduct(s.doc_id, pid);
+      if (fromPicks) return { cell: fromPicks, stage: s };
+      if (!stageHint && s.cell_code) stageHint = s;
+    }
   }
-  return { cell: '', stage: null };
+
+  // Где сейчас лежит такой же товар на Основном — лучше общей «яч» на весь multi-SKU TR
+  try {
+    const mainWh = mainWarehouseId();
+    if (mainWh && pid) {
+      const onMain = cellBalanceForProduct(mainWh, pid);
+      if (onMain) return { cell: onMain, stage: stageHint };
+    }
+  } catch {
+    /* main optional */
+  }
+
+  // Общая «яч: П.10» в комментарии — только если в документе одна номенклатура
+  const commentCell = String(stageHint?.cell_code || '').trim();
+  if (commentCell && !multiProductDoc) return { cell: commentCell, stage: stageHint };
+  return { cell: '', stage: stageHint };
 }
 
 function classifyPostedHandoffDoc(row: {
@@ -1048,8 +1077,11 @@ export function enrichStockReturnLineLocation(
     if (!fromCell) fromCell = cellBalanceForProduct(from.id, pid);
   }
 
+  // Явные ячейки из заявки/ручного ввода важнее эвристики
+  const storedOrigin = String(line.origin_cell_code || '').trim();
+  const storedTo = String(line.to_cell_code || '').trim();
   const originCell =
-    String(line.origin_cell_code || '').trim() ||
+    storedOrigin ||
     resolvedOriginCell ||
     String(reserveOrStoOrigin?.cell_code || '').trim() ||
     '';
@@ -1060,12 +1092,8 @@ export function enrichStockReturnLineLocation(
     : String(line.origin_label || '').trim() ||
       (labelStage ? String(labelStage.route || 'Основной') : 'Основной');
 
-  // «Куда положим» = ячейка, с которой брали с Основного (не «где лежала» на резерве/курьере)
-  const toCell =
-    originCell ||
-    String(line.to_cell_code || '').trim() ||
-    fromCell ||
-    '';
+  // «Куда положим» = явная из заявки → ячейка с Основного → эвристика
+  const toCell = storedTo || originCell || fromCell || '';
 
   return {
     ...line,
