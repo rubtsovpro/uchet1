@@ -954,6 +954,8 @@ export function listCourierRuns(opts?: {
        IFNULL(d.amo_payment_type,'') AS amo_payment_type,
        IFNULL(d.responsible_user_id,'') AS responsible_user_id,
        IFNULL(d.name,'') AS deal_name,
+       IFNULL(d.status_id,'') AS status_id,
+       IFNULL(d.status_name,'') AS status_name,
        IFNULL(d.paid,0) AS deal_paid,
        IFNULL(d.payment_status,'') AS payment_status,
        IFNULL(d.price,0) AS deal_price,
@@ -1002,7 +1004,7 @@ export function listCourierRuns(opts?: {
     )?.n || 0
   );
 
-  const items = rows.map((r) => {
+  const mapped = rows.map((r) => {
     const kind = String(r.kind || 'pickup');
     const ship = String(r.amo_shipment || '').trim();
     const dealId = String(r.deal_id || '').trim();
@@ -1060,6 +1062,10 @@ export function listCourierRuns(opts?: {
     const print_href = docId
       ? `/api/warehouse/pick/handoffs/${encodeURIComponent(docId)}/print`
       : '';
+    const statusName = String(r.status_name || '').trim();
+    const dealClosedFailed =
+      /не реализован|закрыто и не/i.test(statusName) ||
+      String(r.status_id || '').trim() === '143';
     return {
       ...r,
       kind,
@@ -1070,11 +1076,14 @@ export function listCourierRuns(opts?: {
       route_label,
       title,
       print_href,
+      status: String(r.status || ''),
+      deal_id: dealId,
       is_paid: paid,
       payment_label: paid ? 'Оплачено' : 'Не оплачено',
       responsible_name: (respId && respNames.get(respId)) || '',
       comments,
       deal_comments: [] as string[],
+      deal_closed_failed: dealClosedFailed,
       hint:
         kind === 'handoff'
           ? 'Доставил = списание по продаже со склада «Курьер» + примечание в сделку'
@@ -1082,7 +1091,65 @@ export function listCourierRuns(opts?: {
     };
   });
 
+  // Закрытые «не реализовано» не должны висеть у курьера в активных
+  if (opts?.scope !== 'closed' && opts?.scope !== 'all' && !opts?.status) {
+    for (const it of mapped) {
+      if (it.deal_closed_failed && ['new', 'accepted', 'picked_up'].includes(String(it.status))) {
+        try {
+          cancelActiveCourierRunsForDeal(
+            String(it.deal_id || ''),
+            'Авто: сделка закрыта и не реализована'
+          );
+          it.status = 'cancelled';
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  const items = mapped.filter((it) => {
+    if (opts?.scope === 'closed' || opts?.scope === 'all' || opts?.status) return true;
+    return !['cancelled', 'delivered'].includes(String(it.status));
+  });
+
   return { items, counts: { active: activeCount, closed: closedCount } };
+}
+
+/**
+ * Снять активные задания курьера по сделке (возврат на основной / отказ / закрытие).
+ * Иначе заказ остаётся в «К доставке» у курьера.
+ */
+export function cancelActiveCourierRunsForDeal(
+  dealId: string,
+  reason?: string
+): { cancelled: number; ids: string[] } {
+  ensureStoPartsSchema();
+  const id = String(dealId || '').trim();
+  if (!id) return { cancelled: 0, ids: [] };
+  const rows = all<{ id: string }>(
+    `SELECT id FROM courier_runs
+     WHERE deal_id = ?
+       AND status IN ('new','accepted','picked_up')`,
+    [id]
+  );
+  const ids: string[] = [];
+  const note = String(reason || 'Сделка закрыта / возврат на основной').trim();
+  for (const r of rows) {
+    run(
+      `UPDATE courier_runs
+       SET status = 'cancelled',
+           comment = CASE
+             WHEN IFNULL(TRIM(comment),'') = '' THEN ?
+             ELSE comment || ' · ' || ?
+           END,
+           updated_at = datetime('now')
+       WHERE id = ?`,
+      [note, note, r.id]
+    );
+    ids.push(r.id);
+  }
+  return { cancelled: ids.length, ids };
 }
 
 export function setCourierRunStatus(input: {

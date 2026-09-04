@@ -2535,6 +2535,17 @@ export async function completeStockReturnPick(input: {
     });
   }
 
+  try {
+    const { cancelActiveCourierRunsForDeal } = await import('./sto-parts-flow.js');
+    cancelActiveCourierRunsForDeal(dealId, 'Возврат на основной — снять с курьера');
+  } catch (e) {
+    console.warn(
+      'cancelActiveCourierRunsForDeal',
+      dealId,
+      e instanceof Error ? e.message : e
+    );
+  }
+
   return { ok: true, doc_id: docId, return: pending, doc: get('SELECT * FROM stock_docs WHERE id = ?', [docId]) };
 }
 
