@@ -26,6 +26,9 @@ export async function runPostPaymentAutomation(opts: {
   chatId?: string;
   replyToMessageId?: number;
   webhookType?: string;
+  channel?: string;
+  paymentId?: string;
+  account?: string;
   amoAlreadyPaid?: boolean;
 }): Promise<PostPaymentAutomationResult> {
   const dealId = String(opts.dealId || '').replace(/\D/g, '');
@@ -51,6 +54,18 @@ export async function runPostPaymentAutomation(opts: {
   const webhookType = String(opts.webhookType || '').trim();
   if (webhookType !== '') {
     args.push(`--webhook_type=${webhookType}`);
+  }
+  const channel = String(opts.channel || '').trim();
+  if (channel !== '') {
+    args.push(`--channel=${channel}`);
+  }
+  const paymentId = String(opts.paymentId || '').trim();
+  if (paymentId !== '') {
+    args.push(`--payment_id=${paymentId}`);
+  }
+  const account = String(opts.account || '').trim();
+  if (account !== '') {
+    args.push(`--account=${account}`);
   }
   if (opts.amoAlreadyPaid) {
     args.push('--amo_already_paid=1');

@@ -22,7 +22,40 @@ function dealIdFromFormaOrder(raw: string): string {
   return m ? m[1] : s;
 }
 
-export function applyTbankFormaWebhook(payload: Record<string, unknown>) {
+async function runTbankFormaPostPaidHooks(opts: {
+  dealId: string;
+  dealName?: string;
+  payAmount: number;
+  payId: string;
+}): Promise<{ amo: unknown; automation: unknown }> {
+  const { pushDealPaidToAmo } = await import('./amo-deal-paid.js');
+  const amo = await pushDealPaidToAmo({ dealId: opts.dealId, source: 'tbank_forma' });
+
+  const { runPostPaymentAutomation } = await import('./post-payment-automation.js');
+  const automation = await runPostPaymentAutomation({
+    dealId: opts.dealId,
+    source: 'tbank_forma',
+    username: 'tbank_forma',
+    amount: opts.payAmount > 0 ? opts.payAmount : undefined,
+    channel: 'tbank',
+    paymentId: opts.payId,
+    amoAlreadyPaid: amo?.ok === true && (amo as { already_paid?: boolean }).already_paid === true,
+  });
+
+  return { amo, automation };
+}
+
+function dealHasFullFiscal(dealId: string): boolean {
+  const row = get<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM fiscal_receipts
+     WHERE deal_id = ? AND kind = 'full'
+       AND lower(IFNULL(status,'')) NOT IN ('error','cancelled','canceled')`,
+    [dealId]
+  );
+  return Number(row?.c || 0) > 0;
+}
+
+export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
   const orderRaw = String(payload.id || payload.orderNumber || payload.order_number || '').trim();
   const status = String(payload.status || '').toLowerCase().trim();
   const committed = asBool(payload.committed);
@@ -48,13 +81,31 @@ export function applyTbankFormaWebhook(payload: Record<string, unknown>) {
 
   // Идемпотентность по событию Forma
   const eventKey = `forma:${orderRaw}:${status}:${committed ? '1' : '0'}`;
-  const already = get<{ id: string }>(
-    `SELECT id FROM deal_payments
+  const already = get<{ id: string; amount?: number }>(
+    `SELECT id, amount FROM deal_payments
      WHERE deal_id = ? AND IFNULL(meta_json,'') LIKE ?
      LIMIT 1`,
     [dealId, `%"event_key":"${eventKey}"%`]
   );
   if (already?.id && (status === 'signed' || status === 'approved')) {
+    // Повторный signed без чека — добить TG / Sheets / фискал
+    if (status === 'signed' && !dealHasFullFiscal(dealId)) {
+      const payAmount = Number(already.amount) > 0 ? Number(already.amount) : amount;
+      const hooks = await runTbankFormaPostPaidHooks({
+        dealId,
+        dealName: deal.name,
+        payAmount,
+        payId: already.id,
+      });
+      return {
+        ok: true,
+        deal_id: dealId,
+        action: 'duplicate_automation' as const,
+        status,
+        payment_id: already.id,
+        ...hooks,
+      };
+    }
     return {
       ok: true,
       deal_id: dealId,
@@ -184,8 +235,15 @@ export function applyTbankFormaWebhook(payload: Record<string, unknown>) {
     title: 'Сделка оплачена · рассрочка',
     body: `Сделка ${deal.name || dealId} оплачена через Т‑Рассрочку${
       payAmount > 0 ? ` · ${Math.round(payAmount).toLocaleString('ru-RU')} ₽` : ''
-    }. Выбейте чек 1 (аванс) в Документах.`,
+    }. Чек и разноска уходят автоматически.`,
     meta: { forma_status: status, order_id: orderRaw, payment_id: payId, demo },
+  });
+
+  const hooks = await runTbankFormaPostPaidHooks({
+    dealId,
+    dealName: deal.name,
+    payAmount,
+    payId,
   });
 
   return {
@@ -199,6 +257,8 @@ export function applyTbankFormaWebhook(payload: Record<string, unknown>) {
     payment_status: synced.payment_status,
     notifications: n.created,
     warehouse_task: warehouseTask,
+    amo: hooks.amo,
+    automation: hooks.automation,
   };
 }
 

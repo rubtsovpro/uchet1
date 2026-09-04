@@ -2961,7 +2961,7 @@ api.post('/webhooks/tbank-forma', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   try {
     const { applyTbankFormaWebhook } = await import('./tbank-forma.js');
-    const r = applyTbankFormaWebhook(body);
+    const r = await applyTbankFormaWebhook(body);
     auditFromContext(c, {
       action: 'webhook.tbank_forma',
       entity: 'crm_deal',
