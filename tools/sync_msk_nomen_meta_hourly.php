@@ -9,13 +9,14 @@
  * (как в HS) пишем sku@podveska — у каждого контура своя номенклатура.
  *
  * Берём / обновляем:
- *   A MRAER мастер, B Номер на складе, C Цена, D Партнерская, E Снятие/Установка,
+ *   A MRAER мастер, B Номер на складе (факт), C Цена, D Партнерская, E Снятие/Установка,
  *   F Поставщик, G Применимость программная, K № поставки,
  *   N Категория, O Номенклатура 1С, P Ось, Q Сторона, R Привод, S Тип/исполнение,
  *   BA КРОССЫ → array_sku
  *
- * НИКОГДА не трогаем: Кол-во/остаток, Ячейка, Склад, ОЕ/номера поставщиков T/X/G…
- * и любые строки fogel_2025.
+ * Факт с листа → этот мастер: если раньше висел на другом мастере подвески —
+ * переносим (lots + product_id в ячейках), qty/ячейка/склад сохраняются.
+ * Кол-во с листа не затираем. fogel_2025 не трогаем.
  *
  * Usage:
  *   php tools/sync_msk_nomen_meta_hourly.php --dry-run
@@ -126,6 +127,161 @@ function normalizeCrosses(string $raw): string
     }
 
     return implode('; ', $parts);
+}
+
+/**
+ * Перенос факта (номер на складе) на карточку мастера подвески.
+ * Сохраняет qty / ячейку / склад; меняет только привязку product_id / master_sku.
+ *
+ * @return array{moved:int,lots:int,cells:int,cleared_wh:int}
+ */
+function reassignFactToMaster(
+    SQLite3 $db,
+    string $fact,
+    string $toPid,
+    string $toMasterSku,
+    string $toName,
+    bool $dryRun
+): array {
+    $out = ['moved' => 0, 'lots' => 0, 'cells' => 0, 'cleared_wh' => 0];
+    $fact = strtoupper(trim($fact));
+    $toPid = trim($toPid);
+    $toMasterSku = strtoupper(trim($toMasterSku));
+    if ($fact === '' || $toPid === '') {
+        return $out;
+    }
+
+    $deptProd = "IFNULL(source_department,'') IN ('', 'pnevmopodveska_2025')";
+    $deptJoin = "IFNULL(p.source_department,'') IN ('', 'pnevmopodveska_2025')";
+
+    // Снять warehouse_sku у чужих мастеров подвески (не трогаем Фогель и целевой)
+    $q = $db->query(
+        "SELECT id, sku FROM products
+         WHERE warehouse_sku = '" . SQLite3::escapeString($fact) . "' COLLATE NOCASE
+           AND id <> '" . SQLite3::escapeString($toPid) . "'
+           AND {$deptProd}"
+    );
+    while ($q && ($row = $q->fetchArray(SQLITE3_ASSOC))) {
+        if (!$dryRun) {
+            $db->exec(
+                "UPDATE products SET warehouse_sku = '' WHERE id = '"
+                . SQLite3::escapeString((string) $row['id']) . "'"
+            );
+        }
+        $out['cleared_wh']++;
+        $out['moved']++;
+    }
+    if ($q) {
+        $q->finalize();
+    }
+
+    // Лоты с этим фактом → новый мастер
+    $hasLots = (int) $db->querySingle(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='product_supplier_lots'"
+    ) > 0;
+    if ($hasLots) {
+        $q = $db->query(
+            "SELECT l.id, l.product_id, l.master_sku
+             FROM product_supplier_lots l
+             INNER JOIN products p ON p.id = l.product_id
+             WHERE l.fact_sku = '" . SQLite3::escapeString($fact) . "' COLLATE NOCASE
+               AND l.product_id <> '" . SQLite3::escapeString($toPid) . "'
+               AND {$deptSql}"
+        );
+        while ($q && ($row = $q->fetchArray(SQLITE3_ASSOC))) {
+            if (!$dryRun) {
+                $db->exec(
+                    "UPDATE product_supplier_lots
+                     SET product_id = '" . SQLite3::escapeString($toPid) . "',
+                         master_sku = '" . SQLite3::escapeString($toMasterSku) . "',
+                         updated_at = datetime('now')
+                     WHERE id = '" . SQLite3::escapeString((string) $row['id']) . "'"
+                );
+            }
+            $out['lots']++;
+            $out['moved']++;
+        }
+        if ($q) {
+            $q->finalize();
+        }
+    }
+
+    // Ячейки: sku=факт, product_id → новый мастер; qty/ячейка/склад те же
+    $q = $db->query(
+        "SELECT warehouse_id, cell_id, product_id, qty, sku
+         FROM stock_cell_balances
+         WHERE sku = '" . SQLite3::escapeString($fact) . "' COLLATE NOCASE
+           AND IFNULL(product_id,'') <> '" . SQLite3::escapeString($toPid) . "'"
+    );
+    while ($q && ($row = $q->fetchArray(SQLITE3_ASSOC))) {
+        $oldPid = trim((string) ($row['product_id'] ?? ''));
+        $whId = (string) ($row['warehouse_id'] ?? '');
+        $qty = (float) ($row['qty'] ?? 0);
+        // не трогаем остатки, если ячейка висела на Фогеле
+        if ($oldPid !== '') {
+            $oldDept = (string) $db->querySingle(
+                "SELECT IFNULL(source_department,'') FROM products WHERE id = '"
+                . SQLite3::escapeString($oldPid) . "'"
+            );
+            if ($oldDept === 'fogel_2025') {
+                continue;
+            }
+        }
+        if (!$dryRun) {
+            $db->exec(
+                "UPDATE stock_cell_balances
+                 SET product_id = '" . SQLite3::escapeString($toPid) . "',
+                     product_name = '" . SQLite3::escapeString($toName !== '' ? $toName : $toMasterSku) . "',
+                     updated_at = datetime('now')
+                 WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
+                   AND cell_id = '" . SQLite3::escapeString((string) $row['cell_id']) . "'
+                   AND sku = '" . SQLite3::escapeString($fact) . "' COLLATE NOCASE"
+            );
+            if ($oldPid !== '' && $whId !== '' && abs($qty) > 0.0001) {
+                // снять с старого мастера
+                $db->exec(
+                    "UPDATE stock_balances SET qty = qty - {$qty}
+                     WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
+                       AND product_id = '" . SQLite3::escapeString($oldPid) . "'"
+                );
+                $db->exec(
+                    "DELETE FROM stock_balances
+                     WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
+                       AND product_id = '" . SQLite3::escapeString($oldPid) . "'
+                       AND qty <= 0.0001"
+                );
+                $db->exec(
+                    "UPDATE product_store_rests SET qty = qty - {$qty}
+                     WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
+                       AND product_id = '" . SQLite3::escapeString($oldPid) . "'"
+                );
+                $db->exec(
+                    "DELETE FROM product_store_rests
+                     WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
+                       AND product_id = '" . SQLite3::escapeString($oldPid) . "'
+                       AND qty <= 0.0001"
+                );
+                // начислить новому
+                $db->exec(
+                    "INSERT INTO stock_balances (warehouse_id, product_id, qty)
+                     VALUES ('" . SQLite3::escapeString($whId) . "', '" . SQLite3::escapeString($toPid) . "', {$qty})
+                     ON CONFLICT(warehouse_id, product_id) DO UPDATE SET qty = qty + excluded.qty"
+                );
+                $db->exec(
+                    "INSERT INTO product_store_rests (product_id, warehouse_id, qty)
+                     VALUES ('" . SQLite3::escapeString($toPid) . "', '" . SQLite3::escapeString($whId) . "', {$qty})
+                     ON CONFLICT(product_id, warehouse_id) DO UPDATE SET qty = qty + excluded.qty"
+                );
+            }
+        }
+        $out['cells']++;
+        $out['moved']++;
+    }
+    if ($q) {
+        $q->finalize();
+    }
+
+    return $out;
 }
 
 if (!is_readable($credPath) || !is_readable($autoload)) {
@@ -240,6 +396,7 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
     $cur = $masters[$master] ?? [
         'sku' => $master,
         'fact' => $fact,
+        'facts' => [],
         'retail' => 0.0,
         'partner' => 0.0,
         'install' => 0.0,
@@ -255,8 +412,12 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
         'crosses' => '',
         'rows' => 0,
     ];
+    if (!isset($cur['facts']) || !is_array($cur['facts'])) {
+        $cur['facts'] = [];
+    }
     $cur['rows']++;
     $cur['fact'] = $fact;
+    $cur['facts'][$fact] = true;
     $retail = moneyCell($iRetail !== null ? cell($row, $iRetail) : '');
     $partner = moneyCell($iPartner !== null ? cell($row, $iPartner) : '');
     $install = moneyCell($iInstall !== null ? cell($row, $iInstall) : '');
@@ -417,6 +578,10 @@ $stats = [
     'updated' => 0,
     'name' => 0,
     'warehouse_sku' => 0,
+    'fact_moved' => 0,
+    'fact_lots' => 0,
+    'fact_cells' => 0,
+    'fact_cleared_wh' => 0,
     'array_sku' => 0,
     'install' => 0,
     'prices' => 0,
@@ -547,10 +712,44 @@ try {
         }
 
         $fact = trim((string) $m['fact']);
-        if ($fact !== '' && $fact !== (string) ($prod['warehouse_sku'] ?? '')) {
+        $facts = [];
+        if (isset($m['facts']) && is_array($m['facts'])) {
+            foreach (array_keys($m['facts']) as $f) {
+                $f = strtoupper(trim((string) $f));
+                if ($f !== '') {
+                    $facts[$f] = true;
+                }
+            }
+        }
+        if ($fact !== '') {
+            $facts[strtoupper($fact)] = true;
+        }
+        // primary warehouse_sku: сам мастер, иначе первый факт с листа
+        $primaryFact = '';
+        if (isset($facts[strtoupper($sku)])) {
+            $primaryFact = strtoupper($sku);
+        } elseif ($fact !== '') {
+            $primaryFact = strtoupper($fact);
+        } elseif ($facts !== []) {
+            $primaryFact = (string) array_key_first($facts);
+        }
+
+        $displayName = trim((string) ($m['name'] !== '' ? $m['name'] : ($prod['name'] ?? $sku)));
+        foreach (array_keys($facts) as $factSku) {
+            $mv = reassignFactToMaster($db, $factSku, $pid, $sku, $displayName, $dryRun);
+            if ($mv['moved'] > 0) {
+                $stats['fact_moved'] += $mv['moved'];
+                $stats['fact_lots'] += $mv['lots'];
+                $stats['fact_cells'] += $mv['cells'];
+                $stats['fact_cleared_wh'] += $mv['cleared_wh'];
+                $changed = true;
+            }
+        }
+
+        if ($primaryFact !== '' && $primaryFact !== (string) ($prod['warehouse_sku'] ?? '')) {
             if (!$dryRun) {
                 $st = $db->prepare('UPDATE products SET warehouse_sku = :w WHERE id = :id');
-                $st->bindValue(':w', $fact, SQLITE3_TEXT);
+                $st->bindValue(':w', $primaryFact, SQLITE3_TEXT);
                 $st->bindValue(':id', $pid, SQLITE3_TEXT);
                 $st->execute();
             }
