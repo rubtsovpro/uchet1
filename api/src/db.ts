@@ -2713,6 +2713,12 @@ export function migrate(): void {
     if (cpVehCols.length && !cpVehCols.includes('car_mileage')) {
       db.exec(`ALTER TABLE counterparty_vehicles ADD COLUMN car_mileage TEXT NOT NULL DEFAULT ''`);
     }
+    if (cpVehCols.length && !cpVehCols.includes('car_generation')) {
+      db.exec(`ALTER TABLE counterparty_vehicles ADD COLUMN car_generation TEXT NOT NULL DEFAULT ''`);
+    }
+    if (cpVehCols.length && !cpVehCols.includes('last_diag_at')) {
+      db.exec(`ALTER TABLE counterparty_vehicles ADD COLUMN last_diag_at TEXT NOT NULL DEFAULT ''`);
+    }
   }
 
   db.exec(`

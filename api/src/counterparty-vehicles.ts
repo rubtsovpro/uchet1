@@ -25,6 +25,10 @@ export type CounterpartyVehicleFields = {
   car_sts_number?: string;
   /** Последний известный пробег (обновляется с заказа при приёмке). */
   car_mileage?: string;
+  /** Поколение кузова / платформы (как в применимости). */
+  car_generation?: string;
+  /** Дата последней диагностики вибростенда (YYYY-MM-DD). */
+  last_diag_at?: string;
 };
 
 export type CounterpartyVehicle = CounterpartyVehicleFields & {
@@ -72,6 +76,8 @@ function rowToVehicle(r: Row): CounterpartyVehicle {
     car_sts_date: String(r.car_sts_date || ''),
     car_sts_number: String(r.car_sts_number || ''),
     car_mileage: String(r.car_mileage || ''),
+    car_generation: String(r.car_generation || ''),
+    last_diag_at: String(r.last_diag_at || ''),
     created_at: String(r.created_at || ''),
     updated_at: String(r.updated_at || ''),
   };
@@ -135,6 +141,8 @@ export function upsertCounterpartyVehicle(
   }
 
   const mil = pick(vehicle.car_mileage);
+  const gen = pick(vehicle.car_generation);
+  const lastDiag = pick(vehicle.last_diag_at);
   const fields = [
     plate,
     vin,
@@ -153,16 +161,18 @@ export function upsertCounterpartyVehicle(
   ];
 
   if (id) {
-    // пробег на авто — последний известный; пустой с заказа не затирает
+    // пробег / поколение / дата диагн. — пустые значения не затирают
     run(
       `UPDATE counterparty_vehicles SET
          car_plate=?, car_vin=?, car_year=?, car_brand=?, car_model=?, car_color=?,
          car_category=?, car_pts=?, car_owner=?, car_owner_street=?, car_owner_house=?,
          car_owner_flat=?, car_sts_date=?, car_sts_number=?,
          car_mileage=CASE WHEN ? = '' THEN car_mileage ELSE ? END,
+         car_generation=CASE WHEN ? = '' THEN IFNULL(car_generation,'') ELSE ? END,
+         last_diag_at=CASE WHEN ? = '' THEN IFNULL(last_diag_at,'') ELSE ? END,
          updated_at=datetime('now')
        WHERE id=? AND counterparty_id=?`,
-      [...fields, mil, mil, id, cpId]
+      [...fields, mil, mil, gen, gen, lastDiag, lastDiag, id, cpId]
     );
   } else {
     id = newGuid();
@@ -171,9 +181,9 @@ export function upsertCounterpartyVehicle(
          id, counterparty_id,
          car_plate, car_vin, car_year, car_brand, car_model, car_color,
          car_category, car_pts, car_owner, car_owner_street, car_owner_house,
-         car_owner_flat, car_sts_date, car_sts_number, car_mileage
-       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, cpId, ...fields, mil]
+         car_owner_flat, car_sts_date, car_sts_number, car_mileage, car_generation, last_diag_at
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, cpId, ...fields, mil, gen, lastDiag]
     );
   }
   const saved = getCounterpartyVehicle(id);
