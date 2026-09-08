@@ -414,21 +414,58 @@ $stats = [
 $createdSample = [];
 $changedSample = [];
 
-if (!$dryRun) {
-    // IMMEDIATE — сразу берём write-lock, меньше «statements in progress»
-    $db->exec('BEGIN IMMEDIATE');
-}
+/** @return bool */
+$execOk = static function (SQLite3 $db, string $sql): bool {
+    for ($i = 0; $i < 8; $i++) {
+        $ok = @$db->exec($sql);
+        if ($ok) {
+            return true;
+        }
+        $err = $db->lastErrorMsg();
+        if (!str_contains($err, 'locked') && !str_contains($err, 'busy')) {
+            sync_log('ERR sql: ' . $err . ' :: ' . $sql);
+            return false;
+        }
+        usleep(200000 * ($i + 1));
+    }
+    sync_log('ERR sql locked: ' . $sql);
+
+    return false;
+};
+
+/** @return bool */
+$stmtOk = static function (SQLite3Stmt $st): bool {
+    for ($i = 0; $i < 8; $i++) {
+        $res = @$st->execute();
+        if ($res instanceof SQLite3Result) {
+            $res->finalize();
+            return true;
+        }
+        // execute may return false
+        usleep(200000 * ($i + 1));
+    }
+
+    return false;
+};
 
 try {
     foreach ($masters as $sku => $m) {
+        if (!$dryRun) {
+            if (!$execOk($db, 'BEGIN IMMEDIATE')) {
+                throw new RuntimeException('BEGIN IMMEDIATE failed for ' . $sku);
+            }
+        }
+
         $skuNs = $sku . '@podveska';
         $getProduct->bindValue(':sku', $sku, SQLITE3_TEXT);
         $getProduct->bindValue(':sku_ns', $skuNs, SQLITE3_TEXT);
         $getProduct->bindValue(':sku2', $sku, SQLITE3_TEXT);
         $getProduct->bindValue(':sku_ns2', $skuNs, SQLITE3_TEXT);
         $res = $getProduct->execute();
-        $prod = $res->fetchArray(SQLITE3_ASSOC);
-        $res->finalize();
+        $prod = $res ? $res->fetchArray(SQLITE3_ASSOC) : false;
+        if ($res) {
+            $res->finalize();
+        }
 
         $createdNow = false;
         if (!$prod) {
@@ -452,7 +489,10 @@ try {
                 $insProduct->bindValue(':array_sku', $crossNew, SQLITE3_TEXT);
                 $insProduct->bindValue(':warehouse_sku', $factNew, SQLITE3_TEXT);
                 $insProduct->bindValue(':install', $installNew);
-                $insProduct->execute();
+                if (!$stmtOk($insProduct)) {
+                    $execOk($db, 'ROLLBACK');
+                    throw new RuntimeException('INSERT product failed: ' . $sku . ' / ' . $db->lastErrorMsg());
+                }
             }
             $prod = [
                 'id' => $pid,
@@ -652,6 +692,9 @@ try {
                     'UTF-8'
                 );
             }
+            if ($qr) {
+                $qr->finalize();
+            }
             sort($have);
             if ($want !== $have) {
                 if (!$dryRun) {
@@ -671,6 +714,7 @@ try {
                         $st->bindValue(':gen', $ar['generation'], SQLITE3_TEXT);
                         $st->bindValue(':years', $ar['years'], SQLITE3_TEXT);
                         $st->execute();
+                        // ensure no open result
                     }
                 }
                 $stats['app']++;
@@ -684,14 +728,17 @@ try {
                 $changedSample[] = $sku;
             }
         }
-    }
 
-    if (!$dryRun) {
-        $db->exec('COMMIT');
+        if (!$dryRun) {
+            if (!$execOk($db, 'COMMIT')) {
+                $execOk($db, 'ROLLBACK');
+                throw new RuntimeException('COMMIT failed for ' . $sku . ': ' . $db->lastErrorMsg());
+            }
+        }
     }
 } catch (Throwable $e) {
     if (!$dryRun) {
-        $db->exec('ROLLBACK');
+        @$db->exec('ROLLBACK');
     }
     sync_log('ERR: ' . $e->getMessage());
     exit(4);
