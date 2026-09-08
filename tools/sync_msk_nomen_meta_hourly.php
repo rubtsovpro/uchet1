@@ -356,7 +356,7 @@ $insProduct = $db->prepare(
         id, sku, name, category_id, unit_id, barcode, is_active, created_at, brand, code, array_sku,
         measurement_unit, item_kind, is_main, source_department, warehouse_sku, install_price
      ) VALUES (
-        :id, :sku, :name, '', '', '', 1, datetime('now'), 'MRAER', :code, :array_sku,
+        :id, :sku, :name, :category_id, :unit_id, '', 1, datetime('now'), 'MRAER', :code, :array_sku,
         'шт', 'product', 1, 'pnevmopodveska_2025', :warehouse_sku, :install
      )"
 );
@@ -364,8 +364,22 @@ $findCat = $db->prepare(
     "SELECT id FROM categories WHERE name = :name COLLATE NOCASE LIMIT 1"
 );
 $insCat = $db->prepare(
-    "INSERT INTO categories (id, name, parent_id) VALUES (:id, :name, '')"
+    "INSERT INTO categories (id, name, parent_id) VALUES (:id, :name, NULL)"
 );
+
+$unitId = (string) $db->querySingle(
+    "SELECT id FROM units WHERE short_name = 'шт' OR name = 'Штука' ORDER BY CASE WHEN short_name = 'шт' THEN 0 ELSE 1 END LIMIT 1"
+);
+if ($unitId === '') {
+    $unitId = (string) $db->querySingle(
+        "SELECT unit_id FROM products WHERE IFNULL(source_department,'') = 'pnevmopodveska_2025' AND IFNULL(unit_id,'') <> '' GROUP BY unit_id ORDER BY COUNT(*) DESC LIMIT 1"
+    );
+}
+if ($unitId === '') {
+    sync_log('ERR: нет units.id для «шт»');
+    exit(6);
+}
+sync_log('unit_id=' . $unitId);
 
 $skuTaken = static function (SQLite3 $db, string $candidate, string $exceptId = '') : bool {
     $sql = "SELECT id FROM products WHERE sku = '" . SQLite3::escapeString($candidate) . "' COLLATE NOCASE";
@@ -485,6 +499,8 @@ try {
                 $insProduct->bindValue(':id', $pid, SQLITE3_TEXT);
                 $insProduct->bindValue(':sku', $storeSku, SQLITE3_TEXT);
                 $insProduct->bindValue(':name', $nameNew, SQLITE3_TEXT);
+                $insProduct->bindValue(':category_id', null, SQLITE3_NULL);
+                $insProduct->bindValue(':unit_id', $unitId, SQLITE3_TEXT);
                 $insProduct->bindValue(':code', $sku, SQLITE3_TEXT);
                 $insProduct->bindValue(':array_sku', $crossNew, SQLITE3_TEXT);
                 $insProduct->bindValue(':warehouse_sku', $factNew, SQLITE3_TEXT);
