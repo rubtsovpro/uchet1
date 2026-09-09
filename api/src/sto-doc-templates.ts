@@ -1254,10 +1254,13 @@ export function contactFieldsFromDeal(
  * ФИО мастера-приёмщика / {{Сотрудник}}.
  * Приоритет: явный staffName (кто скачал/оформил) → ответственный сделки (Amo → staff).
  */
-/** Тех. id, которые нельзя показывать клиенту как «кто». */
+/** Тех. id / ключи API, которые нельзя показывать клиенту как «кто». */
 function isTechActorToken(s: string): boolean {
   const t = String(s || '').trim().toLowerCase();
-  return !t || t === '__admin__' || t === 'система' || t === 'system';
+  if (!t || t === '__admin__' || t === 'система' || t === 'system') return true;
+  if (t.startsWith('apikey:') || t.startsWith('env:')) return true;
+  if (/wms_ingest_key|wms_json_key|wms_bank|bank_sbp_key/.test(t)) return true;
+  return false;
 }
 
 export function resolveStaffDisplayName(raw?: string | null): string {

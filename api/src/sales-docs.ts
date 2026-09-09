@@ -61,6 +61,7 @@ import {
   contactFieldsFromDeal,
   staffFieldsFromDeal,
   handoverFieldsFromDeal,
+  resolveStaffDisplayName,
 } from './sto-doc-templates.js';
 import { parseStoChecklistJson } from './sto-intake-checklist.js';
 import { createDocument, isServiceProduct } from './stock.js';
@@ -118,9 +119,11 @@ export function formatWorkorderVehicleLine(doc: Record<string, unknown> | null |
   };
   const d = doc || {};
   const brandModel = [d.car_brand, d.car_model].map((x) => String(x ?? '').trim()).filter(Boolean).join(' ');
+  // Как бланк FOGEL: марка → гос. номер → год / цвет / пробег → VIN
   return (
-    `Автомобиль: ${blank(brandModel || '', 12)}  гос. номер ${blank(d.car_plate, 8)}  VIN ${blank(d.car_vin, 8)}  ` +
-    `год вып. ${blank(d.car_year, 4)}  цвет ${blank(d.car_color, 6)}  пробег ${blank(d.car_mileage, 6)}`
+    `Автомобиль: ${blank(brandModel || '', 12)}  гос. номер ${blank(d.car_plate, 8)}  ` +
+    `год вып. ${blank(d.car_year, 4)}  цвет ${blank(d.car_color, 6)}  пробег ${blank(d.car_mileage, 6)}  ` +
+    `VIN ${blank(d.car_vin, 8)}`
   );
 }
 
@@ -2694,9 +2697,7 @@ function renderWorkorderHtml(
   <div class="words">Всего по заказ-наряду: ${escHtml(amountInWordsRu(Number(doc.total) || 0))} в т.ч. НДС ${formatRuMoney(Number(doc.vat_amount) || 0)} RUB</div>
 
   <div class="party" style="margin-top:14px;position:relative;min-height:14mm">
-    Мастер _____________________ /${escHtml(
-      String(opts?.staffName || '').trim() || org.master_title || 'Мастер-приемщик'
-    )}/
+    Мастер _____________________ /${escHtml(resolveStaffDisplayName(opts?.staffName) || '')}/
     ${orgSignHtml(org.inn, { heightMm: 12 })}
   </div>
 

@@ -34,6 +34,7 @@ import { buildInvoicePaymentPurpose, renderPaymentQrPng } from './payment-qr.js'
 import {
   isStoContractTemplateId,
   isStoWorkorderTemplateId,
+  resolveStaffDisplayName,
 } from './sto-doc-templates.js';
 import { buildDealStoTemplatePdf } from './sto-pack-pdf.js';
 import type { FacsimileFlags } from './org-stamp.js';
@@ -924,8 +925,7 @@ async function buildWorkorderPdf(
   const printNumber =
     workorderPrintNumber(String(docData.deal_id || ''), String(docData.number || '')) ||
     String(docData.number || '');
-  const masterName =
-    String(opts?.staffName || '').trim() || org.master_title || 'Мастер-приемщик';
+  const masterName = resolveStaffDisplayName(opts?.staffName);
   const phone = String(docData.buyer_phone || '').trim();
   const addr = String(docData.buyer_address || '').trim();
   const sumLines = (arr: Row[]) =>
