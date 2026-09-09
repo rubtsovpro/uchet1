@@ -3700,9 +3700,7 @@ export function warehouseHandoffsForPick(
             IFNULL(wt.name,'') AS warehouse_to_name,
             IFNULL(w.code,'') AS warehouse_from_code,
             IFNULL(wt.code,'') AS warehouse_to_code,
-            IFNULL(d.amount,0) AS amount,
-            (SELECT COUNT(*) FROM stock_doc_lines l WHERE l.doc_id = d.id) AS lines_count,
-            (SELECT IFNULL(SUM(l.qty),0) FROM stock_doc_lines l WHERE l.doc_id = d.id) AS qty_sum
+            IFNULL(d.amount,0) AS amount
      FROM stock_docs d
      LEFT JOIN warehouses w ON w.id = d.warehouse_id
      LEFT JOIN warehouses wt ON wt.id = d.warehouse_to_id
