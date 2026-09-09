@@ -2646,7 +2646,7 @@ function renderWorkorderHtml(
   <div class="party"><b>Плательщик:</b>
     ${escHtml(doc.counterparty_name || '—')}${phone ? `, тел.: ${escHtml(phone)}` : ''}
   </div>
-  <div class="muted" style="text-align:right">в валюте<br/>RUB</div>
+  <div class="muted" style="text-align:right">в валюте<br/>руб</div>
 
   ${
     workLines.length
@@ -2664,7 +2664,7 @@ function renderWorkorderHtml(
     Итого работ: <b>${formatRuMoney(worksTotal)}</b><br/>
     В том числе НДС${vatRate ? ` ${vatRate}%` : ''}: <b>${formatRuMoney(worksVat)}</b>
   </div>
-  <div>Всего оказано Работ ${workLines.length}, на сумму ${formatRuMoney(worksTotal)} RUB</div>
+  <div>Всего оказано Работ ${workLines.length}, на сумму ${formatRuMoney(worksTotal)} руб</div>
   <div class="words">${escHtml(amountInWordsRu(worksTotal))}</div>`
       : ''
   }
@@ -2685,7 +2685,7 @@ function renderWorkorderHtml(
     Итого: <b>${formatRuMoney(goodsTotal)}</b><br/>
     В том числе НДС${vatRate ? ` ${vatRate}%` : ''}: <b>${formatRuMoney(goodsVat)}</b>
   </div>
-  <div>Всего деталей ${goodsLines.length}, на сумму ${formatRuMoney(goodsTotal)} RUB</div>
+  <div>Всего деталей ${goodsLines.length}, на сумму ${formatRuMoney(goodsTotal)} руб</div>
   <div class="words">${escHtml(amountInWordsRu(goodsTotal))}</div>`
       : ''
   }
@@ -2694,7 +2694,7 @@ function renderWorkorderHtml(
     <b>Итого по заказ-наряду : ${formatRuMoney(Number(doc.total) || 0)}</b><br/>
     В том числе НДС: ${formatRuMoney(Number(doc.vat_amount) || 0)}
   </div>
-  <div class="words">Всего по заказ-наряду: ${escHtml(amountInWordsRu(Number(doc.total) || 0))} в т.ч. НДС ${formatRuMoney(Number(doc.vat_amount) || 0)} RUB</div>
+  <div class="words">Всего по заказ-наряду: ${escHtml(amountInWordsRu(Number(doc.total) || 0))} в т.ч. НДС ${formatRuMoney(Number(doc.vat_amount) || 0)} руб</div>
 
   <div class="party" style="margin-top:14px;position:relative;min-height:14mm">
     Мастер ________________________________ /${escHtml(resolveStaffDisplayName(opts?.staffName) || '')}/

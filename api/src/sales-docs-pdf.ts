@@ -964,7 +964,7 @@ async function buildWorkorderPdf(
     doc.text(
       `Плательщик: ${docData.counterparty_name || '—'}${phone ? `, тел.: ${phone}` : ''}`
     );
-    doc.fillColor('#555').text('в валюте RUB', { align: 'right' }).fillColor('#000');
+    doc.fillColor('#555').text('в валюте руб', { align: 'right' }).fillColor('#000');
     doc.moveDown(0.4);
 
     const contentW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
@@ -1002,7 +1002,7 @@ async function buildWorkorderPdf(
       doc
         .font('DejaVu')
         .fontSize(9)
-        .text(`Всего оказано Работ ${workLines.length}, на сумму ${formatRuMoney(wt)} RUB`);
+        .text(`Всего оказано Работ ${workLines.length}, на сумму ${formatRuMoney(wt)} руб`);
       doc.font('DejaVuBold').fontSize(9).text(amountInWordsRu(wt));
       doc.moveDown(0.4);
     }
@@ -1036,7 +1036,7 @@ async function buildWorkorderPdf(
       doc
         .font('DejaVu')
         .fontSize(9)
-        .text(`Всего деталей ${goodsLines.length}, на сумму ${formatRuMoney(gt)} RUB`);
+        .text(`Всего деталей ${goodsLines.length}, на сумму ${formatRuMoney(gt)} руб`);
       doc.font('DejaVuBold').fontSize(9).text(amountInWordsRu(gt));
       doc.moveDown(0.3);
     }
@@ -1058,7 +1058,7 @@ async function buildWorkorderPdf(
       .text(
         `Всего по заказ-наряду: ${amountInWordsRu(Number(docData.total) || 0)} в т.ч. НДС ${formatRuMoney(
           Number(docData.vat_amount) || 0
-        )} RUB`
+        )} руб`
       );
     doc.moveDown(0.8);
     const masterY = doc.y;
