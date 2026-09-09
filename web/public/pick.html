@@ -2694,7 +2694,7 @@
     </section>
 
     <section class="panel" id="open-panel">
-      <h2>Очередь · производство</h2>
+      <h2>На производство · переделка</h2>
       <div id="groups">Загрузка…</div>
     </section>
   </div>
@@ -5054,14 +5054,21 @@
         }
       }
 
-      await cellsPromise;
+      // Карточки уже в DOM — не ждём карту ячеек (иначе handoffs залипают на «Загрузка…»).
       prodCardsBound = false;
       bindProductionCardActions(root);
       bindProductionCardLookups(root);
+      void cellsPromise.then(() => {
+        if (!document.getElementById('prod-cards')) return;
+        prodCardsBound = false;
+        bindProductionCardActions(root);
+        bindProductionCardLookups(root);
+      });
 
       if (!toEnrich.length) return;
 
-      await Promise.all(
+      // Enrich в фоне — иначе /pick висит, пока handoffs ждут renderGroups.
+      void Promise.all(
         toEnrich.map(async (item) => {
           try {
             const full = await enrichProductionCard(item.t0);
@@ -5094,11 +5101,12 @@
             });
           } catch (_) {}
         })
-      );
-
-      prodCardsBound = false;
-      bindProductionCardActions(root);
-      bindProductionCardLookups(root);
+      ).then(() => {
+        if (!document.getElementById('prod-cards')) return;
+        prodCardsBound = false;
+        bindProductionCardActions(root);
+        bindProductionCardLookups(root);
+      });
     }
 
     async function renderGroups() {
@@ -5322,10 +5330,25 @@
         showErr('Недостаточно прав для экрана сборки. Откройте доступ «/pick» в Персонал → матрица доступов.');
         return;
       }
-      const [data, jobsRes] = await Promise.all([
-        api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)),
-        api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
-      ]);
+      let data;
+      let jobsRes = { items: [] };
+      try {
+        [data, jobsRes] = await Promise.all([
+          api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)),
+          api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
+        ]);
+      } catch (e) {
+        showErr((e && e.message) || 'Не удалось загрузить очередь');
+        const g = document.getElementById('groups');
+        const h = document.getElementById('handoffs-list');
+        if (g && /Загрузка/.test(g.textContent || '')) {
+          g.innerHTML = '<div class="muted">Не удалось загрузить производство.</div>';
+        }
+        if (h && /Загрузка/.test(h.textContent || '')) {
+          h.innerHTML = '<p class="handoffs-empty">Не удалось загрузить расходные.</p>';
+        }
+        return;
+      }
       board = data;
       prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
       handoffs = Array.isArray(data.handoffs)
@@ -5366,16 +5389,7 @@
       if (selectedId && !stillOpen) {
         selectedId = null;
       }
-      const pickerOnly = !!(me && me.picker_only);
-      const keepDetail =
-        stillOpen &&
-        !!document.querySelector('.row.open .detail[data-loaded="1"]');
-      if (keepDetail && handoffTab === 'active') {
-        // Не трогаем DOM детали / инпуты — только шапка очереди.
-        patchOpenBoardMeta();
-      } else if (handoffTab === 'active') {
-        await renderGroups();
-      }
+      // Расходные сразу — не ждать карточки производства
       renderHandoffPager();
       if (!returnCellBusy()) {
         renderStockReturns();
@@ -5392,6 +5406,24 @@
         } else {
           renderHandoffs();
           enrichHandoffsCdek();
+        }
+      }
+      const pickerOnly = !!(me && me.picker_only);
+      const keepDetail =
+        stillOpen &&
+        !!document.querySelector('.row.open .detail[data-loaded="1"]');
+      if (keepDetail && handoffTab === 'active') {
+        // Не трогаем DOM детали / инпуты — только шапка очереди.
+        patchOpenBoardMeta();
+      } else if (handoffTab === 'active') {
+        try {
+          await renderGroups();
+        } catch (e) {
+          showErr((e && e.message) || 'Ошибка очереди производства');
+          const g = document.getElementById('groups');
+          if (g && /Загрузка/.test(g.textContent || '')) {
+            g.innerHTML = '<div class="muted">Не удалось показать производство.</div>';
+          }
         }
       }
       renderDoneList();
