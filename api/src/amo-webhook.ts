@@ -130,6 +130,9 @@ function collectIdsFromFlatForm(rec: Record<string, unknown>, out: string[]): vo
   }
 }
 
+/** CF «Филиал» в Amo — приходит в хуке как custom_fields[]. */
+export const AMO_WEBHOOK_CF_BRANCH = '855167';
+
 /** Одна сделка из тела хука Amo (form-urlencoded). */
 export type AmoWebhookDealPatch = {
   id: string;
@@ -138,6 +141,8 @@ export type AmoWebhookDealPatch = {
   name?: string;
   price?: number;
   responsible_user_id?: string;
+  /** CF 855167 «Филиал» из тела хука */
+  amo_branch?: string;
   /** add | update | status */
   event?: string;
 };
@@ -145,7 +150,20 @@ export type AmoWebhookDealPatch = {
 const WEBHOOK_DEAL_KEY =
   /^leads(?:\[update\]|\[status\]|\[add\])\[(\d+)\]\[([^\]]+)\]$/i;
 
-/** Разобрать поля сделок из хука: `leads[update][0][status_id]=142`. */
+/** `leads[update][0][custom_fields][2][id]=855167` */
+const WEBHOOK_CF_ID_KEY =
+  /^leads(?:\[update\]|\[status\]|\[add\])\[(\d+)\]\[custom_fields\]\[(\d+)\]\[id\]$/i;
+/** `leads[update][0][custom_fields][2][values][0][value]=Москва…` */
+const WEBHOOK_CF_VAL_KEY =
+  /^leads(?:\[update\]|\[status\]|\[add\])\[(\d+)\]\[custom_fields\]\[(\d+)\]\[values\]\[\d+\]\[(?:value|enum)\]$/i;
+
+function webhookEventFromKey(key: string): 'add' | 'status' | 'update' {
+  if (key.includes('[add]')) return 'add';
+  if (key.includes('[status]')) return 'status';
+  return 'update';
+}
+
+/** Разобрать поля сделок из хука: `leads[update][0][status_id]=142` + CF филиала. */
 export function parseAmoWebhookDeals(
   body: unknown,
   formKeys: string[] = []
@@ -156,25 +174,66 @@ export function parseAmoWebhookDeals(
       : {};
   const keys = formKeys.length ? formKeys : Object.keys(rec);
   const bySlot = new Map<string, AmoWebhookDealPatch>();
+  /** slot → cfIndex → { id, value } */
+  const cfBySlot = new Map<string, Map<string, { id?: string; value?: string }>>();
+
+  const ensureRow = (event: string, slot: string): AmoWebhookDealPatch => {
+    const rowKey = `${event}:${slot}`;
+    let row = bySlot.get(rowKey);
+    if (!row) {
+      row = { id: '', event: event as AmoWebhookDealPatch['event'] };
+      bySlot.set(rowKey, row);
+    }
+    return row;
+  };
+
+  const ensureCf = (event: string, slot: string, cfIdx: string) => {
+    const mapKey = `${event}:${slot}`;
+    let map = cfBySlot.get(mapKey);
+    if (!map) {
+      map = new Map();
+      cfBySlot.set(mapKey, map);
+    }
+    let cell = map.get(cfIdx);
+    if (!cell) {
+      cell = {};
+      map.set(cfIdx, cell);
+    }
+    return cell;
+  };
 
   for (const key of keys) {
+    const cfIdM = key.match(WEBHOOK_CF_ID_KEY);
+    if (cfIdM) {
+      const event = webhookEventFromKey(key);
+      const raw = rec[key];
+      const val = raw == null ? '' : String(raw).trim();
+      ensureRow(event, cfIdM[1]);
+      ensureCf(event, cfIdM[1], cfIdM[2]).id = val.replace(/\D/g, '') || val;
+      continue;
+    }
+    const cfValM = key.match(WEBHOOK_CF_VAL_KEY);
+    if (cfValM) {
+      const event = webhookEventFromKey(key);
+      const raw = rec[key];
+      const val = raw == null ? '' : String(raw).trim();
+      if (val) {
+        ensureRow(event, cfValM[1]);
+        const cell = ensureCf(event, cfValM[1], cfValM[2]);
+        if (!cell.value) cell.value = val;
+      }
+      continue;
+    }
+
     const m = key.match(WEBHOOK_DEAL_KEY);
     if (!m) continue;
     const slot = m[1];
     const field = String(m[2] || '').toLowerCase();
+    if (field === 'custom_fields') continue;
     const raw = rec[key];
     const val = raw == null ? '' : String(raw).trim();
-    const event = key.includes('[add]')
-      ? 'add'
-      : key.includes('[status]')
-        ? 'status'
-        : 'update';
-    const rowKey = `${event}:${slot}`;
-    let row = bySlot.get(rowKey);
-    if (!row) {
-      row = { id: '', event };
-      bySlot.set(rowKey, row);
-    }
+    const event = webhookEventFromKey(key);
+    const row = ensureRow(event, slot);
     if (field === 'id') row.id = val.replace(/\D/g, '');
     else if (field === 'status_id') row.status_id = val.replace(/\D/g, '');
     else if (field === 'pipeline_id') row.pipeline_id = val.replace(/\D/g, '');
@@ -182,6 +241,19 @@ export function parseAmoWebhookDeals(
     else if (field === 'price') row.price = Number(val.replace(/[^\d.-]/g, '')) || 0;
     else if (field === 'responsible_user_id') {
       row.responsible_user_id = val.replace(/\D/g, '');
+    }
+  }
+
+  for (const [mapKey, cfMap] of cfBySlot) {
+    const row = bySlot.get(mapKey);
+    if (!row) continue;
+    for (const cell of cfMap.values()) {
+      const fid = String(cell.id || '').trim();
+      const fval = String(cell.value || '').trim();
+      if (fid === AMO_WEBHOOK_CF_BRANCH && fval) {
+        row.amo_branch = fval;
+        break;
+      }
     }
   }
 
@@ -202,6 +274,7 @@ export function parseAmoWebhookDeals(
       name: row.name || prev.name,
       price: row.price != null && row.price > 0 ? row.price : prev.price,
       responsible_user_id: row.responsible_user_id || prev.responsible_user_id,
+      amo_branch: row.amo_branch || prev.amo_branch,
     });
   }
   return [...merged.values()];

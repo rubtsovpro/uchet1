@@ -31,6 +31,7 @@ import { enqueueSyncDealFromAmo1c } from './sync-deal-queue.js';
 import { looksLikeAmoNameCityLabel, looksLikePersonFio } from './person-fio.js';
 import { amoSaleFieldOptions, checkAmoSaleConfigDrift, syncAmoUnmappedStaffAlerts } from './amo-sale-config.js';
 import { persistAmoClientComplaint } from './amo-client-complaint.js';
+import { persistAmoBranch } from './amo-deal-branch.js';
 import { getOrganization, resolveOrganizationForCompany, resolveOrganizationId } from './organizations.js';
 import { stsMediaInfo } from './sts-media.js';
 import { resolveCounterpartyIdForDeal } from './counterparty-vehicles.js';
@@ -1713,6 +1714,7 @@ export function applyAmoDealWebhookPatches(
     name?: string;
     price?: number;
     responsible_user_id?: string;
+    amo_branch?: string;
     event?: string;
   }>
 ): string[] {
@@ -1774,6 +1776,15 @@ export function applyAmoDealWebhookPatches(
         WHEN IFNULL(responsible_user_id,'') IN ('', '0') THEN ?
         ELSE responsible_user_id END`);
       params.push(resp);
+    }
+    // Филиал (CF 855167) из тела хука — иначе «От кого» / контур остаются старыми.
+    const branch = String(p.amo_branch || '').trim();
+    if (branch) {
+      try {
+        persistAmoBranch(id, branch);
+      } catch {
+        /* колонка / meta могут отсутствовать на старом процессе */
+      }
     }
     if (!sets.length) continue;
     sets.push("updated_at = datetime('now')", "synced_at = datetime('now')");
