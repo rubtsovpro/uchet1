@@ -25,6 +25,7 @@ import { createTaskFromStoParts, getTask, setTaskStatus, dealIsPaid } from './wa
 import { executeStoPartsFromTask } from './sto-parts-execute.js';
 import { logStoTransferEvent } from './deal-doc-numbers.js';
 import { writeOffCourierOnDelivered } from './deal-stock-flow.js';
+import { enqueueCourierShipmentSheetAppend } from './courier-shipments-sheet.js';
 
 export type StoPartsSource = 'warehouse' | 'market' | 'courier' | 'nonpneumo' | 'pneumo';
 
@@ -1247,6 +1248,8 @@ export function setCourierRunStatus(input: {
           reason: e instanceof Error ? e.message : 'writeoff failed',
         };
       }
+      // Реестр «отправки Склад»: обычная строка (не оранжевая); столбец I не трогаем.
+      enqueueCourierShipmentSheetAppend(dealId);
     }
   }
 
