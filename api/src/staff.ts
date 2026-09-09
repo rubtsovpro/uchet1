@@ -221,7 +221,7 @@ const ROLE_DEFAULTS: Record<StaffRole, StaffRights> = {
   }),
   warehouse: withCompanyIds(
     {
-      sections: ['home', 'warehouse', 'pick', 'photo', 'chats', 'help'],
+      sections: ['home', 'warehouse', 'pick', 'production', 'photo', 'chats', 'help'],
       can_sync: false,
       can_edit_products: false,
       can_edit_prices: false,

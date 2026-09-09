@@ -5322,8 +5322,12 @@
         showErr('Недостаточно прав для экрана сборки. Откройте доступ «/pick» в Персонал → матрица доступов.');
         return;
       }
-      const data = await api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite));
+      const [data, jobsRes] = await Promise.all([
+        api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)),
+        api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
+      ]);
       board = data;
+      prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
       handoffs = Array.isArray(data.handoffs)
         ? data.handoffs
         : (await api('/warehouse/pick/handoffs?site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] }))).items || [];

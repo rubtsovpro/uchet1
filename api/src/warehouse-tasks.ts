@@ -1893,7 +1893,10 @@ export function dealAllowedForPickActor(dealId: string, actor: PickActor | null 
   const allowed = actorPickCompanyIds(actor);
   if (!allowed?.length) return true;
   const orgId = dealOrgCompanyId(dealId);
-  return orgId ? allowed.includes(orgId) : false;
+  // Без юрлица не скрываем: иначе склад не видит производство/переделку из виджета
+  // (сделка ещё без org_company_id), плашки внизу /pick пропадают.
+  if (!orgId) return true;
+  return allowed.includes(orgId);
 }
 
 export function resolvePickSiteQuery(

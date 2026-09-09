@@ -1044,6 +1044,11 @@ api.use('*', async (c, next) => {
       if (!canAccessReceptionScreen(actor)) {
         return c.json({ error: 'Недостаточно прав: экран приёмщика' }, 403);
       }
+    } else if (section === 'production') {
+      // Склад на /pick должен видеть/закрывать производство (jobs API).
+      if (!canAccessSection(actor, 'production') && !canAccessSection(actor, 'pick')) {
+        return c.json({ error: 'Недостаточно прав: производство' }, 403);
+      }
     } else if (!canAccessSection(actor, section)) {
       return c.json({ error: `Недостаточно прав: раздел` }, 403);
     }
