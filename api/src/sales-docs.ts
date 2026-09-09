@@ -41,7 +41,6 @@ import {
   resolvePersonDocFio,
 } from './person-fio.js';
 import { getLatestPdnSignForDeal } from './pdn-sms-sign.js';
-import { warrantyObligationsHtml } from './warranty-settings.js';
 import {
   CONTRACT_TEMPLATE_ID,
   renderSaleContractHtml,
@@ -55,12 +54,9 @@ import {
   renderStoTemplateHtml,
   suggestContractTemplateId,
   suggestStoContractTemplateId,
-  suggestStoWorkorderTemplateId,
   splitStoWorkPartLines,
   STO_CONTRACT_PERSON,
   isStoLegalContractTemplateId,
-  STO_WORKORDER_LEGAL,
-  STO_WORKORDER_PERSON,
   paymentFieldsFromDeal,
   contactFieldsFromDeal,
   staffFieldsFromDeal,
@@ -346,26 +342,27 @@ export function ensureWorkorderCarPlate(docId: string): boolean {
  * Подогнать template_id ЗН под тип покупателя (03ф / 03ю).
  * Если заказ стал юр, а ЗН ещё со старым физ-бланком — печатаем уже 03ю.
  */
+/**
+ * Коммерческий заказ-наряд = бланк FOGEL / 1С (работы + расходная), не оферта СТО.
+ * Оферта person/legal — только пакет «Шаблоны СТО», не подмена печати ЗН из документов.
+ */
 export function ensureWorkorderTemplateId(docId: string): string {
   const id = String(docId || '').trim();
   if (!id) return '';
-  const row = get<{ doc_type?: string; template_id?: string; deal_id?: string }>(
-    `SELECT doc_type, IFNULL(template_id,'') AS template_id, IFNULL(deal_id,'') AS deal_id
-     FROM sales_docs WHERE id = ?`,
+  const row = get<{ doc_type?: string; template_id?: string }>(
+    `SELECT doc_type, IFNULL(template_id,'') AS template_id FROM sales_docs WHERE id = ?`,
     [id]
   );
   if (!row || String(row.doc_type || '') !== 'workorder') {
     return String(row?.template_id || '').trim();
   }
-  const dealId = String(row.deal_id || '').trim();
-  const deal = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
-  const want = suggestStoWorkorderTemplateId(deal);
   const cur = String(row.template_id || '').trim();
-  if (want && want !== cur) {
-    run(`UPDATE sales_docs SET template_id = ? WHERE id = ?`, [want, id]);
-    return want;
+  // Раньше сюда писали sto-workorder-* → уходил длинный договор-оферта вместо бланка FOGEL.
+  if (isStoWorkorderTemplateId(cur)) {
+    run(`UPDATE sales_docs SET template_id = '' WHERE id = ?`, [id]);
+    return '';
   }
-  return cur || want || STO_WORKORDER_PERSON;
+  return cur;
 }
 
 export type ContractBuyerFields = {
@@ -2089,10 +2086,8 @@ export function createSalesDocFromDeal(input: {
   const carStsNumber = String(deal.car_sts_number || '').trim();
 
   // ЗН можно создать без гос. номера — сначала заполняют авто на карточке, потом PDF.
-  const workorderTemplateId =
-    input.docType === 'workorder'
-      ? suggestStoWorkorderTemplateId(deal as Record<string, unknown>)
-      : '';
+  // template_id пустой = коммерческий бланк FOGEL (Excel 1С); оферта СТО — только sto-pack.
+  const workorderTemplateId = '';
 
   run('BEGIN');
   try {
@@ -2633,25 +2628,22 @@ function renderWorkorderHtml(
     )
     .join('');
 
+  const phone = String(doc.buyer_phone || '').trim();
+  const addr = String(doc.buyer_address || '').trim();
   const body = `
   <div class="party"><b>ПОСТАВЩИК:</b><br/>
-    ${escHtml(org.name)},<br/>
-    ИНН ${escHtml(org.inn)}, ${escHtml(org.address)}
+    ${escHtml(org.name)},&nbsp; ИНН ${escHtml(org.inn)},&nbsp; ${escHtml(org.address)}
   </div>
   <h1>Заказ-наряд № ${escHtml(doc.number)} от ${escHtml(dateRu)}</h1>
   <div class="party"><b>Заказчик:</b> ${escHtml(doc.counterparty_name || '—')}
-    ${doc.buyer_address ? ` &nbsp; ${escHtml(doc.buyer_address)}` : ''}
+    &nbsp; адрес заказчика : ${escHtml(addr || '—')}
+    &nbsp; телефоны: ${escHtml(phone || '—')}
   </div>
   <div class="party">${escHtml(formatWorkorderVehicleLine(doc))}</div>
-  <div class="party"><b>Плательщик:</b> ${escHtml(doc.counterparty_name || '—')}${
-    doc.buyer_address ? `, ${escHtml(doc.buyer_address)}` : ''
-  }</div>
-  ${
-    doc.deal_id
-      ? `<div class="party"><b>Основание:</b> Заказ покупателя № ${escHtml(doc.deal_id)}</div>`
-      : ''
-  }
-  <div class="muted">в валюте RUB</div>
+  <div class="party"><b>Плательщик:</b>
+    ${escHtml(doc.counterparty_name || '—')}${phone ? `, тел.: ${escHtml(phone)}` : ''}
+  </div>
+  <div class="muted" style="text-align:right">в валюте<br/>RUB</div>
 
   ${
     workLines.length
@@ -2687,7 +2679,7 @@ function renderWorkorderHtml(
     <tbody>${goodsRows}</tbody>
   </table>
   <div class="totals">
-    Итого товаров: <b>${formatRuMoney(goodsTotal)}</b><br/>
+    Итого: <b>${formatRuMoney(goodsTotal)}</b><br/>
     В том числе НДС${vatRate ? ` ${vatRate}%` : ''}: <b>${formatRuMoney(goodsVat)}</b>
   </div>
   <div>Всего деталей ${goodsLines.length}, на сумму ${formatRuMoney(goodsTotal)} RUB</div>
@@ -2702,48 +2694,53 @@ function renderWorkorderHtml(
   <div class="words">Всего по заказ-наряду: ${escHtml(amountInWordsRu(Number(doc.total) || 0))} в т.ч. НДС ${formatRuMoney(Number(doc.vat_amount) || 0)} RUB</div>
 
   <div class="party" style="margin-top:14px;position:relative;min-height:14mm">
-    Мастер _____________________ /${escHtml(org.master_title || 'Мастер-приемщик')}/
+    Мастер _____________________ /${escHtml(
+      String(opts?.staffName || '').trim() || org.master_title || 'Мастер-приемщик'
+    )}/
     ${orgSignHtml(org.inn, { heightMm: 12 })}
   </div>
 
   <div class="warranty">
-    ${warrantyObligationsHtml(escHtml, org.inn)}
+    <b>Гарантии:</b><br/>
+    <b>Гарантийные обязательства сторон:</b>
+    <ol>
+      <li>Гарантийный ремонт проводится при предъявлении оборудования в восстановленное Fogel.</li>
+      <li>Доставка оборудования, подлежащего гарантийному ремонту, в сервисную службу осуществляется клиентом самостоятельно и за свой счет, если иное не оговорено.</li>
+      <li>Гарантийные обязательства не распространяются на материалы и детали, считающиеся расходуемыми в процессе эксплуатации.</li>
+      <li>Исполнитель при наступлении гарантийного случая в срок не более 5-ти рабочих дней устраняет неисправности.</li>
+      <li>Гарантийный срок на пневмоэлемент составляет 24 месяца, амортизатор 12 месяцев.</li>
+      <li>Гарантийный срок на компрессор составляет 12 месяцев.</li>
+      <li>Гарантийный срок на рулевую рейку составляет 24 месяца.</li>
+      <li>Гарантийный срок на электрическую рулевую рейку составляет 6 месяцев. Гарантия распространяется исключительно на проделанные работы.</li>
+    </ol>
     <b>Условия прерывания гарантийных обязательств:</b>
+    <div>Гарантийные обязательства могут быть прерваны в следующих случаях:</div>
     <ol>
       <li>Несоответствие серийного номера предъявляемого на гарантийное обслуживание оборудования серийному номеру, указанному в товарном счете или других письменных соглашениях.</li>
       <li>Наличие явных или скрытых механических повреждений оборудования, вызванных нарушением правил транспортировки, хранения или эксплуатации.</li>
-      <li>Выявленное в процессе ремонта несоответствие Правилам и условиям эксплуатации.</li>
+      <li>Выявленное в процессе ремонта несоответствие Правилам и условиям эксплуатации, предъявляемым к оборудованию данного типа.</li>
       <li>Повреждение контрольных этикеток и пломб (если таковые имеются).</li>
-      <li>Наличие внутри корпуса оборудования посторонних предметов.</li>
+      <li>Наличие внутри корпуса оборудования посторонних предметов, независимо от их природы, если возможность подобного не оговорена в технической документации и Инструкциях по эксплуатации.</li>
       <li>Отказ оборудования, вызванный воздействием факторов непреодолимой силы или действиями третьих лиц.</li>
       <li>На пневмоэлемент не распространяются гарантийные обязательства, если на нём есть следы масла либо других агрессивных жидкостей.</li>
       <li>Отказ оборудования, вызванный неисправностью автомобиля (утечка пневмосистемы, замыкание реле и т.п.).</li>
-      <li>Обнаружение в системе рулевого управления посторонних примесей, воды, металлической стружки и т.п.</li>
+      <li>Обнаружение в системе рулевого управления посторонних примесей, воды, металлической стружки и т.п. Механические и другие воздействия на рулевую рейку вследствие неправильной эксплуатации. Повреждение, нарушение герметичности пыльников рулевых тяг.</li>
     </ol>
+    <b>Рекомендации:</b>
+    <div style="min-height:12mm;border-bottom:1px solid #ccc;margin:4px 0 10px"></div>
   </div>
   <div class="sign">
+    <div>
+      Заказчик ______________________ /${escHtml(doc.counterparty_name || '')}/
+    </div>
     <div class="sign-with-stamp">
-      Принят: ${escHtml(dateShort)}<br/>
-      Исполнитель ______________________ /${escHtml(org.short_name || org.director || '')}/
+      Дата: ${escHtml(dateShort)} г.<br/>
       ${orgSignHtml(org.inn, { heightMm: 12 })}
       ${orgStampHtml(org.inn, { sizeMm: 38 })}
-      <div class="muted" style="margin-top:4px">М.П. (при наличии)</div>
     </div>
-    <div>
-      Дата: ${escHtml(dateShort)} г.<br/>
-      Заказчик ______________________ /${escHtml(doc.counterparty_name || '')}/<br/>
-      Заказ-наряд № ${escHtml(doc.number)} от ${escHtml(dateShort)} г.
-      ${
-        isStoWorkorderTemplateId(String((doc as { template_id?: string }).template_id || ''))
-          ? `<div class="muted" style="margin-top:8px">Форма: ${
-              String((doc as { template_id?: string }).template_id) === STO_WORKORDER_LEGAL
-                ? 'заказ-наряд для юрлица / ИП'
-                : 'заказ-наряд для физлица'
-            }. Полный бланк — Документы → Шаблоны СТО.</div>`
-          : ''
-      }
-    </div>
-  </div>`;
+  </div>
+  <div class="party" style="margin-top:10px"><b>Причина обращения:</b></div>
+  <div style="min-height:14mm;border-bottom:1px solid #ccc"></div>`;
   return printShell(`Заказ-наряд № ${doc.number}`, body, org.inn);
 }
 

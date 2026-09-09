@@ -905,7 +905,7 @@ async function buildUpdPdf(docData: DocFull, titlePrefix = 'УПД'): Promise<Bu
 
 async function buildWorkorderPdf(
   docData: DocFull,
-  _opts?: { staffName?: string }
+  opts?: { staffName?: string }
 ): Promise<Buffer> {
   const org = docData.org;
   const allLines = docData.lines || [];
@@ -924,6 +924,10 @@ async function buildWorkorderPdf(
   const printNumber =
     workorderPrintNumber(String(docData.deal_id || ''), String(docData.number || '')) ||
     String(docData.number || '');
+  const masterName =
+    String(opts?.staffName || '').trim() || org.master_title || 'Мастер-приемщик';
+  const phone = String(docData.buyer_phone || '').trim();
+  const addr = String(docData.buyer_address || '').trim();
   const sumLines = (arr: Row[]) =>
     arr.reduce((s, l) => s + (Number(l.amount) || 0) + (Number(l.vat_amount) || 0), 0);
   const vatLines = (arr: Row[]) => arr.reduce((s, l) => s + (Number(l.vat_amount) || 0), 0);
@@ -943,15 +947,8 @@ async function buildWorkorderPdf(
     doc.registerFont('DejaVuBold', findFont('DejaVuSans-Bold.ttf'));
 
     drawOrgLogoPdf(doc, { width: 160, height: 23, gapBelow: 10, orgInn: org.inn });
-    doc.font('DejaVuBold').fontSize(9).text('ИСПОЛНИТЕЛЬ (ПОСТАВЩИК):');
-    doc.font('DejaVu').fontSize(9).text(`${org.name}`);
-    doc.text(
-      `ИНН ${org.inn}${org.kpp ? `, КПП ${org.kpp}` : ''}${org.ogrnip ? `, ОГРНИП ${org.ogrnip}` : ''}`
-    );
-    doc.text(org.address || '');
-    if (org.phone) {
-      doc.text(`тел. ${org.phone}`);
-    }
+    doc.font('DejaVuBold').fontSize(9).text('ПОСТАВЩИК:');
+    doc.font('DejaVu').fontSize(9).text(`${org.name},  ИНН ${org.inn},  ${org.address || ''}`);
     doc.moveDown(0.45);
     doc
       .font('DejaVuBold')
@@ -959,16 +956,15 @@ async function buildWorkorderPdf(
       .text(`Заказ-наряд № ${printNumber} от ${dateRu}`);
     doc.font('DejaVu').fontSize(9);
     doc.text(
-      `Заказчик: ${docData.counterparty_name || '—'}${
-        docData.counterparty_inn ? `, ИНН ${docData.counterparty_inn}` : ''
-      }${docData.buyer_address ? `, ${docData.buyer_address}` : ''}`
+      `Заказчик: ${docData.counterparty_name || '—'}  адрес заказчика : ${addr || '—'}  телефоны: ${
+        phone || '—'
+      }`
     );
     doc.text(formatWorkorderVehicleLine(docData as Record<string, unknown>));
-    doc.text(`Плательщик: ${docData.counterparty_name || '—'}`);
-    if (docData.deal_id) {
-      doc.text(`Основание: Заказ покупателя № ${docData.deal_id}`);
-    }
-    doc.fillColor('#555').text('Валюта: российский рубль (RUB)').fillColor('#000');
+    doc.text(
+      `Плательщик: ${docData.counterparty_name || '—'}${phone ? `, тел.: ${phone}` : ''}`
+    );
+    doc.fillColor('#555').text('в валюте RUB', { align: 'right' }).fillColor('#000');
     doc.moveDown(0.4);
 
     const contentW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
@@ -984,7 +980,7 @@ async function buildWorkorderPdf(
         .text(`Выполненные работы по заказ-наряду № ${printNumber} от ${dateShort} г.`);
       drawTable(
         doc,
-        ['№', 'Наименование работ', 'Кол.', 'Н/ч', 'Цена', 'Сумма'],
+        ['№', 'Наименование, артикул работ', 'Кол. оп.', 'Норма н/ч', 'Цена н/ч', 'Сумма'],
         scaleCols([22, 250, 40, 40, 60, 65]),
         workLines.map((l, i) => [
           String(i + 1),
@@ -999,10 +995,14 @@ async function buildWorkorderPdf(
       writeRightLine(doc, `Итого работ: ${formatRuMoney(wt)}`, { size: 9 });
       writeRightLine(
         doc,
-        `В том числе НДС ${vatRate}%: ${formatRuMoney(vatLines(workLines))}`,
+        `В том числе НДС${vatRate ? ` ${vatRate}%` : ''}: ${formatRuMoney(vatLines(workLines))}`,
         { size: 9 }
       );
       resetLeft(doc);
+      doc
+        .font('DejaVu')
+        .fontSize(9)
+        .text(`Всего оказано Работ ${workLines.length}, на сумму ${formatRuMoney(wt)} RUB`);
       doc.font('DejaVuBold').fontSize(9).text(amountInWordsRu(wt));
       doc.moveDown(0.4);
     }
@@ -1014,7 +1014,7 @@ async function buildWorkorderPdf(
         .text(formatWorkorderOutHeading(docData as Record<string, unknown>, dateShort));
       drawTable(
         doc,
-        ['№', 'Наименование, артикул товаров', 'Кол-во', 'Ед.', 'Цена', 'Сумма'],
+        ['№', 'Наименование, характеристика, артикул товаров', 'Кол-во', 'Ед.изм.', 'Цена', 'Сумма'],
         scaleCols([22, 250, 45, 30, 60, 65]),
         goodsLines.map((l, i) => [
           String(i + 1),
@@ -1026,19 +1026,24 @@ async function buildWorkorderPdf(
         ])
       );
       const gt = sumLines(goodsLines);
-      writeRightLine(doc, `Итого товаров: ${formatRuMoney(gt)}`, { size: 9 });
+      writeRightLine(doc, `Итого: ${formatRuMoney(gt)}`, { size: 9 });
       writeRightLine(
         doc,
-        `В том числе НДС ${vatRate}%: ${formatRuMoney(vatLines(goodsLines))}`,
+        `В том числе НДС${vatRate ? ` ${vatRate}%` : ''}: ${formatRuMoney(vatLines(goodsLines))}`,
         { size: 9 }
       );
       resetLeft(doc);
+      doc
+        .font('DejaVu')
+        .fontSize(9)
+        .text(`Всего деталей ${goodsLines.length}, на сумму ${formatRuMoney(gt)} RUB`);
+      doc.font('DejaVuBold').fontSize(9).text(amountInWordsRu(gt));
       doc.moveDown(0.3);
     }
 
     writeRightLine(
       doc,
-      `Итого по заказ-наряду: ${formatRuMoney(Number(docData.total) || 0)}`,
+      `Итого по заказ-наряду : ${formatRuMoney(Number(docData.total) || 0)}`,
       { bold: true, size: 11 }
     );
     writeRightLine(
@@ -1047,13 +1052,17 @@ async function buildWorkorderPdf(
       { size: 9 }
     );
     resetLeft(doc);
-    doc.font('DejaVuBold').fontSize(9).text(amountInWordsRu(Number(docData.total) || 0));
+    doc
+      .font('DejaVuBold')
+      .fontSize(9)
+      .text(
+        `Всего по заказ-наряду: ${amountInWordsRu(Number(docData.total) || 0)} в т.ч. НДС ${formatRuMoney(
+          Number(docData.vat_amount) || 0
+        )} RUB`
+      );
     doc.moveDown(0.8);
     const masterY = doc.y;
-    doc
-      .font('DejaVu')
-      .fontSize(10)
-      .text(`Мастер ____________________ / ${org.master_title || 'Мастер-приемщик'} /`);
+    doc.font('DejaVu').fontSize(10).text(`Мастер ____________________ / ${masterName} /`);
     drawOrgSignPdf(doc, org.inn, {
       x: doc.page.margins.left + 48,
       y: masterY - 6,
@@ -1061,36 +1070,56 @@ async function buildWorkorderPdf(
       height: 32,
     });
     doc.moveDown(0.85);
-    doc.font('DejaVuBold').fontSize(9).text('Гарантийные обязательства сторон:');
-    doc.font('DejaVu').fontSize(7.5);
-    doc.text(
-      '1. Гарантийный ремонт при предъявлении талона MRAER. 2. Доставка в сервис — силами клиента. 3. Расходные материалы не гарантируются. 4. Устранение неисправности до 5 рабочих дней. 5. Пневмоэлемент 24 мес., амортизатор/компрессор/рейка 12 мес., электрорейка 6 мес.'
-    );
-    doc.moveDown(0.6);
+    doc.font('DejaVuBold').fontSize(9).text('Гарантии:');
+    doc.font('DejaVuBold').fontSize(8).text('Гарантийные обязательства сторон:');
+    doc.font('DejaVu').fontSize(7);
+    const warrantyObl = [
+      '1. Гарантийный ремонт проводится при предъявлении оборудования в восстановленное Fogel.',
+      '2. Доставка оборудования, подлежащего гарантийному ремонту, в сервисную службу осуществляется клиентом самостоятельно и за свой счет, если иное не оговорено.',
+      '3. Гарантийные обязательства не распространяются на материалы и детали, считающиеся расходуемыми в процессе эксплуатации.',
+      '4. Исполнитель при наступлении гарантийного случая в срок не более 5-ти рабочих дней устраняет неисправности.',
+      '5. Гарантийный срок на пневмоэлемент составляет 24 месяца, амортизатор 12 месяцев.',
+      '6. Гарантийный срок на компрессор составляет 12 месяцев.',
+      '7. Гарантийный срок на рулевую рейку составляет 24 месяца.',
+      '8. Гарантийный срок на электрическую рулевую рейку составляет 6 месяцев. Гарантия распространяется исключительно на проделанные работы.',
+    ];
+    for (const line of warrantyObl) doc.text(line);
+    doc.moveDown(0.25);
+    doc.font('DejaVuBold').fontSize(8).text('Условия прерывания гарантийных обязательств:');
+    doc.font('DejaVu').fontSize(7);
+    doc.text('Гарантийные обязательства могут быть прерваны в следующих случаях:');
+    const warrantyBreak = [
+      '1. Несоответствие серийного номера предъявляемого на гарантийное обслуживание оборудования серийному номеру, указанному в товарном счете или других письменных соглашениях.',
+      '2. Наличие явных или скрытых механических повреждений оборудования, вызванных нарушением правил транспортировки, хранения или эксплуатации.',
+      '3. Выявленное в процессе ремонта несоответствие Правилам и условиям эксплуатации, предъявляемым к оборудованию данного типа.',
+      '4. Повреждение контрольных этикеток и пломб (если таковые имеются).',
+      '5. Наличие внутри корпуса оборудования посторонних предметов, независимо от их природы, если возможность подобного не оговорена в технической документации и Инструкциях по эксплуатации.',
+      '6. Отказ оборудования, вызванный воздействием факторов непреодолимой силы или действиями третьих лиц.',
+      '7. На пневмоэлемент не распространяются гарантийные обязательства, если на нём есть следы масла либо других агрессивных жидкостей.',
+      '8. Отказ оборудования, вызванный неисправностью автомобиля (утечка пневмосистемы, замыкание реле и т.п.).',
+      '9. Обнаружение в системе рулевого управления посторонних примесей, воды, металлической стружки и т.п. Механические и другие воздействия на рулевую рейку вследствие неправильной эксплуатации. Повреждение, нарушение герметичности пыльников рулевых тяг.',
+    ];
+    for (const line of warrantyBreak) doc.text(line);
+    doc.moveDown(0.35);
+    doc.font('DejaVuBold').fontSize(9).text('Рекомендации:');
+    doc.moveDown(0.9);
     const stampY = doc.y;
-    doc.fontSize(9).text(`Исполнитель ____________________ / ${org.short_name || org.director || ''} /`);
+    doc
+      .font('DejaVu')
+      .fontSize(9)
+      .text(`Заказчик ____________________ / ${docData.counterparty_name || ''} /`);
     drawOrgSignPdf(doc, org.inn, {
-      x: doc.page.margins.left + 72,
+      x: doc.page.margins.left + 220,
       y: stampY - 8,
       width: 110,
       height: 32,
     });
-    drawOrgStampPdf(doc, org.inn, { x: doc.page.margins.left + 200, y: stampY - 4, size: 72 });
-    doc.moveDown(2.2);
-    doc.fontSize(9).text(`Заказчик ____________________ / ${docData.counterparty_name || ''} /`);
-    doc.text(`Дата: ${dateShort} г.`);
-    const tpl = String((docData as { template_id?: string }).template_id || '');
-    if (tpl === 'sto-workorder-legal' || tpl === 'sto-workorder-person') {
-      doc
-        .fillColor('#555')
-        .fontSize(8)
-        .text(
-          tpl === 'sto-workorder-legal'
-            ? 'Форма ЗН: юрлицо / ИП. Полный бланк — Шаблоны СТО.'
-            : 'Форма ЗН: физлицо. Полный бланк — Шаблоны СТО.'
-        )
-        .fillColor('#000');
-    }
+    drawOrgStampPdf(doc, org.inn, { x: doc.page.margins.left + 340, y: stampY - 4, size: 72 });
+    doc.moveDown(1.6);
+    doc.fontSize(9).text(`Дата: ${dateShort} г.`);
+    doc.moveDown(0.4);
+    doc.font('DejaVuBold').fontSize(9).text('Причина обращения:');
+    doc.moveDown(1.2);
 
     doc.end();
   });
