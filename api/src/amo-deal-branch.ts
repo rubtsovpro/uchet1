@@ -127,14 +127,16 @@ export function persistAmoBranch(dealId: string, branch: string): void {
   }
 }
 
-/** Колонка БД → payload → live Amo; при live — сохраняем в crm_deals. */
+/** Колонка БД → payload; live Amo — только по явному opts.live (не на /pick!). */
 export function resolveAmoBranchForDeal(
-  deal: Record<string, unknown> | null | undefined
+  deal: Record<string, unknown> | null | undefined,
+  opts?: { live?: boolean }
 ): string {
   const fromDb = String((deal as { amo_branch?: string } | null)?.amo_branch || '').trim();
   if (fromDb) return fromDb;
   const fromPayload = extractAmoBranch(deal);
   if (fromPayload) return fromPayload;
+  if (!opts?.live) return '';
   const id = String(deal?.id || (deal as { deal_id?: string })?.deal_id || '').trim();
   if (!id) return '';
   const live = fetchAmoBranchLive(id);

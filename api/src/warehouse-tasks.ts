@@ -1329,7 +1329,10 @@ export function buildPickRouteInfo(task: {
   };
 }
 
-function enrichPickRow(t: Record<string, unknown>) {
+function enrichPickRow(
+  t: Record<string, unknown>,
+  opts?: { includeProductionLines?: boolean }
+) {
   const pick_type = derivePickType({
     status: String(t.status || ''),
     channel: String(t.channel || ''),
@@ -1396,8 +1399,9 @@ function enrichPickRow(t: Record<string, unknown>) {
     else if (/курьер/i.test(channel_label)) city = 'Курьер';
   }
   const dealCtx = dealId ? dealPickContext(dealId) : null;
+  const wantProdLines = opts?.includeProductionLines !== false;
   const productionExtra =
-    ch === 'production_send' || ch === 'production_receive'
+    wantProdLines && (ch === 'production_send' || ch === 'production_receive')
       ? loadProductionPickLines({
           task_id: String(t.id || ''),
           channel: ch,
@@ -1922,7 +1926,8 @@ export function pickerBoard(day?: string, site?: string, actor?: PickActor | nul
        LIMIT 120`
     ) as Array<Record<string, unknown>>
   )
-    .map(enrichPickRow)
+    // Список /pick: без тяжёлых production lines (карточка грузит /warehouse/tasks/:id).
+    .map((t) => enrichPickRow(t, { includeProductionLines: false }))
     .sort(sortOpenPick);
 
   const done = (
@@ -1939,7 +1944,7 @@ export function pickerBoard(day?: string, site?: string, actor?: PickActor | nul
        LIMIT 50`,
       [d, d]
     ) as Array<Record<string, unknown>>
-  ).map(enrichPickRow);
+  ).map((t) => enrichPickRow(t, { includeProductionLines: false }));
 
   const blocked = (
     all(
@@ -1952,7 +1957,7 @@ export function pickerBoard(day?: string, site?: string, actor?: PickActor | nul
        LIMIT 50`,
       [d]
     ) as Array<Record<string, unknown>>
-  ).map(enrichPickRow);
+  ).map((t) => enrichPickRow(t, { includeProductionLines: false }));
 
   const siteFilter = resolvePickSiteQuery(site, actor);
   const taskDealAllowed = (t: { deal_id?: unknown }) => {
@@ -2080,9 +2085,12 @@ export function dealPickTitle(
 }
 
 /** Контекст сделки для экрана /pick и печатной формы расходной. */
+const dealPickContextMemo = new Map<string, Record<string, unknown> | null>();
+
 export function dealPickContext(dealId: string): Record<string, unknown> | null {
   const id = String(dealId || '').trim();
   if (!id) return null;
+  if (dealPickContextMemo.has(id)) return dealPickContextMemo.get(id) ?? null;
   const d = get<{
     name: string;
     buyer_name: string;
@@ -2124,7 +2132,11 @@ export function dealPickContext(dealId: string): Record<string, unknown> | null 
      FROM crm_deals WHERE id = ?`,
     [id]
   );
-  if (!d) return { deal_id: id, missing: true };
+  if (!d) {
+    const missing = { deal_id: id, missing: true };
+    dealPickContextMemo.set(id, missing);
+    return missing;
+  }
   const paid = dealIsPaid(id);
   const rid = String(d.responsible_user_id || '').trim();
   let responsible_name = '';
@@ -2143,8 +2155,9 @@ export function dealPickContext(dealId: string): Record<string, unknown> | null 
     stock_doc_id: '',
     sto_request: null,
   });
+  // Без live Amo (execFileSync php) — иначе /pick висит секундами на каждой сделке без amo_branch.
   const amo_branch = resolveAmoBranchForDeal({ id, amo_branch: String(d.amo_branch || '').trim() });
-  return {
+  const result: Record<string, unknown> = {
     deal_id: id,
     name: String(d.name || '').trim(),
     title: dealPickTitle(id, d.name, d.buyer_name, d.company_name),
@@ -2187,6 +2200,12 @@ export function dealPickContext(dealId: string): Record<string, unknown> | null 
       );
     })(),
   };
+  dealPickContextMemo.set(id, result);
+  if (dealPickContextMemo.size > 500) {
+    const first = dealPickContextMemo.keys().next().value;
+    if (first != null) dealPickContextMemo.delete(first);
+  }
+  return result;
 }
 
 export type HandoffPickCell = {
