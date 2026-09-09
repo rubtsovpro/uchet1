@@ -6452,6 +6452,7 @@
       const root = document.getElementById('handoffs-list');
       if (root) root.innerHTML = '<p class="handoffs-empty">Загрузка…</p>';
       closedLoading = true;
+      const loadGen = (loadClosedHandoffs._gen = (loadClosedHandoffs._gen || 0) + 1);
       try {
         const dealQ = normalizeHandoffSearchQ(handoffDealQ);
         let url =
@@ -6464,6 +6465,7 @@
         if (dealQ) url += '&q=' + encodeURIComponent(dealQ);
         url += handoffFiltersQuery();
         const r = await api(url);
+        if (loadGen !== loadClosedHandoffs._gen) return;
         closedHandoffs = Array.isArray(r.items) ? r.items : [];
         closedTotal = Number(r.total) || 0;
         closedPages = Math.max(1, Number(r.pages) || 1);
@@ -6479,9 +6481,10 @@
         syncPickTabPanels();
         renderHandoffs();
       } catch (_) {
+        if (loadGen !== loadClosedHandoffs._gen) return;
         if (root) root.innerHTML = '<p class="handoffs-empty">Не удалось загрузить завершённые</p>';
       } finally {
-        closedLoading = false;
+        if (loadGen === loadClosedHandoffs._gen) closedLoading = false;
       }
     }
 

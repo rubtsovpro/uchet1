@@ -3670,11 +3670,13 @@ export function warehouseHandoffsForPick(
   limit = 60,
   site?: string,
   actor?: PickActor | null,
-  opts?: { posted?: boolean; offset?: number; deal_q?: string; filters?: HandoffPickListFilters }
+  opts?: { posted?: boolean; offset?: number; deal_q?: string; filters?: HandoffPickListFilters; light?: boolean }
 ) {
   const cap = Math.max(1, Math.min(120, limit));
   const offset = Math.max(0, Number(opts?.offset) || 0);
   const posted = opts?.posted === true;
+  // Архив завершённых — лёгкая карта; активные черновики — полный enrich (ячейки/остатки).
+  const light = opts?.light === true || posted;
   const listFilters = opts?.filters;
   const listActive = handoffPickListFiltersActive(listFilters);
   const search = normalizeHandoffPickSearch(opts?.deal_q);
@@ -3715,10 +3717,11 @@ export function warehouseHandoffsForPick(
   ) as Array<Record<string, unknown>>;
 
   const filteredRows = filterHandoffPickRowsBySite(rows, siteFilter, actor);
+  const mapOpts = { light };
   if (listActive) {
     return runWithDealFlowCache(() => {
       const mapped = filteredRows
-        .map((row) => mapHandoffPickRow(row, siteFilter, posted))
+        .map((row) => mapHandoffPickRow(row, siteFilter, posted, mapOpts))
         .filter((item) => matchesHandoffListFilters(item, listFilters));
       return mapped.slice(offset, offset + cap);
     });
@@ -3726,7 +3729,7 @@ export function warehouseHandoffsForPick(
   return runWithDealFlowCache(() =>
     filteredRows
       .slice(offset, offset + cap)
-      .map((row) => mapHandoffPickRow(row, siteFilter, posted))
+      .map((row) => mapHandoffPickRow(row, siteFilter, posted, mapOpts))
   );
 }
 
@@ -3766,7 +3769,7 @@ export function warehouseHandoffsPickTotal(
   return runWithDealFlowCache(
     () =>
       filteredRows
-        .map((row) => mapHandoffPickRow(row, siteFilter, posted))
+        .map((row) => mapHandoffPickRow(row, siteFilter, posted, { light: true }))
         .filter((item) => matchesHandoffListFilters(item, listFilters)).length
   );
 }
@@ -3804,8 +3807,11 @@ function parseHandoffCompletedLabel(comment: string): string {
 function mapHandoffPickRow(
   row: Record<string, unknown>,
   _siteFilter: string,
-  completed: boolean
+  completed: boolean,
+  opts?: { light?: boolean }
 ): Record<string, unknown> {
+  // light: архив «Передано» — без остатков/ячеек/movedLines (иначе UI висит на «Загрузка…»).
+  const light = opts?.light === true;
   const id = String(row.id || '');
   const dealId = String(row.deal_id || '').trim();
   const warehouseId = String(row.warehouse_id || '').trim();
@@ -3823,7 +3829,7 @@ function mapHandoffPickRow(
     is_to_sto: isToSto,
   });
   const movedLinesPreload =
-    dealId && completed && routeKind ? getDealAlreadyMovedLines(dealId) : undefined;
+    !light && dealId && completed && routeKind ? getDealAlreadyMovedLines(dealId) : undefined;
   const pickSite = resolvePickSiteForDeal(dealId, warehouseId);
   const createdAt = String(row.created_at || '');
   const transferLabel = completed
@@ -3844,16 +3850,29 @@ function mapHandoffPickRow(
      ORDER BY l.line_no ASC, l.id ASC`,
     [id]
   ) as Array<Record<string, unknown>>;
-  const enrichedLines = lines.map((l) => enrichHandoffLine(l, warehouseId, pickSite, dealId));
+  const enrichedLines: Array<Record<string, unknown>> = light
+    ? lines.map((l) => ({
+        ...l,
+        article: String(l.sku || ''),
+        barcode: '',
+        code: '',
+        stock_qty: 0,
+        stock_wh: [] as unknown[],
+        cells: [] as unknown[],
+        cells_label: completed ? parseCellFromDocComment(commentStr) : '',
+        from_warehouse_id: String(l.warehouse_id || warehouseId || ''),
+        from_warehouse_name: String(l.warehouse_name || fromName || ''),
+      }))
+    : lines.map((l) => enrichHandoffLine(l, warehouseId, pickSite, dealId));
   const deal = dealId ? dealPickContext(dealId) : null;
   const warehouseToIdRaw = String(row.warehouse_to_id || '').trim();
   const isReserve =
-    !isToSto && !isReturn && dealId
+    !light && !isToSto && !isReturn && dealId
       ? buildHandoffReserveMeta(dealId, warehouseId, warehouseToIdRaw || undefined)
       : null;
   const reserve = isReserve;
   const ship =
-    !isToSto && !isReturn && !reserve && dealId
+    !light && !isToSto && !isReturn && !reserve && dealId
       ? buildHandoffShipMeta(dealId, warehouseId)
       : null;
   const flowMeta = reserve || ship;
@@ -3865,16 +3884,19 @@ function mapHandoffPickRow(
     ]);
     warehouseToId = flowMeta.dest_warehouse_id;
   }
-  const qtySum = enrichedLines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+  const qtySum =
+    Number(row.qty_sum) ||
+    enrichedLines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
   const isReorder = /дозаказ/i.test(commentStr);
   const alreadyShipped =
-    dealId && routeKind
+    !light && dealId && routeKind
       ? dealSkipLinesOnRoute(dealId, routeKind, { beforeDocId: id })
       : [];
   const shippedMap = new Map(alreadyShipped.map((s) => [s.product_id, s]));
-  const amountFresh =
-    get<{ amount: number }>(`SELECT IFNULL(amount,0) AS amount FROM stock_docs WHERE id = ?`, [id])
-      ?.amount ?? Number(row.amount) ?? 0;
+  const amountFresh = light
+    ? Number(row.amount) || 0
+    : get<{ amount: number }>(`SELECT IFNULL(amount,0) AS amount FROM stock_docs WHERE id = ?`, [id])
+        ?.amount ?? Number(row.amount) ?? 0;
   const toStoRoute =
     isToSto
       ? [fromName || '—', toNameRaw || 'СТО'].join(' → ')
@@ -3939,13 +3961,13 @@ function mapHandoffPickRow(
       const shipped = shippedMap.get(pid);
       let doneCell = '';
       if (completed) {
-        if (dealId && routeKind) {
+        if (!light && dealId && routeKind) {
           doneCell =
             handoffLineDoneCell(dealId, id, pid, routeKind, commentStr, movedLinesPreload) ||
             '';
         }
         if (!doneCell) doneCell = parseCellFromDocComment(commentStr);
-        if (!doneCell && isReturn) {
+        if (!doneCell && isReturn && !light) {
           // meta возврата: куда положили на основной
           try {
             const raw = get<{ value: string }>(
