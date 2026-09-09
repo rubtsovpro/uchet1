@@ -1062,7 +1062,7 @@ async function buildWorkorderPdf(
       );
     doc.moveDown(0.8);
     const masterY = doc.y;
-    doc.font('DejaVu').fontSize(10).text(`Мастер ____________________ / ${masterName} /`);
+    doc.font('DejaVu').fontSize(10).text(`Мастер ________________________________________ / ${masterName} /`);
     drawOrgSignPdf(doc, org.inn, {
       x: doc.page.margins.left + 48,
       y: masterY - 6,

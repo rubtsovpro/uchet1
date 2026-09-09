@@ -2697,7 +2697,7 @@ function renderWorkorderHtml(
   <div class="words">Всего по заказ-наряду: ${escHtml(amountInWordsRu(Number(doc.total) || 0))} в т.ч. НДС ${formatRuMoney(Number(doc.vat_amount) || 0)} RUB</div>
 
   <div class="party" style="margin-top:14px;position:relative;min-height:14mm">
-    Мастер _____________________ /${escHtml(resolveStaffDisplayName(opts?.staffName) || '')}/
+    Мастер ________________________________ /${escHtml(resolveStaffDisplayName(opts?.staffName) || '')}/
     ${orgSignHtml(org.inn, { heightMm: 12 })}
   </div>
 
