@@ -92,7 +92,7 @@ const TYPE_LABEL: Record<SalesDocType, string> = {
 };
 
 /** На одну сделку — один счёт, один УПД, один договор; повтор = перегенерация. */
-const SINGLE_DEAL_DOC_TYPES: SalesDocType[] = ['invoice', 'upd', 'contract'];
+const SINGLE_DEAL_DOC_TYPES: SalesDocType[] = ['invoice', 'upd', 'contract', 'workorder'];
 
 function latestDealSalesDoc(
   dealId: string,
@@ -144,8 +144,8 @@ export function findDealOutStockNumber(dealId: string | null | undefined): strin
 }
 
 /**
- * Заголовок блока товаров в ЗН:
- * «Списание № Р… к заказ-наряду № {сделка} от … г.»
+ * Заголовок блока товаров в ЗН (как бланк FOGEL / 1С):
+ * «Расходная накладная к заказ-наряду № {номер} от … г.»
  */
 export function formatWorkorderOutHeading(
   doc: Record<string, unknown> | null | undefined,
@@ -157,20 +157,10 @@ export function formatWorkorderOutHeading(
     workorderPrintNumber(dealId, String(d.number || '').trim()) ||
     String(d.number || '').trim() ||
     '—';
-  const out =
-    findDealOutStockNumber(String(d.deal_id || '')) ||
-    // если расходная ещё не создана — ожидаемый номер Р{сделка}
-    (() => {
-      const deal = String(d.deal_id || '').trim();
-      return deal ? `Р${deal}` : '';
-    })();
   const datePart = String(dateShort || '').trim();
-  if (out) {
-    return `Списание № ${out} к заказ-наряду № ${wo}${
-      datePart ? ` от ${datePart} г.` : ''
-    }`;
-  }
-  return `Списание к заказ-наряду № ${wo}${datePart ? ` от ${datePart} г.` : ''}`;
+  return `Расходная накладная к заказ-наряду №  ${wo}${
+    datePart ? ` от ${datePart} г.` : ''
+  }`;
 }
 
 export function updateSalesDocStoChecklist(
@@ -392,6 +382,8 @@ export type ContractBuyerFields = {
   bik?: string;
   rs?: string;
   ks?: string;
+  /** Явная карточка юрлица из виджета «Документы» */
+  counterpartyId?: string;
 };
 
 function contractTemplateOpts(
@@ -500,7 +492,14 @@ export function resolveContractBuyerFromDeal(
   deal: Row | null | undefined,
   overrides: ContractBuyerFields = {}
 ): ContractBuyerFields {
-  let cp = findCounterpartyForDeal(deal);
+  const explicitCpId = String(overrides.counterpartyId || '').trim();
+  let cp: Row | null = explicitCpId
+    ? ((get('SELECT * FROM counterparties WHERE id = ? LIMIT 1', [explicitCpId]) as Row | null) ||
+      null)
+    : null;
+  if (!cp) {
+    cp = findCounterpartyForDeal(deal);
+  }
   const overrideInn = String(overrides.inn || '').replace(/\D/g, '');
   if (!cp && (overrideInn.length === 10 || overrideInn.length === 12)) {
     cp = findCounterpartyByInn(overrideInn);
@@ -511,7 +510,15 @@ export function resolveContractBuyerFromDeal(
   const companyName = String(deal?.company_name || '').trim();
   const contactName = String(deal?.buyer_name || '').trim();
   const isLegal = dealIsLegalEntity(deal as Record<string, unknown> | null | undefined);
-  const nameFromCpRaw = String(cp?.name_full || cp?.name || '').trim();
+  // В счёте / УПД — «Наименование» (короткое), полное — запасной вариант
+  const cpShort = String(cp?.name || '').trim();
+  const cpFull = String(cp?.name_full || '').trim();
+  const nameFromCpRaw = (
+    (cpShort && !isWeakBuyerDocName(cpShort) ? cpShort : '') ||
+    (cpFull && !isWeakBuyerDocName(cpFull) ? cpFull : '') ||
+    cpShort ||
+    cpFull
+  ).trim();
   const nameFromCp =
     nameFromCpRaw && !isWeakBuyerDocName(nameFromCpRaw)
       ? formatBuyerLegalDocName({
@@ -1915,6 +1922,7 @@ export function createSalesDocFromDeal(input: {
   comment?: string;
   createdBy?: string;
   organizationId?: string;
+  counterpartyId?: string;
   /** Явный № УПД (только upd/sf); при перегенерации без override — сохраняется старый. */
   number?: string;
   /** Явная дата документа YYYY-MM-DD; при перегенерации без override — сохраняется старая. */
@@ -1963,6 +1971,9 @@ export function createSalesDocFromDeal(input: {
       assertUpdNumberAvailable(numberOverride, organizationId, regenerated ? id : undefined);
     }
     number = numberOverride;
+  } else if (input.docType === 'workorder') {
+    // Всегда номер сделки; при перегенерации сбрасываем хвосты вроде «25904927-20».
+    number = dealIdStr;
   } else if (!number) {
     number = nextSalesNumber(input.docType, dealIdStr, organizationId);
   }
@@ -1976,6 +1987,7 @@ export function createSalesDocFromDeal(input: {
     inn: (input.buyerInn || '').trim(),
     address: (input.buyerAddress || '').trim(),
     phone: (input.buyerPhone || '').trim(),
+    counterpartyId: (input.counterpartyId || '').trim(),
   });
   const companyName = String(deal.company_name || '').trim();
   const contactName = String(deal.buyer_name || '').trim();

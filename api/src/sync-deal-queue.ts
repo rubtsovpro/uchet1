@@ -1,62 +1,62 @@
 /**
- * Очередь фоновых sync-deal-cli: без лимита Amo-webhook валит VPS (десятки Node × ~80MB).
+ * Очередь синка сделок Amo → Учёт в **том же** Node-процессе.
+ * Отдельный sync-deal-cli держал второе подключение к SQLite и валил WMS.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
+/** 0 = аварийно выключить фоновый export (UI не трогаем). */
 const MAX_CONCURRENT = Math.max(
-  1,
-  Math.min(8, Number(process.env.WMS_SYNC_MAX_CONCURRENT || 3) || 3)
+  0,
+  Math.min(2, Number(process.env.WMS_SYNC_MAX_CONCURRENT ?? 1) || 0)
+);
+
+/** Макс. время PHP export одной сделки (мс). */
+const SYNC_TIMEOUT_MS = Math.max(
+  10_000,
+  Math.min(90_000, Number(process.env.WMS_SYNC_CHILD_TIMEOUT_MS || 45_000) || 45_000)
 );
 
 const pending: string[] = [];
 const seen = new Set<string>();
 let running = 0;
+let pumping = false;
 
-function pump(): void {
-  while (running < MAX_CONCURRENT && pending.length > 0) {
-    const id = pending.shift();
-    if (!id) break;
-    running++;
-    spawnOne(id);
-  }
-}
-
-function spawnOne(dealId: string): void {
-  let child: ChildProcess | null = null;
+async function runOne(dealId: string): Promise<void> {
   try {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const cli = path.join(here, 'sync-deal-cli.js');
-    child = spawn(process.execPath, ['--experimental-sqlite', cli, dealId], {
-      cwd: path.dirname(here),
-      stdio: 'ignore',
-      env: process.env,
-    });
-    child.unref();
+    const { syncDealsFromAmo1cAsync } = await import('./deals.js');
+    await syncDealsFromAmo1cAsync({ dealId, limit: 1 }, SYNC_TIMEOUT_MS);
   } catch (e) {
-    console.error('[sync-deal-queue] spawn', dealId, e);
-    running = Math.max(0, running - 1);
-    pump();
-    return;
+    console.error('[sync-deal-queue]', dealId, e instanceof Error ? e.message : e);
   }
-  const done = () => {
-    running = Math.max(0, running - 1);
-    pump();
-  };
-  child.on('exit', done);
-  child.on('error', done);
 }
 
-/** Поставить сделку в очередь синка (дедуп в рамках процесса WMS). */
+async function pump(): Promise<void> {
+  if (pumping) return;
+  pumping = true;
+  try {
+    while (running < MAX_CONCURRENT && pending.length > 0) {
+      const id = pending.shift();
+      if (!id) break;
+      running++;
+      void runOne(id).finally(() => {
+        running = Math.max(0, running - 1);
+        seen.delete(id);
+        void pump();
+      });
+    }
+  } finally {
+    pumping = false;
+  }
+}
+
+/** Полный export через amo1c (новая сделка / нет в WMS / нужны позиции). */
 export function enqueueSyncDealFromAmo1c(dealId: string): void {
+  if (MAX_CONCURRENT <= 0) return;
   const id = String(dealId || '')
     .replace(/\D/g, '')
     .trim();
   if (!id || seen.has(id)) return;
   seen.add(id);
   pending.push(id);
-  pump();
+  void pump();
 }
 
 export function syncDealQueueStats(): { pending: number; running: number; max: number } {

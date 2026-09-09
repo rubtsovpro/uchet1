@@ -2,8 +2,8 @@
  * Этап 1: склейка оплата → задание склада → «Сделал» → этап Amo «Успешно реализовано».
  */
 import { all, get } from './db.js';
-import { getDeal, pushDealStageToAmo, updateDealStage, rawStatusId, mapAmoShipChannel } from './deals.js';
-import { createTaskFromDeal, dealIsPaid } from './warehouse-tasks.js';
+import { getDeal, pushDealStageToAmo, updateDealStage, rawStatusId } from './deals.js';
+import { dealIsPaid } from './warehouse-tasks.js';
 import { mappedSuccessStatus } from './amo-settings.js';
 import { ensureOrderDocChain } from './order-doc-tree.js';
 import { buildDealSaleRules } from './deal-sale-rules.js';
@@ -54,8 +54,8 @@ export function findSuccessStatusForDeal(dealId: string): {
 }
 
 /**
- * После оплаты — создать задание складу, если ещё нет активного.
- * Канал: из аргумента, иначе из сделки (если есть), иначе СДЭК предоплата.
+ * После оплаты — только черновик «Передача на склад» (handoff) для резерва/отправки.
+ * Старые warehouse_tasks «Авто после оплаты» больше не создаём — путали с переделкой на /pick.
  */
 export function ensureWarehouseTaskAfterPaid(input: {
   dealId: string;
@@ -65,39 +65,6 @@ export function ensureWarehouseTaskAfterPaid(input: {
   const dealId = String(input.dealId || '').trim();
   if (!dealId) return { created: false, task: null, reason: 'no deal' };
 
-  const existing = get(
-    `SELECT id, number, status FROM warehouse_tasks
-     WHERE deal_id = ? AND status NOT IN ('cancelled') LIMIT 1`,
-    [dealId]
-  ) as { id: string; number: string; status: string } | undefined;
-  if (existing) {
-    return {
-      created: false,
-      task: existing as unknown as Record<string, unknown>,
-      reason: 'already_exists',
-    };
-  }
-
-  const deal = get<{
-    department?: string;
-    name?: string;
-    ship_channel?: string;
-    amo_channel?: string;
-    amo_shipment?: string;
-  }>(`SELECT department, name, ship_channel, amo_channel, amo_shipment FROM crm_deals WHERE id = ?`, [
-    dealId,
-  ]);
-  let channel = String(input.channel || '').trim();
-  if (!channel) {
-    channel = mapAmoShipChannel({
-      ship_channel: deal?.ship_channel,
-      amo_channel: deal?.amo_channel,
-      amo_shipment: deal?.amo_shipment,
-      name: deal?.name,
-      department: deal?.department,
-    });
-  }
-
   try {
     const dealRow = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
       `SELECT IFNULL(amo_channel,'') AS amo_channel,
@@ -106,30 +73,21 @@ export function ensureWarehouseTaskAfterPaid(input: {
        FROM crm_deals WHERE id = ?`,
       [dealId]
     );
-    const useHandoff = isReserveChannelDeal(dealRow) || isShipChannelDeal(dealRow);
-    if (useHandoff) {
-      const handoff = ensureHandoffPickAfterPaid(dealId);
-      if (handoff.created || handoff.doc) {
-        return {
-          created: !!handoff.created,
-          task: null,
-          reason: handoff.reason || (handoff.created ? 'handoff_created' : 'handoff_exists'),
-          handoff: handoff.doc,
-        };
-      }
+    if (!isReserveChannelDeal(dealRow) && !isShipChannelDeal(dealRow)) {
+      return { created: false, task: null, reason: 'channel_skip_no_auto_task' };
     }
-    const task = createTaskFromDeal({
-      deal_id: dealId,
-      channel,
-      actor_id: input.actorId,
-      comment: 'Авто после оплаты',
-    }) as Record<string, unknown>;
+    const handoff = ensureHandoffPickAfterPaid(dealId);
     try {
       ensureOrderDocChain(dealId);
     } catch {
-      /* дерево не блокирует задание */
+      /* дерево не блокирует передачу */
     }
-    return { created: true, task };
+    return {
+      created: !!handoff.created,
+      task: null,
+      reason: handoff.reason || (handoff.created ? 'handoff_created' : 'handoff_exists'),
+      handoff: handoff.doc,
+    };
   } catch (e) {
     return {
       created: false,

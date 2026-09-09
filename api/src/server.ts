@@ -7,7 +7,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { api } from './api.js';
-import { get, migrate, run } from './db.js';
+import { db, get, migrate, run } from './db.js';
 import { repairPodveskaMskWarehouses } from './hs.js';
 import { deactivateLegacyServices, purgeServiceLinesFromOutDocs, reclassifyAllProductKinds } from './product-kind.js';
 import {
@@ -234,6 +234,17 @@ function startBackgroundJobs() {
   };
   setInterval(runStoWriteoffIfEvening, 15 * 60 * 1000);
   setTimeout(runStoWriteoffIfEvening, 120_000);
+
+  // WAL checkpoint — иначе /pick тормозит при разросшемся warehouse.sqlite-wal
+  const runWalCheckpoint = () => {
+    try {
+      db.exec('PRAGMA wal_checkpoint(PASSIVE)');
+    } catch (e) {
+      console.warn('[cron] wal_checkpoint failed', e instanceof Error ? e.message : e);
+    }
+  };
+  setTimeout(runWalCheckpoint, 90_000);
+  setInterval(runWalCheckpoint, 5 * 60 * 1000);
 
   // Google Drive прайсы Жени → purchase-intake (раз в 3 мин)
   try {

@@ -110,7 +110,55 @@ export function marketingCategoryLabel(category: string, inferFrom = ''): string
     if (cat && /амортизатор/i.test(cat)) return cat;
     return 'Амортизаторы';
   }
+  if (/пневмобаллон/.test(hay)) {
+    if (cat && /пневмобаллон/i.test(cat)) return singularMarketingCategory(cat) || cat;
+    return 'Пневмобаллон';
+  }
+  if (/компрессор/.test(hay)) {
+    if (cat && /компрессор/i.test(cat)) return singularMarketingCategory(cat) || cat;
+    return 'Компрессор';
+  }
+  if (/пневмостойк/.test(hay)) {
+    if (cat && /пневмостойк/i.test(cat)) return singularMarketingCategory(cat) || cat;
+    return 'Пневмостойка';
+  }
+  if (/датчик/.test(hay)) {
+    if (cat && /датчик/i.test(cat)) return singularMarketingCategory(cat) || cat;
+    return 'Датчик';
+  }
+  return singularMarketingCategory(cat) || cat;
+}
+
+/** Мн.ч. категории → ед.ч. для коммерческого названия в документах. */
+export function singularMarketingCategory(category: string): string {
+  const cat = String(category || '').trim();
+  if (!cat) return '';
+  const map: Array<[RegExp, string]> = [
+    [/^пневмобаллоны$/i, 'Пневмобаллон'],
+    [/^компрессоры$/i, 'Компрессор'],
+    [/^амортизаторы$/i, 'Амортизатор'],
+    [/^пневмостойки$/i, 'Пневмостойка'],
+    [/^датчики$/i, 'Датчик'],
+    [/^рулевые рейки$/i, 'Рулевая рейка'],
+  ];
+  for (const [re, singular] of map) {
+    if (re.test(cat)) return singular;
+  }
   return cat;
+}
+
+/** Модель + поколение: «4Runner (N210)», без дубля если gen уже в model. */
+export function commercialCarLabel(model: string, generation = '', onlyModel = ''): string {
+  const only = String(onlyModel || '').trim();
+  const mo = String(model || '').trim();
+  const gen = String(generation || '').trim();
+  let base = only || mo;
+  if (!base) return gen;
+  if (!gen) return base;
+  const fold = (s: string) => s.toLowerCase().replace(/ё/g, 'е');
+  if (fold(base).includes(fold(gen))) return base;
+  if (/^\(.*\)$/.test(gen)) return `${base} ${gen}`.trim();
+  return `${base} (${gen})`.trim();
 }
 
 export function fractalDisplayName(input: {
@@ -119,6 +167,10 @@ export function fractalDisplayName(input: {
   model?: string | null;
   years?: string | null;
   generation?: string | null;
+  only_model?: string | null;
+  side?: string | null;
+  axis?: string | null;
+  drive?: string | null;
   fallbackName?: string | null;
 }): string {
   const parts: string[] = [];
@@ -128,11 +180,20 @@ export function fractalDisplayName(input: {
   };
   push(marketingCategoryLabel(String(input.category ?? ''), String(input.fallbackName ?? '')));
   push(input.mark);
-  push(input.model);
-  const years = String(input.years ?? '').trim();
-  const generation = String(input.generation ?? '').trim();
-  if (years) push(years);
-  else if (generation) push(generation);
+  push(
+    commercialCarLabel(
+      String(input.model ?? ''),
+      String(input.generation ?? ''),
+      String(input.only_model ?? '')
+    )
+  );
+  push(input.years);
+  const side = String(input.side ?? '').trim();
+  const axis = String(input.axis ?? '').trim();
+  const drive = String(input.drive ?? '').trim();
+  if (side) push(`Сторона: ${side}`);
+  if (axis) push(`Ось: ${axis}`);
+  if (drive) push(`Привод: ${drive}`);
 
   const title = parts.join(' ').trim();
   if (title) return title.slice(0, 255);
@@ -193,8 +254,15 @@ export type ApplicabilityLineInput = {
   mark?: string | null;
   model?: string | null;
   generation?: string | null;
+  only_model?: string | null;
   category?: string | null;
   years?: string | null;
+  side?: string | null;
+  axis?: string | null;
+  drive?: string | null;
+  prop_side?: string | null;
+  prop_axis?: string | null;
+  prop_drive?: string | null;
 };
 
 /** Склад / закупки / приход — только имя из карточки товара (1С). */
@@ -225,7 +293,9 @@ export function applicabilityLineName(line: ApplicabilityLineInput): string {
   const hasApp = Boolean(mark || model || generation);
 
   if (!hasApp) {
-    return widgetName || 'Товар';
+    // Уже коммерческое из виджета — не подменять на 1С.
+    if (widgetName) return widgetName.slice(0, 255);
+    return 'Товар';
   }
 
   const productId = String(line.product_guid || line.product_id || '').trim();
@@ -241,12 +311,21 @@ export function applicabilityLineName(line: ApplicabilityLineInput): string {
     String(line.name_1c || line.product_name_1c || line.product_name || '').trim();
   category = marketingCategoryLabel(category, inferFrom);
 
+  const fromDb = productId ? productPropsHighlight(productId) : null;
+  const side = String(line.prop_side || line.side || fromDb?.side || '').trim();
+  const axis = String(line.prop_axis || line.axis || fromDb?.axis || '').trim();
+  const drive = String(line.prop_drive || line.drive || fromDb?.drive || '').trim();
+
   return fractalDisplayName({
     category,
     mark,
     model,
     years,
     generation,
+    only_model: line.only_model,
+    side,
+    axis,
+    drive,
     fallbackName: widgetName || 'Товар',
   });
 }
@@ -352,10 +431,10 @@ export function salesDocLineCharacteristicsSuffix(it: Record<string, unknown>): 
   return parts.length ? ` · ${parts.join(' · ')}` : '';
 }
 
-/** Счёт / УПД / ЗН / виджет документов. */
+/** Счёт / УПД / ЗН / виджет документов — только коммерческое название. */
 export function salesDocLineDisplayName(it: Record<string, unknown>): string {
   const s = (v: unknown) => String(v ?? '').trim();
-  const base = applicabilityLineName({
+  return applicabilityLineName({
     applicability_name: s(it.name),
     name_1c: s(it.name_1c),
     product_name_1c: s(it.product_name_1c),
@@ -364,11 +443,11 @@ export function salesDocLineDisplayName(it: Record<string, unknown>): string {
     model: s(it.model),
     generation: s(it.generation),
     category: s(it.category_name),
+    years: s(it.years),
+    side: s(it.prop_side || it.side),
+    axis: s(it.prop_axis || it.axis),
+    drive: s(it.prop_drive || it.drive),
   });
-  if (/Сторона\s*:/i.test(base) || /Ось\s*:/i.test(base)) {
-    return base;
-  }
-  return base + salesDocLineCharacteristicsSuffix(it);
 }
 
 /** Слить одинаковые строки (один товар + применимость + цена). */

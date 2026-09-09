@@ -51,7 +51,7 @@ export function parseImportNumber(v: unknown): number {
     .trim()
     .replace(/[\u00A0\u202F\u2009\u2007]/g, ' ')
     .replace(/\s+/g, '')
-    .replace(/[₽$€]/g, '')
+    .replace(/[₽$€¥￥]/g, '')
     .replace(/руб\.?/gi, '');
   if (!s) return 0;
   const neg = s.startsWith('-') || s.startsWith('(');
@@ -171,23 +171,35 @@ export function rowsFromTable(
     const qty = num(cells[map.qty]);
     let price = num(cells[map.price]);
     const amountIdx = map.amount;
+    let amountVal: number | undefined;
     if (amountIdx != null && amountIdx >= 0) {
       const amount = num(cells[amountIdx]);
+      amountVal = amount > 0 ? amount : undefined;
       if (amount > 0 && qty > 0) {
         const fromAmount = Math.round((amount / qty) * 100) / 100;
-        // Если цена пустая/нулевая — берём из суммы; если цена есть, но сумма
-        // сильно больше (часто цена битая из-за разрядности) — доверяем сумме.
+        // Сумма строки из пакинга — источник истины: если цена пустая или
+        // qty×price заметно расходится с суммой (схлопнутая разрядность) — берём из суммы.
         if (!(price > 0)) {
           price = fromAmount;
-        } else if (amount > price * qty * 1.5 + 1) {
-          price = fromAmount;
+        } else {
+          const line = price * qty;
+          const skew = Math.abs(amount - line);
+          if (skew > Math.max(1, line * 0.02) || amount > line * 1.2 + 1) {
+            price = fromAmount;
+          }
         }
       }
     }
     const oldIdx = map.old_sku;
     const old_sku =
       oldIdx != null && oldIdx >= 0 ? String(cells[oldIdx] ?? '').trim() : '';
-    out.push({ article, qty, price, amount: amountIdx != null ? num(cells[amountIdx]) : undefined, old_sku });
+    out.push({
+      article,
+      qty,
+      price,
+      amount: amountVal,
+      old_sku,
+    });
   }
   return out;
 }
@@ -269,38 +281,55 @@ export async function parseImportSpreadsheet(
       const XLSX = await import('xlsx');
       const wb = XLSX.read(buf, { type: 'buffer', raw: false });
       const sheet = (wb.SheetNames || [])[0] || 'CSV';
-      const aoa = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[sheet]!, {
-        header: 1,
-        defval: '',
-        raw: false,
-      }) as unknown as string[][];
-      const csvRows = (aoa || []).map((r) =>
-        (Array.isArray(r) ? r : []).map((c) => String(c ?? '').trim())
-      );
+      const csvRows = sheetToFormattedAoA(XLSX, wb.Sheets[sheet]!);
       return { sheets: [sheet], sheet, rows: csvRows };
     }
     return { sheets: ['CSV'], sheet: 'CSV', rows };
   }
   const XLSX = await import('xlsx');
-  const wb = XLSX.read(buf, { type: 'buffer', cellDates: true, raw: false });
+  // cellText:true — в cell.w форматированный текст («1.250», «26 715»), иначе raw number
+  // схлопывает разрядность (1.25) и parseImportNumber не видит тысячи.
+  const wb = XLSX.read(buf, { type: 'buffer', cellDates: true, cellText: true, raw: false });
   const sheets = wb.SheetNames || [];
   if (!sheets.length) throw new Error('В файле нет листов');
   const sheet = sheetName && sheets.includes(sheetName) ? sheetName : sheets[0]!;
-  const aoa = XLSX.utils.sheet_to_json<(string | number | boolean | null)[]>(wb.Sheets[sheet]!, {
-    header: 1,
-    defval: '',
-    raw: true,
-    blankrows: false,
-  }) as unknown as (string | number | boolean | null)[][];
-  const rows = (aoa || [])
-    .map((r) =>
-      (Array.isArray(r) ? r : []).map((c) => {
-        if (typeof c === 'number' && Number.isFinite(c)) return String(c);
-        return String(c ?? '').trim();
-      })
-    )
-    .filter((r) => r.some((c) => c));
+  const rows = sheetToFormattedAoA(XLSX, wb.Sheets[sheet]!);
   return { sheets, sheet, rows };
+}
+
+/**
+ * AOA из листа: предпочитаем formatted text (cell.w), чтобы «1.250» / «1,250»
+ * не превращались в Number(1.25) до парсера разрядности.
+ */
+function sheetToFormattedAoA(
+  XLSX: typeof import('xlsx'),
+  sheet: import('xlsx').WorkSheet
+): string[][] {
+  const ref = sheet['!ref'];
+  if (!ref) return [];
+  const range = XLSX.utils.decode_range(ref);
+  const rows: string[][] = [];
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    const row: string[] = [];
+    let any = false;
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const addr = XLSX.utils.encode_cell({ r: R, c: C });
+      const cell = sheet[addr] as { w?: string; v?: unknown; t?: string } | undefined;
+      let text = '';
+      if (cell) {
+        if (cell.w != null && String(cell.w).trim() !== '') {
+          text = String(cell.w);
+        } else if (cell.v != null && cell.v !== '') {
+          text = String(cell.v);
+        }
+      }
+      text = text.replace(/\u00a0/g, ' ').trim();
+      if (text) any = true;
+      row.push(text);
+    }
+    if (any) rows.push(row);
+  }
+  return rows;
 }
 
 function resolveImportRows(body: {

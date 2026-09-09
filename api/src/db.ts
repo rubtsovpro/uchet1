@@ -12,11 +12,12 @@ const dbPath = path.join(dataDir, 'warehouse.sqlite');
 fs.mkdirSync(dataDir, { recursive: true });
 
 export const db = new DatabaseSync(dbPath);
+// Короткий busy_timeout: иначе конкурентный sync держит WAL и event loop WMS «молчит».
 db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
   PRAGMA foreign_keys = ON;
-  PRAGMA busy_timeout = 60000;
+  PRAGMA busy_timeout = 3000;
   PRAGMA wal_autocheckpoint = 200;
 `);
 
@@ -28,7 +29,7 @@ function isBusyError(e: unknown): boolean {
   return /database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(msg);
 }
 
-function withBusyRetry<T>(fn: () => T, attempts = 8): T {
+function withBusyRetry<T>(fn: () => T, attempts = 4): T {
   let last: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -38,8 +39,8 @@ function withBusyRetry<T>(fn: () => T, attempts = 8): T {
       if (!isBusyError(e) || i === attempts - 1) {
         throw e;
       }
-      // 50ms, 100ms, 200ms… (синхронная пауза)
-      const ms = Math.min(2000, 50 * 2 ** i);
+      // Короткая пауза (sync API). Раньше до 2s × 8 + busy_timeout 60s — блокировало Node целиком.
+      const ms = Math.min(150, 25 * 2 ** i);
       const until = Date.now() + ms;
       while (Date.now() < until) {
         /* busy wait — sync API, без async */

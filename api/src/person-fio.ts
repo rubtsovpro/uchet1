@@ -72,12 +72,12 @@ function normTag(s: string): string {
 
 /** Контакт Amo вида «Павел Москва» / «Сергей Москва СТО» / «Андрей … Краснодар …». */
 export function looksLikeAmoNameCityLabel(name: string): boolean {
-  const parts = String(name || '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
+  const raw = String(name || '').trim();
+  if (!raw) return false;
+  // Юрлицо / ИП — не ярлык Amo (см. buyerDocNameHasOpf: без \b на кириллице).
+  if (buyerDocNameHasOpf(raw)) return false;
+  const parts = raw.split(/\s+/).filter(Boolean);
   if (parts.length < 2) return false;
-  if (/^(ооо|ао|пао|зао|ип|общество|индивидуальный)\b/i.test(parts[0])) return false;
   const tags = parts.map(normTag);
   // Город в любом токене после первого (и длинные ярлыки с улицей)
   for (let i = 1; i < tags.length; i++) {
@@ -91,7 +91,8 @@ export function looksLikeAmoNameCityLabel(name: string): boolean {
 export function buyerDocNameHasOpf(name: string): boolean {
   const n = String(name || '').trim();
   if (!n) return false;
-  return /^(ооо|ооо\s|ао\b|пао\b|зао\b|ип\b|общество\b|индивидуальный\s+предприниматель\b)/i.test(
+  // Без \b после кириллических ОПФ: в JS \w = [A-Za-z0-9_], иначе «ООО "…СПБ…"» / «Общество …» не распознаются.
+  return /^(ооо|ао|пао|зао|ип|общество|индивидуальный(\s+предприниматель)?)(\s|$|["'«]|\.)/i.test(
     n
   );
 }
@@ -103,6 +104,7 @@ export function isWeakBuyerDocName(name: string): boolean {
   if (looksLikeAmoNameCityLabel(n)) return true;
   if (/^тестов/i.test(n)) return true;
   if (/^(клиент|заказчик|покупатель|контрагент|компания)$/i.test(n)) return true;
+  if (/^покупатель\s*\(\s*заказ\b/i.test(n)) return true;
   // «Андрей АВД Моторс…» без ОПФ — не юрлицо для бланка
   if (!buyerDocNameHasOpf(n) && /\b(авд|сто|моторс)\b/i.test(n) && /\s/.test(n)) return true;
   return false;

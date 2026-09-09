@@ -21,6 +21,7 @@ import { mainWarehouseId, stoWarehouseId, courierWarehouseId } from './supply-ch
 import { mappedSuccessStatus } from './amo-settings.js';
 import { rawStatusId } from './deals.js';
 import { abortOpenProductionForDeal } from './production-jobs.js';
+import { supplierLotFieldsForLine } from './supplier-lots.js';
 
 const SUCCESS_NAME_RE = /успешн|реализован/i;
 const FAIL_NAME_RE = /не реализован|закрыто и не/i;
@@ -38,6 +39,7 @@ type DealFlowCache = {
 let dealFlowCache: DealFlowCache | null = null;
 
 export function runWithDealFlowCache<T>(fn: () => T): T {
+  if (dealFlowCache) return fn();
   dealFlowCache = {
     movedLines: new Map(),
     transferSums: new Map(),
@@ -71,6 +73,12 @@ export type StockReturnLine = {
   origin_label?: string;
   /** Куда класть на Основной (по умолчанию = origin). */
   to_cell_code?: string;
+  /** Мастер / факт / поставщик из листа лотов. */
+  master_sku?: string;
+  fact_sku?: string;
+  supplier?: string;
+  lot_cell_code?: string;
+  lot_warehouse_name?: string;
 };
 export type StockReturnRequest = {
   id: string;
@@ -1104,6 +1112,10 @@ export function enrichStockReturnLineLocation(
     origin_cell_code: originCell,
     origin_label: originLabel,
     to_cell_code: toCell,
+    ...supplierLotFieldsForLine(pid, {
+      preferCell: fromCell || originCell || toCell || '',
+      dealId: id,
+    }),
   };
 }
 
@@ -1269,51 +1281,50 @@ function prunePhantomStockReturn(req: StockReturnRequest): StockReturnRequest | 
 
 /** Все открытые требования возврата (для /pick). */
 export function listPendingStockReturns(limit = 60): Array<Record<string, unknown>> {
-  const rows = all<{ key: string; value: string }>(
-    `SELECT key, value FROM meta WHERE key LIKE 'stock_return_pending:%' ORDER BY key DESC LIMIT ?`,
-    [Math.min(200, Math.max(1, limit * 3))]
-  );
-  const out: Array<Record<string, unknown>> = [];
-  for (const row of rows) {
-    try {
-      const raw = JSON.parse(String(row.value || '')) as StockReturnRequest;
-      if (!raw || raw.status !== 'pending') continue;
-      const pruned = prunePhantomStockReturn(raw);
-      if (!pruned) continue;
-      const req = summarizeReturnRequest(pruned);
-      // Подтянуть свежие ячейки/склад в meta (без смены статуса)
+  // Кэш movedLines / остатков — иначе каждый auto-refresh /pick (12с) бьёт SQLite пачкой JOIN.
+  return runWithDealFlowCache(() => {
+    const rows = all<{ key: string; value: string }>(
+      `SELECT key, value FROM meta WHERE key LIKE 'stock_return_pending:%' ORDER BY key DESC LIMIT ?`,
+      [Math.min(200, Math.max(1, limit * 3))]
+    );
+    const out: Array<Record<string, unknown>> = [];
+    for (const row of rows) {
       try {
-        writeMetaJson(RETURN_META(String(req.deal_id)), req);
+        const raw = JSON.parse(String(row.value || '')) as StockReturnRequest;
+        if (!raw || raw.status !== 'pending') continue;
+        const pruned = prunePhantomStockReturn(raw);
+        if (!pruned) continue;
+        const req = summarizeReturnRequest(pruned);
+        // Не пишем meta на каждый GET /pick — иначе WAL растёт и экран «висит» на Загрузка…
+        // Ячейки подтягиваются при complete / явном сохранении.
+        const deal = get<{ name: string; buyer_name: string; amo_channel: string }>(
+          `SELECT IFNULL(name,'') AS name, IFNULL(buyer_name,'') AS buyer_name,
+                  IFNULL(amo_channel,'') AS amo_channel
+           FROM crm_deals WHERE id = ?`,
+          [String(req.deal_id)]
+        );
+        out.push({
+          ...req,
+          deal_id: String(req.deal_id || ''),
+          lines_count: (req.lines || []).length,
+          qty_sum: (req.lines || []).reduce((s, l) => s + (Number(l.qty) || 0), 0),
+          deal: deal
+            ? {
+                deal_id: String(req.deal_id),
+                title: String(deal.name || '').replace(/\s+/g, ' ').trim(),
+                buyer_name: String(deal.buyer_name || ''),
+                amo_channel: String(deal.amo_channel || ''),
+              }
+            : null,
+          complete_href: `/api/crm/deals/${encodeURIComponent(String(req.deal_id))}/stock-flow/return-complete`,
+        });
+        if (out.length >= limit) break;
       } catch {
-        /* ignore */
+        /* skip */
       }
-      const deal = get<{ name: string; buyer_name: string; amo_channel: string }>(
-        `SELECT IFNULL(name,'') AS name, IFNULL(buyer_name,'') AS buyer_name,
-                IFNULL(amo_channel,'') AS amo_channel
-         FROM crm_deals WHERE id = ?`,
-        [String(req.deal_id)]
-      );
-      out.push({
-        ...req,
-        deal_id: String(req.deal_id || ''),
-        lines_count: (req.lines || []).length,
-        qty_sum: (req.lines || []).reduce((s, l) => s + (Number(l.qty) || 0), 0),
-        deal: deal
-          ? {
-              deal_id: String(req.deal_id),
-              title: String(deal.name || '').replace(/\s+/g, ' ').trim(),
-              buyer_name: String(deal.buyer_name || ''),
-              amo_channel: String(deal.amo_channel || ''),
-            }
-          : null,
-        complete_href: `/api/crm/deals/${encodeURIComponent(String(req.deal_id))}/stock-flow/return-complete`,
-      });
-      if (out.length >= limit) break;
-    } catch {
-      /* skip */
     }
-  }
-  return out;
+    return out;
+  });
 }
 
 async function applyPendingReturnDeletesToAmo(dealId: string, orderItemIds: number[]): Promise<void> {

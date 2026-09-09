@@ -1406,7 +1406,7 @@
           <label>Вх. номер / инвойс<input id="so-invoice-number" class="mono" value="${esc(d.invoice_number || d.supply_number || '')}" placeholder="K0814-9514-9" autocomplete="off" /></label>
           <label>Дата инвойса<input id="so-invoice-date" type="date" value="${esc(String(d.invoice_date || '').slice(0, 10))}" /></label>
           <label>План. поступление<input id="so-eta" type="date" value="${esc(String(d.expected_arrival_date || '').slice(0, 10))}" /></label>
-          <label>Сумма<input class="mono" value="${esc(money(d.amount || linesSum))}" readonly /></label>
+          <label>Сумма<input class="mono" id="so-header-amount" value="${esc(money(linesSum))}" readonly /></label>
           <label>Позиций<input class="mono" id="thin-lines-count" value="${esc(String(lines.length))}" readonly /></label>
           <label class="span-2">Комментарий<input id="so-comment" value="${esc(d.comment || '')}" autocomplete="off" /></label>
           ${
@@ -1661,8 +1661,8 @@
           </tbody>
           <tfoot>
             <tr>
-              <td colspan="${key === 'supplier_orders' && linesEditable ? 6 : 5}" style="text-align:right"><strong>Итого</strong></td>
-              <td class="mono"><strong id="thin-lines-sum">${money(d.amount || linesSum)}</strong></td>
+              <td colspan="${key === 'supplier_orders' && linesEditable ? 6 : 5}" style="text-align:right"><strong id="thin-lines-sum-label">Итого · ${lines.length} поз.</strong></td>
+              <td class="mono"><strong id="thin-lines-sum">${money(linesSum)}</strong></td>
               <td></td>
             </tr>
           </tfoot>
@@ -2433,6 +2433,54 @@
         }
       });
 
+      const recalcVisibleLinesSum = () => {
+        let sum = 0;
+        let shown = 0;
+        leg.view.querySelectorAll('tbody tr[data-line-idx]').forEach((tr) => {
+          if (tr.hidden) return;
+          shown += 1;
+          const idx = tr.getAttribute('data-line-idx');
+          const amountEl = leg.view.querySelector(`.so-line-amount[data-line-idx="${idx}"]`);
+          const raw = String(amountEl?.textContent || '')
+            .replace(/[\s\u00a0]/g, '')
+            .replace(',', '.')
+            .replace(/[^\d.-]/g, '');
+          const n = Number(raw);
+          if (Number.isFinite(n)) sum += n;
+        });
+        const sumEl = document.getElementById('thin-lines-sum');
+        if (sumEl) sumEl.textContent = money(sum);
+        const labelEl = document.getElementById('thin-lines-sum-label');
+        if (labelEl) {
+          const filtered = [...leg.view.querySelectorAll('tbody tr[data-line-idx]')].some(
+            (tr) => tr.hidden
+          );
+          labelEl.textContent = filtered
+            ? `Итого · ${shown} поз. (фильтр)`
+            : `Итого · ${shown} поз.`;
+        }
+        const hdr = document.getElementById('so-header-amount');
+        if (hdr && ![...leg.view.querySelectorAll('tbody tr[data-line-idx]')].some((tr) => tr.hidden)) {
+          hdr.value = money(sum);
+        }
+        const shownEl = document.getElementById('thin-lines-shown');
+        if (shownEl) shownEl.textContent = String(shown);
+        return sum;
+      };
+
+      const paintLineAmountFromInputs = (idx) => {
+        const qtyInp = leg.view.querySelector(`.so-line-qty[data-line-idx="${idx}"]`);
+        const priceInp = leg.view.querySelector(`.so-line-price[data-line-idx="${idx}"]`);
+        const amountEl = leg.view.querySelector(`.so-line-amount[data-line-idx="${idx}"]`);
+        if (!amountEl) return;
+        const qty = Number(qtyInp?.value);
+        const price = Number(priceInp?.value);
+        if (Number.isFinite(qty) && Number.isFinite(price)) {
+          amountEl.textContent = money(qty * price);
+        }
+        recalcVisibleLinesSum();
+      };
+
       const saveLineCell = async (idx, patch) => {
         const msg = document.getElementById('thin-line-msg');
         try {
@@ -2452,8 +2500,17 @@
               line.amount != null ? line.amount : Number(line.qty) * Number(line.price)
             );
           }
+          const linesNow = r.lines || [];
+          const sumNow = linesNow.reduce(
+            (s, l) => s + (Number(l.amount) || Number(l.qty) * Number(l.price) || 0),
+            0
+          );
           const sumEl = document.getElementById('thin-lines-sum');
-          if (sumEl && r.amount != null) sumEl.textContent = money(r.amount);
+          if (sumEl) sumEl.textContent = money(r.amount != null ? r.amount : sumNow);
+          const hdr = document.getElementById('so-header-amount');
+          if (hdr) hdr.value = money(r.amount != null ? r.amount : sumNow);
+          const labelEl = document.getElementById('thin-lines-sum-label');
+          if (labelEl) labelEl.textContent = `Итого · ${linesNow.length} поз.`;
           if (msg) msg.textContent = '';
         } catch (e) {
           if (msg) msg.textContent = e.message || String(e);
@@ -2461,6 +2518,9 @@
         }
       };
       leg.view.querySelectorAll('.so-line-qty').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          paintLineAmountFromInputs(Number(inp.getAttribute('data-line-idx')));
+        });
         inp.addEventListener('change', () => {
           const idx = Number(inp.getAttribute('data-line-idx'));
           const qty = Number(inp.value);
@@ -2472,6 +2532,9 @@
         });
       });
       leg.view.querySelectorAll('.so-line-price').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          paintLineAmountFromInputs(Number(inp.getAttribute('data-line-idx')));
+        });
         inp.addEventListener('change', () => {
           const idx = Number(inp.getAttribute('data-line-idx'));
           const price = Number(inp.value);
@@ -2527,24 +2590,34 @@
     if (catSel) {
       catSel.onchange = () => {
         const v = catSel.value || '';
-        let shown = 0;
-        let sum = 0;
         leg.view.querySelectorAll('tbody tr[data-cat]').forEach((tr) => {
           const cat = tr.getAttribute('data-cat') || '__none__';
-          const ok = !v || cat === v;
-          tr.hidden = !ok;
-          if (ok) {
-            shown += 1;
-            const cells = tr.querySelectorAll('td');
-            const raw = (cells[cells.length - 2]?.textContent || '').replace(/\s/g, '').replace(',', '.');
-            const n = Number(String(raw).replace(/[^\d.-]/g, ''));
-            if (Number.isFinite(n)) sum += n;
-          }
+          tr.hidden = !!(v && cat !== v);
+        });
+        let shown = 0;
+        let sum = 0;
+        leg.view.querySelectorAll('tbody tr[data-line-idx]').forEach((tr) => {
+          if (tr.hidden) return;
+          shown += 1;
+          const idx = tr.getAttribute('data-line-idx');
+          const amountEl = leg.view.querySelector(`.so-line-amount[data-line-idx="${idx}"]`);
+          const raw = String(amountEl?.textContent || '')
+            .replace(/[\s\u00a0]/g, '')
+            .replace(',', '.')
+            .replace(/[^\d.-]/g, '');
+          const n = Number(raw);
+          if (Number.isFinite(n)) sum += n;
         });
         const shownEl = document.getElementById('thin-lines-shown');
         if (shownEl) shownEl.textContent = String(shown);
         const sumEl = document.getElementById('thin-lines-sum');
         if (sumEl) sumEl.textContent = money(sum);
+        const labelEl = document.getElementById('thin-lines-sum-label');
+        if (labelEl) {
+          labelEl.textContent = v
+            ? `Итого · ${shown} поз. (фильтр)`
+            : `Итого · ${shown} поз.`;
+        }
       };
     }
     const dmBase =

@@ -12,6 +12,7 @@ import {
   type S3Config,
 } from './s3.js';
 import { readImageSize, type ImageSize } from './image-size.js';
+import { supplierLotsTableReady } from './supplier-lots.js';
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -572,4 +573,283 @@ export async function backfillMediaOrientation(opts: {
     left,
     seconds: Math.round((Date.now() - t0) / 1000),
   };
+}
+
+/** База артикула без @podveska/@fogel и без :8hex. */
+export function productSkuBase(sku: string): string {
+  let s = String(sku || '').trim();
+  if (!s) return '';
+  const at = s.indexOf('@');
+  if (at > 0) s = s.slice(0, at);
+  const colon = s.indexOf(':');
+  if (colon > 0 && /^[0-9a-f]{6,}$/i.test(s.slice(colon + 1))) s = s.slice(0, colon);
+  return s.trim();
+}
+
+function normalizeWarehouseSkuTokens(warehouseSku: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const part of String(warehouseSku || '').split(/[;,|\/\n]+/)) {
+    const t = productSkuBase(part).toUpperCase().replace(/\s+/g, '');
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  return out;
+}
+
+/**
+ * Id карточек, с которых берём фото для мастера:
+ * сам мастер + любые товары с sku = факт / факт@… / факт:… из warehouse_sku и лотов.
+ */
+export function photoSourceProductIds(productId: string): string[] {
+  const id = String(productId || '').trim();
+  if (!id) return [];
+  const row = get<{ id: string; sku: string; warehouse_sku: string }>(
+    `SELECT id, sku, IFNULL(warehouse_sku,'') AS warehouse_sku FROM products WHERE id = ?`,
+    [id]
+  );
+  if (!row) return [];
+  const ids = new Set<string>([row.id]);
+  const facts = new Set<string>(normalizeWarehouseSkuTokens(row.warehouse_sku));
+  try {
+    const lots = all<{ fact_sku: string }>(
+      `SELECT DISTINCT fact_sku FROM product_supplier_lots
+       WHERE product_id = ? OR master_sku = ? COLLATE NOCASE`,
+      [row.id, row.sku]
+    );
+    for (const l of lots) {
+      const f = productSkuBase(l.fact_sku).toUpperCase().replace(/\s+/g, '');
+      if (f) facts.add(f);
+    }
+  } catch {
+    /* таблицы лотов может не быть */
+  }
+  for (const fact of facts) {
+    const hits = all<{ id: string }>(
+      `SELECT id FROM products
+       WHERE upper(replace(sku,' ','')) = ?
+          OR upper(replace(sku,' ','')) LIKE (? || '@%')
+          OR upper(replace(sku,' ','')) LIKE (? || ':%')`,
+      [fact, fact, fact]
+    );
+    for (const h of hits) {
+      if (h?.id) ids.add(h.id);
+    }
+  }
+  return [...ids];
+}
+
+/**
+ * Медиа для карточки: свои; если картинок нет — с фактов (Номер на складе).
+ */
+export function listProductMediaForDisplay(productId: string): Array<Record<string, unknown>> {
+  const id = String(productId || '').trim();
+  if (!id) return [];
+  const own = all<Record<string, unknown>>(
+    `SELECT id, kind, mime, ext, url, size, sort_order, width, height, orientation, product_id
+     FROM product_media WHERE product_id = ?
+     ORDER BY sort_order, synced_at`,
+    [id]
+  );
+  const ownImages = own.filter((m) => String(m.kind || '') === 'image');
+  if (ownImages.length > 0) return own;
+
+  const sourceIds = photoSourceProductIds(id).filter((x) => x !== id);
+  if (!sourceIds.length) return own;
+
+  // Предпочитаем карточку с точным fact sku (без @/:), иначе первую с фото.
+  const ranked = all<{ id: string; sku: string; c: number }>(
+    `SELECT p.id, p.sku,
+            (SELECT COUNT(*) FROM product_media m WHERE m.product_id = p.id AND m.kind = 'image') AS c
+     FROM products p
+     WHERE p.id IN (${sourceIds.map(() => '?').join(',')})`,
+    sourceIds
+  )
+    .filter((r) => (Number(r.c) || 0) > 0)
+    .sort((a, b) => {
+      const aExact = productSkuBase(a.sku).toUpperCase() === String(a.sku || '').toUpperCase() ? 1 : 0;
+      const bExact = productSkuBase(b.sku).toUpperCase() === String(b.sku || '').toUpperCase() ? 1 : 0;
+      if (aExact !== bExact) return bExact - aExact;
+      return (Number(b.c) || 0) - (Number(a.c) || 0);
+    });
+  const bestId = ranked[0]?.id;
+  if (!bestId) return own;
+
+  const inherited = all<Record<string, unknown>>(
+    `SELECT id, kind, mime, ext, url, size, sort_order, width, height, orientation, product_id
+     FROM product_media
+     WHERE product_id = ? AND kind = 'image'
+     ORDER BY sort_order, synced_at`,
+    [bestId]
+  ).map((m) => ({ ...m, inherited_from_fact: 1 }));
+
+  return [...own.filter((m) => String(m.kind || '') !== 'image'), ...inherited];
+}
+
+/**
+ * SQL: свои фото мастера (без fallback — fallback в enrichMasterListPhotos).
+ */
+export function sqlMasterImagesCountExpr(alias = 'p'): string {
+  return `(SELECT COUNT(*) FROM product_media m WHERE m.product_id = ${alias}.id AND m.kind = 'image')`;
+}
+
+/** SQL: своё превью. */
+export function sqlMasterThumbUrlExpr(alias = 'p'): string {
+  return `(SELECT m.url FROM product_media m
+         WHERE m.product_id = ${alias}.id AND m.kind = 'image'
+         ORDER BY m.sort_order, m.synced_at LIMIT 1)`;
+}
+
+/**
+ * Для строк списка без своих фото — подставить счётчик и thumb с карточек
+ * «Номер на складе (факт)» / лотов. Один-два запроса на страницу.
+ */
+export function enrichMasterListPhotos<T extends Record<string, unknown>>(items: T[]): T[] {
+  if (!items.length) return items;
+  const factToItemIdx = new Map<string, number[]>();
+  const needMeta: Array<{ idx: number; id: string; sku: string }> = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if ((Number(it.images_count) || 0) > 0) continue;
+    if (String(it.item_kind || '') === 'service') continue;
+    const facts = new Set<string>(normalizeWarehouseSkuTokens(String(it.warehouse_sku || '')));
+    const masterSku = String(it.sku || '');
+    const productId = String(it.id || '');
+    needMeta.push({ idx: i, id: productId, sku: masterSku });
+    for (const f of facts) {
+      if (!factToItemIdx.has(f)) factToItemIdx.set(f, []);
+      factToItemIdx.get(f)!.push(i);
+    }
+  }
+  if (!needMeta.length) return items;
+
+  if (supplierLotsTableReady()) {
+    const ids = needMeta.map((x) => x.id).filter(Boolean);
+    const skus = needMeta.map((x) => x.sku).filter(Boolean);
+    const byId = new Map(needMeta.map((x) => [x.id, x.idx]));
+    const bySku = new Map(needMeta.map((x) => [x.sku.toUpperCase(), x.idx]));
+    try {
+      if (ids.length) {
+        const ph = ids.map(() => '?').join(',');
+        const lots = all<{ product_id: string; master_sku: string; fact_sku: string }>(
+          `SELECT product_id, master_sku, fact_sku FROM product_supplier_lots
+           WHERE product_id IN (${ph})`,
+          ids
+        );
+        for (const l of lots) {
+          const f = productSkuBase(l.fact_sku).toUpperCase().replace(/\s+/g, '');
+          if (!f) continue;
+          const idx = byId.get(String(l.product_id));
+          if (idx == null) continue;
+          if (!factToItemIdx.has(f)) factToItemIdx.set(f, []);
+          factToItemIdx.get(f)!.push(idx);
+        }
+      }
+      if (skus.length) {
+        const ph = skus.map(() => '?').join(',');
+        const lots = all<{ master_sku: string; fact_sku: string }>(
+          `SELECT master_sku, fact_sku FROM product_supplier_lots
+           WHERE master_sku IN (${ph})`,
+          skus
+        );
+        for (const l of lots) {
+          const f = productSkuBase(l.fact_sku).toUpperCase().replace(/\s+/g, '');
+          if (!f) continue;
+          const idx = bySku.get(String(l.master_sku || '').toUpperCase());
+          if (idx == null) continue;
+          if (!factToItemIdx.has(f)) factToItemIdx.set(f, []);
+          factToItemIdx.get(f)!.push(idx);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!factToItemIdx.size) return items;
+
+  const facts = [...factToItemIdx.keys()];
+  const placeholders = facts.map(() => '?').join(',');
+  const factProducts = all<{ id: string; sku: string; base: string }>(
+    `SELECT id, sku,
+            UPPER(REPLACE(
+              CASE
+                WHEN INSTR(sku, '@') > 0 THEN SUBSTR(sku, 1, INSTR(sku, '@') - 1)
+                WHEN INSTR(sku, ':') > 0 THEN SUBSTR(sku, 1, INSTR(sku, ':') - 1)
+                ELSE sku
+              END, ' ', '')) AS base
+     FROM products
+     WHERE UPPER(REPLACE(
+              CASE
+                WHEN INSTR(sku, '@') > 0 THEN SUBSTR(sku, 1, INSTR(sku, '@') - 1)
+                WHEN INSTR(sku, ':') > 0 THEN SUBSTR(sku, 1, INSTR(sku, ':') - 1)
+                ELSE sku
+              END, ' ', '')) IN (${placeholders})`,
+    facts
+  );
+  if (!factProducts.length) return items;
+
+  const pidToFacts = new Map<string, string[]>();
+  const pids: string[] = [];
+  const exactFactIds = new Set<string>();
+  for (const fp of factProducts) {
+    pids.push(fp.id);
+    const base = String(fp.base || '').toUpperCase();
+    if (!pidToFacts.has(fp.id)) pidToFacts.set(fp.id, []);
+    pidToFacts.get(fp.id)!.push(base);
+    if (productSkuBase(fp.sku).toUpperCase().replace(/\s+/g, '') === String(fp.sku || '').toUpperCase().replace(/\s+/g, '')) {
+      exactFactIds.add(fp.id);
+    }
+    // точное совпадение sku с фактом (без @/: )
+    if (String(fp.sku || '').toUpperCase().replace(/\s+/g, '') === base) {
+      exactFactIds.add(fp.id);
+    }
+  }
+  const ph2 = pids.map(() => '?').join(',');
+  const mediaAgg = all<{ product_id: string; c: number; thumb: string }>(
+    `SELECT product_id,
+            COUNT(*) AS c,
+            (SELECT m2.url FROM product_media m2
+             WHERE m2.product_id = product_media.product_id AND m2.kind = 'image'
+             ORDER BY m2.sort_order, m2.synced_at LIMIT 1) AS thumb
+     FROM product_media
+     WHERE kind = 'image' AND product_id IN (${ph2})
+     GROUP BY product_id`,
+    pids
+  );
+
+  // На мастер — одна лучшая карточка факта (точный sku предпочтительнее клонов).
+  type Cand = { c: number; thumb: string; exact: boolean };
+  const bestByItem = new Map<number, Cand>();
+  for (const row of mediaAgg) {
+    const pid = String(row.product_id);
+    const c = Number(row.c) || 0;
+    if (c <= 0) continue;
+    const exact = exactFactIds.has(pid);
+    const bases = pidToFacts.get(pid) || [];
+    for (const base of bases) {
+      for (const idx of factToItemIdx.get(base) || []) {
+        const cur = bestByItem.get(idx);
+        const next: Cand = { c, thumb: String(row.thumb || ''), exact };
+        if (
+          !cur ||
+          (exact && !cur.exact) ||
+          (exact === cur.exact && c > cur.c)
+        ) {
+          bestByItem.set(idx, next);
+        }
+      }
+    }
+  }
+
+  return items.map((it, i) => {
+    const st = bestByItem.get(i);
+    if (!st || st.c <= 0) return it;
+    return {
+      ...it,
+      images_count: st.c,
+      thumb_url: st.thumb || it.thumb_url || '',
+      photos_from_fact: 1,
+    };
+  });
 }

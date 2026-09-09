@@ -110,6 +110,10 @@ import {
   addProductVideoLink,
   deleteProductMediaItem,
   deleteProductMediaBatch,
+  sqlMasterImagesCountExpr,
+  sqlMasterThumbUrlExpr,
+  listProductMediaForDisplay,
+  enrichMasterListPhotos,
 } from './media.js';
 import { listMediaProducts, listPhotographerQueue, mediaCoverageByCategory } from './media-coverage.js';
 import { s3ConfigFromEnv } from './s3.js';
@@ -239,7 +243,8 @@ import {
   setDealIsSto,
   setDealOrgCompany,
   setDealVehicle,
-  syncDealsFromAmo1c,
+  syncDealsFromAmo1cAsync,
+  applyAmoDealWebhookPatches,
   syncDealFromAmo1cBackground,
   updateDealBuyer,
   updateDealItem,
@@ -572,6 +577,7 @@ import {
 import {
   amoWebhookSecret,
   isAmoWebhookEnabled,
+  parseAmoWebhookDeals,
   parseAmoWebhookPayload,
   recordAmoWebhookHit,
   setAmoWebhookEnabled,
@@ -829,6 +835,7 @@ import {
 import { mountWarehouseCellsRoutes, getPlacementSummariesForDocs } from './warehouse-cells.js';
 import { mountWarehouseInboundRoutes } from './warehouse-inbound.js';
 import { renderDataMatrixPng, renderDataMatrixSvg } from './datamatrix.js';
+import { syncDealQueueStats } from './sync-deal-queue.js';
 
 export const api = new Hono();
 
@@ -848,6 +855,7 @@ api.get('/health', (c) => {
       worker_set: twofa.worker_set,
       ...(twofa.ask ? { ask: twofa.ask } : {}),
     },
+    sync_queue: syncDealQueueStats(),
   });
 });
 
@@ -3044,14 +3052,14 @@ api.post('/webhooks/amo', async (c) => {
   }
   const parsed = parseAmoWebhookPayload(body, formKeys);
   recordAmoWebhookHit(parsed);
-  // Amo → Учёт: подтянуть сделки в фоне (канал / СТО / статусы), не блокируя ответ хука
-  const dealIds =
-    parsed.entities.includes('deals') || parsed.entities.includes('other')
-      ? parsed.ids.map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean).slice(0, 15)
-      : [];
-  if (dealIds.length) {
-    // Отдельный процесс: syncDealsFromAmo1c внутри setImmediate блокировал весь Учёт на 5–60с
-    for (const dealId of dealIds) {
+  // Amo → Учёт: сначала лёгкий патч из тела хука; полный export — только для новых / отсутствующих
+  if (parsed.entities.includes('deals') || parsed.entities.includes('other')) {
+    const patches = parseAmoWebhookDeals(body, formKeys);
+    const needFull = patches.length
+      ? applyAmoDealWebhookPatches(patches)
+      : parsed.ids.map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean);
+    const uniq = [...new Set(needFull)].slice(0, 15);
+    for (const dealId of uniq) {
       syncDealFromAmo1cBackground(dealId);
     }
   }
@@ -3836,7 +3844,7 @@ api.post('/crm/deals/sync', async (c) => {
     deal_id?: string;
   };
   try {
-    const result = syncDealsFromAmo1c({
+    const result = await syncDealsFromAmo1cAsync({
       days: body.days ?? 60,
       limit: body.limit ?? 800,
       dealId: body.deal_id,
@@ -3889,7 +3897,7 @@ api.post('/crm/deals/backfill-amo-channels', async (c) => {
   const samples: Array<{ id: string; amo_channel: string }> = [];
   for (const dealId of ids) {
     try {
-      syncDealsFromAmo1c({ dealId, limit: 1 });
+      await syncDealsFromAmo1cAsync({ dealId, limit: 1 });
       const row = get<{ amo_channel: string }>(
         `SELECT amo_channel FROM crm_deals WHERE id = ?`,
         [dealId]
@@ -6936,7 +6944,7 @@ api.post('/crm/deals/:id/refresh-from-amo', async (c) => {
   const dealId = String(c.req.param('id') || '').trim();
   if (!dealId) return c.json({ error: 'deal id required' }, 400);
   try {
-    const result = syncDealsFromAmo1c({ dealId, limit: 1 });
+    const result = await syncDealsFromAmo1cAsync({ dealId, limit: 1 });
     const who = String(actor?.name || actor?.login || '').trim() || 'Сотрудник';
     const n = Number(result?.deals) || 0;
     auditFromContext(c, {
@@ -10466,16 +10474,22 @@ api.get('/products', (c) => {
       JOIN warehouses w ON w.id = x.warehouse_id
       GROUP BY x.product_id
     ) st ON st.product_id = p.id`;
-  const imagesCountSql = `(SELECT COUNT(*) FROM product_media m WHERE m.product_id = p.id AND m.kind = 'image')`;
-  const thumbUrlSql = `(SELECT m.url FROM product_media m
-         WHERE m.product_id = p.id AND m.kind = 'image'
-         ORDER BY m.sort_order, m.synced_at LIMIT 1)`;
+  const imagesCountSql = sqlMasterImagesCountExpr('p');
+  const thumbUrlSql = sqlMasterThumbUrlExpr('p');
+  const lotSuppliersSql = `(SELECT group_concat(x.supplier, ';')
+         FROM (
+           SELECT DISTINCT l.supplier AS supplier
+           FROM product_supplier_lots l
+           WHERE (l.product_id = p.id OR l.master_sku = p.sku)
+             AND IFNULL(l.supplier,'') != ''
+         ) x)`;
   const select = `SELECT p.*, u.short_name AS unit, c.name AS category,
             CASE WHEN IFNULL(p.item_kind,'product') = 'service' THEN 'service' ELSE 'product' END AS item_kind,
             IFNULL(st.stock_qty, 0) AS stock_qty,
             IFNULL(st.stock_places, '') AS stock_places,
             ${imagesCountSql} AS images_count,
-            ${thumbUrlSql} AS thumb_url
+            ${thumbUrlSql} AS thumb_url,
+            IFNULL(${lotSuppliersSql}, '') AS lot_suppliers
      FROM products p
      LEFT JOIN units u ON u.id = p.unit_id
      LEFT JOIN categories c ON c.id = p.category_id
@@ -10534,12 +10548,13 @@ api.get('/products', (c) => {
 
   if (q) {
     const like = `%${q}%`;
-    // Артикул / код / штрихкод / название / бренд; применимость (марка/модель) при q ≥ 2
+    // Артикул / код / штрихкод / название / бренд; факт с листа; лоты поставщиков
     if (q.length >= 2) {
       where += ` AND (
         p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
         OR IFNULL(p.barcode,'') LIKE ? OR IFNULL(p.array_sku,'') LIKE ?
         OR IFNULL(p.warehouse_sku,'') LIKE ?
+        OR IFNULL(p.sheet_supplier,'') LIKE ?
         OR IFNULL(p.brand,'') LIKE ? OR IFNULL(c.name,'') LIKE ?
         OR p.id IN (
           SELECT product_id FROM product_alt_codes WHERE value LIKE ?
@@ -10549,8 +10564,30 @@ api.get('/products', (c) => {
           WHERE a.mark LIKE ? OR a.model LIKE ? OR a.only_model LIKE ?
           LIMIT 2000
         )
+        OR EXISTS (
+          SELECT 1 FROM product_supplier_lots l
+          WHERE (l.product_id = p.id OR l.master_sku = p.sku)
+            AND (l.fact_sku LIKE ? OR l.master_sku LIKE ? OR IFNULL(l.supplier,'') LIKE ?)
+        )
       )`;
-      params.push(like, like, like, like, like, like, like, like, like, like, like, like);
+      params.push(
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like
+      );
     } else {
       where += ` AND (
         p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
@@ -10633,6 +10670,7 @@ api.get('/products', (c) => {
     `${select} ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   ) as Array<Record<string, unknown>>;
+  items = enrichMasterListPhotos(items);
   if (includePrices && items.length) {
     const ids = items
       .map((it) => String(it.id || '').trim())
@@ -10728,14 +10766,36 @@ api.get('/products/facet-counts', (c) => {
         p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
         OR IFNULL(p.barcode,'') LIKE ? OR IFNULL(p.array_sku,'') LIKE ?
         OR IFNULL(p.warehouse_sku,'') LIKE ?
+        OR IFNULL(p.sheet_supplier,'') LIKE ?
         OR IFNULL(p.brand,'') LIKE ? OR IFNULL(c.name,'') LIKE ?
         OR p.id IN (
           SELECT a.product_id FROM product_applicability a
           WHERE a.mark LIKE ? OR a.model LIKE ? OR a.only_model LIKE ?
           LIMIT 2000
         )
+        OR EXISTS (
+          SELECT 1 FROM product_supplier_lots l
+          WHERE (l.product_id = p.id OR l.master_sku = p.sku)
+            AND (l.fact_sku LIKE ? OR l.master_sku LIKE ? OR IFNULL(l.supplier,'') LIKE ?)
+        )
       )`;
-      params.push(like, like, like, like, like, like, like, like, like, like, like);
+      params.push(
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like
+      );
     } else {
       where += ` AND (
         p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
@@ -10912,12 +10972,7 @@ api.get('/products/:id', (c) => {
             has_value: true,
           }))
           .sort((a, b) => a.price_type.localeCompare(b.price_type, 'ru'));
-  const media = all(
-    `SELECT id, kind, mime, ext, url, size, sort_order, width, height, orientation
-     FROM product_media WHERE product_id = ?
-     ORDER BY sort_order, synced_at`,
-    [id]
-  );
+  const media = listProductMediaForDisplay(id);
   const restsRaw = all(
     `SELECT x.warehouse_id,
             IFNULL(w.name, x.warehouse_id) AS warehouse,
@@ -12105,7 +12160,7 @@ api.get('/docs/:id', async (c) => {
   ).trim();
   if (dealIdNow && !get('SELECT id FROM crm_deals WHERE id = ?', [dealIdNow])) {
     try {
-      syncDealsFromAmo1c({ dealId: dealIdNow });
+      await syncDealsFromAmo1cAsync({ dealId: dealIdNow, limit: 1 });
     } catch (e) {
       console.warn('docs/:id ensure deal', dealIdNow, e instanceof Error ? e.message : e);
     }
@@ -12233,7 +12288,7 @@ api.patch('/docs/:id/deal', async (c) => {
     const result = setOutDocDeal(c.req.param('id'), String(body.deal_id || ''));
     if (!get('SELECT id FROM crm_deals WHERE id = ?', [result.deal_id])) {
       try {
-        syncDealsFromAmo1c({ dealId: result.deal_id });
+        await syncDealsFromAmo1cAsync({ dealId: result.deal_id, limit: 1 });
       } catch (e) {
         console.warn(
           'docs/:id/deal ensure deal',
@@ -14294,14 +14349,36 @@ api.put('/currencies/:code', async (c) => {
 
 /* ——— Паритет меню / экран сборщика (без правок ops UI) ——— */
 
+/** Короткий кэш счётчика «завершённых» — UI /pick дергает today каждые ~12с. */
+const pickCompletedTotalCache = new Map<string, { at: number; n: number }>();
+const PICK_COMPLETED_TOTAL_TTL_MS = 20_000;
+
 api.get('/warehouse/pick/today', async (c) => {
   const actor = actorFromContext(c);
   const day = (c.req.query('day') || '').trim() || undefined;
   const site = (c.req.query('site') || '').trim() || undefined;
+  const t0 = Date.now();
   const board = pickerBoard(day, site, actor);
+  const tBoard = Date.now();
   const handoffs = warehouseHandoffsForPick(60, site, actor);
-  const handoffs_completed_total = warehouseHandoffsPickTotal(site, actor, true);
+  const tHandoffs = Date.now();
+  const cacheKey = `${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`;
+  const cached = pickCompletedTotalCache.get(cacheKey);
+  let handoffs_completed_total: number;
+  if (cached && Date.now() - cached.at < PICK_COMPLETED_TOTAL_TTL_MS) {
+    handoffs_completed_total = cached.n;
+  } else {
+    handoffs_completed_total = warehouseHandoffsPickTotal(site, actor, true);
+    pickCompletedTotalCache.set(cacheKey, { at: Date.now(), n: handoffs_completed_total });
+  }
+  const tTotal = Date.now();
   const returns = stockReturnsForPick(60);
+  const tEnd = Date.now();
+  if (tEnd - t0 > 800) {
+    console.warn(
+      `[pick/today] ${tEnd - t0}ms board=${tBoard - t0} handoffs=${tHandoffs - tBoard} total=${tTotal - tHandoffs} returns=${tEnd - tTotal} site=${site || ''}`
+    );
+  }
   return c.json({ ...board, handoffs, handoffs_completed_total, returns });
 });
 

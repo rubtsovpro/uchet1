@@ -1021,6 +1021,19 @@ function loadExport(scriptPath = DEFAULT_EXPORT, extraArgs: string[] = []): Deal
   return JSON.parse(out) as DealExport;
 }
 
+async function loadExportAsync(
+  scriptPath = DEFAULT_EXPORT,
+  extraArgs: string[] = [],
+  timeoutMs = 45_000
+): Promise<DealExport> {
+  const { stdout } = await execFileAsync('php', [scriptPath, ...extraArgs], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: timeoutMs,
+  });
+  return JSON.parse(String(stdout || '{}')) as DealExport;
+}
+
 export function dealsMeta() {
   return {
     pipelines: get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_pipelines')?.c ?? 0,
@@ -1542,8 +1555,8 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
     run(
       `INSERT INTO crm_deal_items (
          id, deal_id, product_guid, sku, code, name, brand, price, qty, amount, unit, department, note, line_no,
-         name_1c, applicability_key
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         name_1c, applicability_key, mark, model, generation
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         itemId,
         id,
@@ -1561,6 +1574,9 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
         lineNo,
         String(it.name_1c || ''),
         String(it.applicability_key || ''),
+        String(it.mark || ''),
+        String(it.model || ''),
+        String(it.generation || ''),
       ]
     );
   }
@@ -1614,29 +1630,34 @@ export function normalizeDealPhone(raw: string): string {
 
 /**
  * Перед чеком: телефон/email из Amo → WMS.
- * Сначала синк сделки, если пусто — повторный export и запись в crm_deals.
+ * Если сделка уже есть и телефон заполнен — не трогаем PHP/SQLite.
  */
-export function ensureDealBuyerContactFromAmo(dealId: string): {
+export async function ensureDealBuyerContactFromAmo(dealId: string): Promise<{
   deal: Record<string, unknown> | null;
   phone: string;
   email: string;
-} {
+}> {
   const id = String(dealId || '').trim();
   if (!id) return { deal: null, phone: '', email: '' };
-
-  try {
-    syncDealsFromAmo1c({ dealId: id, limit: 1 });
-  } catch {
-    /* сделка могла уже быть в WMS */
-  }
 
   let deal = getDeal(id) as Record<string, unknown> | null;
   let phone = normalizeDealPhone(String(deal?.buyer_phone || ''));
   let email = String(deal?.buyer_email || '').trim();
+  if (deal && phone) return { deal, phone, email };
+
+  try {
+    await syncDealsFromAmo1cAsync({ dealId: id, limit: 1 }, 45_000);
+  } catch {
+    /* сделка могла уже быть в WMS */
+  }
+
+  deal = getDeal(id) as Record<string, unknown> | null;
+  phone = normalizeDealPhone(String(deal?.buyer_phone || ''));
+  email = String(deal?.buyer_email || '').trim();
 
   if (!phone) {
     try {
-      const exp = loadExport(DEFAULT_EXPORT, [`--deal=${id}`]);
+      const exp = await loadExportAsync(DEFAULT_EXPORT, [`--deal=${id}`], 45_000);
       const row = (exp.deals || []).find((d) => String((d as { id?: string }).id || '') === id) as
         | { buyer_phone?: string; buyer_email?: string }
         | undefined;
@@ -1662,11 +1683,104 @@ export function ensureDealBuyerContactFromAmo(dealId: string): {
   return { deal, phone, email };
 }
 
-/**
- * Синк сделки в отдельном Node-процессе — webhook / HTTP не блокируются на PHP export.
- */
+/** Фоновый полный export (очередь в том же процессе, без второго SQLite). */
 export function syncDealFromAmo1cBackground(dealId: string): void {
   enqueueSyncDealFromAmo1c(dealId);
+}
+
+function statusNameForPipeline(pipelineId: string, statusId: string): string {
+  const pid = String(pipelineId || '').trim();
+  const sid = String(statusId || '').trim();
+  if (!pid || !sid) return '';
+  const row = get<{ name: string }>(
+    `SELECT name FROM crm_pipeline_statuses
+     WHERE pipeline_id = ? AND (id = ? OR id = ?)
+     LIMIT 1`,
+    [pid, sid, `${pid}:${sid}`]
+  );
+  return String(row?.name || '').trim();
+}
+
+/**
+ * Применить изменения сделки прямо из тела хука Amo (без PHP export).
+ * Возвращает id, для которых нужен полный export (новая сделка / нет в WMS).
+ */
+export function applyAmoDealWebhookPatches(
+  patches: Array<{
+    id: string;
+    status_id?: string;
+    pipeline_id?: string;
+    name?: string;
+    price?: number;
+    responsible_user_id?: string;
+    event?: string;
+  }>
+): string[] {
+  const needFull: string[] = [];
+  for (const p of patches) {
+    const id = String(p.id || '').replace(/\D/g, '').trim();
+    if (!id) continue;
+    if (p.event === 'add') {
+      needFull.push(id);
+      continue;
+    }
+    const exists = get<{ id: string }>('SELECT id FROM crm_deals WHERE id = ?', [id]);
+    if (!exists) {
+      needFull.push(id);
+      continue;
+    }
+    const sets: string[] = [];
+    const params: Array<string | number> = [];
+    const pipelineId = String(p.pipeline_id || '').trim();
+    const statusId = String(p.status_id || '').trim();
+    if (pipelineId) {
+      sets.push('pipeline_id = ?');
+      params.push(pipelineId);
+      const plName = get<{ name: string }>('SELECT name FROM crm_pipelines WHERE id = ?', [
+        pipelineId,
+      ])?.name;
+      if (plName) {
+        sets.push('pipeline_name = ?');
+        params.push(String(plName));
+      }
+    }
+    if (statusId) {
+      sets.push('status_id = ?');
+      params.push(statusId);
+      const stName = statusNameForPipeline(pipelineId || String(
+        get<{ pipeline_id: string }>('SELECT pipeline_id FROM crm_deals WHERE id = ?', [id])
+          ?.pipeline_id || ''
+      ), statusId);
+      if (stName) {
+        sets.push('status_name = ?');
+        params.push(stName);
+      }
+    }
+    const name = String(p.name || '').trim();
+    if (name) {
+      sets.push(`name = CASE
+        WHEN IFNULL(name,'') = '' OR name = ? OR name LIKE 'Сделка #%' OR name LIKE 'Заказ #%'
+          THEN ?
+        ELSE name END`);
+      params.push(id, name);
+    }
+    if (p.price != null && p.price > 0) {
+      sets.push('price = ?');
+      params.push(Math.round(p.price));
+    }
+    const resp = String(p.responsible_user_id || '').trim();
+    if (resp && resp !== '0') {
+      sets.push(`responsible_user_id = CASE
+        WHEN IFNULL(responsible_user_id,'') IN ('', '0') THEN ?
+        ELSE responsible_user_id END`);
+      params.push(resp);
+    }
+    if (!sets.length) continue;
+    sets.push("updated_at = datetime('now')", "synced_at = datetime('now')");
+    params.push(id);
+    run(`UPDATE crm_deals SET ${sets.join(', ')} WHERE id = ?`, params);
+  }
+  return needFull;
 }
 
 export function syncDealsFromAmo1c(opts: {
@@ -1686,6 +1800,61 @@ export function syncDealsFromAmo1c(opts: {
   if (opts.limit) args.push(`--limit=${opts.limit}`);
   if (opts.dealId) args.push(`--deal=${opts.dealId}`);
   const exp = loadExport(opts.scriptPath || DEFAULT_EXPORT, args);
+
+  for (const pl of exp.pipelines || []) {
+    upsertPipeline(pl);
+  }
+  for (const d of exp.deals || []) {
+    upsertDealRecord(d);
+    const did = String((d as { id?: string }).id || '').trim();
+    if (did) softEnsureClientStockReserve(did);
+  }
+
+  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    'deals_synced_at',
+    new Date().toISOString(),
+  ]);
+
+  try {
+    checkAmoSaleConfigDrift();
+  } catch {
+    /* не блокируем синк */
+  }
+  try {
+    syncAmoUnmappedStaffAlerts();
+  } catch {
+    /* не блокируем синк */
+  }
+
+  return {
+    pipelines: (exp.pipelines || []).length,
+    deals: (exp.deals || []).length,
+    withAmo: Number((exp as { counts?: { with_amo?: number } }).counts?.with_amo || 0),
+    seconds: Math.round((Date.now() - t0) / 1000),
+  };
+}
+
+/** Async export — не блокирует event loop (в отличие от execFileSync). */
+export async function syncDealsFromAmo1cAsync(
+  opts: {
+    days?: number;
+    limit?: number;
+    dealId?: string;
+    scriptPath?: string;
+  } = {},
+  timeoutMs = 45_000
+): Promise<{
+  pipelines: number;
+  deals: number;
+  withAmo: number;
+  seconds: number;
+}> {
+  const t0 = Date.now();
+  const args: string[] = [];
+  if (opts.days) args.push(`--days=${opts.days}`);
+  if (opts.limit) args.push(`--limit=${opts.limit}`);
+  if (opts.dealId) args.push(`--deal=${opts.dealId}`);
+  const exp = await loadExportAsync(opts.scriptPath || DEFAULT_EXPORT, args, timeoutMs);
 
   for (const pl of exp.pipelines || []) {
     upsertPipeline(pl);

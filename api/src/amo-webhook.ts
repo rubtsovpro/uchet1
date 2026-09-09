@@ -130,6 +130,83 @@ function collectIdsFromFlatForm(rec: Record<string, unknown>, out: string[]): vo
   }
 }
 
+/** Одна сделка из тела хука Amo (form-urlencoded). */
+export type AmoWebhookDealPatch = {
+  id: string;
+  status_id?: string;
+  pipeline_id?: string;
+  name?: string;
+  price?: number;
+  responsible_user_id?: string;
+  /** add | update | status */
+  event?: string;
+};
+
+const WEBHOOK_DEAL_KEY =
+  /^leads(?:\[update\]|\[status\]|\[add\])\[(\d+)\]\[([^\]]+)\]$/i;
+
+/** Разобрать поля сделок из хука: `leads[update][0][status_id]=142`. */
+export function parseAmoWebhookDeals(
+  body: unknown,
+  formKeys: string[] = []
+): AmoWebhookDealPatch[] {
+  const rec =
+    body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const keys = formKeys.length ? formKeys : Object.keys(rec);
+  const bySlot = new Map<string, AmoWebhookDealPatch>();
+
+  for (const key of keys) {
+    const m = key.match(WEBHOOK_DEAL_KEY);
+    if (!m) continue;
+    const slot = m[1];
+    const field = String(m[2] || '').toLowerCase();
+    const raw = rec[key];
+    const val = raw == null ? '' : String(raw).trim();
+    const event = key.includes('[add]')
+      ? 'add'
+      : key.includes('[status]')
+        ? 'status'
+        : 'update';
+    const rowKey = `${event}:${slot}`;
+    let row = bySlot.get(rowKey);
+    if (!row) {
+      row = { id: '', event };
+      bySlot.set(rowKey, row);
+    }
+    if (field === 'id') row.id = val.replace(/\D/g, '');
+    else if (field === 'status_id') row.status_id = val.replace(/\D/g, '');
+    else if (field === 'pipeline_id') row.pipeline_id = val.replace(/\D/g, '');
+    else if (field === 'name') row.name = val;
+    else if (field === 'price') row.price = Number(val.replace(/[^\d.-]/g, '')) || 0;
+    else if (field === 'responsible_user_id') {
+      row.responsible_user_id = val.replace(/\D/g, '');
+    }
+  }
+
+  const merged = new Map<string, AmoWebhookDealPatch>();
+  for (const row of bySlot.values()) {
+    const id = String(row.id || '').trim();
+    if (!id) continue;
+    const prev = merged.get(id);
+    if (!prev) {
+      merged.set(id, { ...row });
+      continue;
+    }
+    merged.set(id, {
+      id,
+      event: row.event === 'add' ? 'add' : prev.event || row.event,
+      status_id: row.status_id || prev.status_id,
+      pipeline_id: row.pipeline_id || prev.pipeline_id,
+      name: row.name || prev.name,
+      price: row.price != null && row.price > 0 ? row.price : prev.price,
+      responsible_user_id: row.responsible_user_id || prev.responsible_user_id,
+    });
+  }
+  return [...merged.values()];
+}
+
 /** Разбор тела Amo (form / json) → сущности и id. */
 export function parseAmoWebhookPayload(
   body: unknown,

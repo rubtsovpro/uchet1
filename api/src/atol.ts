@@ -480,13 +480,13 @@ function refundKindForBase(baseKind: string): FiscalKind {
 type DealForFiscal = Record<string, unknown> & { items?: Array<Record<string, unknown>> };
 
 /** Сделка из Amo → WMS перед чеком (контакт обязателен). */
-function ensureDealForFiscal(
+async function ensureDealForFiscal(
   dealId: string,
   opts?: { clientPhoneFallback?: string }
-): DealForFiscal {
+): Promise<DealForFiscal> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('Сделка не найдена');
-  const { deal, phone } = ensureDealBuyerContactFromAmo(id);
+  const { deal, phone } = await ensureDealBuyerContactFromAmo(id);
   if (!deal) {
     throw new Error(
       `Сделка ${id} не найдена в Учёте №1. Откройте заказ в Учёте или дождитесь синка из Amo.`
@@ -541,7 +541,7 @@ export async function prepareOrSendFiscalReceipt(input: {
     });
   }
 
-  const deal = ensureDealForFiscal(input.dealId, {
+  const deal = await ensureDealForFiscal(input.dealId, {
     clientPhoneFallback: input.client_phone,
   });
   const orgId = organizationIdForDealRecord(deal) || undefined;

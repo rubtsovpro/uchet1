@@ -15,6 +15,7 @@ const state = {
   categories: [],
   productsPage: 1,
   productsQ: '',
+  productsMainFilter: '1',
   productsSort: 'created_at',
   productsDir: 'desc',
   productsCategoryId: '',
@@ -3188,6 +3189,19 @@ function oldSkuLine(p) {
   return oldWarehouseSkus(p?.warehouse_sku)
     .filter((x) => x.toUpperCase().replace(/\s+/g, '') !== sku)
     .join('; ');
+}
+
+/** Номера на складе (факт) с листа — все, включая совпадение с артикулом мастера. */
+function factSkuLine(p) {
+  return oldWarehouseSkus(p?.warehouse_sku).join('; ');
+}
+
+/** Поставщик (по коду) с листа / лотов мастера. */
+function sheetSupplierLine(p) {
+  const fromSheet = String(p?.sheet_supplier || '').trim();
+  if (fromSheet) return fromSheet;
+  const fromLots = String(p?.lot_suppliers || p?.supplier_codes || '').trim();
+  return fromLots;
 }
 
 /** Убрать `@podveska` / `@fogel`; `:8hex` оставить — обособленные карточки 1С. */
@@ -8369,14 +8383,16 @@ async function renderProducts(opts = {}) {
   if (catId) url += '&category_id=' + encodeURIComponent(catId);
   else if (catName) url += '&category=' + encodeURIComponent(catName);
   const kindFilter = state.productsItemKind || '';
-  const mainFilter = state.productsMainFilter || '';
+  // Номенклатура: только мастера (клоны @podveska/@fogel не показываем).
+  state.productsMainFilter = '1';
+  const mainFilter = '1';
   if (kindFilter) url += '&item_kind=' + encodeURIComponent(kindFilter);
-  if (mainFilter === '1' || mainFilter === '0') url += '&is_main=' + encodeURIComponent(mainFilter);
+  url += '&is_main=1';
   url = withCompanyId(url);
   let treeUrl = withCompanyId('/categories/tree');
   const treeQs = [];
   if (kindFilter) treeQs.push('item_kind=' + encodeURIComponent(kindFilter));
-  if (mainFilter === '1' || mainFilter === '0') treeQs.push('is_main=' + encodeURIComponent(mainFilter));
+  treeQs.push('is_main=1');
   if (treeQs.length) {
     treeUrl += (treeUrl.includes('?') ? '&' : '?') + treeQs.join('&');
   }
@@ -8386,7 +8402,7 @@ async function renderProducts(opts = {}) {
   if (catId) facetQs.push('category_id=' + encodeURIComponent(catId));
   else if (catName) facetQs.push('category=' + encodeURIComponent(catName));
   if (kindFilter) facetQs.push('item_kind=' + encodeURIComponent(kindFilter));
-  if (mainFilter === '1' || mainFilter === '0') facetQs.push('is_main=' + encodeURIComponent(mainFilter));
+  facetQs.push('is_main=1');
   if (facetQs.length) {
     facetsUrl += (facetsUrl.includes('?') ? '&' : '?') + facetQs.join('&');
   }
@@ -8397,7 +8413,6 @@ async function renderProducts(opts = {}) {
     api(facetsUrl).catch(() => null),
   ]);
   const kindCounts = facets?.kind || {};
-  const mainCounts = facets?.main || {};
   state.productsCatTree = catTree;
   const roots = catTree.roots || [];
   const path = findCategoryPath(roots, catId);
@@ -8434,8 +8449,9 @@ async function renderProducts(opts = {}) {
     'Номенклатура',
     `
     <p class="muted" style="margin:0 0 10px;font-size:12px">
-      Номенклатура по филиалу в шапке: Подвеска (Москва) и Фогель/Стрела — разные базы 1С.
-      Смена филиала обновляет список и категории.
+      Только карточки-мастера. «Номер на складе (факт)» и «Поставщик (по коду)» — с листа номенклатуры.
+      Поиск по факту (например MRAA01300) или по артикулу мастера (MRAA01000) открывает мастера с поставщиком.
+      Филиал в шапке: Подвеска (Москва) и Фогель/Стрела — разные базы 1С.
     </p>
     ${
       canEdit
@@ -8463,18 +8479,6 @@ async function renderProducts(opts = {}) {
             kindFilter
           )}
         </div>
-        <div class="field" style="margin:0">
-          <span class="muted" style="font-size:11px;display:block;margin-bottom:4px">Основные</span>
-          ${radioPillsHtml(
-            'pmain-filter',
-            [
-              { value: '', label: 'Все', count: mainCounts.all },
-              { value: '1', label: '★ Да', count: mainCounts.yes },
-              { value: '0', label: 'Нет', count: mainCounts.no },
-            ],
-            mainFilter
-          )}
-        </div>
         ${
           catFiltered
             ? `<button type="button" id="pcat-clear" title="Сбросить фильтр">Сбросить</button>`
@@ -8493,12 +8497,12 @@ async function renderProducts(opts = {}) {
               sort === key ? 'sorted' : ''
             }" title="${esc(tip || 'Сортировка')}">${esc(label)}${mark(key)}</th>`;
           return (
-            th('main', 'Основной', 'да = основной товар · сортировка') +
             th('photos', 'Фото', 'Превью и количество фото · сортировка') +
             th('kind', 'Вид') +
             th('site', 'Сайт') +
             th('sku', 'Артикул') +
-            th('old_sku', 'Старые номера') +
+            th('old_sku', 'Номер на складе (факт)', 'warehouse_sku с листа номенклатуры') +
+            th('supplier', 'Поставщик (по коду)', 'Код поставщика с листа') +
             th('code', 'Код') +
             th('name', 'Название') +
             th('category', 'Категория') +
@@ -8528,25 +8532,17 @@ async function renderProducts(opts = {}) {
                     }<span class="mono prod-photo-n">${esc(photoN)}</span>
                   </td>`
                 : `<td class="prod-photo-cell muted" data-filter-text="0">—</td>`;
-              const mainCell = isSvc
-                ? '<td><span class="muted">—</span></td>'
-                : canEdit
-                  ? `<td class="cp-star-cell" onclick="event.stopPropagation()">
-                      <button type="button" class="linkish${isMain ? '' : ' muted'}" data-prod-star="${esc(
-                        p.id
-                      )}" data-on="${isMain ? '1' : '0'}" title="${
-                        isMain ? 'Убрать из основных' : 'Сделать основным товаром'
-                      }">${isMain ? 'да' : '<span class="badge draft">нет</span>'}</button>
-                    </td>`
-                  : `<td>${isMain ? 'да' : '<span class="badge draft">нет</span>'}</td>`;
+              const supplierLine = sheetSupplierLine(p);
               return `
           <tr class="clickable${isMain ? ' is-main-cp' : ''}">
-            ${mainCell}
             ${photoCell}
             <td>${isSvc ? 'Услуга' : 'Товар'}</td>
             <td>${Number(p.notupload) ? '<span class="badge draft">нет</span>' : 'да'}</td>
             <td class="mono"><a href="#" data-open="${esc(p.id)}">${esc(p.sku)}</a></td>
-            <td class="mono">${oldSkuLine(p) ? esc(oldSkuLine(p)) : '<span class="muted">—</span>'}</td>
+            <td class="mono">${factSkuLine(p) ? esc(factSkuLine(p)) : '<span class="muted">—</span>'}</td>
+            <td class="mono">${
+              supplierLine ? esc(supplierLine) : '<span class="muted">—</span>'
+            }</td>
             <td class="mono">${esc(p.code || '')}</td>
             <td><a href="#" data-open="${esc(p.id)}">${esc(productTitle(p))}</a></td>
             <td>${p.category ? esc(p.category) : '<span class="muted">—</span>'}</td>
@@ -8589,7 +8585,7 @@ async function renderProducts(opts = {}) {
         }
         <div class="grow"></div>
         <div class="find">
-          <input id="pq" placeholder="Артикул / старый номер / код / название" value="${esc(q)}" autocomplete="off" />
+          <input id="pq" placeholder="Мастер / номер на складе (факт) / код / название" value="${esc(q)}" autocomplete="off" />
           <button type="button" class="find-go" id="psearch">Найти</button>
         </div>`,
     }

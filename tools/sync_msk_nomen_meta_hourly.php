@@ -186,7 +186,7 @@ function reassignFactToMaster(
              INNER JOIN products p ON p.id = l.product_id
              WHERE l.fact_sku = '" . SQLite3::escapeString($fact) . "' COLLATE NOCASE
                AND l.product_id <> '" . SQLite3::escapeString($toPid) . "'
-               AND {$deptSql}"
+               AND {$deptJoin}"
         );
         while ($q && ($row = $q->fetchArray(SQLITE3_ASSOC))) {
             if (!$dryRun) {
@@ -401,6 +401,7 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
         'partner' => 0.0,
         'install' => 0.0,
         'supplier' => '',
+        'suppliers' => [],
         'app_prog' => '',
         'supply' => '',
         'category' => '',
@@ -433,6 +434,10 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
     $sup = cell($row, $iSup);
     if ($sup !== '') {
         $cur['supplier'] = $sup;
+        if (!isset($cur['suppliers']) || !is_array($cur['suppliers'])) {
+            $cur['suppliers'] = [];
+        }
+        $cur['suppliers'][$sup] = true;
     }
     $app = cell($row, $iAppProg);
     if ($app !== '') {
@@ -578,6 +583,7 @@ $stats = [
     'updated' => 0,
     'name' => 0,
     'warehouse_sku' => 0,
+    'sheet_supplier' => 0,
     'fact_moved' => 0,
     'fact_lots' => 0,
     'fact_cells' => 0,
@@ -717,26 +723,31 @@ try {
             foreach (array_keys($m['facts']) as $f) {
                 $f = strtoupper(trim((string) $f));
                 if ($f !== '') {
-                    $facts[$f] = true;
+                    $facts[$f] = $f; // значение-строка: PHP не должен отдать int в reassign
                 }
             }
         }
         if ($fact !== '') {
-            $facts[strtoupper($fact)] = true;
+            $f = strtoupper($fact);
+            $facts[$f] = $f;
         }
-        // primary warehouse_sku: сам мастер, иначе первый факт с листа
+        // Все факты с листа → warehouse_sku через «;» (поиск по любому номеру на складе)
+        $factList = array_values($facts);
+        // primary для переноса остатков: сам мастер, иначе последний/первый факт с листа
         $primaryFact = '';
-        if (isset($facts[strtoupper($sku)])) {
-            $primaryFact = strtoupper($sku);
+        $skuU = strtoupper($sku);
+        if (isset($facts[$skuU])) {
+            $primaryFact = $skuU;
         } elseif ($fact !== '') {
             $primaryFact = strtoupper($fact);
-        } elseif ($facts !== []) {
-            $primaryFact = (string) array_key_first($facts);
+        } elseif ($factList !== []) {
+            $primaryFact = (string) $factList[0];
         }
+        $warehouseSkuJoined = implode(';', $factList);
 
         $displayName = trim((string) ($m['name'] !== '' ? $m['name'] : ($prod['name'] ?? $sku)));
-        foreach (array_keys($facts) as $factSku) {
-            $mv = reassignFactToMaster($db, $factSku, $pid, $sku, $displayName, $dryRun);
+        foreach ($factList as $factSku) {
+            $mv = reassignFactToMaster($db, (string) $factSku, $pid, $sku, $displayName, $dryRun);
             if ($mv['moved'] > 0) {
                 $stats['fact_moved'] += $mv['moved'];
                 $stats['fact_lots'] += $mv['lots'];
@@ -746,15 +757,32 @@ try {
             }
         }
 
-        if ($primaryFact !== '' && $primaryFact !== (string) ($prod['warehouse_sku'] ?? '')) {
-            if (!$dryRun) {
-                $st = $db->prepare('UPDATE products SET warehouse_sku = :w WHERE id = :id');
-                $st->bindValue(':w', $primaryFact, SQLITE3_TEXT);
-                $st->bindValue(':id', $pid, SQLITE3_TEXT);
-                $st->execute();
+        if ($warehouseSkuJoined !== '' && $warehouseSkuJoined !== (string) ($prod['warehouse_sku'] ?? '')) {
+            // Не затирать вручную добавленные факты: мержим с текущим
+            $merged = [];
+            foreach (preg_split('/[;,|\/\n]+/', (string) ($prod['warehouse_sku'] ?? '')) ?: [] as $p) {
+                $p = strtoupper(trim((string) $p));
+                if ($p !== '' && $p !== $skuU) {
+                    $merged[$p] = $p;
+                }
             }
-            $stats['warehouse_sku']++;
-            $changed = true;
+            foreach ($factList as $p) {
+                $p = strtoupper(trim((string) $p));
+                if ($p !== '') {
+                    $merged[$p] = $p;
+                }
+            }
+            $warehouseSkuJoined = implode(';', array_values($merged));
+            if ($warehouseSkuJoined !== (string) ($prod['warehouse_sku'] ?? '')) {
+                if (!$dryRun) {
+                    $st = $db->prepare('UPDATE products SET warehouse_sku = :w WHERE id = :id');
+                    $st->bindValue(':w', $warehouseSkuJoined, SQLITE3_TEXT);
+                    $st->bindValue(':id', $pid, SQLITE3_TEXT);
+                    $st->execute();
+                }
+                $stats['warehouse_sku']++;
+                $changed = true;
+            }
         }
 
         $crosses = trim((string) $m['crosses']);
@@ -842,13 +870,35 @@ try {
         }
 
         // properties (replace known keys only)
+        $supJoined = '';
+        if (!empty($m['suppliers']) && is_array($m['suppliers'])) {
+            $supJoined = implode(';', array_keys($m['suppliers']));
+        } elseif (trim((string) ($m['supplier'] ?? '')) !== '') {
+            $supJoined = trim((string) $m['supplier']);
+        }
+        if ($supJoined !== '') {
+            $curSup = (string) $db->querySingle(
+                "SELECT IFNULL(sheet_supplier,'') FROM products WHERE id = '"
+                . SQLite3::escapeString($pid) . "'"
+            );
+            if ($curSup !== $supJoined) {
+                if (!$dryRun) {
+                    $st = $db->prepare('UPDATE products SET sheet_supplier = :s WHERE id = :id');
+                    $st->bindValue(':s', $supJoined, SQLITE3_TEXT);
+                    $st->bindValue(':id', $pid, SQLITE3_TEXT);
+                    $st->execute();
+                }
+                $stats['sheet_supplier'] = ($stats['sheet_supplier'] ?? 0) + 1;
+                $changed = true;
+            }
+        }
         $props = [
             'category' => (string) $m['category'],
             'axis' => (string) $m['axis'],
             'side' => (string) $m['side'],
             'drive' => (string) $m['drive'],
             'type' => (string) $m['type'],
-            'supplier_code' => (string) $m['supplier'],
+            'supplier_code' => $supJoined !== '' ? $supJoined : (string) $m['supplier'],
             'supply' => (string) $m['supply'],
             'applicability_program' => (string) $m['app_prog'],
             'nomen_source' => 'sheet:nomen-meta-hourly',

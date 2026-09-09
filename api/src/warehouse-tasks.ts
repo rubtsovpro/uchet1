@@ -26,6 +26,7 @@ import {
 } from './handoff-reserve.js';
 import { catalogArticleOf } from './product-display-name.js';
 import { ensureWarehouseCellsSchema } from './warehouse-cells.js';
+import { supplierLotFieldsForLine } from './supplier-lots.js';
 import {
   getDealAlreadyMovedLines,
   buildHandoffRouteBrief,
@@ -103,7 +104,7 @@ export function channelLabel(ch: string): string {
 export function statusLabel(st: string): string {
   const map: Record<string, string> = {
     new: 'Новое',
-    picking: 'Сборка',
+    picking: 'К отгрузке',
     packed: 'Упаковано',
     ready: 'К выдаче',
     handed: 'Сделано',
@@ -1053,8 +1054,8 @@ export const PICK_TYPE_ORDER: PickType[] = [
 
 export function pickTypeLabel(t: string): string {
   const map: Record<string, string> = {
-    production: 'На производство',
-    pick: 'Сборка',
+    production: 'Переделка',
+    pick: 'К отгрузке',
     pack: 'Упаковка',
     hand: 'Выдача',
     cdek: 'СДЭК',
@@ -2515,7 +2516,8 @@ function productStockQtyOnWarehouse(
 function enrichHandoffLine(
   line: Record<string, unknown>,
   warehouseId: string,
-  pickSite?: PickSiteId
+  pickSite?: PickSiteId,
+  dealIdOpt?: string
 ): Record<string, unknown> {
   const productId = String(line.product_id || '').trim();
   const p = productId
@@ -2550,6 +2552,18 @@ function enrichHandoffLine(
       cells_label: wLoc.cells_label,
     };
   });
+  const preferCell = String(
+    (Array.isArray(loc.cells) && loc.cells[0] && (loc.cells[0] as { cell_code?: string }).cell_code) ||
+      loc.cells_label ||
+      ''
+  )
+    .split(/[·,;\s]+/)[0]
+    ?.trim();
+  const dealId = String(dealIdOpt || line.deal_id || '').trim();
+  const lotFields = supplierLotFieldsForLine(productId, {
+    preferCell,
+    dealId: dealId || undefined,
+  });
   return {
     ...line,
     sku: String(p?.sku || line.sku || '').trim(),
@@ -2564,6 +2578,7 @@ function enrichHandoffLine(
     cells: loc.cells,
     cells_label: loc.cells_label,
     stock_wh,
+    ...lotFields,
   };
 }
 
@@ -2658,7 +2673,7 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
      ORDER BY l.line_no ASC, l.id ASC`,
     [id]
   ) as Array<Record<string, unknown>>;
-  const lines = rawLines.map((l) => enrichHandoffLine(l, warehouseId));
+  const lines = rawLines.map((l) => enrichHandoffLine(l, warehouseId, undefined, dealId));
   const routeKind = handoffRouteKindFromDoc({
     comment: commentStr,
     from_code: String(doc.warehouse_from_code || ''),
@@ -2741,6 +2756,10 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
     cell: string;
     bc: string;
     note?: string;
+    master_sku?: string;
+    fact_sku?: string;
+    supplier?: string;
+    lot_cell?: string;
   }) => {
     rowNo += 1;
     const chk = row.checked
@@ -2748,15 +2767,28 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
       : '<td class="c">☐</td>';
     const rowClass = row.checked ? ' class="row-done"' : '';
     const noteHtml = row.note ? `<div class="done-note">${pickEsc(row.note)}</div>` : '';
+    const master = String(row.master_sku || row.article || '').trim();
+    const fact = String(row.fact_sku || '').trim() || master;
+    const lotCell = String(row.lot_cell || '').trim();
+    const supplier = String(row.supplier || '').trim();
+    const lotBits: string[] = [];
+    if (master) lotBits.push(`Мастер: <b>${pickEsc(master)}</b>`);
+    if (fact) lotBits.push(`На складе: <b>${pickEsc(fact)}</b>`);
+    if (supplier) lotBits.push(`Поставщик: <b>${pickEsc(supplier)}</b>`);
+    if (lotCell) lotBits.push(`Яч.: <b>${pickEsc(lotCell)}</b>`);
+    const lotHtml = lotBits.length
+      ? `<div class="lot-meta">${lotBits.join(' · ')}</div>`
+      : '';
+    const bc = String(row.bc || fact || row.article || '').trim() || '—';
     return `<tr${rowClass}>
         <td class="c">${rowNo}</td>
         ${chk}
         <td class="l mono code-td">${pickEsc(row.code || '—')}</td>
         <td class="l mono">${pickEsc(row.article || '—')}</td>
-        <td class="l">${pickEsc(row.name || '—')}${noteHtml}</td>
+        <td class="l">${pickEsc(row.name || '—')}${lotHtml}${noteHtml}</td>
         <td class="c"><b>${pickEsc(String(row.qty ?? ''))}</b></td>
         <td class="l mono cell-td">${pickEsc(row.cell || '—')}</td>
-        <td class="l mono muted">${pickEsc(row.bc || '—')}</td>
+        <td class="l mono muted">${pickEsc(bc)}</td>
       </tr>`;
   };
 
@@ -2764,9 +2796,13 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
     .map((sr) => {
       const enriched = enrichHandoffLine(
         { product_id: sr.product_id, sku: sr.sku, name: sr.name, qty: sr.qty },
-        warehouseId
+        warehouseId,
+        undefined,
+        dealId
       );
       const note = [sr.doc_number, sr.current_label, 'уже отгружено'].filter(Boolean).join(' · ');
+      const master = String(enriched.master_sku || enriched.article || enriched.sku || sr.sku || '').trim();
+      const fact = String(enriched.fact_sku || '').trim() || master;
       return renderPrintSlipRow({
         checked: true,
         code: String(enriched.code || '').trim(),
@@ -2774,8 +2810,12 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
         name: String(sr.name || ''),
         qty: sr.qty,
         cell: String(sr.cell_code || '').trim() || '—',
-        bc: String(enriched.barcode || '').trim() || String(enriched.article || sr.sku || ''),
+        bc: fact,
         note,
+        master_sku: master,
+        fact_sku: fact,
+        supplier: String(enriched.supplier || '').trim(),
+        lot_cell: String(enriched.lot_cell_code || sr.cell_code || '').trim(),
       });
     })
     .join('');
@@ -2786,11 +2826,14 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
       if (shippedByProduct.has(pid)) return '';
       const code = String(l.code || '').trim();
       const article = String(l.article || l.sku || '').trim();
-      const bc = String(l.barcode || '').trim() || article;
+      const master = String(l.master_sku || article || '').trim();
+      const fact = String(l.fact_sku || '').trim() || master;
+      const lotCell = String(l.lot_cell_code || '').trim();
       const cells = Array.isArray(l.cells) ? (l.cells as HandoffPickCell[]) : [];
       const cellCode =
         String(l.cells_label || '').trim() ||
         cells.map((c) => String(c.cell_code || '').trim()).filter(Boolean).join(', ') ||
+        lotCell ||
         '—';
       return renderPrintSlipRow({
         checked: false,
@@ -2799,8 +2842,12 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
         name: String(l.name || '—'),
         qty: Number(l.qty) || 0,
         cell: cellCode,
-        bc,
+        bc: fact,
         note: 'к сборке',
+        master_sku: master,
+        fact_sku: fact,
+        supplier: String(l.supplier || '').trim(),
+        lot_cell: lotCell || cellCode.replace(/\s*\(\d+\)\s*$/, '').trim(),
       });
     })
     .filter(Boolean)
@@ -2881,6 +2928,8 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
   .chk-done { color: #047857; font-weight: 900; font-size: 16px; }
   .chk-shipped { color: #047857; font-weight: 900; font-size: 16px; }
   .done-note { font-size: 10px; color: #6b7280; font-weight: 600; margin-top: 2px; }
+  .lot-meta { font-size: 11px; color: #0d7377; font-weight: 600; margin-top: 4px; line-height: 1.35; }
+  .lot-meta b { font-weight: 800; color: #063e40; }
   .foot { margin-top: 14px; font-size: 11px; color: #666; border-top: 1px dashed #aaa; padding-top: 8px; }
   .sign { margin-top: 18px; display: flex; gap: 24px; }
   .sign div { flex: 1; border-top: 1px solid #333; padding-top: 4px; font-size: 11px; }
@@ -3509,6 +3558,17 @@ function filterHandoffPickRowsBySite(
   siteFilter: string,
   actor?: PickActor | null
 ): Array<Record<string, unknown>> {
+  // Один SELECT на сделку за вызов списка (иначе total×500 и handoffs×120 бьют crm_deals).
+  const siteByDeal = new Map<string, ReturnType<typeof resolvePickSiteForDeal>>();
+  const siteOf = (dealId: string, whId: string) => {
+    const key = dealId || `wh:${whId}`;
+    let site = siteByDeal.get(key);
+    if (!site) {
+      site = resolvePickSiteForDeal(dealId, whId);
+      siteByDeal.set(key, site);
+    }
+    return site;
+  };
   if (siteFilter === 'all') {
     return rows.filter((row) => dealAllowedForPickActor(String(row.deal_id || '').trim(), actor));
   }
@@ -3516,7 +3576,7 @@ function filterHandoffPickRowsBySite(
     const dealId = String(row.deal_id || '').trim();
     const whId = String(row.warehouse_id || '').trim();
     if (!dealAllowedForPickActor(dealId, actor)) return false;
-    return resolvePickSiteForDeal(dealId, whId) === siteFilter;
+    return siteOf(dealId, whId) === siteFilter;
   });
 }
 
@@ -3765,7 +3825,7 @@ function mapHandoffPickRow(
      ORDER BY l.line_no ASC, l.id ASC`,
     [id]
   ) as Array<Record<string, unknown>>;
-  const enrichedLines = lines.map((l) => enrichHandoffLine(l, warehouseId, pickSite));
+  const enrichedLines = lines.map((l) => enrichHandoffLine(l, warehouseId, pickSite, dealId));
   const deal = dealId ? dealPickContext(dealId) : null;
   const warehouseToIdRaw = String(row.warehouse_to_id || '').trim();
   const isReserve =
@@ -3907,6 +3967,11 @@ function mapHandoffPickRow(
       needs_pick: !shipped,
       shipped_cell: String(shipped?.cell_code || ''),
       done_cell: doneCell,
+      master_sku: String(l.master_sku || ''),
+      fact_sku: String(l.fact_sku || ''),
+      supplier: String(l.supplier || ''),
+      lot_cell_code: String(l.lot_cell_code || ''),
+      lot_warehouse_name: String(l.lot_warehouse_name || ''),
     };
     }),
     doc_href: `/docs/${encodeURIComponent(id)}`,

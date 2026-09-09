@@ -38,6 +38,13 @@ export const DEAL_SALES_PREFIX: Record<string, string> = {
 
 export function salesNumberFromDeal(docType: string, dealId: string): string {
   if (!(docType in DEAL_SALES_PREFIX)) throw new Error(`Нет префикса для типа ${docType}`);
+  const deal = String(dealId || '')
+    .trim()
+    .replace(/\s+/g, '');
+  // ЗН один на сделку: номер = id заказа, без «-2/-20».
+  if (docType === 'workorder') {
+    return deal;
+  }
   const prefix = DEAL_SALES_PREFIX[docType] ?? '';
   return numberFromDeal(prefix, dealId, (n) =>
     Boolean(get('SELECT id FROM sales_docs WHERE number = ? LIMIT 1', [n]))

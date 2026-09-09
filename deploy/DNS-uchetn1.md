@@ -91,7 +91,7 @@ Env: `PAY_PUBLIC_URL=https://pay.pnevmopodveska1.ru` в `/etc/warehouse-wms.env`
 Без PROXY protocol nginx видит только `127.0.0.1`.
 
 - HAProxy: `server nginx_ssl 127.0.0.1:4443 send-proxy-v2` (см. `deploy/haproxy-sni-443.cfg`)
-- Обход для мобильного интернета, если `https://uchetn1.ru` таймаутит на :443: **`https://uchetn1.ru:9443/`** (тот же HAProxy/SNI)
+- Если у оператора раньше таймаутил `:443`: на VPS стоят **TCPMSS 1200** + `ssl_buffer_size 1400` (см. `/etc/iptables/rules.v4`, `iptables-mss.service`). Запасной обход: **`https://uchetn1.ru:9443/`**
 - nginx: `listen … proxy_protocol` + `real_ip_header proxy_protocol` (`deploy/nginx-uchetn1-ssl-mtu.conf`)
 - API: `clientIpFromHeaders` берёт первый публичный IP из `X-Real-IP` / `X-Forwarded-For`
 

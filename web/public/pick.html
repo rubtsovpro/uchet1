@@ -3248,16 +3248,16 @@
       const serialsReady = isProduction
         ? true
         : lineList.every((l) => {
-            const need = Math.max(0, Math.ceil(Number(l.need || l.qty) || 0));
-            if (need <= 0) return true;
-            const serials = Array.isArray(l.serials)
-              ? l.serials.map((s) => String(s || '').trim()).filter(Boolean)
-              : String(l.item_number || '')
-                  .split(',')
-                  .map((s) => s.trim())
-                  .filter(Boolean);
-            return serials.length >= need;
-          });
+        const need = Math.max(0, Math.ceil(Number(l.need || l.qty) || 0));
+        if (need <= 0) return true;
+        const serials = Array.isArray(l.serials)
+          ? l.serials.map((s) => String(s || '').trim()).filter(Boolean)
+          : String(l.item_number || '')
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+        return serials.length >= need;
+      });
       const canDone = serialsReady && !needRb;
       const pay =
         !isSto && t.can_hand === false
@@ -3326,7 +3326,7 @@
           ? '<div class="prod-send-title">Уходит на производство</div>'
           : isProduction && t.channel === 'production_receive'
             ? '<div class="prod-send-title">Какие детали после производства получились</div>'
-            : '';
+        : '';
       const taskNum = String(t.number || t.barcode || '').trim() || '—';
       const deal = t.deal && typeof t.deal === 'object' ? t.deal : {};
       const resp =
@@ -4482,7 +4482,7 @@
     }
 
     function productionFormBusy() {
-      const ae = document.activeElement;
+          const ae = document.activeElement;
       if (!ae) return false;
       return !!(ae.closest && ae.closest('[data-prod-task]'));
     }
@@ -5684,10 +5684,10 @@
       if (h.is_ship) {
         const ship = String((deal && deal.amo_shipment) || '').trim();
         const lbl = handoffIsCdek(deal) ? 'СДЭК' : ship || 'Отправка';
-        return (
+      return (
           ' <span class="handoff-reserve-badge" style="background:#fef3c7;color:#92400e">' +
           esc(lbl) +
-          '</span>'
+            '</span>'
         );
       }
       return '';
@@ -8846,8 +8846,8 @@
       const ta =
         e.target && e.target.matches && e.target.matches('[data-handoff-cancel-comment]') ? e.target : null;
       if (ta) {
-        const key = String(ta.getAttribute('data-handoff-cancel-comment') || '').trim();
-        if (key) handoffCancelDrafts.set(key, String(ta.value || ''));
+      const key = String(ta.getAttribute('data-handoff-cancel-comment') || '').trim();
+      if (key) handoffCancelDrafts.set(key, String(ta.value || ''));
         return;
       }
       const pickEl =
@@ -8886,8 +8886,8 @@
     load()
       .then(() => {
         if (!IS_PROD_SCREEN) {
-          startChatWidget();
-          ensurePickPush().catch(() => {});
+        startChatWidget();
+        ensurePickPush().catch(() => {});
         }
         if (pendingTaskId && selectedId === pendingTaskId) {
           const detail = document.querySelector('.row.open .detail');
