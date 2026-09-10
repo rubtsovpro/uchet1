@@ -9753,8 +9753,8 @@ button.linkish:hover {
 
 .media-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
 }
 .media-grid a.media-item,
 .media-grid div.media-item {
@@ -9829,14 +9829,14 @@ button.linkish:hover {
 }
 .media-grid .media-title-badge {
   position: absolute;
-  bottom: 46px;
-  left: 4px;
+  bottom: 52px;
+  left: 6px;
   z-index: 2;
   background: #1a7f37;
   color: #fff;
   border-radius: 3px;
-  padding: 2px 6px;
-  font-size: 10px;
+  padding: 3px 8px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1.2;
   pointer-events: none;
