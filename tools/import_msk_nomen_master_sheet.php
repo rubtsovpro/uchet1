@@ -266,7 +266,18 @@ $iMarks = colIndex($header, ['марки'], false);
 $iModel = colIndex($header, ['модель'], false);
 $iBody = colIndex($header, ['кузова']);
 $iYears = colIndex($header, ['годы'], false);
-$iApp = colIndex($header, ['применимость (все машины)', 'применимость']);
+// Столбец Y «ПРИМЕНИМОСТЬ (все машины)» — не путать с G «Применимость программная».
+$iApp = colIndex($header, ['применимость (все машины)'], false);
+if ($iApp === null) {
+    foreach ($header as $hi => $hh) {
+        $hn = mb_strtolower(trim((string) $hh), 'UTF-8');
+        if (str_contains($hn, 'применимость') && str_contains($hn, 'все машин')) {
+            $iApp = (int) $hi;
+            break;
+        }
+    }
+}
+fwrite(STDERR, 'cols app(Y)=' . json_encode($iApp) . "\n");
 $iOe = colIndex($header, ['ое — один проверенный номер', 'ое —']);
 $iOld = colIndex($header, ['старые mraer (склад/история)', 'старые mraer']);
 $iT = colIndex($header, ['mraer t'], false);
@@ -750,7 +761,8 @@ try {
             $delApp->execute();
             $appRows = [];
             if (trim((string) $m['applicability']) !== '') {
-                foreach (parseApplicabilityAllCars((string) $m['applicability']) as $row) {
+                // Y: «марка | модель | поколение | годы ‖ …»
+                foreach (parseSheetApplicabilityColumn((string) $m['applicability']) as $row) {
                     $appRows[] = [
                         'mark' => $row['mark'],
                         'model' => $row['model'],

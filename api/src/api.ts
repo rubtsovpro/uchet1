@@ -110,6 +110,7 @@ import {
   addProductVideoLink,
   deleteProductMediaItem,
   deleteProductMediaBatch,
+  reorderProductMediaImages,
   sqlMasterImagesCountExpr,
   sqlMasterThumbUrlExpr,
   listProductMediaForDisplay,
@@ -9219,6 +9220,35 @@ api.post('/media/products/:id/photos/delete', async (c) => {
     after: batch,
   });
   return c.json({ ok: true, ...batch });
+});
+
+/** Порядок фото: первое в списке = титульное (превью в списках). */
+api.post('/media/products/:id/photos/reorder', async (c) => {
+  const actor = actorFromContext(c);
+  if (!canUploadProductPhoto(actor)) {
+    return c.json({ error: 'Недостаточно прав' }, 403);
+  }
+  const id = c.req.param('id');
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: string[]; media_ids?: string[] };
+  const ids = Array.isArray(body.ids)
+    ? body.ids
+    : Array.isArray(body.media_ids)
+      ? body.media_ids
+      : [];
+  try {
+    const result = reorderProductMediaImages(id, ids.map(String));
+    auditFromContext(c, {
+      action: 'media.reorder',
+      entity: 'product',
+      entityId: id,
+      summary: `Изменён порядок фото · титульное первым`,
+      after: result,
+    });
+    return c.json({ ...result, ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'reorder failed';
+    return c.json({ error: msg }, /Нужно|меньше|сопоставить|не указан/i.test(msg) ? 400 : 500);
+  }
 });
 
 /** Статус смены фотографа. */

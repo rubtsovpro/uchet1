@@ -7370,6 +7370,10 @@ async function renderProductDetail(id) {
     canAccessSectionMe('media') ||
     canAccessSectionMe('photo') ||
     canAccessSectionMe('warehouse');
+  const canReorderPhotos =
+    canUploadPhoto &&
+    images.length > 1 &&
+    images.every((m) => !m.product_id || String(m.product_id) === String(id));
   if (p.category_id && !state.categories.some((c) => c.id === p.category_id)) {
     state.categories = [
       { id: p.category_id, name: p.category || p.category_id },
@@ -7567,22 +7571,34 @@ async function renderProductDetail(id) {
             canUploadPhoto
               ? `<div class="pe-media-tools">
             <button type="button" id="pe-photo-del-sel" disabled>Удалить выбранные</button>
-            <span class="muted" style="font-size:12px">Отметьте фото галочкой · удаление пишется в историю</span>
+            <span class="muted" style="font-size:12px">${
+              canReorderPhotos
+                ? 'Перетащите фото · первое = титульное · галочка — удаление в историю'
+                : 'Отметьте фото галочкой · удаление пишется в историю'
+            }</span>
           </div>`
               : ''
           }
-        <div class="media-grid" id="pe-media-grid">${images
-            .map((m) => {
+        <div class="media-grid${canReorderPhotos ? ' is-sortable' : ''}" id="pe-media-grid">${images
+            .map((m, idx) => {
               const ol = orientLabel(m.orientation);
               const dims =
                 m.width && m.height ? `${m.width}×${m.height}` : '';
               const tip = [ol, dims].filter(Boolean).join(' · ') || 'ориентация не определена';
               const mid = esc(m.id);
+              const titleBadge =
+                canReorderPhotos && idx === 0
+                  ? '<span class="media-title-badge" title="Титульное фото">Титул</span>'
+                  : '';
               if (canUploadPhoto) {
-                return `<div class="media-item orient-${esc(m.orientation || 'unknown')}" data-media-id="${mid}" title="${esc(tip)}">
+                return `<div class="media-item orient-${esc(m.orientation || 'unknown')}" data-media-id="${mid}"${
+                  canReorderPhotos ? ' draggable="true"' : ''
+                } title="${esc(tip)}${canReorderPhotos ? ' · перетащите для смены порядка' : ''}">
+                  ${canReorderPhotos ? '<span class="media-drag" title="Перетащить" aria-hidden="true">⋮⋮</span>' : ''}
+                  ${titleBadge}
                   <label class="media-check"><input type="checkbox" class="pe-media-check" value="${mid}" /></label>
                   <a class="media-thumb" href="${esc(m.url)}" target="_blank" rel="noopener">
-                    <img src="${esc(m.url)}" alt="" loading="lazy" />
+                    <img src="${esc(m.url)}" alt="" loading="lazy" draggable="false" />
                   </a>
                   <span class="media-orient">${esc(ol || '—')}${dims ? ' · ' + esc(dims) : ''}</span>
                   <button type="button" class="linkish pe-media-del" data-media-id="${mid}">удалить</button>
@@ -8023,6 +8039,112 @@ async function renderProductDetail(id) {
         syncDelSel();
       }
     };
+  }
+  const mediaGrid = document.getElementById('pe-media-grid');
+  if (mediaGrid && canReorderPhotos && mediaGrid.classList.contains('is-sortable')) {
+    let dragEl = null;
+    let reorderBusy = false;
+    const refreshTitleBadges = () => {
+      mediaGrid.querySelectorAll('.media-title-badge').forEach((el) => el.remove());
+      const first = mediaGrid.querySelector('.media-item[data-media-id]');
+      if (!first) return;
+      const badge = document.createElement('span');
+      badge.className = 'media-title-badge';
+      badge.title = 'Титульное фото';
+      badge.textContent = 'Титул';
+      first.appendChild(badge);
+    };
+    const saveOrder = async () => {
+      if (reorderBusy) return;
+      const ids = [...mediaGrid.querySelectorAll('.media-item[data-media-id]')].map((el) =>
+        String(el.getAttribute('data-media-id') || '').trim()
+      ).filter(Boolean);
+      if (ids.length < 2) return;
+      const msg = document.getElementById('pmedia-msg');
+      reorderBusy = true;
+      if (msg) msg.textContent = 'Сохраняю порядок фото…';
+      try {
+        await api('/media/products/' + encodeURIComponent(id) + '/photos/reorder', {
+          method: 'POST',
+          body: JSON.stringify({ ids }),
+        });
+        if (msg) msg.textContent = 'Порядок сохранён · первое фото — титульное';
+        refreshTitleBadges();
+      } catch (err) {
+        if (msg) msg.textContent = err.message || String(err);
+        renderProductDetail(id);
+      } finally {
+        reorderBusy = false;
+      }
+    };
+    mediaGrid.querySelectorAll('.media-item[data-media-id]').forEach((item) => {
+      item.addEventListener('dragstart', (ev) => {
+        if (ev.target?.closest?.('input, button, label.media-check')) {
+          ev.preventDefault();
+          return;
+        }
+        dragEl = item;
+        item.classList.add('is-dragging');
+        try {
+          ev.dataTransfer.setData('text/plain', item.getAttribute('data-media-id') || '');
+          ev.dataTransfer.effectAllowed = 'move';
+        } catch (_) {
+          /* ignore */
+        }
+      });
+      // Не открывать фото в новой вкладке, если это был drag
+      const thumb = item.querySelector('a.media-thumb');
+      if (thumb) {
+        let dragged = false;
+        item.addEventListener('dragstart', () => {
+          dragged = true;
+        });
+        item.addEventListener('dragend', () => {
+          setTimeout(() => {
+            dragged = false;
+          }, 0);
+        });
+        thumb.addEventListener('click', (ev) => {
+          if (dragged) {
+            ev.preventDefault();
+            ev.stopPropagation();
+          }
+        });
+      }
+      item.addEventListener('dragend', () => {
+        item.classList.remove('is-dragging');
+        mediaGrid.querySelectorAll('.media-item').forEach((el) => el.classList.remove('drag-over'));
+        dragEl = null;
+      });
+      item.addEventListener('dragover', (ev) => {
+        ev.preventDefault();
+        if (!dragEl || dragEl === item) return;
+        try {
+          ev.dataTransfer.dropEffect = 'move';
+        } catch (_) {
+          /* ignore */
+        }
+        mediaGrid.querySelectorAll('.media-item').forEach((el) => el.classList.remove('drag-over'));
+        item.classList.add('drag-over');
+        const rect = item.getBoundingClientRect();
+        const before = ev.clientX < rect.left + rect.width / 2;
+        if (before) mediaGrid.insertBefore(dragEl, item);
+        else mediaGrid.insertBefore(dragEl, item.nextSibling);
+      });
+      item.addEventListener('drop', (ev) => {
+        ev.preventDefault();
+        item.classList.remove('drag-over');
+        saveOrder();
+      });
+    });
+    mediaGrid.addEventListener('dragover', (ev) => {
+      if (dragEl) ev.preventDefault();
+    });
+    mediaGrid.addEventListener('drop', (ev) => {
+      if (!dragEl) return;
+      ev.preventDefault();
+      saveOrder();
+    });
   }
   const syncProductOnlyFields = () => {
     const kind = document.getElementById('pe-kind')?.value || 'product';

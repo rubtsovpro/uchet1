@@ -283,6 +283,47 @@ export function deleteProductMediaBatch(
   return { deleted: deletedIds.length, ids: deletedIds, kinds };
 }
 
+/**
+ * Порядок фото карточки: ids слева направо, первое = титульное (sort_order 0).
+ * Не принадлежащие товару / не image — пропускаем; остальные image сдвигаем в хвост.
+ */
+export function reorderProductMediaImages(
+  productId: string,
+  mediaIds: string[]
+): { ok: boolean; ordered: string[]; title_id: string | null } {
+  const pid = String(productId || '').trim();
+  if (!pid) throw new Error('Товар не указан');
+  const wanted = [
+    ...new Set((mediaIds || []).map((x) => String(x || '').trim()).filter(Boolean)),
+  ].slice(0, 200);
+  if (wanted.length < 2) throw new Error('Нужно минимум 2 фото для смены порядка');
+
+  const existing = all<{ id: string }>(
+    `SELECT id FROM product_media
+     WHERE product_id = ? AND kind = 'image'
+     ORDER BY sort_order, synced_at`,
+    [pid]
+  ).map((r) => String(r.id));
+  if (existing.length < 2) throw new Error('На карточке меньше двух своих фото');
+
+  const own = new Set(existing);
+  const ordered: string[] = [];
+  for (const id of wanted) {
+    if (!own.has(id) || ordered.includes(id)) continue;
+    ordered.push(id);
+  }
+  for (const id of existing) {
+    if (!ordered.includes(id)) ordered.push(id);
+  }
+  if (ordered.length < 2) throw new Error('Не удалось сопоставить фото карточки');
+
+  const upd = `UPDATE product_media SET sort_order = ? WHERE id = ? AND product_id = ?`;
+  ordered.forEach((id, idx) => {
+    run(upd, [idx, id, pid]);
+  });
+  return { ok: true, ordered, title_id: ordered[0] || null };
+}
+
 async function uploadProductImages(
   cfg: S3Config,
   productId: string,

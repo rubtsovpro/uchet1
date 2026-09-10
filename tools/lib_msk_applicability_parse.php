@@ -305,8 +305,7 @@ if (!function_exists('enrichApplicabilityOnlyModel')) {
 
 if (!function_exists('parseProgrammaticApplicability')) {
     /**
-     * Разбор «Применимость программная»:
-     *   марка | модель | поколение | годы ‖ марка | модель | поколение | годы
+     * Разбор «марка | модель | поколение | годы ‖ …» (столбец Y / G).
      *
      * @return list<array{mark:string,model:string,generation:string,years:string}>
      */
@@ -351,5 +350,34 @@ if (!function_exists('parseProgrammaticApplicability')) {
         }
 
         return $out;
+    }
+}
+
+if (!function_exists('parseSheetApplicabilityColumn')) {
+    /**
+     * Колонка Y «ПРИМЕНИМОСТЬ (все машины)» (и G «программная»):
+     *   марка | модель | поколение | годы ‖ …
+     * Иначе — свободный текст через parseApplicabilityAllCars.
+     *
+     * @return list<array{mark:string,model:string,generation:string,years:string}>
+     */
+    function parseSheetApplicabilityColumn(string $text): array
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return [];
+        }
+        // Формат с ‖ / || или ≥2 разделителями |.
+        if (
+            preg_match('/‖|\|\|/u', $text)
+            || substr_count($text, '|') >= 2
+        ) {
+            $rows = parseProgrammaticApplicability($text);
+            if ($rows !== []) {
+                return $rows;
+            }
+        }
+
+        return parseApplicabilityAllCars($text);
     }
 }

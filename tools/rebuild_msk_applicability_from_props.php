@@ -81,7 +81,7 @@ foreach ($masters as $m) {
     }
     $prs->finalize();
 
-    $rows = parseApplicabilityAllCars($props['applicability']);
+    $rows = parseSheetApplicabilityColumn($props['applicability']);
     if ($rows !== []) {
         $stats['from_app_col']++;
     } else {

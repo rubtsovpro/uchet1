@@ -10,9 +10,9 @@
  *
  * Берём / обновляем:
  *   A MRAER мастер, B Номер на складе (факт), C Цена, D Партнерская, E Снятие/Установка,
- *   F Поставщик, G Применимость программная, K № поставки,
- *   N Категория, O Номенклатура 1С, P Ось, Q Сторона, R Привод, S Тип/исполнение,
- *   BA КРОССЫ → array_sku
+ *   F Поставщик, G Применимость программная (fallback),
+ *   Y ПРИМЕНИМОСТЬ (все машины) — основной источник применимости в пикер,
+ *   K № поставки, N Категория, O Номенклатура 1С, …
  *
  * Факт с листа → этот мастер: если раньше висел на другом мастере подвески —
  * переносим (lots + product_id в ячейках), qty/ячейка/склад сохраняются.
@@ -346,6 +346,17 @@ $iPartner ??= colIndex($header, ['партнерская', 'партнёрска
 $iInstall ??= colIndex($header, ['снятие/установка', 'снятие']);
 $iSup = colIndex($header, ['поставщик (по коду)', 'поставщик']);
 $iAppProg = colIndex($header, ['применимость программная']);
+// Y «ПРИМЕНИМОСТЬ (все машины)» — основной источник применимости в пикер.
+$iAppAll = colIndex($header, ['применимость (все машины)'], false);
+if ($iAppAll === null) {
+    foreach ($header as $i => $h) {
+        $hn = mb_strtolower(trim((string) $h), 'UTF-8');
+        if (str_contains($hn, 'применимость') && str_contains($hn, 'все машин')) {
+            $iAppAll = (int) $i;
+            break;
+        }
+    }
+}
 $iSupply = colIndex($header, ['№ поставки (склад)', '№ поставки', 'поставки']);
 $iCat = colIndex($header, ['категория'], false);
 $iName = colIndex($header, ['номенклатура 1с']);
@@ -378,6 +389,7 @@ sync_log('cols: master=' . json_encode($iMaster)
     . ' retail=' . json_encode($iRetail)
     . ' partner=' . json_encode($iPartner)
     . ' install=' . json_encode($iInstall)
+    . ' appY=' . json_encode($iAppAll)
     . ' appProg=' . json_encode($iAppProg)
     . ' cross=' . json_encode($iCross));
 
@@ -403,6 +415,7 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
         'supplier' => '',
         'suppliers' => [],
         'app_prog' => '',
+        'app_all' => '',
         'supply' => '',
         'category' => '',
         'name' => '',
@@ -438,6 +451,10 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
             $cur['suppliers'] = [];
         }
         $cur['suppliers'][$sup] = true;
+    }
+    $appY = cell($row, $iAppAll);
+    if ($appY !== '') {
+        $cur['app_all'] = $appY;
     }
     $app = cell($row, $iAppProg);
     if ($app !== '') {
@@ -900,6 +917,7 @@ try {
             'type' => (string) $m['type'],
             'supplier_code' => $supJoined !== '' ? $supJoined : (string) $m['supplier'],
             'supply' => (string) $m['supply'],
+            'applicability' => (string) ($m['app_all'] ?? ''),
             'applicability_program' => (string) $m['app_prog'],
             'nomen_source' => 'sheet:nomen-meta-hourly',
         ];
@@ -933,10 +951,13 @@ try {
             $changed = true;
         }
 
-        // applicability from programmatic column only
-        $appText = trim((string) $m['app_prog']);
+        // Применимость: столбец Y «ПРИМЕНИМОСТЬ (все машины)», fallback G программная.
+        $appText = trim((string) ($m['app_all'] ?? ''));
+        if ($appText === '') {
+            $appText = trim((string) $m['app_prog']);
+        }
         if ($appText !== '') {
-            $appRows = enrichApplicabilityOnlyModel(parseProgrammaticApplicability($appText));
+            $appRows = enrichApplicabilityOnlyModel(parseSheetApplicabilityColumn($appText));
             $want = [];
             foreach ($appRows as $ar) {
                 $want[] = mb_strtolower(
