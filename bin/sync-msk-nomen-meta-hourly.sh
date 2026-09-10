@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Hourly cron wrapper: MSK nomen meta → WMS (подвеска only, no stock).
+# MSK nomen meta → WMS (подвеска only, no stock).
+# Cron ОТКЛЮЧЁН 2026-09-10 (/etc/cron.d/wms-msk-nomen-meta удалён).
+# Ручной запуск: php tools/sync_msk_nomen_meta_hourly.php --apply
 set -euo pipefail
 
 ROOT="${WMS_ROOT:-/root/1c_pnevmopodveska1_ru/warehouse}"
