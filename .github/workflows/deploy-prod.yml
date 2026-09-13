@@ -65,23 +65,22 @@ jobs:
             code=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:3101/api/health || true)
             echo "health $code"
             test "$code" = "200"
-            # Досписание со СТО по успешным сделкам (+ примечание в Amo)
-            set +e
-            # shellcheck disable=SC1091
-            set -a
-            source /etc/warehouse-wms.env 2>/dev/null || true
-            set +a
-            KEY="${WMS_JSON_KEY:-${WMS_INGEST_KEY:-${WMS_API_KEY:-}}}"
-            if [[ -n "$KEY" ]]; then
-              echo "sto-sale-writeoffs:"
-              curl -sS -X POST "http://127.0.0.1:3101/api/cron/sto-sale-writeoffs?limit=80" \
-                -H "X-Wms-Key: ${KEY}" \
-                -H "Authorization: Bearer ${KEY}" | head -c 4000
-              echo
-            else
-              echo "sto-sale-writeoffs: skip (no machine key in /etc/warehouse-wms.env)"
-            fi
-            set -e
+            # Досписание со СТО — не валим деплой, если ключ/env кривые
+            (
+              set +eu
+              # shellcheck disable=SC1091
+              [ -f /etc/warehouse-wms.env ] && . /etc/warehouse-wms.env
+              KEY="${WMS_JSON_KEY:-${WMS_INGEST_KEY:-${WMS_API_KEY:-}}}"
+              if [ -n "$KEY" ]; then
+                echo "sto-sale-writeoffs:"
+                curl -sS -X POST "http://127.0.0.1:3101/api/cron/sto-sale-writeoffs?limit=80" \
+                  -H "X-Wms-Key: ${KEY}" \
+                  -H "Authorization: Bearer ${KEY}" | head -c 4000
+                echo
+              else
+                echo "sto-sale-writeoffs: skip (no machine key)"
+              fi
+            ) || echo "sto-sale-writeoffs: non-fatal error"
             echo "OK $(git rev-parse --short HEAD)"
 
       - name: Telegram · deploy OK
