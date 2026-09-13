@@ -296,6 +296,24 @@ export function createDocument(input: {
   const basisOrderId = String(input.basis_order_id || '').trim();
   const sourceSupplierOrderId = String(input.source_supplier_order_id || '').trim();
   const supplyNumber = String(input.supply_number || '').trim();
+  const commentStr = String(input.comment || '');
+  const isAdminStockFix = /^(Коррекция остатков|Инвентаризация)\b/i.test(commentStr.trim());
+  // Списание со склада — только по реализации заказа. Исключение: админ-коррекция / инвентаризация.
+  if (input.doc_type === 'out' && !dealId && !isAdminStockFix) {
+    throw new Error(
+      'Списание создаётся только по реализации заказа покупателя — укажите номер заказа'
+    );
+  }
+  // Спуск / передача на склад / СРОЧНО — без сделки нельзя.
+  if (
+    !dealId &&
+    (/Спуск на СТО|СРОЧНО на СТО|Передача на склад/i.test(commentStr) ||
+      (input.doc_type === 'transfer' &&
+        isDealFlowWarehouseId(String(input.warehouse_id || '')) &&
+        isDealFlowWarehouseId(String(input.warehouse_to_id || ''))))
+  ) {
+    throw new Error('Спуск / передача на склад только по сделке (заказу покупателя)');
+  }
   // Расходная по заказу: Р{номер сделки Amo}; иначе старая серия OUT…
   const number =
     input.doc_type === 'out' && dealId
@@ -821,6 +839,24 @@ function isAutoSysWarehouse(w: { code?: string; name?: string } | null | undefin
   return false;
 }
 
+/** СТО / Резерв / Отложено — перемещения только со сделкой (заказом). */
+function isDealFlowWarehouse(w: { code?: string } | null | undefined): boolean {
+  const code = String(w?.code || '')
+    .trim()
+    .toUpperCase();
+  return code === 'STO' || /^STO-RSV/.test(code) || /^STO-RES/.test(code) || code === 'COURIER';
+}
+
+function isDealFlowWarehouseId(warehouseId: string): boolean {
+  const id = String(warehouseId || '').trim();
+  if (!id) return false;
+  const row = get<{ code: string }>(
+    `SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`,
+    [id]
+  );
+  return isDealFlowWarehouse(row);
+}
+
 export function createTransferRequestFromBalances(input: {
   warehouseFromId: string;
   warehouseToId: string;
@@ -864,6 +900,13 @@ export function createTransferRequestFromBalances(input: {
   }
   if (isAutoSysWarehouse(toWh)) {
     throw new Error('На автосклад нельзя оформить ручной заказ на перемещение — перемещения только автоматически');
+  }
+  const dealIdEarly = String(input.deal_id || '').trim();
+  // Спуск / движение по СТО·Резерв·Отложено — только со сделкой (заказом покупателя).
+  if ((isDealFlowWarehouse(fromWh) || isDealFlowWarehouse(toWh)) && !dealIdEarly) {
+    throw new Error(
+      'Перемещение по СТО / Резерв / Отложено только по сделке (заказу покупателя) — укажите deal_id'
+    );
   }
 
   const balances = all<{ product_id: string; qty: number; sku: string; name: string }>(

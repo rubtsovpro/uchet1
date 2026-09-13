@@ -41,6 +41,8 @@ import {
   handoffHoldWarehouseIdForSite,
   resolveHandoffSourceWarehouseId,
   isToStoHandoffComment,
+  movedQtyMapForDeal,
+  dealReservePendingToStoLines,
   type HandoffRouteKind,
 } from './deal-stock-flow.js';
 import { actorAllowedCompanyIds, type StaffRights } from './staff.js';
@@ -2768,7 +2770,6 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
 
   const renderPrintSlipRow = (row: {
     checked: boolean;
-    code: string;
     article: string;
     name: string;
     qty: number | string;
@@ -2802,12 +2803,11 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
     return `<tr${rowClass}>
         <td class="c">${rowNo}</td>
         ${chk}
-        <td class="l mono code-td">${pickEsc(row.code || '—')}</td>
         <td class="l mono">${pickEsc(row.article || '—')}</td>
         <td class="l">${pickEsc(row.name || '—')}${lotHtml}${noteHtml}</td>
         <td class="c"><b>${pickEsc(String(row.qty ?? ''))}</b></td>
         <td class="l mono cell-td">${pickEsc(row.cell || '—')}</td>
-        <td class="l mono muted">${pickEsc(bc)}</td>
+        <td class="l mono bc-td">${pickEsc(bc)}</td>
       </tr>`;
   };
 
@@ -2824,7 +2824,6 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
       const fact = String(enriched.fact_sku || '').trim() || master;
       return renderPrintSlipRow({
         checked: true,
-        code: String(enriched.code || '').trim(),
         article: String(enriched.article || enriched.sku || sr.sku || '').trim(),
         name: String(sr.name || ''),
         qty: sr.qty,
@@ -2843,7 +2842,6 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
     .map((l) => {
       const pid = String(l.product_id || '').trim();
       if (shippedByProduct.has(pid)) return '';
-      const code = String(l.code || '').trim();
       const article = String(l.article || l.sku || '').trim();
       const master = String(l.master_sku || article || '').trim();
       const fact = String(l.fact_sku || '').trim() || master;
@@ -2856,7 +2854,6 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
         '—';
       return renderPrintSlipRow({
         checked: false,
-        code,
         article,
         name: String(l.name || '—'),
         qty: Number(l.qty) || 0,
@@ -2940,8 +2937,8 @@ export function handoffPickSlipHtml(docId: string, opts?: { autoprint?: boolean 
   .l { text-align: left; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .muted { color: #666; font-size: 11px; }
-  .code-td { font-size: 13px; font-weight: 700; }
   .cell-td { font-size: 18px; font-weight: 800; letter-spacing: 0.02em; line-height: 1.25; }
+  .bc-td { color: #111; font-size: 13px; font-weight: 800; }
   .row-done td { background: #f3f4f6; color: #374151; }
   .row-done .cell-td { color: #047857; }
   .chk-done { color: #047857; font-weight: 900; font-size: 16px; }
@@ -2979,14 +2976,13 @@ ${alreadyMovedHtml}
   <thead><tr>
     <th style="width:28px">№</th>
     <th style="width:32px">□</th>
-    <th style="width:90px">Код</th>
-    <th style="width:90px">Артикул</th>
+    <th style="width:100px">Артикул</th>
     <th>Наименование</th>
     <th style="width:44px">Кол</th>
     <th style="width:150px">Ячейка · где лежит</th>
-    <th style="width:80px">ШК</th>
+    <th style="width:110px">К перемещению</th>
   </tr></thead>
-  <tbody>${tableBodyHtml || '<tr><td colspan="8" class="c">Нет строк</td></tr>'}</tbody>
+  <tbody>${tableBodyHtml || '<tr><td colspan="7" class="c">Нет строк</td></tr>'}</tbody>
 </table>
 <div class="sign">
   <div>Собрал · подпись</div>
@@ -3249,12 +3245,13 @@ function ensureHandoffProductStub(line: {
   }
 }
 
-/** Позиции заказа для черновика «Передача на склад» (без услуг). */
+/** Позиции заказа для черновика «Передача на склад» (без услуг) — только ещё не перемещённые. */
 function dealHandoffSourceLines(dealId: string, docWarehouseId: string): HandoffDealLine[] {
   const deal = String(dealId || '').trim();
   if (!deal) return [];
   const defaultWh = String(docWarehouseId || '').trim() || mainWarehouseId();
   const site = resolvePickSiteForDeal(deal);
+  const moved = movedQtyMapForDeal(deal);
   const rows = all<{
     product_guid: string;
     qty: number;
@@ -3276,20 +3273,37 @@ function dealHandoffSourceLines(dealId: string, docWarehouseId: string): Handoff
      ORDER BY i.line_no ASC, i.id ASC`,
     [deal]
   );
-  const out: HandoffDealLine[] = [];
+  const agg = new Map<string, HandoffDealLine>();
   for (const row of rows) {
     if (String(row.item_kind || '') === 'service') continue;
     const productId = String(row.product_guid || '').trim();
     if (!productId || isServiceProduct(productId)) continue;
     const qty = Math.max(1, Math.round(Number(row.qty) || 1));
+    const prev = agg.get(productId);
+    if (prev) {
+      prev.qty += qty;
+      continue;
+    }
     const resolved = resolveHandoffSourceWarehouseId(productId, qty, site);
-    out.push({
+    agg.set(productId, {
       product_id: productId,
       qty,
       price: Math.max(0, Math.round(Number(row.price) || 0)),
       warehouse_id: resolved || String(row.warehouse_id || '').trim() || defaultWh,
       name: String(row.name || '').trim(),
       sku: String(row.sku || '').trim(),
+    });
+  }
+  const out: HandoffDealLine[] = [];
+  for (const line of agg.values()) {
+    const was = moved.get(line.product_id) ?? 0;
+    const need = Math.max(0, line.qty - was);
+    if (need <= 0) continue;
+    const resolved = resolveHandoffSourceWarehouseId(line.product_id, need, site);
+    out.push({
+      ...line,
+      qty: need,
+      warehouse_id: resolved || line.warehouse_id || defaultWh,
     });
   }
   return out;
@@ -3318,7 +3332,28 @@ function syncUnpostedHandoffDocLines(docId: string): boolean {
   if (!dealId) return false;
 
   const warehouseId = String(doc.warehouse_id || '').trim() || mainWarehouseId();
-  const targetLines = dealHandoffSourceLines(dealId, warehouseId);
+  const commentStr = String(doc.comment || '');
+  const isUrgentMainToSto = /СРОЧНО на СТО/i.test(commentStr);
+  const isReserveToSto = /Спуск на СТО/i.test(commentStr) && !isUrgentMainToSto;
+  let targetLines: HandoffDealLine[] = [];
+  if (isReserveToSto) {
+    // Резерв → СТО — только то, что ещё лежит на резерве.
+    targetLines = dealReservePendingToStoLines(dealId)
+      .map((l) => ({
+        product_id: l.product_id,
+        qty: Math.max(0, Math.round(Number(l.qty) || 0)),
+        price: 0,
+        warehouse_id: warehouseId,
+        name: String(l.name || ''),
+        sku: String(l.sku || ''),
+      }))
+      .filter((l) => l.qty > 0);
+  } else {
+    // Обычная передача и «СРОЧНО на СТО» (Основной/Отложено → СТО):
+    // состав из заказа минус уже перемещённое. Нельзя подменять на «только резерв» —
+    // иначе баллоны/дозаказ с Основного пропадают с распечатки при закрытии.
+    targetLines = dealHandoffSourceLines(dealId, warehouseId);
+  }
   if (!targetLines.length) return false;
 
   const currentLines = all<{ product_id: string; qty: number }>(
@@ -3685,8 +3720,12 @@ export function warehouseHandoffsForPick(
   const joinSql = searchClause.joinSql || listClause.joinSql;
   const whereSql = searchClause.whereSql + listClause.whereSql;
   const siteFilter = resolvePickSiteQuery(site, actor);
-  // Сначала фильтр по филиалу/актору, потом LIMIT — иначе page даёт пустой список при ненулевом total.
-  const fetchCap = Math.min(500, Math.max(cap + offset + 80, listActive ? 500 : 120));
+  // Сначала фильтр по филиалу/актору, потом slice — иначе page пустой при ненулевом total.
+  // Архив «Закрытые» может быть >500; потолок 500 ломал и список, и счётчик.
+  const fetchCap = Math.min(
+    posted ? 20000 : 800,
+    Math.max(cap + offset + 120, listActive ? (posted ? 5000 : 500) : 120)
+  );
   const params: Array<string | number> = [
     posted ? 1 : 0,
     ...searchClause.params,
@@ -3746,10 +3785,19 @@ export function warehouseHandoffsPickTotal(
   const joinSql = searchClause.joinSql || listClause.joinSql;
   const whereSql = searchClause.whereSql + listClause.whereSql;
   const params: Array<string | number> = [posted ? 1 : 0, ...searchClause.params, ...listClause.params];
-  const rows = all(
-    `SELECT d.id, d.deal_id, d.warehouse_id, d.comment, d.created_at, d.warehouse_to_id,
+  // Без LIMIT: вкладка «Закрытые» — точное число передач, не потолок 500.
+  // Без фильтров списка достаточно id/deal/wh для site-filter.
+  const selectSql = listActive
+    ? `SELECT d.id, d.number, d.deal_id, d.comment, d.created_at, d.doc_date, d.doc_type,
+            d.warehouse_id, d.warehouse_to_id,
             IFNULL(w.name,'') AS warehouse_name,
-            IFNULL(wt.name,'') AS warehouse_to_name
+            IFNULL(wt.name,'') AS warehouse_to_name,
+            IFNULL(w.code,'') AS warehouse_from_code,
+            IFNULL(wt.code,'') AS warehouse_to_code,
+            IFNULL(d.amount,0) AS amount`
+    : `SELECT d.id, d.deal_id, d.warehouse_id`;
+  const rows = all(
+    `${selectSql}
      FROM stock_docs d
      LEFT JOIN warehouses w ON w.id = d.warehouse_id
      LEFT JOIN warehouses wt ON wt.id = d.warehouse_to_id
@@ -3758,8 +3806,7 @@ export function warehouseHandoffsPickTotal(
        AND TRIM(IFNULL(d.deal_id,'')) != ''
        AND ${handoffPickDocSql(posted)}
        ${whereSql}
-     ORDER BY datetime(d.created_at) DESC
-     LIMIT 500`,
+     ORDER BY datetime(d.created_at) DESC`,
     params
   ) as Array<Record<string, unknown>>;
   const filteredRows = filterHandoffPickRowsBySite(rows, siteFilter, actor);
@@ -4259,6 +4306,11 @@ export async function completeHandoffPick(
   }
   syncUnpostedHandoffDocLines(id);
   const dealId = String(doc.deal_id || '').trim();
+  if (!dealId) {
+    throw new Error(
+      'Передача / спуск на СТО без сделки запрещены — привяжите заказ покупателя'
+    );
+  }
   const packLabel = formatMoscowLabel(new Date());
   let packTag = `Склад ГОТОВО · ${packLabel}`;
   if (Array.isArray(picks) && picks.length) {
@@ -4313,7 +4365,24 @@ export async function completeHandoffPick(
         serials: (JSON.parse(String(l.serials_json || '[]')) as string[]) || [],
       }))
       .filter((l) => l.qty > 0);
-    if (!lines.length) throw new Error('Нет строк для спуска на СТО');
+    // Если кладовщик отметил picks — двигаем только их (уже отгруженные ✓ не трогаем).
+    let transferLines = lines;
+    if (Array.isArray(picks) && picks.length) {
+      const pickQty = new Map<string, number>();
+      for (const p of picks) {
+        const pid = String(p.product_id || '').trim();
+        if (!pid) continue;
+        pickQty.set(pid, (pickQty.get(pid) || 0) + 1);
+      }
+      transferLines = lines
+        .map((l) => {
+          const q = pickQty.get(String(l.product_id || '').trim()) || 0;
+          if (q <= 0) return null;
+          return { ...l, qty: Math.min(l.qty, q) };
+        })
+        .filter((l): l is NonNullable<typeof l> => !!l && l.qty > 0);
+    }
+    if (!transferLines.length) throw new Error('Нет строк для спуска на СТО');
 
     const transferDocId = createDocument({
       doc_type: 'transfer',
@@ -4321,7 +4390,7 @@ export async function completeHandoffPick(
       warehouse_to_id: toWh,
       deal_id: dealId,
       comment: `${comment} · ${packTag} · ${route}`,
-      lines,
+      lines: transferLines,
       post: true,
       serials_optional: true,
       ignore_stock: true,

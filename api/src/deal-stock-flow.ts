@@ -121,21 +121,58 @@ function writeMetaJson(key: string, value: unknown): void {
   run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [key, JSON.stringify(value)]);
 }
 
-/** Снимок состава заказа после проведённого перемещения на резерв/курьер. */
+/** Снимок уже перемещённого (по проведённым TR), не весь состав заказа.
+ * Иначе позиции с бумаги, которые не вошли в проводку, помечаются «уехали»
+ * и пропадают из следующих заданий / СРОЧНО на СТО. */
 export function snapshotDealFlowLines(dealId: string): void {
   const id = String(dealId || '').trim();
   if (!id) return;
-  const lines = all<{ product_id: string; qty: number; name: string; sku: string }>(
-    `SELECT IFNULL(i.product_guid,'') AS product_id, IFNULL(i.qty,0) AS qty,
-            IFNULL(NULLIF(TRIM(i.name),''), IFNULL(p.name,'')) AS name,
-            IFNULL(NULLIF(TRIM(i.sku),''), IFNULL(p.sku,'')) AS sku
-     FROM crm_deal_items i
-     LEFT JOIN products p ON p.id = i.product_guid
-     WHERE i.deal_id = ? AND IFNULL(p.item_kind,'product') != 'service'
-     ORDER BY i.line_no ASC`,
+  const posted = all<{ product_id: string; qty: number; name: string; sku: string }>(
+    `SELECT IFNULL(l.product_id,'') AS product_id, IFNULL(SUM(l.qty),0) AS qty,
+            IFNULL(MAX(NULLIF(TRIM(i.name),'')), IFNULL(MAX(p.name),'')) AS name,
+            IFNULL(MAX(NULLIF(TRIM(i.sku),'')), IFNULL(MAX(p.sku),'')) AS sku
+     FROM stock_doc_lines l
+     INNER JOIN stock_docs d ON d.id = l.doc_id
+     LEFT JOIN products p ON p.id = l.product_id
+     LEFT JOIN crm_deal_items i ON i.deal_id = d.deal_id AND i.product_guid = l.product_id
+     WHERE d.deal_id = ?
+       AND IFNULL(d.posted,0) = 1
+       AND (
+         (d.doc_type = 'transfer' AND (
+            IFNULL(d.comment,'') LIKE '%Передача на склад%'
+            OR IFNULL(d.comment,'') LIKE '%Склад ГОТОВО%'
+            OR IFNULL(d.comment,'') LIKE '%на курьера%'
+            OR IFNULL(d.comment,'') LIKE '%зарезервир%'
+            OR IFNULL(d.comment,'') LIKE '%СРОЧНО на СТО%'
+         ))
+         OR (d.doc_type = 'out' AND IFNULL(d.comment,'') LIKE '%Передача на склад%'
+             AND IFNULL(d.comment,'') LIKE '%ГОТОВО%')
+       )
+       AND IFNULL(d.comment,'') NOT LIKE '%Спуск на СТО%'
+       AND IFNULL(d.comment,'') NOT LIKE '%Возврат на основной%'
+       AND IFNULL(d.comment,'') NOT LIKE '%Списание по продаже%'
+     GROUP BY l.product_id`,
     [id]
-  ).filter((l) => String(l.product_id || '').trim() && Number(l.qty) > 0);
-  writeMetaJson(FLOW_SNAPSHOT(id), { at: new Date().toISOString(), lines });
+  );
+  const byPid = new Map<string, { product_id: string; qty: number; name: string; sku: string }>();
+  for (const row of posted) {
+    const pid = String(row.product_id || '').trim();
+    if (!pid) continue;
+    let qty = Math.max(0, Number(row.qty) || 0);
+    const returned = dealReturnedToMainQty(id, pid);
+    qty = Math.max(0, qty - returned);
+    if (qty <= 0.0001) continue;
+    byPid.set(pid, {
+      product_id: pid,
+      qty,
+      name: String(row.name || '').trim(),
+      sku: String(row.sku || '').trim(),
+    });
+  }
+  writeMetaJson(FLOW_SNAPSHOT(id), {
+    at: new Date().toISOString(),
+    lines: [...byPid.values()],
+  });
 }
 
 /**
@@ -204,6 +241,16 @@ export function movedQtyMapForDeal(dealId: string): Map<string, number> {
     const pid = String(row.product_id || '').trim();
     if (!pid) continue;
     map.set(pid, (map.get(pid) || 0) + Math.max(0, Number(row.qty) || 0));
+  }
+
+  // Минус уже возвращённое на Основной — иначе после возврата кнопка «Основной → Курьер/Резерв» не появляется.
+  if (map.size) {
+    for (const pid of [...map.keys()]) {
+      const returned = dealReturnedToMainQty(id, pid);
+      const net = Math.max(0, (map.get(pid) || 0) - returned);
+      if (net <= 0.0001) map.delete(pid);
+      else map.set(pid, net);
+    }
   }
 
   return map;
@@ -612,6 +659,9 @@ function classifyPostedHandoffDoc(row: {
   if (isDealReserveWhCode(toCode) || /резерв|отложено/i.test(to)) {
     return { label: 'На резерве', route: `${from} → ${to}` };
   }
+  if (toCode === 'COURIER' || /курьер/i.test(to) || /на курьер/i.test(comment)) {
+    return { label: 'На курьере', route: `${from} → ${to}` };
+  }
   if (row.doc_type === 'out' && /продаж|реализован/i.test(comment)) {
     return { label: 'Реализовано', route: from };
   }
@@ -825,6 +875,38 @@ function dealGoodsQtyAggregated(dealId: string): DealFlowQtyLine[] {
   return [...map.values()];
 }
 
+/**
+ * product_guid из Amo/виджета иногда не совпадает с products.id
+ * (битый GUID / старый каталог). Тогда склад «не видит» номенклатуру.
+ * Резолвим живую карточку по code / sku / warehouse_sku (с приоритетом is_main).
+ */
+function resolveExistingProductId(opts: {
+  product_guid?: string;
+  sku?: string;
+  code?: string;
+}): string {
+  const guid = String(opts.product_guid || '').trim();
+  if (guid) {
+    const byId = get<{ id: string }>(`SELECT id FROM products WHERE id = ? LIMIT 1`, [guid]);
+    if (byId?.id) return String(byId.id);
+  }
+  const keys = [String(opts.code || '').trim(), String(opts.sku || '').trim()].filter(Boolean);
+  for (const key of keys) {
+    const hit = get<{ id: string }>(
+      `SELECT id FROM products
+       WHERE (code = ? OR sku = ? OR IFNULL(warehouse_sku,'') = ?)
+         AND IFNULL(is_active,1) = 1
+       ORDER BY CASE WHEN IFNULL(is_main,0) = 1 THEN 0 ELSE 1 END,
+                CASE WHEN IFNULL(source_department,'') = 'fogel_2025' THEN 1 ELSE 0 END,
+                CASE WHEN id LIKE 'pnevmopodveska_2025::%' OR id LIKE 'fogel_2025::%' THEN 1 ELSE 0 END
+       LIMIT 1`,
+      [key, key, key]
+    );
+    if (hit?.id) return String(hit.id);
+  }
+  return guid;
+}
+
 /** Сумма qty по product_id из сырых строк заказа (crm / handoff). */
 function aggregateProductQtyLines<
   T extends { product_id?: string; product_guid?: string; qty?: number; name?: string; sku?: string; price?: number }
@@ -991,6 +1073,19 @@ export function enrichStockReturnLineLocation(
       priority: 3,
     });
   }
+  const courierWh = courierWarehouseId();
+  if (courierWh) {
+    const cour = get<{ code: string; name: string }>(
+      `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
+      [courierWh]
+    );
+    candidates.push({
+      id: courierWh,
+      code: String(cour?.code || 'COURIER'),
+      name: String(cour?.name || 'Курьер'),
+      priority: 4,
+    });
+  }
 
   let from:
     | { id: string; code: string; name: string; priority: number }
@@ -1024,6 +1119,8 @@ export function enrichStockReturnLineLocation(
     const last = [...(movedHint?.stages || [])].reverse()[0];
     if (last?.label === 'На СТО' && stoWh && productQtyOnWarehouse(pid, stoWh) > 0) {
       from = candidates.find((c) => c.id === stoWh) || null;
+    } else if (last?.label === 'На курьере' && courierWh && productQtyOnWarehouse(pid, courierWh) > 0) {
+      from = candidates.find((c) => c.id === courierWh) || null;
     } else if (last?.label === 'На резерве') {
       from = pickWithBalance([holdWh?.id, rsvWh?.id]) || pickWithBalance([rsvWh?.id, holdWh?.id]);
     }
@@ -1202,7 +1299,7 @@ function dealOrderProductQty(dealId: string, productId: string): number {
   );
 }
 
-/** Проведённые TR на СТО / резерв / отложено по сделке. */
+/** Проведённые TR на СТО / резерв / отложено по сделке (только вход с не-буфера). */
 function dealMovedToBufferQty(dealId: string, productId: string): number {
   const id = String(dealId || '').trim();
   const pid = String(productId || '').trim();
@@ -1214,12 +1311,56 @@ function dealMovedToBufferQty(dealId: string, productId: string): number {
          FROM stock_doc_lines l
          INNER JOIN stock_docs d ON d.id = l.doc_id
          INNER JOIN warehouses wt ON wt.id = d.warehouse_to_id
+         LEFT JOIN warehouses wf ON wf.id = d.warehouse_id
          WHERE d.deal_id = ? AND l.product_id = ?
            AND IFNULL(d.posted,0) = 1 AND d.doc_type = 'transfer'
            AND (
              UPPER(IFNULL(wt.code,'')) = 'STO'
              OR UPPER(IFNULL(wt.code,'')) LIKE 'STO-RSV%'
              OR UPPER(IFNULL(wt.code,'')) LIKE 'STO-RES%'
+             OR UPPER(IFNULL(wt.code,'')) = 'COURIER'
+             OR IFNULL(wt.name,'') LIKE '%урьер%'
+           )
+           AND NOT (
+             UPPER(IFNULL(wf.code,'')) = 'STO'
+             OR UPPER(IFNULL(wf.code,'')) LIKE 'STO-RSV%'
+             OR UPPER(IFNULL(wf.code,'')) LIKE 'STO-RES%'
+             OR UPPER(IFNULL(wf.code,'')) = 'COURIER'
+           )`,
+        [id, pid]
+      )?.q
+    ) || 0
+  );
+}
+
+/** Уже вернулось на Основной (проведённый TR) — чтобы не показывать фантом на /pick. */
+function dealReturnedToMainQty(dealId: string, productId: string): number {
+  const id = String(dealId || '').trim();
+  const pid = String(productId || '').trim();
+  if (!id || !pid) return 0;
+  return (
+    Number(
+      get<{ q: number }>(
+        `SELECT IFNULL(SUM(l.qty),0) AS q
+         FROM stock_doc_lines l
+         INNER JOIN stock_docs d ON d.id = l.doc_id
+         INNER JOIN warehouses wt ON wt.id = d.warehouse_to_id
+         LEFT JOIN warehouses wf ON wf.id = d.warehouse_id
+         WHERE d.deal_id = ? AND l.product_id = ?
+           AND IFNULL(d.posted,0) = 1 AND d.doc_type = 'transfer'
+           AND (
+             IFNULL(d.comment,'') LIKE '%Возврат на основной%'
+             OR (
+               (UPPER(IFNULL(wt.code,'')) IN ('НФ-000032', 'MAIN')
+                 OR IFNULL(wt.name,'') LIKE '%Основн%')
+               AND (
+                 UPPER(IFNULL(wf.code,'')) = 'STO'
+                 OR UPPER(IFNULL(wf.code,'')) LIKE 'STO-RSV%'
+                 OR UPPER(IFNULL(wf.code,'')) LIKE 'STO-RES%'
+                 OR UPPER(IFNULL(wf.code,'')) = 'COURIER'
+                 OR IFNULL(wf.name,'') LIKE '%урьер%'
+               )
+             )
            )`,
         [id, pid]
       )?.q
@@ -1228,14 +1369,14 @@ function dealMovedToBufferQty(dealId: string, productId: string): number {
 }
 
 /**
- * Убрать фантомные возвраты: перемещено ≤ осталось в заказе — возвращать нечего.
+ * Убрать фантомные возвраты: перемещено ≤ осталось в заказе — возвращать нечего;
+ * либо возврат на основной уже проведён документом.
  * null → meta удалена, карточку на /pick не показываем.
  */
 function prunePhantomStockReturn(req: StockReturnRequest): StockReturnRequest | null {
   if (req.status !== 'pending') return req;
   const reason = String(req.reason || '').trim();
-  // Полный возврат — вернуть всё с СТО/резерва, даже если позиции ещё в заказе.
-  if (/^полный возврат/i.test(reason)) return req;
+  const fullReturn = /^полный возврат/i.test(reason);
   const dealId = String(req.deal_id || '').trim();
   const lines = [...(req.lines || [])];
   if (!dealId || !lines.length) {
@@ -1248,8 +1389,14 @@ function prunePhantomStockReturn(req: StockReturnRequest): StockReturnRequest | 
     const pid = String(l.product_id || '').trim();
     if (!pid || maxReturn.has(pid)) continue;
     const moved = dealMovedToBufferQty(dealId, pid);
-    const order = dealOrderProductQty(dealId, pid);
-    maxReturn.set(pid, Math.max(0, moved - order));
+    const returned = dealReturnedToMainQty(dealId, pid);
+    const stillAway = Math.max(0, moved - returned);
+    if (fullReturn) {
+      maxReturn.set(pid, stillAway);
+    } else {
+      const order = dealOrderProductQty(dealId, pid);
+      maxReturn.set(pid, Math.max(0, stillAway - order));
+    }
   }
 
   const consumed = new Map<string, number>();
@@ -1456,6 +1603,35 @@ export function requestStockReturn(input: {
   return pruned;
 }
 
+/**
+ * Если товар убрали из заказа после перемещения на резерв/СТО —
+ * сразу ставим требование возврата на /pick (без клика менеджера в Amo).
+ */
+export function ensureAutoStockReturnForRemoved(dealId: string): StockReturnRequest | null {
+  const id = String(dealId || '').trim();
+  if (!id) return null;
+  const existing = getPendingStockReturn(id);
+  if (existing?.status === 'pending') {
+    return prunePhantomStockReturn(existing);
+  }
+  const removed = detectRemovedFlowLines(id);
+  if (!removed.length) return null;
+  try {
+    return requestStockReturn({
+      deal_id: id,
+      reason: 'Удалено из заказа после перемещения',
+      lines: removed,
+    });
+  } catch (e) {
+    // «Нет позиций для возврата» — уже вернуто / фантом; не шумим.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/нет позиций для возврата/i.test(msg)) {
+      console.warn('[deal-stock-flow] auto stock return', id, msg);
+    }
+    return null;
+  }
+}
+
 /** Остаток товара на складе (stock_balances). */
 export function productQtyOnWarehouse(productId: string, warehouseId: string): number {
   const pid = String(productId || '').trim();
@@ -1595,10 +1771,13 @@ export function createHandoffPickDraft(input: {
     price: number;
     name: string;
     sku: string;
+    code: string;
+    item_id: string;
     item_kind: string;
   }>(
     `SELECT IFNULL(i.product_guid,'') AS product_guid, IFNULL(i.qty,0) AS qty, IFNULL(i.price,0) AS price,
-            IFNULL(i.name,'') AS name, IFNULL(i.sku,'') AS sku,
+            IFNULL(i.name,'') AS name, IFNULL(i.sku,'') AS sku, IFNULL(i.code,'') AS code,
+            IFNULL(i.id,'') AS item_id,
             IFNULL(p.item_kind,'product') AS item_kind
      FROM crm_deal_items i
      LEFT JOIN products p ON p.id = i.product_guid
@@ -1610,8 +1789,29 @@ export function createHandoffPickDraft(input: {
   const snapQty = movedQtyMapForDeal(dealId);
   const hasSnapshot = snapQty.size > 0;
 
+  const resolvedRows = rows.map((r) => {
+    const rawGuid = String(r.product_guid || '').trim();
+    const resolved = resolveExistingProductId({
+      product_guid: rawGuid,
+      sku: r.sku,
+      code: r.code,
+    });
+    if (resolved && rawGuid && resolved !== rawGuid && r.item_id) {
+      try {
+        run(`UPDATE crm_deal_items SET product_guid = ? WHERE id = ? AND deal_id = ?`, [
+          resolved,
+          r.item_id,
+          dealId,
+        ]);
+      } catch {
+        /* ignore heal */
+      }
+    }
+    return { ...r, product_guid: resolved || rawGuid };
+  });
+
   const allProductLines = aggregateProductQtyLines(
-    rows
+    resolvedRows
       .filter((r) => String(r.item_kind) !== 'service' && String(r.product_guid || '').trim())
       .map((r) => ({
         product_id: String(r.product_guid),
@@ -1842,8 +2042,19 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
 
   const pendingReturn = getPendingStockReturn(id);
   const removedDetected = detectRemovedFlowLines(id);
+  // Авто: удалили из заказа → требование возврата на /pick без клика в Amo.
+  let pendingReturnEffective = pendingReturn;
+  if (removedDetected.length && (!pendingReturn || pendingReturn.status !== 'pending')) {
+    pendingReturnEffective = ensureAutoStockReturnForRemoved(id) || pendingReturn;
+  } else if (pendingReturn?.status === 'pending') {
+    pendingReturnEffective = prunePhantomStockReturn(pendingReturn);
+  }
   const addedDetected = detectAddedFlowLines(id);
   const movedMap = movedQtyMapForDeal(id);
+  // После полного возврата на Основной старое «не собрали» больше не блокирует новую передачу.
+  if (movedMap.size === 0) {
+    clearHandoffReturnState(id);
+  }
   const openDraft = get<{ id: string; comment: string }>(
     `SELECT id, IFNULL(comment,'') AS comment FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
@@ -1905,7 +2116,7 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
     on_reserve: reserveQty,
     on_sto: stoQty,
     movements: listDealStockMovements(id),
-    pending_return: pendingReturn,
+    pending_return: pendingReturnEffective,
     removed_detected: removedDetected,
     added_detected: addedDetected,
     can_reorder: movedMap.size > 0 && addedDetected.length > 0 && !openDraft,
@@ -2346,6 +2557,7 @@ export async function completeStockReturnPick(input: {
          LIMIT 1`
       )?.id || ''
     ).trim() || handoffHoldWarehouseIdForSite(site);
+  const courierWh = courierWarehouseId();
 
   const lineOverrides = new Map(
     (input.lines || []).map((l) => [String(l.product_id || '').trim(), l])
@@ -2356,7 +2568,8 @@ export async function completeStockReturnPick(input: {
     String(pending.lines.find((l) => l.from_warehouse_id)?.from_warehouse_id || '').trim() ||
     holdWh ||
     reserveWh ||
-    stoWh;
+    stoWh ||
+    courierWh;
   if (!headerFromHint) throw new Error('Не удалось определить склад, откуда возвращать');
 
   /** Склад списания: где реально есть qty (часто «Отложено», а в заявке — «Резерв»). */
@@ -2369,6 +2582,7 @@ export async function completeStockReturnPick(input: {
       holdWh,
       reserveWh,
       stoWh,
+      courierWh,
     ].filter(Boolean);
     const seen = new Set<string>();
     for (const wid of candidates) {
@@ -2612,12 +2826,78 @@ function dealHasStockOnSto(dealId: string): boolean {
   return Number(c) > 0;
 }
 
-const OPEN_DEAL_NOT_WRITEOFF_SQL = `NOT EXISTS (
-  SELECT 1 FROM stock_docs wo
-  WHERE wo.deal_id = d.deal_id
-    AND IFNULL(wo.posted,0) = 1
-    AND wo.doc_type = 'out'
-    AND IFNULL(wo.comment,'') LIKE '%Списание по продаже%'
+/** Есть ли по успешной сделке несписанный остаток спущенного на СТО. */
+function dealHasPendingStoSaleWriteoff(dealId: string): boolean {
+  const id = String(dealId || '').trim();
+  if (!id) return false;
+  const stoWh = stoWarehouseId();
+  if (!stoWh) return false;
+  const descended = dealDescendedToStoQtyByProduct(id);
+  const alreadyOff = dealSaleWriteOffQtyByProduct(id);
+  const productIds =
+    descended.size > 0
+      ? [...descended.keys()]
+      : all<{ product_id: string }>(
+          `SELECT DISTINCT IFNULL(i.product_guid,'') AS product_id
+           FROM crm_deal_items i
+           LEFT JOIN products p ON p.id = i.product_guid
+           WHERE i.deal_id = ? AND IFNULL(p.item_kind,'product') != 'service'`,
+          [id]
+        )
+          .map((r) => String(r.product_id || '').trim())
+          .filter(Boolean);
+  for (const productId of productIds) {
+    let need = 0;
+    if (descended.size > 0) {
+      need = (descended.get(productId) || 0) - (alreadyOff.get(productId) || 0);
+    } else {
+      const dealQty =
+        Number(
+          get<{ qty: number }>(
+            `SELECT IFNULL(SUM(qty),0) AS qty FROM crm_deal_items
+             WHERE deal_id = ? AND product_guid = ?`,
+            [id, productId]
+          )?.qty
+        ) || 0;
+      need = dealQty - (alreadyOff.get(productId) || 0);
+    }
+    need = Math.max(0, need);
+    if (!(need > 0)) continue;
+    const onSto =
+      Number(
+        get<{ qty: number }>(
+          `SELECT IFNULL(qty,0) AS qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?`,
+          [stoWh, productId]
+        )?.qty
+      ) || 0;
+    if (Math.min(need, onSto) > 0) return true;
+  }
+  return false;
+}
+
+/** Сделка ещё «держит» позицию на складе: спустили больше, чем списали по продаже. */
+const OPEN_DEAL_NOT_WRITEOFF_SQL = `(
+  IFNULL((
+    SELECT SUM(l_in.qty)
+    FROM stock_docs d_in
+    INNER JOIN stock_doc_lines l_in ON l_in.doc_id = d_in.id
+    WHERE d_in.deal_id = d.deal_id
+      AND IFNULL(d_in.posted, 0) = 1
+      AND d_in.doc_type = 'transfer'
+      AND d_in.warehouse_to_id = b.warehouse_id
+      AND l_in.product_id = b.product_id
+  ), 0)
+  >
+  IFNULL((
+    SELECT SUM(l_wo.qty)
+    FROM stock_docs d_wo
+    INNER JOIN stock_doc_lines l_wo ON l_wo.doc_id = d_wo.id
+    WHERE d_wo.deal_id = d.deal_id
+      AND IFNULL(d_wo.posted, 0) = 1
+      AND d_wo.doc_type = 'out'
+      AND IFNULL(d_wo.comment, '') LIKE '%Списание по продаже%'
+      AND l_wo.product_id = b.product_id
+  ), 0)
 )`;
 
 /** Проведённый приход на склад по сделке (перемещение или приходная). */
@@ -3052,7 +3332,7 @@ function saleWriteOffComment(dealId: string): string {
   return `Списание по продаже · склад СТО · заказ ${String(dealId || '').trim()}`;
 }
 
-/** Сколько спустили на СТО по сделке (все проведённые TR «Спуск» / Резерв→СТО). */
+/** Сколько спустили на СТО по сделке (все проведённые TR на склад СТО). */
 function dealDescendedToStoQtyByProduct(dealId: string): Map<string, number> {
   const id = String(dealId || '').trim();
   const stoWh = stoWarehouseId();
@@ -3062,18 +3342,12 @@ function dealDescendedToStoQtyByProduct(dealId: string): Map<string, number> {
     `SELECT l.product_id AS product_id, IFNULL(SUM(l.qty), 0) AS qty
      FROM stock_docs d
      INNER JOIN stock_doc_lines l ON l.doc_id = d.id
-     LEFT JOIN warehouses wf ON wf.id = d.warehouse_id
      LEFT JOIN products p ON p.id = l.product_id
      WHERE d.deal_id = ?
        AND IFNULL(d.posted, 0) = 1
        AND d.doc_type = 'transfer'
        AND d.warehouse_to_id = ?
        AND IFNULL(p.item_kind, 'product') != 'service'
-       AND (
-         IFNULL(d.comment, '') LIKE '%Спуск на СТО%'
-         OR UPPER(IFNULL(wf.code, '')) LIKE 'STO-RES-%'
-         OR UPPER(IFNULL(wf.code, '')) LIKE 'STO-RSV-%'
-       )
      GROUP BY l.product_id`,
     [id, stoWh]
   );
@@ -3410,9 +3684,28 @@ export function writeOffStoOnDealSuccess(
     by_descended: descended.size > 0,
   });
 
-  const amoNote = `Товары списаны со склада СТО = продажа · заказ ${id}${
-    stockDoc?.number ? ' · ' + String(stockDoc.number) : ''
-  }${existing ? ' · досписание спущенного' : ''}${actor ? ' · ' + actor : ''}`;
+  const lineHint = lines
+    .map((l) => {
+      const sku =
+        get<{ sku: string }>(
+          `SELECT IFNULL(sku,'') AS sku FROM products WHERE id = ?`,
+          [l.product_id]
+        )?.sku || '';
+      return `${sku || l.product_id.slice(0, 8)}×${l.qty}`;
+    })
+    .slice(0, 8)
+    .join(', ');
+  const amoNote = [
+    'Списано по продаже',
+    `склад СТО`,
+    `заказ ${id}`,
+    stockDoc?.number ? String(stockDoc.number) : '',
+    existing ? 'досписание' : '',
+    lineHint ? `поз: ${lineHint}` : '',
+    actor || '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
   void notifyAmoWarehousePacked({ dealId: id, text: amoNote }).then((r) => {
     if (!r.ok) {
       writeMetaJson(`amo_note_err:writeoff:${id}`, {
@@ -3657,11 +3950,8 @@ export function runStoSaleWriteoffCron(limit = 80): {
       skipped += 1;
       continue;
     }
-    if (getDealSaleWriteOffDoc(dealId)) {
-      skipped += 1;
-      continue;
-    }
-    if (!dealHasStockOnSto(dealId)) {
+    // Не пропускаем из‑за уже существующего списания: возможны досписания (СРОЧНО / частичные).
+    if (!dealHasPendingStoSaleWriteoff(dealId)) {
       skipped += 1;
       continue;
     }
