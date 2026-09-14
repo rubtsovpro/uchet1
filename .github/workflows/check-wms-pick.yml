@@ -1,0 +1,39 @@
+name: Check WMS pick
+on:
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Diagnose
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 8m
+          script: |
+            set +e
+            echo "=== service ==="
+            systemctl is-active warehouse-wms
+            systemctl status warehouse-wms --no-pager -l | head -30
+            echo "=== listen ==="
+            ss -lntp | grep -E '3101|node' | head -20
+            echo "=== local health ==="
+            curl -sS -m 5 -o /tmp/h.txt -w "health %{http_code} time=%{time_total}\n" http://127.0.0.1:3101/api/health
+            head -c 200 /tmp/h.txt; echo
+            echo "=== pick html local ==="
+            curl -sS -m 10 -o /dev/null -w "pick %{http_code} time=%{time_total}\n" http://127.0.0.1:3101/pick
+            curl -sS -m 10 -o /dev/null -w "pick_public %{http_code}\n" http://127.0.0.1:3101/public/pick.html
+            echo "=== nginx ==="
+            curl -sS -m 10 -o /dev/null -w "nginx_pick %{http_code} time=%{time_total}\n" -H 'Host: uchetn1.ru' http://127.0.0.1/pick
+            curl -sS -m 15 -o /dev/null -w "ext_pick %{http_code} time=%{time_total}\n" https://uchetn1.ru/pick
+            echo "=== journal ==="
+            journalctl -u warehouse-wms -n 60 --no-pager
+            echo "=== load ==="
+            uptime; free -m | head -3
+            ps aux --sort=-%cpu | head -12
+            echo "=== sqlite ==="
+            ls -lh /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite* 2>/dev/null | head -10
+            echo DONE
