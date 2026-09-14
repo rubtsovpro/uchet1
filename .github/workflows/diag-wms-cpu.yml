@@ -1,0 +1,43 @@
+name: Diag WMS CPU
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Sample CPU hang
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 10m
+          script_stop: false
+          script: |
+            set +e
+            PID=$(systemctl show -p MainPID --value warehouse-wms)
+            echo "pid=$PID"
+            ps -o pid,pcpu,pmem,etime,cmd -p "$PID"
+            echo "=== sqlite sizes ==="
+            ls -lh /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite*
+            echo "=== health now ==="
+            curl -sS -m 3 -w "\nhttp=%{http_code} t=%{time_total}\n" http://127.0.0.1:3101/api/health | head -c 200; echo
+            echo "=== wait 70s then resample ==="
+            for s in 10 20 30 40 50 60 70; do
+              sleep 10
+              PID=$(systemctl show -p MainPID --value warehouse-wms)
+              CPU=$(ps -o pcpu= -p "$PID" 2>/dev/null)
+              CODE=$(curl -sS -m 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:3101/api/health)
+              echo "t=${s}s pid=$PID cpu=$CPU health=$CODE"
+            done
+            echo "=== journal since restart ==="
+            journalctl -u warehouse-wms -n 80 --no-pager --since '5 min ago'
+            echo "=== nginx access last pick/api ==="
+            tail -n 50 /var/log/nginx/access.log 2>/dev/null | rg -i 'pick|/api/' | tail -30
+            ls /var/log/nginx/*uchet* /var/log/nginx/*1c* 2>/dev/null
+            echo "=== open connections to 3101 ==="
+            ss -tn sport = :3101 | head -40
+            echo "=== node threads ==="
+            ps -L -o pid,tid,pcpu,state,comm -p "$(systemctl show -p MainPID --value warehouse-wms)" | head -30
+            echo DONE
