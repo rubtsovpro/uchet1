@@ -3785,8 +3785,23 @@ export function warehouseHandoffsPickTotal(
   const joinSql = searchClause.joinSql || listClause.joinSql;
   const whereSql = searchClause.whereSql + listClause.whereSql;
   const params: Array<string | number> = [posted ? 1 : 0, ...searchClause.params, ...listClause.params];
-  // Без LIMIT: вкладка «Закрытые» — точное число передач, не потолок 500.
-  // Без фильтров списка достаточно id/deal/wh для site-filter.
+  const actorCompanyFilter = !!actorPickCompanyIds(actor)?.length;
+
+  // Быстрый путь: COUNT в SQL — без выгрузки всей истории в Node (иначе /pick вешает event loop).
+  if (!listActive && !searchClause.whereSql && siteFilter === 'all' && !actorCompanyFilter) {
+    const row = get<{ c: number }>(
+      `SELECT COUNT(*) AS c
+       FROM stock_docs d
+       WHERE IFNULL(d.posted,0) = ?
+         AND TRIM(IFNULL(d.deal_id,'')) != ''
+         AND ${handoffPickDocSql(posted)}`,
+      [posted ? 1 : 0]
+    );
+    return Number(row?.c) || 0;
+  }
+
+  // Потолок: полный скан stock_docs + resolvePickSiteForDeal на каждую строку = 100% CPU / 502.
+  const fetchCap = listActive ? 4000 : posted ? 2500 : 800;
   const selectSql = listActive
     ? `SELECT d.id, d.number, d.deal_id, d.comment, d.created_at, d.doc_date, d.doc_type,
             d.warehouse_id, d.warehouse_to_id,
@@ -3806,8 +3821,9 @@ export function warehouseHandoffsPickTotal(
        AND TRIM(IFNULL(d.deal_id,'')) != ''
        AND ${handoffPickDocSql(posted)}
        ${whereSql}
-     ORDER BY datetime(d.created_at) DESC`,
-    params
+     ORDER BY datetime(d.created_at) DESC
+     LIMIT ?`,
+    [...params, fetchCap]
   ) as Array<Record<string, unknown>>;
   const filteredRows = filterHandoffPickRowsBySite(rows, siteFilter, actor);
   if (!listActive) return filteredRows.length;

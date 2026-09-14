@@ -290,9 +290,11 @@ export function sqlExcludeCrossContourProducts(productAlias = 'p', companyAlias 
 
 /** Оставить активными только общие услуги se-* (23 шт.). Остальное — legacy из 1С. */
 export function deactivateLegacyServices(): number {
+  // Только реально активные — иначе каждый boot «меняет» сотни строк (WAL/CPU).
   const r = db.prepare(
     `UPDATE products SET is_active = 0
      WHERE IFNULL(item_kind,'product') = 'service'
+       AND IFNULL(is_active,1) != 0
        AND lower(IFNULL(sku,'')) NOT LIKE 'se-%'
        AND lower(IFNULL(code,'')) NOT LIKE 'se-%'`
   ).run();

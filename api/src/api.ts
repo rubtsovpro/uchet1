@@ -29,6 +29,10 @@ import {
 } from './product-kind.js';
 import { catalogArticleOf, warehouseArticleOf } from './product-display-name.js';
 import {
+  looksLike1cProductCode,
+  sqlProductTextSearch,
+} from './product-search.js';
+import {
   dmCodesForBalanceRows,
   listDealLineSources,
   listProductUnits,
@@ -10541,7 +10545,9 @@ api.get('/products', (c) => {
         ? ` AND IFNULL(p.item_kind,'product') = 'service'`
         : ` AND IFNULL(p.item_kind,'product') != 'service'`;
   }
-  if (isMainQ === '1') {
+  // Код 1С (НФ-/00-): не режем is_main — иначе архивный мастер / клон не находятся.
+  const relaxMainForCode = Boolean(q && looksLike1cProductCode(q));
+  if (isMainQ === '1' && !relaxMainForCode) {
     where += ` AND IFNULL(p.is_main,0) = 1`;
   } else if (isMainQ === '0') {
     where += ` AND IFNULL(p.is_main,0) = 0`;
@@ -10577,53 +10583,26 @@ api.get('/products', (c) => {
   }
 
   if (q) {
-    const like = `%${q}%`;
     // Артикул / код / штрихкод / название / бренд; факт с листа; лоты поставщиков
+    // Unicode-варианты: SQLite LIKE не складывает «нф» и «НФ».
     if (q.length >= 2) {
-      where += ` AND (
-        p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
-        OR IFNULL(p.barcode,'') LIKE ? OR IFNULL(p.array_sku,'') LIKE ?
-        OR IFNULL(p.warehouse_sku,'') LIKE ?
-        OR IFNULL(p.sheet_supplier,'') LIKE ?
-        OR IFNULL(p.brand,'') LIKE ? OR IFNULL(c.name,'') LIKE ?
-        OR p.id IN (
-          SELECT product_id FROM product_alt_codes WHERE value LIKE ?
-        )
-        OR p.id IN (
-          SELECT a.product_id FROM product_applicability a
-          WHERE a.mark LIKE ? OR a.model LIKE ? OR a.only_model LIKE ?
-          LIMIT 2000
-        )
-        OR EXISTS (
-          SELECT 1 FROM product_supplier_lots l
-          WHERE (l.product_id = p.id OR l.master_sku = p.sku)
-            AND (l.fact_sku LIKE ? OR l.master_sku LIKE ? OR IFNULL(l.supplier,'') LIKE ?)
-        )
-      )`;
-      params.push(
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like,
-        like
-      );
+      const ts = sqlProductTextSearch('p', q, {
+        withAltCodes: true,
+        withLots: true,
+        withApplicability: true,
+        withCategory: true,
+      });
+      where += ` AND ${ts.sql}`;
+      params.push(...ts.params);
     } else {
-      where += ` AND (
-        p.name LIKE ? OR p.sku LIKE ? OR IFNULL(p.code,'') LIKE ?
-        OR IFNULL(p.brand,'') LIKE ? OR IFNULL(c.name,'') LIKE ?
-      )`;
-      params.push(like, like, like, like, like);
+      const ts = sqlProductTextSearch('p', q, {
+        withAltCodes: false,
+        withLots: false,
+        withApplicability: false,
+        withCategory: true,
+      });
+      where += ` AND ${ts.sql}`;
+      params.push(...ts.params);
     }
   }
 
@@ -14382,9 +14361,9 @@ api.put('/currencies/:code', async (c) => {
 
 /* ——— Паритет меню / экран сборщика (без правок ops UI) ——— */
 
-/** Короткий кэш счётчика «завершённых» — UI /pick дергает today каждые ~12с. */
+/** Кэш счётчика «завершённых» — UI /pick дергает today каждые ~12с. */
 const pickCompletedTotalCache = new Map<string, { at: number; n: number }>();
-const PICK_COMPLETED_TOTAL_TTL_MS = 20_000;
+const PICK_COMPLETED_TOTAL_TTL_MS = 120_000;
 
 api.get('/warehouse/pick/today', async (c) => {
   const actor = actorFromContext(c);
@@ -14401,7 +14380,9 @@ api.get('/warehouse/pick/today', async (c) => {
   if (cached && Date.now() - cached.at < PICK_COMPLETED_TOTAL_TTL_MS) {
     handoffs_completed_total = cached.n;
   } else {
-    handoffs_completed_total = warehouseHandoffsPickTotal(site, actor, true);
+    // Hot path: без site/actor-фильтра в JS (иначе полный скан + N×crm_deals → 502).
+    // Точный site-фильтр — на вкладке «Передано» /handoffs/completed.
+    handoffs_completed_total = warehouseHandoffsPickTotal(undefined, null, true);
     pickCompletedTotalCache.set(cacheKey, { at: Date.now(), n: handoffs_completed_total });
   }
   const tTotal = Date.now();
