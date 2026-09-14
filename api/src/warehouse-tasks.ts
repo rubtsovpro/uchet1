@@ -23,6 +23,8 @@ import {
   buildHandoffReserveMeta,
   buildHandoffShipMeta,
   ensureReserveHandoffComment,
+  isReserveChannelDeal,
+  isShipChannelDeal,
 } from './handoff-reserve.js';
 import { catalogArticleOf } from './product-display-name.js';
 import { ensureWarehouseCellsSchema } from './warehouse-cells.js';
@@ -3940,6 +3942,52 @@ function mapHandoffPickRow(
         stock_wh: [],
       };
     });
+    const slimDeal = dealId
+      ? get<{
+          amo_channel: string;
+          amo_shipment: string;
+          ship_channel: string;
+          name: string;
+          buyer_name: string;
+        }>(
+          `SELECT IFNULL(amo_channel,'') AS amo_channel,
+                  IFNULL(amo_shipment,'') AS amo_shipment,
+                  IFNULL(ship_channel,'') AS ship_channel,
+                  IFNULL(name,'') AS name,
+                  IFNULL(buyer_name,'') AS buyer_name
+           FROM crm_deals WHERE id = ?`,
+          [dealId]
+        )
+      : null;
+    const byCodesReserve =
+      !isToSto &&
+      !isReturn &&
+      (/^STO-RS[VE]/.test(toCode) ||
+        /^STO-RS[VE]/.test(fromCode) ||
+        /резерв/i.test(toNameRaw) ||
+        /резерв/i.test(commentStr));
+    const isReserve =
+      !isToSto &&
+      !isReturn &&
+      (byCodesReserve || isReserveChannelDeal(slimDeal));
+    const isShip =
+      !isToSto && !isReturn && !isReserve && isShipChannelDeal(slimDeal);
+    const destName =
+      toNameRaw ||
+      (isToSto ? 'СТО' : isReserve ? 'Резерв' : isShip ? 'Курьер' : '');
+    const routeLabel =
+      fromName && destName
+        ? `${fromName} → ${destName}`
+        : fromName || destName || '';
+    const purposeLabel = isReturn
+      ? 'Возврат на основной'
+      : isToSto
+        ? (/СРОЧНО на СТО/i.test(commentStr) ? 'СРОЧНО на СТО' : 'Спуск на СТО / самовывоз')
+        : isReserve
+          ? 'Резерв'
+          : isShip
+            ? 'Отправка · склад курьера'
+            : '';
     return {
       id,
       number: String(row.number || ''),
@@ -3951,18 +3999,44 @@ function mapHandoffPickRow(
       warehouse_id: warehouseId,
       warehouse_name: fromName,
       warehouse_to_id: String(row.warehouse_to_id || ''),
-      warehouse_to_name: toNameRaw,
+      warehouse_to_name: destName || toNameRaw,
+      dest_warehouse_name: destName,
       warehouse_from_code: fromCode,
       warehouse_to_code: toCode,
       amount: Number(row.amount) || 0,
       transfer_label: transferLabel,
       pick_site: pickSite,
+      pick_site_label: pickSiteLabel(pickSite),
       route_kind: routeKind,
+      route_label: routeLabel,
       is_return: isReturn,
       is_to_sto: isToSto,
+      is_reserve: isReserve,
+      is_ship: isShip,
+      is_reorder: /дозаказ/i.test(commentStr),
+      purpose_label: purposeLabel,
+      print_href: isReturn
+        ? `/api/warehouse/pick/returns/${encodeURIComponent(dealId)}/print`
+        : `/api/warehouse/pick/handoffs/${encodeURIComponent(id)}/print`,
+      print_label: isReturn ? 'Приходная' : 'Расходная',
       completed,
       lines,
-      deal: dealId ? { id: dealId } : null,
+      deal: dealId
+        ? {
+            id: dealId,
+            amo_channel: String(slimDeal?.amo_channel || ''),
+            amo_shipment: String(slimDeal?.amo_shipment || ''),
+            ship_channel: String(slimDeal?.ship_channel || ''),
+            name: String(slimDeal?.name || ''),
+            buyer_name: String(slimDeal?.buyer_name || ''),
+            title: dealPickTitle(
+              dealId,
+              slimDeal?.name,
+              slimDeal?.buyer_name,
+              ''
+            ),
+          }
+        : null,
       cells_label: completed ? parseCellFromDocComment(commentStr) : '',
     };
   }
