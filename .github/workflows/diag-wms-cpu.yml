@@ -16,28 +16,33 @@ jobs:
           script_stop: false
           script: |
             set +e
+            echo "=== who locks sqlite ==="
+            lsof /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null | head -30
+            echo "=== php/node against warehouse ==="
+            ps aux | grep -E 'warehouse.sqlite|sync_msk|import_msk|node.*server' | grep -v grep | head -20
+            echo "=== restart clean ==="
+            systemctl restart warehouse-wms
+            sleep 2
             PID=$(systemctl show -p MainPID --value warehouse-wms)
-            echo "pid=$PID"
-            ps -o pid,pcpu,pmem,etime,cmd -p "$PID"
-            echo "=== sqlite sizes ==="
-            ls -lh /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite*
-            echo "=== health now ==="
-            curl -sS -m 3 -w "\nhttp=%{http_code} t=%{time_total}\n" http://127.0.0.1:3101/api/health | head -c 200; echo
-            echo "=== wait 70s then resample ==="
-            for s in 10 20 30 40 50 60 70; do
-              sleep 10
+            echo pid=$PID
+            # sample stacks while warming
+            for i in 1 2 3 4 5 6 7 8 9 10 12 15; do
+              sleep 3
               PID=$(systemctl show -p MainPID --value warehouse-wms)
-              CPU=$(ps -o pcpu= -p "$PID" 2>/dev/null)
+              CPU=$(ps -o pcpu= -p "$PID")
               CODE=$(curl -sS -m 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:3101/api/health)
-              echo "t=${s}s pid=$PID cpu=$CPU health=$CODE"
+              echo "t=$((i*3))s cpu=$CPU health=$CODE"
+              # wchan / stack
+              cat /proc/$PID/wchan 2>/dev/null; echo
+              cat /proc/$PID/stack 2>/dev/null | head -15
+              echo "---"
             done
-            echo "=== journal since restart ==="
-            journalctl -u warehouse-wms -n 80 --no-pager --since '5 min ago'
-            echo "=== nginx access last pick/api ==="
-            tail -n 50 /var/log/nginx/access.log 2>/dev/null | rg -i 'pick|/api/' | tail -30
-            ls /var/log/nginx/*uchet* /var/log/nginx/*1c* 2>/dev/null
-            echo "=== open connections to 3101 ==="
-            ss -tn sport = :3101 | head -40
-            echo "=== node threads ==="
-            ps -L -o pid,tid,pcpu,state,comm -p "$(systemctl show -p MainPID --value warehouse-wms)" | head -30
+            echo "=== nginx recent uchetn1 ==="
+            for f in /var/log/nginx/access.log /var/log/nginx/uchetn1*access* /var/log/nginx/*1c*access* /var/log/nginx/error.log; do
+              [ -f "$f" ] || continue
+              echo "FILE $f"
+              tail -n 80 "$f" | grep -E 'pick|/api/|3101' | tail -40
+            done
+            echo "=== journal pick/today warns ==="
+            journalctl -u warehouse-wms -n 100 --no-pager --since '3 min ago'
             echo DONE
