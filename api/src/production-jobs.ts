@@ -206,8 +206,22 @@ export function setProductionProduceResults(
   return getProductionJob(jobId)!;
 }
 
-function enrichJob(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+function enrichJob(
+  row: Record<string, unknown> | null | undefined,
+  opts?: { light?: boolean }
+): Record<string, unknown> | null {
   if (!row) return null;
+  if (opts?.light) {
+    return {
+      ...row,
+      status_label: STATUS_LABELS[String(row.status)] || String(row.status),
+      kind_label: KIND_LABELS[String(row.kind)] || String(row.kind),
+      lines: [],
+      consume: [],
+      produce: [],
+      summary: String(row.number || row.id || ''),
+    };
+  }
   const lines = loadLines(String(row.id));
   const consume = lines.filter((l) => l.direction === 'consume');
   const produce = lines.filter((l) => l.direction === 'produce');
@@ -264,7 +278,7 @@ export function listProductionJobs(opts: {
      ORDER BY datetime(updated_at) DESC, number DESC
      LIMIT ?`,
     [...params, limit]
-  ).map((r) => enrichJob(r as Record<string, unknown>));
+  ).map((r) => enrichJob(r as Record<string, unknown>, { light: true }));
   return { items, status_labels: STATUS_LABELS, kind_labels: KIND_LABELS };
 }
 

@@ -14371,56 +14371,121 @@ api.put('/currencies/:code', async (c) => {
 /** Кэш счётчика «завершённых» — UI /pick дергает today каждые ~12с. */
 const pickCompletedTotalCache = new Map<string, { at: number; n: number }>();
 const PICK_COMPLETED_TOTAL_TTL_MS = 120_000;
-/** Полный ответ /pick/today — без этого 5+ вкладок убивают Node sync SQL. */
+/** Полный ответ /pick/today — собираем в фоне, не на HTTP-потоке. */
 const pickTodayPayloadCache = new Map<string, { at: number; body: Record<string, unknown> }>();
-const PICK_TODAY_TTL_MS = 8_000;
+const PICK_TODAY_TTL_MS = 15_000;
 let pickTodayBuilding = 0;
+
+function emptyPickTodayBody(day: string, site?: string): Record<string, unknown> {
+  return {
+    day: String(day).slice(0, 10),
+    title: 'Задачи на сегодня',
+    note: 'Загрузка…',
+    pick_site: site || 'all',
+    pick_sites: [],
+    counts: { open: 0, done: 0, blocked: 0 },
+    urgency_counts: { overdue: 0, hot: 0, normal: 0, wait: 0 },
+    next: null,
+    open: [],
+    groups: {},
+    done: [],
+    blocked: [],
+    handoffs: [],
+    handoffs_completed_total: 0,
+    returns: [],
+    loading: true,
+  };
+}
+
+function buildPickTodayPayload(
+  day: string,
+  site: string | undefined,
+  actor: ReturnType<typeof actorFromContext>
+): Record<string, unknown> {
+  const t0 = Date.now();
+  const board = pickerBoard(day, site, actor);
+  const tBoard = Date.now();
+  const handoffs = warehouseHandoffsForPick(40, site, actor, { light: true });
+  const tHandoffs = Date.now();
+  const totalKey = `${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`;
+  const cached = pickCompletedTotalCache.get(totalKey);
+  let handoffs_completed_total: number;
+  if (cached && Date.now() - cached.at < PICK_COMPLETED_TOTAL_TTL_MS) {
+    handoffs_completed_total = cached.n;
+  } else {
+    handoffs_completed_total = warehouseHandoffsPickTotal(undefined, null, true);
+    pickCompletedTotalCache.set(totalKey, { at: Date.now(), n: handoffs_completed_total });
+  }
+  const tTotal = Date.now();
+  const returns = stockReturnsForPick(40);
+  const tEnd = Date.now();
+  if (tEnd - t0 > 400) {
+    console.warn(
+      `[pick/today] ${tEnd - t0}ms board=${tBoard - t0} handoffs=${tHandoffs - tBoard} total=${tTotal - tHandoffs} returns=${tEnd - tTotal} site=${site || ''}`
+    );
+  }
+  return { ...board, handoffs, handoffs_completed_total, returns };
+}
+
+/** Фоновый прогрев полного /pick/today — по одному сайту за тик, с yield. */
+export function warmPickTodayCaches(): void {
+  if (pickTodayBuilding > 0) return;
+  pickTodayBuilding = 1;
+  const day = new Date().toISOString().slice(0, 10);
+  const sites: Array<string | undefined> = [undefined, 'msk', 'strela', 'vogel'];
+  let i = 0;
+  const step = () => {
+    if (i >= sites.length) {
+      pickTodayBuilding = 0;
+      return;
+    }
+    const site = sites[i++];
+    try {
+      const body = buildPickTodayPayload(day, site, null);
+      const at = Date.now();
+      pickTodayPayloadCache.set(`${day}|${site || 'all'}|||`, { at, body });
+      pickTodayPayloadCache.set(`${day}|${site || 'all'}|admin||`, { at, body });
+    } catch (e) {
+      console.warn('[pick/today] warm', site, e instanceof Error ? e.message : e);
+    }
+    setImmediate(step);
+  };
+  setImmediate(step);
+}
 
 api.get('/warehouse/pick/today', async (c) => {
   const actor = actorFromContext(c);
-  const day = (c.req.query('day') || '').trim() || undefined;
+  const day = (c.req.query('day') || '').trim() || new Date().toISOString().slice(0, 10);
   const site = (c.req.query('site') || '').trim() || undefined;
-  const cacheKey = `${day || 'today'}|${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}|${actor?.id || ''}`;
-  const hit = pickTodayPayloadCache.get(cacheKey);
+  const d = String(day).slice(0, 10);
+  const cacheKey = `${d}|${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}|${actor?.id || ''}`;
+  const hit =
+    pickTodayPayloadCache.get(cacheKey) ||
+    pickTodayPayloadCache.get(`${d}|${site || 'all'}|||`);
   if (hit && Date.now() - hit.at < PICK_TODAY_TTL_MS) {
     return c.json(hit.body);
   }
-  // Уже строится — отдать stale / пустой каркас, не ставить второй тяжёлый sync в очередь.
-  if (pickTodayBuilding > 0 && hit) {
-    return c.json(hit.body);
-  }
-  pickTodayBuilding++;
+  // Лёгкий sync-ответ без pickerBoard/enrich — полный payload греем в фоне.
   const t0 = Date.now();
+  let handoffs: unknown[] = [];
   try {
-    const board = pickerBoard(day, site, actor);
-    const tBoard = Date.now();
-    // light: без enrich ячеек/остатков на каждый poll — иначе event loop умирает под нагрузкой вкладок.
-    const handoffs = warehouseHandoffsForPick(40, site, actor, { light: true });
-    const tHandoffs = Date.now();
-    const totalKey = `${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`;
-    const cached = pickCompletedTotalCache.get(totalKey);
-    let handoffs_completed_total: number;
-    if (cached && Date.now() - cached.at < PICK_COMPLETED_TOTAL_TTL_MS) {
-      handoffs_completed_total = cached.n;
-    } else {
-      // Hot path: без site/actor-фильтра в JS (иначе полный скан + N×crm_deals → 502).
-      handoffs_completed_total = warehouseHandoffsPickTotal(undefined, null, true);
-      pickCompletedTotalCache.set(totalKey, { at: Date.now(), n: handoffs_completed_total });
-    }
-    const tTotal = Date.now();
-    const returns = stockReturnsForPick(40);
-    const tEnd = Date.now();
-    if (tEnd - t0 > 400) {
-      console.warn(
-        `[pick/today] ${tEnd - t0}ms board=${tBoard - t0} handoffs=${tHandoffs - tBoard} total=${tTotal - tHandoffs} returns=${tEnd - tTotal} site=${site || ''}`
-      );
-    }
-    const body = { ...board, handoffs, handoffs_completed_total, returns };
-    pickTodayPayloadCache.set(cacheKey, { at: Date.now(), body });
-    return c.json(body);
-  } finally {
-    pickTodayBuilding = Math.max(0, pickTodayBuilding - 1);
+    handoffs = warehouseHandoffsForPick(30, site, actor, { light: true });
+  } catch (e) {
+    console.warn('[pick/today] light handoffs', e instanceof Error ? e.message : e);
   }
+  const body = {
+    ...emptyPickTodayBody(d, site),
+    note: 'Склад · задачи',
+    loading: false,
+    handoffs,
+    handoffs_completed_total: pickCompletedTotalCache.get('all||')?.n ?? 0,
+  };
+  pickTodayPayloadCache.set(cacheKey, { at: Date.now(), body });
+  if (Date.now() - t0 > 300) {
+    console.warn(`[pick/today] light ${Date.now() - t0}ms site=${site || ''}`);
+  }
+  // Полный board — только в фоне, не блокируя ответ
+  return c.json(body);
 });
 
 async function enrichPickHandoffsWithCdek(
