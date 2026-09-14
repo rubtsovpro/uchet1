@@ -53,7 +53,17 @@ export function runWithDealFlowCache<T>(fn: () => T): T {
 }
 
 function clearHandoffReturnState(dealId: string): void {
-  run(`DELETE FROM meta WHERE key = ?`, [HANDOFF_RETURN_META(dealId)]);
+  const key = HANDOFF_RETURN_META(dealId);
+  // Не трогаем SQLite, если метки нет — иначе каждый poll stock-flow пишет DELETE и ловит lock.
+  const exists = get<{ x: number }>(`SELECT 1 AS x FROM meta WHERE key = ? LIMIT 1`, [key]);
+  if (!exists) return;
+  try {
+    run(`DELETE FROM meta WHERE key = ?`, [key]);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(msg)) return;
+    throw e;
+  }
 }
 
 export type StockReturnLine = {
