@@ -1333,7 +1333,7 @@ export function buildPickRouteInfo(task: {
 
 function enrichPickRow(
   t: Record<string, unknown>,
-  opts?: { includeProductionLines?: boolean }
+  opts?: { includeProductionLines?: boolean; skipDealContext?: boolean }
 ) {
   const pick_type = derivePickType({
     status: String(t.status || ''),
@@ -1400,7 +1400,7 @@ function enrichPickRow(
     if (route.route_to) city = route.route_to;
     else if (/курьер/i.test(channel_label)) city = 'Курьер';
   }
-  const dealCtx = dealId ? dealPickContext(dealId) : null;
+  const dealCtx = dealId && opts?.skipDealContext !== true ? dealPickContext(dealId) : null;
   const wantProdLines = opts?.includeProductionLines !== false;
   const productionExtra =
     wantProdLines && (ch === 'production_send' || ch === 'production_receive')
@@ -1929,7 +1929,7 @@ export function pickerBoard(day?: string, site?: string, actor?: PickActor | nul
     ) as Array<Record<string, unknown>>
   )
     // Список /pick: без тяжёлых production lines (карточка грузит /warehouse/tasks/:id).
-    .map((t) => enrichPickRow(t, { includeProductionLines: false }))
+    .map((t) => enrichPickRow(t, { includeProductionLines: false, skipDealContext: true }))
     .sort(sortOpenPick);
 
   const done = (
@@ -1946,7 +1946,7 @@ export function pickerBoard(day?: string, site?: string, actor?: PickActor | nul
        LIMIT 50`,
       [d, d]
     ) as Array<Record<string, unknown>>
-  ).map((t) => enrichPickRow(t, { includeProductionLines: false }));
+  ).map((t) => enrichPickRow(t, { includeProductionLines: false, skipDealContext: true }));
 
   const blocked = (
     all(
@@ -1959,7 +1959,7 @@ export function pickerBoard(day?: string, site?: string, actor?: PickActor | nul
        LIMIT 50`,
       [d]
     ) as Array<Record<string, unknown>>
-  ).map((t) => enrichPickRow(t, { includeProductionLines: false }));
+  ).map((t) => enrichPickRow(t, { includeProductionLines: false, skipDealContext: true }));
 
   const siteFilter = resolvePickSiteQuery(site, actor);
   const taskDealAllowed = (t: { deal_id?: unknown }) => {
@@ -3899,6 +3899,34 @@ function mapHandoffPickRow(
         : parseHandoffCompletedLabel(commentStr) ||
           parseHandoffTransferLabel(commentStr, createdAt))
     : parseHandoffTransferLabel(commentStr, createdAt);
+  // light + список /pick/today: без строк документа и dealPickContext — иначе N×SQL вешает event loop.
+  if (light) {
+    return {
+      id,
+      number: String(row.number || ''),
+      deal_id: dealId,
+      comment: commentStr,
+      created_at: createdAt,
+      doc_date: String(row.doc_date || ''),
+      doc_type: String(row.doc_type || ''),
+      warehouse_id: warehouseId,
+      warehouse_name: fromName,
+      warehouse_to_id: String(row.warehouse_to_id || ''),
+      warehouse_to_name: toNameRaw,
+      warehouse_from_code: fromCode,
+      warehouse_to_code: toCode,
+      amount: Number(row.amount) || 0,
+      transfer_label: transferLabel,
+      pick_site: pickSite,
+      route_kind: routeKind,
+      is_return: isReturn,
+      is_to_sto: isToSto,
+      completed,
+      lines: [] as unknown[],
+      deal: dealId ? { id: dealId } : null,
+      cells_label: completed ? parseCellFromDocComment(commentStr) : '',
+    };
+  }
   const lines = all(
     `SELECT l.qty, l.product_id,
             IFNULL(l.warehouse_id,'') AS warehouse_id,
@@ -3911,20 +3939,9 @@ function mapHandoffPickRow(
      ORDER BY l.line_no ASC, l.id ASC`,
     [id]
   ) as Array<Record<string, unknown>>;
-  const enrichedLines: Array<Record<string, unknown>> = light
-    ? lines.map((l) => ({
-        ...l,
-        article: String(l.sku || ''),
-        barcode: '',
-        code: '',
-        stock_qty: 0,
-        stock_wh: [] as unknown[],
-        cells: [] as unknown[],
-        cells_label: completed ? parseCellFromDocComment(commentStr) : '',
-        from_warehouse_id: String(l.warehouse_id || warehouseId || ''),
-        from_warehouse_name: String(l.warehouse_name || fromName || ''),
-      }))
-    : lines.map((l) => enrichHandoffLine(l, warehouseId, pickSite, dealId));
+  const enrichedLines: Array<Record<string, unknown>> = lines.map((l) =>
+    enrichHandoffLine(l, warehouseId, pickSite, dealId)
+  );
   const deal = dealId ? dealPickContext(dealId) : null;
   const warehouseToIdRaw = String(row.warehouse_to_id || '').trim();
   const isReserve =

@@ -3055,20 +3055,27 @@ api.post('/webhooks/amo', async (c) => {
     // ключ верный, но переключатель выкл — Amo не должен отписывать (200)
     return c.text('OK', 200, { 'Content-Type': 'text/plain; charset=utf-8' });
   }
+  // Сразу 200: иначе очередь Amo + sync SQL на каждый хук валит /pick (event loop).
   const parsed = parseAmoWebhookPayload(body, formKeys);
-  recordAmoWebhookHit(parsed);
-  // Amo → Учёт: сначала лёгкий патч из тела хука; полный export — только для новых / отсутствующих
-  if (parsed.entities.includes('deals') || parsed.entities.includes('other')) {
-    const patches = parseAmoWebhookDeals(body, formKeys);
-    const needFull = patches.length
-      ? applyAmoDealWebhookPatches(patches)
-      : parsed.ids.map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean);
-    const uniq = [...new Set(needFull)].slice(0, 15);
-    for (const dealId of uniq) {
-      syncDealFromAmo1cBackground(dealId);
+  const bodyRef = body;
+  const keysRef = formKeys.slice();
+  setImmediate(() => {
+    try {
+      recordAmoWebhookHit(parsed);
+      if (parsed.entities.includes('deals') || parsed.entities.includes('other')) {
+        const patches = parseAmoWebhookDeals(bodyRef, keysRef);
+        const needFull = patches.length
+          ? applyAmoDealWebhookPatches(patches)
+          : parsed.ids.map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean);
+        const uniq = [...new Set(needFull)].slice(0, 15);
+        for (const dealId of uniq) {
+          syncDealFromAmo1cBackground(dealId);
+        }
+      }
+    } catch (e) {
+      console.warn('[webhooks/amo] deferred', e instanceof Error ? e.message : e);
     }
-  }
-  // Amo отключает медленные хуки — короткий ответ
+  });
   return c.text('OK', 200, { 'Content-Type': 'text/plain; charset=utf-8' });
 });
 
@@ -14364,37 +14371,56 @@ api.put('/currencies/:code', async (c) => {
 /** Кэш счётчика «завершённых» — UI /pick дергает today каждые ~12с. */
 const pickCompletedTotalCache = new Map<string, { at: number; n: number }>();
 const PICK_COMPLETED_TOTAL_TTL_MS = 120_000;
+/** Полный ответ /pick/today — без этого 5+ вкладок убивают Node sync SQL. */
+const pickTodayPayloadCache = new Map<string, { at: number; body: Record<string, unknown> }>();
+const PICK_TODAY_TTL_MS = 8_000;
+let pickTodayBuilding = 0;
 
 api.get('/warehouse/pick/today', async (c) => {
   const actor = actorFromContext(c);
   const day = (c.req.query('day') || '').trim() || undefined;
   const site = (c.req.query('site') || '').trim() || undefined;
+  const cacheKey = `${day || 'today'}|${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}|${actor?.id || ''}`;
+  const hit = pickTodayPayloadCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < PICK_TODAY_TTL_MS) {
+    return c.json(hit.body);
+  }
+  // Уже строится — отдать stale / пустой каркас, не ставить второй тяжёлый sync в очередь.
+  if (pickTodayBuilding > 0 && hit) {
+    return c.json(hit.body);
+  }
+  pickTodayBuilding++;
   const t0 = Date.now();
-  const board = pickerBoard(day, site, actor);
-  const tBoard = Date.now();
-  // light: без enrich ячеек/остатков на каждый poll — иначе event loop умирает под нагрузкой вкладок.
-  const handoffs = warehouseHandoffsForPick(40, site, actor, { light: true });
-  const tHandoffs = Date.now();
-  const cacheKey = `${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`;
-  const cached = pickCompletedTotalCache.get(cacheKey);
-  let handoffs_completed_total: number;
-  if (cached && Date.now() - cached.at < PICK_COMPLETED_TOTAL_TTL_MS) {
-    handoffs_completed_total = cached.n;
-  } else {
-    // Hot path: без site/actor-фильтра в JS (иначе полный скан + N×crm_deals → 502).
-    // Точный site-фильтр — на вкладке «Передано» /handoffs/completed.
-    handoffs_completed_total = warehouseHandoffsPickTotal(undefined, null, true);
-    pickCompletedTotalCache.set(cacheKey, { at: Date.now(), n: handoffs_completed_total });
+  try {
+    const board = pickerBoard(day, site, actor);
+    const tBoard = Date.now();
+    // light: без enrich ячеек/остатков на каждый poll — иначе event loop умирает под нагрузкой вкладок.
+    const handoffs = warehouseHandoffsForPick(40, site, actor, { light: true });
+    const tHandoffs = Date.now();
+    const totalKey = `${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`;
+    const cached = pickCompletedTotalCache.get(totalKey);
+    let handoffs_completed_total: number;
+    if (cached && Date.now() - cached.at < PICK_COMPLETED_TOTAL_TTL_MS) {
+      handoffs_completed_total = cached.n;
+    } else {
+      // Hot path: без site/actor-фильтра в JS (иначе полный скан + N×crm_deals → 502).
+      handoffs_completed_total = warehouseHandoffsPickTotal(undefined, null, true);
+      pickCompletedTotalCache.set(totalKey, { at: Date.now(), n: handoffs_completed_total });
+    }
+    const tTotal = Date.now();
+    const returns = stockReturnsForPick(40);
+    const tEnd = Date.now();
+    if (tEnd - t0 > 400) {
+      console.warn(
+        `[pick/today] ${tEnd - t0}ms board=${tBoard - t0} handoffs=${tHandoffs - tBoard} total=${tTotal - tHandoffs} returns=${tEnd - tTotal} site=${site || ''}`
+      );
+    }
+    const body = { ...board, handoffs, handoffs_completed_total, returns };
+    pickTodayPayloadCache.set(cacheKey, { at: Date.now(), body });
+    return c.json(body);
+  } finally {
+    pickTodayBuilding = Math.max(0, pickTodayBuilding - 1);
   }
-  const tTotal = Date.now();
-  const returns = stockReturnsForPick(40);
-  const tEnd = Date.now();
-  if (tEnd - t0 > 400) {
-    console.warn(
-      `[pick/today] ${tEnd - t0}ms board=${tBoard - t0} handoffs=${tHandoffs - tBoard} total=${tTotal - tHandoffs} returns=${tEnd - tTotal} site=${site || ''}`
-    );
-  }
-  return c.json({ ...board, handoffs, handoffs_completed_total, returns });
 });
 
 async function enrichPickHandoffsWithCdek(
