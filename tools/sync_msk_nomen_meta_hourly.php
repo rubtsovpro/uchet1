@@ -10,13 +10,15 @@
  *
  * Берём / обновляем:
  *   A MRAER мастер, B Номер на складе (факт), C Цена, D Партнерская, E Снятие/Установка,
- *   F Поставщик, G Применимость программная (fallback),
- *   Y ПРИМЕНИМОСТЬ (все машины) — основной источник применимости в пикер,
+ *   F Поставщик,
+ *   Y ПРИМЕНИМОСТЬ (все машины) — единственный источник применимости в пикер,
  *   K № поставки, N Категория, O Номенклатура 1С, …
  *
  * Факт с листа → этот мастер: если раньше висел на другом мастере подвески —
  * переносим (lots + product_id в ячейках), qty/ячейка/склад сохраняются.
- * Кол-во с листа не затираем. fogel_2025 не трогаем.
+ * Остатки с листа (H/I/J): только при СОЗДАНИИ новой карточки — один раз.
+ * Уже существующие товары — qty с листа никогда не обновляем.
+ * fogel_2025 не трогаем.
  *
  * Usage:
  *   php tools/sync_msk_nomen_meta_hourly.php --dry-run
@@ -41,6 +43,13 @@ $dryRun = !in_array('--apply', $argv, true);
 if (in_array('--dry-run', $argv, true)) {
     $dryRun = true;
 }
+
+/** Коды 1С: применимость с листа не трогаем (оставить как в карточке). */
+$skipAppByCode = [
+    'НФ-00026159' => true,
+    '00-00007524' => true,
+    '00-00001830' => true,
+];
 
 function sync_log(string $msg): void
 {
@@ -127,6 +136,196 @@ function normalizeCrosses(string $raw): string
     }
 
     return implode('; ', $parts);
+}
+
+function normCellCode(string $raw): string
+{
+    $s = trim(str_replace(["\xc2\xa0", ' '], ['', ''], $raw));
+
+    return mb_strtoupper($s, 'UTF-8');
+}
+
+/**
+ * Первичная загрузка остатков с листа — только для только что созданной карточки.
+ *
+ * @param list<array{fact:string,qty:float,cell:string,warehouse:string,supply:string,supplier:string}> $lines
+ * @return array{cells:int,bal:int,lots:int,skipped:int}
+ */
+function seedInitialStockFromSheet(
+    SQLite3 $db,
+    string $productId,
+    string $masterSku,
+    string $productName,
+    array $lines,
+    bool $dryRun
+): array {
+    $out = ['cells' => 0, 'bal' => 0, 'lots' => 0, 'skipped' => 0];
+    $productId = trim($productId);
+    $masterSku = strtoupper(trim($masterSku));
+    if ($productId === '' || $lines === []) {
+        return $out;
+    }
+
+    // Уже есть остатки по карточке — не трогаем (повторный create не должен быть).
+    $have = (float) $db->querySingle(
+        "SELECT IFNULL(SUM(ABS(qty)),0) FROM stock_balances WHERE product_id = '"
+        . SQLite3::escapeString($productId) . "'"
+    );
+    $haveCells = (float) $db->querySingle(
+        "SELECT IFNULL(SUM(ABS(qty)),0) FROM stock_cell_balances WHERE product_id = '"
+        . SQLite3::escapeString($productId) . "'"
+    );
+    if ($have > 0.0001 || $haveCells > 0.0001) {
+        $out['skipped'] = count($lines);
+
+        return $out;
+    }
+
+    $whByKey = [];
+    $res = $db->query('SELECT id, name, code FROM warehouses WHERE IFNULL(is_active,1)=1');
+    while ($res && ($w = $res->fetchArray(SQLITE3_ASSOC))) {
+        $whByKey[mb_strtolower(trim((string) $w['name']), 'UTF-8')] = $w;
+        $whByKey[mb_strtolower(trim((string) $w['code']), 'UTF-8')] = $w;
+    }
+    if ($res) {
+        $res->finalize();
+    }
+    $mapWh = static function (string $name) use ($whByKey): ?array {
+        $k = mb_strtolower(trim($name), 'UTF-8');
+        if ($k === '') {
+            $k = 'основной';
+        }
+        if (isset($whByKey[$k])) {
+            return $whByKey[$k];
+        }
+        if (str_contains($k, 'брак')) {
+            return $whByKey['брак/рекламация'] ?? ($whByKey['брак'] ?? null);
+        }
+        if ($k === 'сто' || str_starts_with($k, 'сто ')) {
+            return $whByKey['сто'] ?? ($whByKey['склад сто москва'] ?? null);
+        }
+        if (str_contains($k, 'основн')) {
+            return $whByKey['основной'] ?? null;
+        }
+
+        return null;
+    };
+
+    $balAgg = []; // whId => qty
+    foreach ($lines as $line) {
+        $qty = (float) ($line['qty'] ?? 0);
+        if ($qty <= 0.0001) {
+            continue;
+        }
+        $fact = strtoupper(trim((string) ($line['fact'] ?? '')));
+        if ($fact === '') {
+            $fact = $masterSku;
+        }
+        $wh = $mapWh((string) ($line['warehouse'] ?? ''));
+        if (!$wh) {
+            $wh = $mapWh('Основной');
+        }
+        if (!$wh) {
+            $out['skipped']++;
+            continue;
+        }
+        $whId = (string) $wh['id'];
+        $whName = (string) $wh['name'];
+        $cellCode = normCellCode((string) ($line['cell'] ?? ''));
+        $supply = trim((string) ($line['supply'] ?? ''));
+        $supplier = trim((string) ($line['supplier'] ?? ''));
+
+        if ($dryRun) {
+            $balAgg[$whId] = ($balAgg[$whId] ?? 0) + $qty;
+            if ($cellCode !== '') {
+                $out['cells']++;
+            }
+            $out['lots']++;
+            continue;
+        }
+
+        $cellId = '';
+        if ($cellCode !== '') {
+            $cellId = (string) $db->querySingle(
+                "SELECT id FROM warehouse_cells WHERE warehouse_id = '"
+                . SQLite3::escapeString($whId) . "' AND code = '"
+                . SQLite3::escapeString($cellCode) . "' COLLATE NOCASE LIMIT 1"
+            );
+            if ($cellId === '') {
+                $cellId = guid();
+                $db->exec(
+                    "INSERT INTO warehouse_cells (id, warehouse_id, code, kind, is_active)
+                     VALUES ('" . SQLite3::escapeString($cellId) . "', '"
+                    . SQLite3::escapeString($whId) . "', '"
+                    . SQLite3::escapeString($cellCode) . "', 'shelf', 1)"
+                );
+            }
+            $db->exec(
+                "INSERT INTO stock_cell_balances
+                    (warehouse_id, cell_id, product_id, sku, product_name, supply, qty, updated_at)
+                 VALUES (
+                    '" . SQLite3::escapeString($whId) . "',
+                    '" . SQLite3::escapeString($cellId) . "',
+                    '" . SQLite3::escapeString($productId) . "',
+                    '" . SQLite3::escapeString($fact) . "',
+                    '" . SQLite3::escapeString($productName) . "',
+                    '" . SQLite3::escapeString($supply) . "',
+                    {$qty},
+                    datetime('now')
+                 )
+                 ON CONFLICT(warehouse_id, cell_id, sku) DO UPDATE SET
+                    product_id = excluded.product_id,
+                    product_name = excluded.product_name,
+                    supply = excluded.supply,
+                    qty = stock_cell_balances.qty + excluded.qty,
+                    updated_at = datetime('now')"
+            );
+            $out['cells']++;
+        }
+
+        $lotId = guid();
+        $db->exec(
+            "INSERT INTO product_supplier_lots (
+                id, product_id, master_sku, fact_sku, supplier, warehouse_id, warehouse_name,
+                cell_code, supply, qty, oe, price, how_found, sheet_row, updated_at
+             ) VALUES (
+                '" . SQLite3::escapeString($lotId) . "',
+                '" . SQLite3::escapeString($productId) . "',
+                '" . SQLite3::escapeString($masterSku) . "',
+                '" . SQLite3::escapeString($fact) . "',
+                '" . SQLite3::escapeString($supplier) . "',
+                '" . SQLite3::escapeString($whId) . "',
+                '" . SQLite3::escapeString($whName) . "',
+                '" . SQLite3::escapeString($cellCode) . "',
+                '" . SQLite3::escapeString($supply) . "',
+                {$qty}, '', 0, 'sheet:seed-on-create', 0, datetime('now')
+             )"
+        );
+        $out['lots']++;
+        $balAgg[$whId] = ($balAgg[$whId] ?? 0) + $qty;
+    }
+
+    foreach ($balAgg as $whId => $qty) {
+        if ($dryRun) {
+            $out['bal']++;
+            continue;
+        }
+        $db->exec(
+            "INSERT INTO stock_balances (warehouse_id, product_id, qty)
+             VALUES ('" . SQLite3::escapeString((string) $whId) . "', '"
+            . SQLite3::escapeString($productId) . "', {$qty})
+             ON CONFLICT(warehouse_id, product_id) DO UPDATE SET qty = qty + excluded.qty"
+        );
+        $db->exec(
+            "INSERT INTO product_store_rests (product_id, warehouse_id, qty)
+             VALUES ('" . SQLite3::escapeString($productId) . "', '"
+            . SQLite3::escapeString((string) $whId) . "', {$qty})
+             ON CONFLICT(product_id, warehouse_id) DO UPDATE SET qty = qty + excluded.qty"
+        );
+        $out['bal']++;
+    }
+
+    return $out;
 }
 
 /**
@@ -345,9 +544,11 @@ $iRetail ??= colIndex($header, ['цена'], false);
 $iPartner ??= colIndex($header, ['партнерская', 'партнёрская']);
 $iInstall ??= colIndex($header, ['снятие/установка', 'снятие']);
 $iSup = colIndex($header, ['поставщик (по коду)', 'поставщик']);
-$iAppProg = colIndex($header, ['применимость программная']);
-// Y «ПРИМЕНИМОСТЬ (все машины)» — основной источник применимости в пикер.
+// Y «ПРИМЕНИМОСТЬ (все машины)» — единственный источник применимости.
 $iAppAll = colIndex($header, ['применимость (все машины)'], false);
+$iQty = colIndex($header, ['кол-во', 'остаток']);
+$iCell = colIndex($header, ['ячейка']);
+$iWh = colIndex($header, ['склад'], false);
 if ($iAppAll === null) {
     foreach ($header as $i => $h) {
         $hn = mb_strtolower(trim((string) $h), 'UTF-8');
@@ -390,7 +591,9 @@ sync_log('cols: master=' . json_encode($iMaster)
     . ' partner=' . json_encode($iPartner)
     . ' install=' . json_encode($iInstall)
     . ' appY=' . json_encode($iAppAll)
-    . ' appProg=' . json_encode($iAppProg)
+    . ' qty=' . json_encode($iQty)
+    . ' cell=' . json_encode($iCell)
+    . ' wh=' . json_encode($iWh)
     . ' cross=' . json_encode($iCross));
 
 /** @var array<string,array<string,mixed>> $masters */
@@ -414,8 +617,8 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
         'install' => 0.0,
         'supplier' => '',
         'suppliers' => [],
-        'app_prog' => '',
         'app_all' => '',
+        'stock_lines' => [],
         'supply' => '',
         'category' => '',
         'name' => '',
@@ -456,10 +659,23 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
     if ($appY !== '') {
         $cur['app_all'] = $appY;
     }
-    $app = cell($row, $iAppProg);
-    if ($app !== '') {
-        $cur['app_prog'] = $app;
+    // Строки остатка с листа — только для первичного seed при create (не для update).
+    if (!isset($cur['stock_lines']) || !is_array($cur['stock_lines'])) {
+        $cur['stock_lines'] = [];
     }
+    $qtyRaw = cell($row, $iQty);
+    $qty = (float) str_replace([',', ' '], ['.', ''], str_replace("\xc2\xa0", '', $qtyRaw));
+    if ($qty < 0) {
+        $qty = 0;
+    }
+    $cur['stock_lines'][] = [
+        'fact' => $fact,
+        'qty' => $qty,
+        'cell' => normCellCode(cell($row, $iCell)),
+        'warehouse' => cell($row, $iWh),
+        'supply' => cell($row, $iSupply),
+        'supplier' => $sup !== '' ? $sup : cell($row, $iSup),
+    ];
     $supply = cell($row, $iSupply);
     if ($supply !== '') {
         $cur['supply'] = $supply;
@@ -525,12 +741,15 @@ $getProduct = $db->prepare(
          sku = :sku COLLATE NOCASE
          OR sku = :sku_ns COLLATE NOCASE
          OR warehouse_sku = :sku COLLATE NOCASE
+         OR code = :sku_code COLLATE NOCASE
        )
      ORDER BY
        CASE
          WHEN sku = :sku2 COLLATE NOCASE THEN 0
          WHEN sku = :sku_ns2 COLLATE NOCASE THEN 1
-         ELSE 2
+         WHEN code = :sku_code2 COLLATE NOCASE AND id NOT LIKE '%::%' THEN 2
+         WHEN code = :sku_code2 COLLATE NOCASE THEN 3
+         ELSE 4
        END
      LIMIT 1"
 );
@@ -563,6 +782,55 @@ if ($unitId === '') {
     exit(6);
 }
 sync_log('unit_id=' . $unitId);
+
+// Таблица лотов — нужна для первичного seed остатков.
+$db->exec(
+    "CREATE TABLE IF NOT EXISTS product_supplier_lots (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL,
+        master_sku TEXT NOT NULL,
+        fact_sku TEXT NOT NULL,
+        supplier TEXT NOT NULL DEFAULT '',
+        warehouse_id TEXT NOT NULL DEFAULT '',
+        warehouse_name TEXT NOT NULL DEFAULT '',
+        cell_code TEXT NOT NULL DEFAULT '',
+        supply TEXT NOT NULL DEFAULT '',
+        qty REAL NOT NULL DEFAULT 0,
+        oe TEXT NOT NULL DEFAULT '',
+        price REAL NOT NULL DEFAULT 0,
+        how_found TEXT NOT NULL DEFAULT '',
+        sheet_row INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )"
+);
+$db->exec(
+    "CREATE TABLE IF NOT EXISTS warehouse_cells (
+        id TEXT PRIMARY KEY,
+        warehouse_id TEXT NOT NULL,
+        code TEXT NOT NULL,
+        rack TEXT NOT NULL DEFAULT '',
+        bay INTEGER NOT NULL DEFAULT 0,
+        level INTEGER NOT NULL DEFAULT 0,
+        kind TEXT NOT NULL DEFAULT 'shelf',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (warehouse_id, code)
+    )"
+);
+$db->exec(
+    "CREATE TABLE IF NOT EXISTS stock_cell_balances (
+        warehouse_id TEXT NOT NULL,
+        cell_id TEXT NOT NULL,
+        product_id TEXT NOT NULL DEFAULT '',
+        sku TEXT NOT NULL DEFAULT '',
+        product_name TEXT NOT NULL DEFAULT '',
+        supply TEXT NOT NULL DEFAULT '',
+        qty REAL NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (warehouse_id, cell_id, sku)
+    )"
+);
 
 $skuTaken = static function (SQLite3 $db, string $candidate, string $exceptId = '') : bool {
     $sql = "SELECT id FROM products WHERE sku = '" . SQLite3::escapeString($candidate) . "' COLLATE NOCASE";
@@ -611,6 +879,9 @@ $stats = [
     'props' => 0,
     'app' => 0,
     'category' => 0,
+    'stock_seed' => 0,
+    'stock_seed_cells' => 0,
+    'stock_seed_lots' => 0,
 ];
 
 $createdSample = [];
@@ -663,6 +934,8 @@ try {
         $getProduct->bindValue(':sku_ns', $skuNs, SQLITE3_TEXT);
         $getProduct->bindValue(':sku2', $sku, SQLITE3_TEXT);
         $getProduct->bindValue(':sku_ns2', $skuNs, SQLITE3_TEXT);
+        $getProduct->bindValue(':sku_code', $sku, SQLITE3_TEXT);
+        $getProduct->bindValue(':sku_code2', $sku, SQLITE3_TEXT);
         $res = $getProduct->execute();
         $prod = $res ? $res->fetchArray(SQLITE3_ASSOC) : false;
         if ($res) {
@@ -716,6 +989,19 @@ try {
             if (count($createdSample) < 20) {
                 $createdSample[] = $storeSku === $sku ? $sku : ($sku . '→' . $storeSku);
             }
+            // Остатки с листа — только при создании карточки, один раз.
+            $seedLines = is_array($m['stock_lines'] ?? null) ? $m['stock_lines'] : [];
+            $seed = seedInitialStockFromSheet(
+                $db,
+                $pid,
+                $sku,
+                $nameNew,
+                $seedLines,
+                $dryRun
+            );
+            $stats['stock_seed'] += (int) $seed['bal'];
+            $stats['stock_seed_cells'] += (int) $seed['cells'];
+            $stats['stock_seed_lots'] += (int) $seed['lots'];
         }
 
         $stats['matched']++;
@@ -917,10 +1203,11 @@ try {
             'type' => (string) $m['type'],
             'supplier_code' => $supJoined !== '' ? $supJoined : (string) $m['supplier'],
             'supply' => (string) $m['supply'],
-            'applicability' => (string) ($m['app_all'] ?? ''),
-            'applicability_program' => (string) $m['app_prog'],
             'nomen_source' => 'sheet:nomen-meta-hourly',
         ];
+        if (empty($skipAppByCode[$sku])) {
+            $props['applicability'] = (string) ($m['app_all'] ?? '');
+        }
         foreach ($props as $pk => $pv) {
             $pv = trim($pv);
             if ($pv === '') {
@@ -951,11 +1238,8 @@ try {
             $changed = true;
         }
 
-        // Применимость: столбец Y «ПРИМЕНИМОСТЬ (все машины)», fallback G программная.
-        $appText = trim((string) ($m['app_all'] ?? ''));
-        if ($appText === '') {
-            $appText = trim((string) $m['app_prog']);
-        }
+        // Применимость: только столбец Y «ПРИМЕНИМОСТЬ (все машины)».
+        $appText = empty($skipAppByCode[$sku]) ? trim((string) ($m['app_all'] ?? '')) : '';
         if ($appText !== '') {
             $appRows = enrichApplicabilityOnlyModel(parseSheetApplicabilityColumn($appText));
             $want = [];

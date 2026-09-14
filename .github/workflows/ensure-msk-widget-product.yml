@@ -1,0 +1,43 @@
+# Срочный фикс: код номенклатуры → виден в виджете Amo · Москва
+name: Ensure MSK widget product
+
+on:
+  workflow_dispatch:
+    inputs:
+      code:
+        description: 'Код 1С (напр. НФ-00026159)'
+        required: true
+        default: 'НФ-00026159'
+      apply:
+        description: 'apply=1 записать, иначе dry-run'
+        required: true
+        default: '1'
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Run on tech35
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            set -euo pipefail
+            APP=/root/1c_pnevmopodveska1_ru/warehouse
+            cd "$APP"
+            git fetch origin
+            git reset --hard origin/main
+            CODE='${{ github.event.inputs.code }}'
+            APPLY='${{ github.event.inputs.apply }}'
+            ARGS=("$CODE")
+            if [[ "$APPLY" == "1" || "$APPLY" == "true" || "$APPLY" == "yes" ]]; then
+              ARGS+=(--apply)
+            fi
+            php tools/ensure_msk_code_in_widget.php "${ARGS[@]}"
+            # сбросить кэш пикера
+            rm -rf /tmp/amo1c-wms-picker 2>/dev/null || true
+            echo "OK widget ensure $CODE"
