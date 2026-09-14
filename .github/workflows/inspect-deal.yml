@@ -24,34 +24,36 @@ jobs:
             DEAL="${{ github.event.inputs.deal_id }}"
             DB=/root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite
             echo "=== deal $DEAL ==="
-            sqlite3 -readonly "$DB" <<SQL
-            .mode column
-            .headers on
-            SELECT id, name, amo_channel, amo_status FROM crm_deals WHERE id='$DEAL';
-            SELECT '--- items ---';
-            SELECT line_no, sku, name, qty, product_guid FROM crm_deal_items WHERE deal_id='$DEAL' ORDER BY line_no;
-            SELECT '--- stock_docs ---';
-            SELECT id, number, doc_type, posted, warehouse_id, warehouse_to_id, substr(comment,1,180) AS comment, created_at
-            FROM stock_docs WHERE deal_id='$DEAL' ORDER BY datetime(created_at) DESC LIMIT 30;
-            SELECT '--- open drafts ---';
-            SELECT id, number, posted, substr(comment,1,180)
-            FROM stock_docs WHERE deal_id='$DEAL' AND IFNULL(posted,0)=0;
-            SELECT '--- lines of open drafts ---';
-            SELECT l.doc_id, l.product_id, l.qty, p.sku, p.name
-            FROM stock_doc_lines l
-            JOIN stock_docs d ON d.id=l.doc_id
-            LEFT JOIN products p ON p.id=l.product_id
-            WHERE d.deal_id='$DEAL' AND IFNULL(d.posted,0)=0;
-            SELECT '--- meta return/handoff ---';
-            SELECT key, substr(value,1,400) FROM meta WHERE key LIKE '%$DEAL%';
-            SELECT '--- warehouse_tasks ---';
-            SELECT id, number, status, channel, substr(comment,1,160), created_at, updated_at
-            FROM warehouse_tasks WHERE deal_id='$DEAL' ORDER BY datetime(created_at) DESC LIMIT 20;
-            SELECT '--- balances by deal products ---';
-            SELECT b.warehouse_id, w.code, w.name, b.product_id, p.sku, b.qty
-            FROM stock_balances b
-            LEFT JOIN warehouses w ON w.id=b.warehouse_id
-            LEFT JOIN products p ON p.id=b.product_id
-            WHERE b.qty>0 AND b.product_id IN (SELECT product_guid FROM crm_deal_items WHERE deal_id='$DEAL');
-            SQL
-            echo DONE
+            python3 - <<PY
+import sqlite3, json, os
+deal = """${{ github.event.inputs.deal_id }}""".strip()
+db = "/root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite"
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+con.row_factory = sqlite3.Row
+def show(title, sql, args=()):
+    print("===", title, "===")
+    try:
+        rows = con.execute(sql, args).fetchall()
+    except Exception as e:
+        print("ERR", e)
+        return
+    if not rows:
+        print("(empty)")
+        return
+    cols = rows[0].keys()
+    print(" | ".join(cols))
+    for r in rows:
+        print(" | ".join(str(r[c] if r[c] is not None else "")[:180] for c in cols))
+show("deal", "SELECT id, name, amo_channel, amo_status FROM crm_deals WHERE id=?", (deal,))
+show("items", "SELECT line_no, sku, name, qty, product_guid FROM crm_deal_items WHERE deal_id=? ORDER BY line_no", (deal,))
+show("stock_docs", """SELECT id, number, doc_type, posted, warehouse_id, warehouse_to_id, substr(comment,1,180) AS comment, created_at
+FROM stock_docs WHERE deal_id=? ORDER BY datetime(created_at) DESC LIMIT 30""", (deal,))
+show("open drafts", "SELECT id, number, posted, substr(comment,1,180) FROM stock_docs WHERE deal_id=? AND IFNULL(posted,0)=0", (deal,))
+show("open draft lines", """SELECT l.doc_id, l.product_id, l.qty, IFNULL(p.sku,'') sku, IFNULL(p.name,'') name
+FROM stock_doc_lines l JOIN stock_docs d ON d.id=l.doc_id LEFT JOIN products p ON p.id=l.product_id
+WHERE d.deal_id=? AND IFNULL(d.posted,0)=0""", (deal,))
+show("meta", "SELECT key, substr(value,1,400) FROM meta WHERE key LIKE ?", (f"%{deal}%",))
+show("tasks", """SELECT id, number, status, channel, substr(comment,1,160), created_at, updated_at
+FROM warehouse_tasks WHERE deal_id=? ORDER BY datetime(created_at) DESC LIMIT 20""", (deal,))
+print("DONE")
+PY
