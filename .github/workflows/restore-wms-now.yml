@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Kill orphans, cap sync, restart
+      - name: Restart clean
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -16,46 +16,52 @@ jobs:
           script_stop: false
           script: |
             set +e
-            echo "=== before: node on sqlite ==="
-            lsof /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null | head -20
-            ps -o pid,pcpu,etime,cmd -C node 2>/dev/null | head -20
-            echo "=== kill orphan node/php holding warehouse.sqlite (keep systemd main after stop) ==="
-            systemctl stop warehouse-wms
-            sleep 1
-            # любые node с dist/server.js
-            pgrep -af 'dist/server.js' | head -20
-            pkill -9 -f '/warehouse/api/dist/server.js' 2>/dev/null || true
-            pkill -9 -f 'node --experimental-sqlite dist/server.js' 2>/dev/null || true
-            # php export, держащие ту же sqlite
-            for pid in $(lsof -t /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null); do
-              echo "killing locker pid=$pid $(ps -o cmd= -p $pid)"
-              kill -9 "$pid" 2>/dev/null || true
-            done
-            sleep 1
-            echo "=== ensure sync cap in env ==="
+            echo "=== lockers before ==="
+            lsof /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null | head -30
+            echo "=== write sync-limit (no concurrent PHP export from WMS) ==="
             mkdir -p /etc/systemd/system/warehouse-wms.service.d
-            cat > /etc/systemd/system/warehouse-wms.service.d/sync-limit.conf <<'EON'
-            [Service]
-            Environment=WMS_SYNC_MAX_CONCURRENT=1
-            Environment=WMS_SYNC_CHILD_TIMEOUT_MS=25000
-            EON
-            # flatten indent
-            sed -i 's/^            //' /etc/systemd/system/warehouse-wms.service.d/sync-limit.conf
+            printf '%s\n' '[Service]' 'Environment=WMS_SYNC_MAX_CONCURRENT=0' 'Environment=WMS_SYNC_CHILD_TIMEOUT_MS=20000' > /etc/systemd/system/warehouse-wms.service.d/sync-limit.conf
+            cat /etc/systemd/system/warehouse-wms.service.d/sync-limit.conf
             systemctl daemon-reload
+            OLD=$(systemctl show -p MainPID --value warehouse-wms)
+            echo "stopping old pid=$OLD"
+            systemctl stop warehouse-wms
+            sleep 2
+            # If old pid still alive — kill by numeric PID only (never pkill -f)
+            if [ -n "$OLD" ] && [ "$OLD" != "0" ] && kill -0 "$OLD" 2>/dev/null; then
+              echo "force kill leftover $OLD"
+              kill -9 "$OLD" 2>/dev/null || true
+              sleep 1
+            fi
+            # Kill only PHP CLI export children holding the db (not php-fpm master)
+            for pid in $(lsof -t /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null); do
+              cmd=$(ps -o cmd= -p "$pid" 2>/dev/null)
+              case "$cmd" in
+                *php\ *export*|*php\ *sync*|*php\ *amo1c*|*import_msk*|*ensure_msk*)
+                  echo "kill php cli $pid $cmd"
+                  kill -9 "$pid" 2>/dev/null || true
+                  ;;
+                *)
+                  echo "keep $pid $cmd"
+                  ;;
+              esac
+            done
             systemctl start warehouse-wms
             sleep 3
             PID=$(systemctl show -p MainPID --value warehouse-wms)
-            echo "main=$PID"
-            lsof /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null | head -10
-            for i in 1 2 3 4 5 6 8 10 12 15 20; do
+            echo "main=$PID active=$(systemctl is-active warehouse-wms)"
+            lsof /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null | head -15
+            ok=0
+            for i in 1 2 3 4 5 6 8 10; do
               CODE=$(curl -sS -m 3 -o /tmp/h.txt -w '%{http_code}' http://127.0.0.1:3101/api/health)
-              CPU=$(ps -o pcpu= -p "$PID" 2>/dev/null)
-              echo "t=${i}s health=$CODE cpu=$CPU body=$(head -c 60 /tmp/h.txt)"
-              [ "$CODE" = "200" ] && [ "${CPU%.*}" -lt 70 ] && break
+              CPU=$(ps -o pcpu= -p "$PID" 2>/dev/null | tr -d ' ')
+              echo "t=${i}s health=$CODE cpu=$CPU"
+              if [ "$CODE" = "200" ]; then ok=1; fi
               sleep "$i"
               PID=$(systemctl show -p MainPID --value warehouse-wms)
             done
             curl -sS -m 5 -o /dev/null -w "pick %{http_code} %{time_total}\n" http://127.0.0.1:3101/pick
             curl -sS -m 8 -o /dev/null -w "ext %{http_code} %{time_total}\n" https://uchetn1.ru/pick
-            journalctl -u warehouse-wms -n 20 --no-pager --since '1 min ago'
-            echo DONE
+            curl -sS -m 5 -o /dev/null -w "today %{http_code} %{time_total}\n" -H 'Cookie: sid=x' http://127.0.0.1:3101/api/warehouse/pick/today?site=msk
+            journalctl -u warehouse-wms -n 25 --no-pager --since '90 sec ago'
+            echo DONE ok=$ok
