@@ -13,41 +13,36 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           command_timeout: 12m
+          script_stop: false
           script: |
             set +e
             echo "=== before ==="
-            systemctl is-active warehouse-wms
             PID=$(systemctl show -p MainPID --value warehouse-wms)
-            echo "pid=$PID cpu:"
-            ps -o pid,pcpu,pmem,etime,cmd -p "$PID" 2>/dev/null
-            echo "=== open files / sqlite ==="
-            ls -la /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite* 2>/dev/null | head -20
-            lsof /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null | head -20
-            echo "=== kill stuck deploy builds if any ==="
-            pkill -f 'typescript/lib/tsc.js -p tsconfig.json' 2>/dev/null || true
-            pkill -f 'vite build' 2>/dev/null || true
-            sleep 1
+            ps -o pid,pcpu,pmem,etime,cmd -p "$PID"
+            echo "=== stack sample ==="
+            timeout 2 strace -p "$PID" -c 2>&1 | tail -30
             echo "=== restart ==="
             systemctl restart warehouse-wms
-            sleep 4
-            systemctl is-active warehouse-wms
-            journalctl -u warehouse-wms -n 40 --no-pager --since '1 min ago'
-            echo "=== probe loop ==="
-            for i in 1 2 3 4 5 6 7 8 9 10; do
-              CODE=$(curl -sS -m 3 -o /tmp/h2.txt -w '%{http_code}' http://127.0.0.1:3101/api/health 2>/dev/null)
-              TIM=$(curl -sS -m 3 -o /dev/null -w '%{time_total}' http://127.0.0.1:3101/api/health 2>/dev/null)
-              BODY=$(head -c 120 /tmp/h2.txt 2>/dev/null)
-              echo "try$i code=$CODE time=$TIM body=$BODY"
-              if [ "$CODE" = "200" ]; then break; fi
-              sleep 2
+            sleep 3
+            NEW=$(systemctl show -p MainPID --value warehouse-wms)
+            echo "newpid=$NEW"
+            journalctl -u warehouse-wms -n 25 --no-pager --since '30 sec ago'
+            echo "=== probe ==="
+            for i in 1 2 3 4 5 6 7 8 9 10 11 12 15 20; do
+              CODE=$(curl -sS -m 2 -o /tmp/h2.txt -w '%{http_code}' http://127.0.0.1:3101/api/health)
+              echo "t=${i}s code=$CODE body=$(head -c 80 /tmp/h2.txt)"
+              ps -o pid,pcpu,etime -p "$NEW" | tail -1
+              if [ "$CODE" = "200" ]; then
+                curl -sS -m 5 -o /dev/null -w "pick %{http_code} %{time_total}\n" http://127.0.0.1:3101/pick
+                curl -sS -m 8 -o /dev/null -w "ext %{http_code} %{time_total}\n" https://uchetn1.ru/pick
+                break
+              fi
+              sleep "$i"
+              # refresh if restarted
+              NEW=$(systemctl show -p MainPID --value warehouse-wms)
             done
-            echo "=== pick ==="
-            curl -sS -m 8 -o /dev/null -w "pick_local %{http_code} %{time_total}\n" http://127.0.0.1:3101/pick
-            curl -sS -m 10 -o /dev/null -w "pick_ext %{http_code} %{time_total}\n" https://uchetn1.ru/pick
-            echo "=== cpu after ==="
-            PID=$(systemctl show -p MainPID --value warehouse-wms)
-            ps -o pid,pcpu,pmem,etime,cmd -p "$PID" 2>/dev/null
-            top -b -n 1 -p "$PID" 2>/dev/null | tail -5
-            echo "=== recent journal ==="
-            journalctl -u warehouse-wms -n 30 --no-pager
+            echo "=== final ==="
+            systemctl is-active warehouse-wms
+            ps -o pid,pcpu,pmem,etime,cmd -p "$(systemctl show -p MainPID --value warehouse-wms)"
+            journalctl -u warehouse-wms -n 40 --no-pager --since '3 min ago'
             echo DONE
