@@ -1,0 +1,53 @@
+name: Restart WMS
+on:
+  workflow_dispatch:
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Restart and verify
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 12m
+          script: |
+            set +e
+            echo "=== before ==="
+            systemctl is-active warehouse-wms
+            PID=$(systemctl show -p MainPID --value warehouse-wms)
+            echo "pid=$PID cpu:"
+            ps -o pid,pcpu,pmem,etime,cmd -p "$PID" 2>/dev/null
+            echo "=== open files / sqlite ==="
+            ls -la /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite* 2>/dev/null | head -20
+            lsof /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null | head -20
+            echo "=== kill stuck deploy builds if any ==="
+            pkill -f 'typescript/lib/tsc.js -p tsconfig.json' 2>/dev/null || true
+            pkill -f 'vite build' 2>/dev/null || true
+            sleep 1
+            echo "=== restart ==="
+            systemctl restart warehouse-wms
+            sleep 4
+            systemctl is-active warehouse-wms
+            journalctl -u warehouse-wms -n 40 --no-pager --since '1 min ago'
+            echo "=== probe loop ==="
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              CODE=$(curl -sS -m 3 -o /tmp/h2.txt -w '%{http_code}' http://127.0.0.1:3101/api/health 2>/dev/null)
+              TIM=$(curl -sS -m 3 -o /dev/null -w '%{time_total}' http://127.0.0.1:3101/api/health 2>/dev/null)
+              BODY=$(head -c 120 /tmp/h2.txt 2>/dev/null)
+              echo "try$i code=$CODE time=$TIM body=$BODY"
+              if [ "$CODE" = "200" ]; then break; fi
+              sleep 2
+            done
+            echo "=== pick ==="
+            curl -sS -m 8 -o /dev/null -w "pick_local %{http_code} %{time_total}\n" http://127.0.0.1:3101/pick
+            curl -sS -m 10 -o /dev/null -w "pick_ext %{http_code} %{time_total}\n" https://uchetn1.ru/pick
+            echo "=== cpu after ==="
+            PID=$(systemctl show -p MainPID --value warehouse-wms)
+            ps -o pid,pcpu,pmem,etime,cmd -p "$PID" 2>/dev/null
+            top -b -n 1 -p "$PID" 2>/dev/null | tail -5
+            echo "=== recent journal ==="
+            journalctl -u warehouse-wms -n 30 --no-pager
+            echo DONE
