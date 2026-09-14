@@ -1,0 +1,90 @@
+name: Patch widget queue TTL
+on:
+  workflow_dispatch:
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Patch side_panels on VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 5m
+          script_stop: false
+          script: |
+            python3 - <<'PY'
+            from pathlib import Path
+            p = Path('/root/widget_pnevmopodveska1_ru/public_html/deal_buttons/side_panels.js')
+            t = p.read_text()
+            old1 = """    function isUrgentStoQueuedLocally(leadId) {
+      try {
+        return !!sessionStorage.getItem(urgentStoQueuedStorageKey(leadId));
+      } catch (_) {
+        return false;
+      }
+    }"""
+            new1 = """    function isUrgentStoQueuedLocally(leadId) {
+      try {
+        var raw = sessionStorage.getItem(urgentStoQueuedStorageKey(leadId));
+        if (!raw) return false;
+        var ts = Number(raw) || 0;
+        if (!ts || (Date.now() - ts) > 15000) {
+          sessionStorage.removeItem(urgentStoQueuedStorageKey(leadId));
+          return false;
+        }
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }"""
+            old2 = """    function isStoQueuedLocally(leadId) {
+      try {
+        return !!sessionStorage.getItem(stoQueuedStorageKey(leadId));
+      } catch (_) {
+        return false;
+      }
+    }"""
+            new2 = """    function isStoQueuedLocally(leadId) {
+      try {
+        var raw = sessionStorage.getItem(stoQueuedStorageKey(leadId));
+        if (!raw) return false;
+        var ts = Number(raw) || 0;
+        if (!ts || (Date.now() - ts) > 15000) {
+          sessionStorage.removeItem(stoQueuedStorageKey(leadId));
+          return false;
+        }
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }"""
+            n = 0
+            if old1 in t:
+                t = t.replace(old1, new1, 1); n += 1
+            else:
+                print('urgent fn already patched or missing')
+            if old2 in t:
+                t = t.replace(old2, new2, 1); n += 1
+            else:
+                print('sto fn already patched or missing')
+            p.write_text(t)
+            print('patched functions', n)
+            PY
+            python3 - <<'PY'
+            from pathlib import Path
+            p = Path('/root/widget_pnevmopodveska1_ru/public_html/deal_buttons/widget_runtime.js')
+            t = p.read_text()
+            t2 = t.replace('side_panels.js?v=20260911a', 'side_panels.js?v=20260914q')
+            t2 = t2.replace('side_panels.js?v=20260914q', 'side_panels.js?v=20260914q')
+            if 'v=20260914q' not in t2:
+                import re
+                t2 = re.sub(r'side_panels\.js\?v=[^\'"]+', 'side_panels.js?v=20260914q', t2, count=1)
+            p.write_text(t2)
+            print('runtime', '20260914q' in t2)
+            PY
+            grep -n 'Date.now() - ts' /root/widget_pnevmopodveska1_ru/public_html/deal_buttons/side_panels.js | head
+            grep -n 'side_panels.js?v=' /root/widget_pnevmopodveska1_ru/public_html/deal_buttons/widget_runtime.js | head
+            echo DONE

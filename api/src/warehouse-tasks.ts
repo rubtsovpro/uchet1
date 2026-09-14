@@ -4778,18 +4778,21 @@ export async function cancelHandoffPickByDeal(
 ): Promise<Record<string, unknown>> {
   const deal = String(dealId || '').trim();
   if (!deal) throw new Error('Нет id сделки');
-  const doc = get<{ id: string }>(
+  const docs = all<{ id: string }>(
     `SELECT id FROM stock_docs
      WHERE doc_type = 'out'
        AND IFNULL(posted,0) = 0
        AND TRIM(IFNULL(deal_id,'')) = ?
        AND IFNULL(comment,'') LIKE '%Передача на склад%'
-     ORDER BY datetime(created_at) DESC
-     LIMIT 1`,
+     ORDER BY datetime(created_at) DESC`,
     [deal]
   );
-  if (!doc) throw new Error('Черновик расходной не найден');
-  return cancelHandoffPick(String(doc.id), comment, actorId);
+  if (!docs.length) throw new Error('Черновик расходной не найден');
+  let last: Record<string, unknown> | null = null;
+  for (const doc of docs) {
+    last = await cancelHandoffPick(String(doc.id), comment, actorId);
+  }
+  return last || { ok: true, deal_id: deal };
 }
 
 function findTaskIdByBarcode(barcode: string): string {
