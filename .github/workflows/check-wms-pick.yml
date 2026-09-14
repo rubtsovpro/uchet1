@@ -15,6 +15,33 @@ jobs:
           command_timeout: 8m
           script: |
             set +e
+            echo "=== deal 25840845 ==="
+            python3 -c "
+            import sqlite3
+            deal='25840845'
+            db='/root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite'
+            con=sqlite3.connect('file:%s?mode=ro'%db, uri=True)
+            con.row_factory=sqlite3.Row
+            def show(title,sql,args=()):
+                print('===',title,'===')
+                try:
+                    rows=con.execute(sql,args).fetchall()
+                except Exception as e:
+                    print('ERR',e); return
+                if not rows:
+                    print('(empty)'); return
+                cols=rows[0].keys()
+                print(' | '.join(cols))
+                for r in rows:
+                    print(' | '.join(str(r[c] if r[c] is not None else '')[:180] for c in cols))
+            show('deal','SELECT id, name, amo_channel, amo_status FROM crm_deals WHERE id=?',(deal,))
+            show('items','SELECT line_no, sku, name, qty, product_guid FROM crm_deal_items WHERE deal_id=? ORDER BY line_no',(deal,))
+            show('stock_docs','SELECT id, number, doc_type, posted, substr(comment,1,180) comment, created_at FROM stock_docs WHERE deal_id=? ORDER BY datetime(created_at) DESC LIMIT 30',(deal,))
+            show('open drafts','SELECT id, number, posted, substr(comment,1,180) FROM stock_docs WHERE deal_id=? AND IFNULL(posted,0)=0',(deal,))
+            show('open draft lines','SELECT l.doc_id, l.qty, IFNULL(p.sku,\"\") sku FROM stock_doc_lines l JOIN stock_docs d ON d.id=l.doc_id LEFT JOIN products p ON p.id=l.product_id WHERE d.deal_id=? AND IFNULL(d.posted,0)=0',(deal,))
+            show('meta','SELECT key, substr(value,1,400) FROM meta WHERE key LIKE ?',('%'+deal+'%',))
+            print('DONE')
+            "
             echo "=== service ==="
             systemctl is-active warehouse-wms
             systemctl status warehouse-wms --no-pager -l | head -30
