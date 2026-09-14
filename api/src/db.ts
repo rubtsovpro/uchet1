@@ -17,7 +17,7 @@ db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
   PRAGMA foreign_keys = ON;
-  PRAGMA busy_timeout = 3000;
+  PRAGMA busy_timeout = 800;
   PRAGMA wal_autocheckpoint = 200;
 `);
 
@@ -29,7 +29,7 @@ function isBusyError(e: unknown): boolean {
   return /database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(msg);
 }
 
-function withBusyRetry<T>(fn: () => T, attempts = 4): T {
+function withBusyRetry<T>(fn: () => T, attempts = 3): T {
   let last: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -39,11 +39,14 @@ function withBusyRetry<T>(fn: () => T, attempts = 4): T {
       if (!isBusyError(e) || i === attempts - 1) {
         throw e;
       }
-      // Короткая пауза (sync API). Раньше до 2s × 8 + busy_timeout 60s — блокировало Node целиком.
-      const ms = Math.min(150, 25 * 2 ** i);
-      const until = Date.now() + ms;
-      while (Date.now() < until) {
-        /* busy wait — sync API, без async */
+      // Не крутить while(Date.now) — это 100% CPU и 502 на весь WMS, пока PHP export держит sqlite.
+      // Короткая пауза через Atomics.wait (блокирует поток, но без spin-loop).
+      try {
+        const sab = new SharedArrayBuffer(4);
+        const ia = new Int32Array(sab);
+        Atomics.wait(ia, 0, 0, Math.min(80, 20 * 2 ** i));
+      } catch {
+        /* ignore */
       }
     }
   }

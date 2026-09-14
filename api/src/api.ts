@@ -14372,7 +14372,8 @@ api.get('/warehouse/pick/today', async (c) => {
   const t0 = Date.now();
   const board = pickerBoard(day, site, actor);
   const tBoard = Date.now();
-  const handoffs = warehouseHandoffsForPick(60, site, actor);
+  // light: без enrich ячеек/остатков на каждый poll — иначе event loop умирает под нагрузкой вкладок.
+  const handoffs = warehouseHandoffsForPick(40, site, actor, { light: true });
   const tHandoffs = Date.now();
   const cacheKey = `${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`;
   const cached = pickCompletedTotalCache.get(cacheKey);
@@ -14386,9 +14387,9 @@ api.get('/warehouse/pick/today', async (c) => {
     pickCompletedTotalCache.set(cacheKey, { at: Date.now(), n: handoffs_completed_total });
   }
   const tTotal = Date.now();
-  const returns = stockReturnsForPick(60);
+  const returns = stockReturnsForPick(40);
   const tEnd = Date.now();
-  if (tEnd - t0 > 800) {
+  if (tEnd - t0 > 400) {
     console.warn(
       `[pick/today] ${tEnd - t0}ms board=${tBoard - t0} handoffs=${tHandoffs - tBoard} total=${tTotal - tHandoffs} returns=${tEnd - tTotal} site=${site || ''}`
     );
