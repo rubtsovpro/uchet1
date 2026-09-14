@@ -3899,8 +3899,47 @@ function mapHandoffPickRow(
         : parseHandoffCompletedLabel(commentStr) ||
           parseHandoffTransferLabel(commentStr, createdAt))
     : parseHandoffTransferLabel(commentStr, createdAt);
-  // light + список /pick/today: без строк документа и dealPickContext — иначе N×SQL вешает event loop.
+  // light + список /pick/today: без dealPickContext / stock_wh / lot — иначе N×SQL вешает event loop.
+  // Строки документа + ячейки склада-источника нужны: иначе UI показывает «Без строк» при живом черновике.
   if (light) {
+    const rawLines = all(
+      `SELECT l.qty, l.product_id,
+              IFNULL(l.warehouse_id,'') AS warehouse_id,
+              IFNULL(p.sku,'') AS sku, IFNULL(p.name,'') AS name,
+              IFNULL(wl.name,'') AS warehouse_name
+       FROM stock_doc_lines l
+       LEFT JOIN products p ON p.id = l.product_id
+       LEFT JOIN warehouses wl ON wl.id = l.warehouse_id
+       WHERE l.doc_id = ?
+       ORDER BY l.line_no ASC, l.id ASC`,
+      [id]
+    ) as Array<Record<string, unknown>>;
+    const lines = rawLines.map((l) => {
+      const productId = String(l.product_id || '').trim();
+      const lineWh =
+        String(l.warehouse_id || '').trim() || String(warehouseId || '').trim();
+      const loc = productId ? productPickLocations(productId, lineWh) : {
+        stock_qty: 0,
+        cells: [] as HandoffPickCell[],
+        cells_label: '',
+      };
+      const sku = String(l.sku || '').trim();
+      const fromWhName =
+        String(l.warehouse_name || '').trim() || fromName;
+      return {
+        ...l,
+        sku,
+        article: sku,
+        name: String(l.name || '').trim(),
+        warehouse_id: lineWh,
+        from_warehouse_id: lineWh,
+        from_warehouse_name: fromWhName,
+        stock_qty: loc.stock_qty,
+        cells: loc.cells,
+        cells_label: loc.cells_label,
+        stock_wh: [],
+      };
+    });
     return {
       id,
       number: String(row.number || ''),
@@ -3922,7 +3961,7 @@ function mapHandoffPickRow(
       is_return: isReturn,
       is_to_sto: isToSto,
       completed,
-      lines: [] as unknown[],
+      lines,
       deal: dealId ? { id: dealId } : null,
       cells_label: completed ? parseCellFromDocComment(commentStr) : '',
     };
