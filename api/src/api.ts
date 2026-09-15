@@ -14547,7 +14547,15 @@ api.get('/warehouse/pick/handoffs', async (c) => {
   const site = (c.req.query('site') || '').trim() || undefined;
   // Только light: полный enrich валит event loop при опросе с нескольких вкладок.
   const items = warehouseHandoffsForPick(limit, site, actor, { light: true });
-  const completed_total = pickCompletedTotalCache.get('all||')?.n ?? 0;
+  const cacheKey = `all|${site || ''}|`;
+  let completed_total = pickCompletedTotalCache.get(cacheKey)?.n;
+  if (completed_total == null) {
+    completed_total = pickCompletedTotalCache.get('all||')?.n;
+  }
+  if (completed_total == null) {
+    completed_total = warehouseHandoffsPickTotal(site, actor, true);
+    pickCompletedTotalCache.set(cacheKey, { at: Date.now(), n: completed_total });
+  }
   return c.json({
     items,
     count: items.length,

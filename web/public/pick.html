@@ -11,7 +11,7 @@
   <title>Склад · задачи · Учёт №1</title>
   <!-- pick-ui rev=pick-production-nom-check-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc61';
+    window.__PICK_UI_REV = 'pc75';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -5479,12 +5479,19 @@
       let data;
       let jobsRes = { items: [] };
       let waitJobsRes = { items: [] };
+      let handoffsRes = { items: [], completed_total: 0 };
       try {
-        [data, jobsRes, waitJobsRes] = await Promise.all([
+        [data, jobsRes, waitJobsRes, handoffsRes] = await Promise.all([
           api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)),
           api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
           // Иначе «ждёт приёмку» видно только на /production, а /pick пустой при сбое light board.
           api('/production/jobs?status=await_receive&limit=80').catch(() => ({ items: [] })),
+          // today больше не кладёт handoffs (event loop) — отдельный light-эндпоинт.
+          api(
+            '/warehouse/pick/handoffs?site=' +
+              encodeURIComponent(pickSite) +
+              '&limit=40'
+          ).catch(() => ({ items: [], completed_total: 0 })),
         ]);
       } catch (e) {
         showErr((e && e.message) || 'Не удалось загрузить очередь');
@@ -5503,11 +5510,19 @@
       prodWaitReceiveJobs = Array.isArray(waitJobsRes && waitJobsRes.items)
         ? waitJobsRes.items
         : [];
-      handoffs = Array.isArray(data.handoffs) ? data.handoffs : [];
+      const fromToday = Array.isArray(data.handoffs) ? data.handoffs : [];
+      const fromHandoffsApi = Array.isArray(handoffsRes && handoffsRes.items)
+        ? handoffsRes.items
+        : [];
+      handoffs = fromHandoffsApi.length ? fromHandoffsApi : fromToday;
       noteNewAlerts(data, handoffs);
       stockReturns = Array.isArray(data.returns) ? data.returns : [];
       ensureMainCellRacks();
-      handoffsCompletedTotal = Number(data.handoffs_completed_total) || handoffsCompletedTotal || 0;
+      handoffsCompletedTotal =
+        Number(handoffsRes && handoffsRes.completed_total) ||
+        Number(data.handoffs_completed_total) ||
+        handoffsCompletedTotal ||
+        0;
       syncSiteSwitch();
       loadHandoffFilterFacets();
       if (pendingTaskId) {
