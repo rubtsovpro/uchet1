@@ -27,7 +27,7 @@ import {
   sqlExcludeCrossContourProducts,
   sqlExcludeServices,
 } from './product-kind.js';
-import { catalogArticleOf, warehouseArticleOf } from './product-display-name.js';
+import { catalogArticleOf, warehouseArticleOf, salesDocLineDisplayName } from './product-display-name.js';
 import {
   looksLike1cProductCode,
   sqlProductTextSearch,
@@ -6358,9 +6358,16 @@ api.get('/sales-docs/deal-lines', (c) => {
       (productGuid && knMap[`g:${productGuid}`]) ||
       (skuKey && knMap[`s:${skuKey}`]) ||
       '';
-    const baseName = String(
-      it.display_name || it.name_display || it.name || ''
-    ).trim();
+    // Не «Не найдено: …» из карточки склада — в документах имя из заказа / применимости.
+    const rawName = String(it.name || '').trim();
+    const baseName =
+      (rawName && !/^не\s*найдено:/i.test(rawName) ? rawName : '') ||
+      salesDocLineDisplayName(it) ||
+      String(it.display_name || '')
+        .replace(/^не\s*найдено:\s*/i, '')
+        .replace(/^.+?\s+[—–-]\s+/, '')
+        .trim() ||
+      rawName;
     return {
       line_no: Number(it.line_no) || idx + 1,
       item_id: String(it.id || ''),
