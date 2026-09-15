@@ -1917,6 +1917,51 @@ export function resolvePickSiteQuery(
   return normalizePickSiteFilter(site);
 }
 
+/**
+ * Лёгкая очередь производства для /pick/today (без enrichPickRow / полного board):
+ * только open production_send / production_receive.
+ */
+export function pickerBoardLightProduction(
+  site?: string,
+  actor?: PickActor | null
+): {
+  open: Array<Record<string, unknown>>;
+  groups: ReturnType<typeof groupOpenByType>;
+  counts: { open: number; done: number; blocked: number };
+} {
+  void site;
+  void actor;
+  const open = (
+    all(
+      `SELECT t.id, t.number, t.barcode, t.deal_id, t.status, t.channel, t.city,
+              t.buyer_name, t.comment, t.stock_doc_id, t.created_at, t.updated_at,
+              (SELECT COUNT(*) FROM warehouse_task_lines l WHERE l.task_id = t.id) AS lines_count
+       FROM warehouse_tasks t
+       WHERE t.status IN ('new','picking','packed','ready')
+         AND t.channel IN ('production_send','production_receive')
+       ORDER BY datetime(t.created_at) ASC
+       LIMIT 40`
+    ) as Array<Record<string, unknown>>
+  ).map((t) => {
+    const ch = String(t.channel || '');
+    const isRecv = ch === 'production_receive';
+    return {
+      ...t,
+      pick_type: 'production',
+      urgency: 'normal',
+      route_from: isRecv ? 'Производство' : 'Основной',
+      route_to: isRecv ? 'Основной' : 'Производство',
+      route_label: isRecv ? 'Производство → Основной' : 'Основной → Производство',
+      lines: [],
+    };
+  });
+  return {
+    open,
+    groups: groupOpenByType(open),
+    counts: { open: open.length, done: 0, blocked: 0 },
+  };
+}
+
 /** Экран сборщика «без Ани»: сегодня — очередь / сделано / не сделано+почему / следующее. */
 export function pickerBoard(day?: string, site?: string, actor?: PickActor | null) {
   const d = (day || new Date().toISOString().slice(0, 10)).slice(0, 10);

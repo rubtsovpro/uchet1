@@ -45,6 +45,8 @@ origin = git@github.com:rubtsovpro/uchet1.git
 
 Автодеплой снова включать только после явной команды, когда `origin/main` = живой код на VPS (полный sync).
 
+Лимиты sync / Amo webhook без nginx-заглушек: [WMS-STEADY-LIMITS.md](./WMS-STEADY-LIMITS.md).
+
 SSH-ключ для Actions: `~/.ssh/id_ed25519_bank` (secret `DEPLOY_SSH_KEY`).
 
 ### Проверка

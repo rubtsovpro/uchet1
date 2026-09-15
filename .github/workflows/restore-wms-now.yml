@@ -18,10 +18,19 @@ jobs:
             set +e
             echo "=== lockers before ==="
             lsof /root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite 2>/dev/null | head -30
-            echo "=== write sync-limit (no concurrent PHP export from WMS) ==="
+            echo "=== write steady-limits (concurrent=1 after clean restart) ==="
             mkdir -p /etc/systemd/system/warehouse-wms.service.d
-            printf '%s\n' '[Service]' 'Environment=WMS_SYNC_MAX_CONCURRENT=0' 'Environment=WMS_SYNC_CHILD_TIMEOUT_MS=20000' > /etc/systemd/system/warehouse-wms.service.d/sync-limit.conf
-            cat /etc/systemd/system/warehouse-wms.service.d/sync-limit.conf
+            printf '%s\n' \
+              '[Service]' \
+              'Environment=GDRIVE_PURCHASE_POLL=0' \
+              'Environment=WMS_SYNC_MAX_CONCURRENT=1' \
+              'Environment=WMS_SYNC_CHILD_TIMEOUT_MS=25000' \
+              'Environment=AMO_WEBHOOK_SYNC_MAX=8' \
+              > /etc/systemd/system/warehouse-wms.service.d/steady-limits.conf
+            rm -f /etc/systemd/system/warehouse-wms.service.d/emergency-light.conf \
+                  /etc/systemd/system/warehouse-wms.service.d/sync-limit.conf \
+                  /etc/systemd/system/warehouse-wms.service.d/zz-emergency.conf
+            cat /etc/systemd/system/warehouse-wms.service.d/steady-limits.conf
             systemctl daemon-reload
             OLD=$(systemctl show -p MainPID --value warehouse-wms)
             echo "stopping old pid=$OLD"

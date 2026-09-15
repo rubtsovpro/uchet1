@@ -613,6 +613,7 @@ import {
   markTaskDone,
   packingSlip,
   pickerBoard,
+  pickerBoardLightProduction,
   pickSitesCatalog,
   warehouseHandoffsForPick,
   warehouseCompletedHandoffsForPick,
@@ -850,7 +851,7 @@ api.get('/health', (c) => {
     ok: true,
     service: 'warehouse-1c',
     /** Совпадает с LEGACY_UI_BUILD в web/public/legacy.html — устаревшие вкладки перезагрузятся. */
-    ui_build: Number(process.env.WMS_UI_BUILD || 1173) || 1173,
+    ui_build: Number(process.env.WMS_UI_BUILD || 1174) || 1174,
     auth_2fa: {
       channel: twofa.channel,
       mode: twofa.mode,
@@ -3067,7 +3068,13 @@ api.post('/webhooks/amo', async (c) => {
         const needFull = patches.length
           ? applyAmoDealWebhookPatches(patches)
           : parsed.ids.map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean);
-        const uniq = [...new Set(needFull)].slice(0, 15);
+        // Лимит на хук: шторм Amo + полный export валил sqlite/event loop (502).
+        // Override: AMO_WEBHOOK_SYNC_MAX (1…20), по умолчанию 8.
+        const syncMax = Math.max(
+          1,
+          Math.min(20, Number(process.env.AMO_WEBHOOK_SYNC_MAX || 8) || 8)
+        );
+        const uniq = [...new Set(needFull)].slice(0, syncMax);
         for (const dealId of uniq) {
           syncDealFromAmo1cBackground(dealId);
         }
@@ -14373,8 +14380,9 @@ const pickCompletedTotalCache = new Map<string, { at: number; n: number }>();
 const PICK_COMPLETED_TOTAL_TTL_MS = 120_000;
 /** Полный ответ /pick/today — собираем в фоне, не на HTTP-потоке. */
 const pickTodayPayloadCache = new Map<string, { at: number; body: Record<string, unknown> }>();
-const PICK_TODAY_TTL_MS = 15_000;
+const PICK_TODAY_TTL_MS = 30_000;
 let pickTodayBuilding = 0;
+let pickHandoffsWarming = 0;
 
 function emptyPickTodayBody(day: string, site?: string): Record<string, unknown> {
   return {
@@ -14387,7 +14395,7 @@ function emptyPickTodayBody(day: string, site?: string): Record<string, unknown>
     urgency_counts: { overdue: 0, hot: 0, normal: 0, wait: 0 },
     next: null,
     open: [],
-    groups: {},
+    groups: [],
     done: [],
     blocked: [],
     handoffs: [],
@@ -14465,26 +14473,30 @@ api.get('/warehouse/pick/today', async (c) => {
   if (hit && Date.now() - hit.at < PICK_TODAY_TTL_MS) {
     return c.json(hit.body);
   }
-  // Лёгкий sync-ответ без pickerBoard/enrich — полный payload греем в фоне.
-  const t0 = Date.now();
-  let handoffs: unknown[] = [];
+  // Не считаем handoffs на HTTP-потоке: под нагрузкой это кладёт event loop.
+  // production_send/receive — лёгкий SQL, кладём сразу (иначе W-xxxx пропадают с /pick).
+  let prodBoard: ReturnType<typeof pickerBoardLightProduction> = {
+    open: [],
+    groups: [],
+    counts: { open: 0, done: 0, blocked: 0 },
+  };
   try {
-    handoffs = warehouseHandoffsForPick(30, site, actor, { light: true });
+    prodBoard = pickerBoardLightProduction(site, actor);
   } catch (e) {
-    console.warn('[pick/today] light handoffs', e instanceof Error ? e.message : e);
+    console.warn('[pick/today] light production', e instanceof Error ? e.message : e);
   }
   const body = {
     ...emptyPickTodayBody(d, site),
     note: 'Склад · задачи',
     loading: false,
-    handoffs,
+    open: prodBoard.open,
+    groups: prodBoard.groups,
+    counts: { ...prodBoard.counts },
+    // handoffs не считаем здесь — иначе WMS захлёбывается; расходные догружаются отдельно при необходимости
+    handoffs: [],
     handoffs_completed_total: pickCompletedTotalCache.get('all||')?.n ?? 0,
   };
   pickTodayPayloadCache.set(cacheKey, { at: Date.now(), body });
-  if (Date.now() - t0 > 300) {
-    console.warn(`[pick/today] light ${Date.now() - t0}ms site=${site || ''}`);
-  }
-  // Полный board — только в фоне, не блокируя ответ
   return c.json(body);
 });
 
@@ -14531,10 +14543,11 @@ async function enrichPickHandoffsWithCdek(
 
 api.get('/warehouse/pick/handoffs', async (c) => {
   const actor = actorFromContext(c);
-  const limit = Math.max(1, Math.min(120, Number(c.req.query('limit') || 60) || 60));
+  const limit = Math.max(1, Math.min(40, Number(c.req.query('limit') || 30) || 30));
   const site = (c.req.query('site') || '').trim() || undefined;
-  const items = warehouseHandoffsForPick(limit, site, actor);
-  const completed_total = warehouseHandoffsPickTotal(site, actor, true);
+  // Только light: полный enrich валит event loop при опросе с нескольких вкладок.
+  const items = warehouseHandoffsForPick(limit, site, actor, { light: true });
+  const completed_total = pickCompletedTotalCache.get('all||')?.n ?? 0;
   return c.json({
     items,
     count: items.length,

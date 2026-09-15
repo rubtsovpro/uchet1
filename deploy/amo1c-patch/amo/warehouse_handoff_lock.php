@@ -331,6 +331,8 @@ function widget_handoff_item_on_sto_buffer(string $productGuid): bool
              UPPER(IFNULL(w.code,'')) = 'STO'
              OR UPPER(IFNULL(w.code,'')) LIKE 'STO-RSV%'
              OR UPPER(IFNULL(w.code,'')) LIKE 'STO-RES%'
+             OR UPPER(IFNULL(w.code,'')) = 'COURIER'
+             OR IFNULL(w.name,'') LIKE '%урьер%'
            )
          LIMIT 1"
     );
@@ -339,7 +341,7 @@ function widget_handoff_item_on_sto_buffer(string $productGuid): bool
     return (bool) $st->fetchColumn();
 }
 
-/** Сколько шт product_guid уже уехало на СТО/Резерв/Отложено по этой сделке (проведённые TR). */
+/** Сколько шт product_guid уже уехало на СТО/Резерв/Отложено/Курьер по этой сделке (проведённые TR). */
 function widget_handoff_deal_moved_product_qty(int $dealId, string $productGuid): float
 {
     $dealId = (int) $dealId;
@@ -364,6 +366,8 @@ function widget_handoff_deal_moved_product_qty(int $dealId, string $productGuid)
              UPPER(IFNULL(wt.code, '')) = 'STO'
              OR UPPER(IFNULL(wt.code, '')) LIKE 'STO-RSV%'
              OR UPPER(IFNULL(wt.code, '')) LIKE 'STO-RES%'
+             OR UPPER(IFNULL(wt.code, '')) = 'COURIER'
+             OR IFNULL(wt.name, '') LIKE '%урьер%'
            )"
     );
     $st->execute([(string) $dealId, $guid]);
@@ -449,6 +453,22 @@ function widget_handoff_return_location(PDO $pdo, string $dealId, string $produc
     if ($res) {
         $candidates[] = ['id' => (string) $res['id'], 'code' => (string) $res['code'], 'name' => (string) ($res['name'] ?: 'Отложено под СТО'), 'prio' => 3];
     }
+    // Отправка: товар часто уже на «Курьер» — без него удаление с виджета не создаёт возврат.
+    $cour = $pdo->query(
+        "SELECT id, IFNULL(code,'') AS code, IFNULL(name,'') AS name
+         FROM warehouses
+         WHERE UPPER(IFNULL(code,'')) = 'COURIER' OR IFNULL(name,'') LIKE '%урьер%'
+         ORDER BY CASE WHEN UPPER(IFNULL(code,'')) = 'COURIER' THEN 0 ELSE 1 END
+         LIMIT 1"
+    )->fetch(PDO::FETCH_ASSOC);
+    if ($cour) {
+        $candidates[] = [
+            'id' => (string) $cour['id'],
+            'code' => (string) $cour['code'],
+            'name' => (string) ($cour['name'] ?: 'Курьер'),
+            'prio' => 4,
+        ];
+    }
     usort($candidates, static fn ($a, $b) => $a['prio'] <=> $b['prio']);
 
     $from = null;
@@ -513,7 +533,10 @@ function widget_handoff_return_location(PDO $pdo, string $dealId, string $produc
            AND (
              UPPER(IFNULL(wt.code,'')) LIKE 'STO-RSV%'
              OR UPPER(IFNULL(wt.code,'')) LIKE 'STO-RES%'
+             OR UPPER(IFNULL(wt.code,'')) = 'COURIER'
+             OR IFNULL(wt.name,'') LIKE '%урьер%'
              OR IFNULL(d.comment,'') LIKE '%Резерв%'
+             OR IFNULL(d.comment,'') LIKE '%Курьер%'
            )
          ORDER BY datetime(d.created_at) ASC LIMIT 1"
     );

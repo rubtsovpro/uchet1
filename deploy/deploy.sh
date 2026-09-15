@@ -24,6 +24,30 @@ build_and_restart() {
     rsync -a --exclude 'assets/' web/public/ web/dist/
   fi
   npm prune --omit=dev --prefix api
+  # Steady-state sync/GDrive limits (docs/WMS-STEADY-LIMITS.md) — не emergency stub
+  if [[ -f deploy/warehouse-wms.service.d/steady-limits.conf ]]; then
+    mkdir -p /etc/systemd/system/warehouse-wms.service.d
+    install -m 644 deploy/warehouse-wms.service.d/steady-limits.conf \
+      /etc/systemd/system/warehouse-wms.service.d/steady-limits.conf
+    rm -f /etc/systemd/system/warehouse-wms.service.d/emergency-light.conf \
+      /etc/systemd/system/warehouse-wms.service.d/sync-limit.conf \
+      /etc/systemd/system/warehouse-wms.service.d/zz-emergency.conf
+    systemctl daemon-reload
+  fi
+  if [[ -f /etc/warehouse-wms.env ]]; then
+    grep -q '^WMS_SYNC_MAX_CONCURRENT=' /etc/warehouse-wms.env \
+      && sed -i 's/^WMS_SYNC_MAX_CONCURRENT=.*/WMS_SYNC_MAX_CONCURRENT=1/' /etc/warehouse-wms.env \
+      || echo 'WMS_SYNC_MAX_CONCURRENT=1' >> /etc/warehouse-wms.env
+    grep -q '^GDRIVE_PURCHASE_POLL=' /etc/warehouse-wms.env \
+      && sed -i 's/^GDRIVE_PURCHASE_POLL=.*/GDRIVE_PURCHASE_POLL=0/' /etc/warehouse-wms.env \
+      || echo 'GDRIVE_PURCHASE_POLL=0' >> /etc/warehouse-wms.env
+    grep -q '^AMO_WEBHOOK_SYNC_MAX=' /etc/warehouse-wms.env \
+      && sed -i 's/^AMO_WEBHOOK_SYNC_MAX=.*/AMO_WEBHOOK_SYNC_MAX=8/' /etc/warehouse-wms.env \
+      || echo 'AMO_WEBHOOK_SYNC_MAX=8' >> /etc/warehouse-wms.env
+    grep -q '^WMS_SYNC_CHILD_TIMEOUT_MS=' /etc/warehouse-wms.env \
+      && sed -i 's/^WMS_SYNC_CHILD_TIMEOUT_MS=.*/WMS_SYNC_CHILD_TIMEOUT_MS=25000/' /etc/warehouse-wms.env \
+      || echo 'WMS_SYNC_CHILD_TIMEOUT_MS=25000' >> /etc/warehouse-wms.env
+  fi
   systemctl restart warehouse-wms
   # локальный OCR: python -m uvicorn + chmod bin (иначе systemd 203/EXEC)
   if [[ -d deploy/ocr-local/.venv ]]; then

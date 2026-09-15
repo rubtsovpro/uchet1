@@ -11,7 +11,7 @@
   <title>Склад · задачи · Учёт №1</title>
   <!-- pick-ui rev=pick-production-nom-check-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc59';
+    window.__PICK_UI_REV = 'pc61';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -2842,6 +2842,7 @@
     /** Заказы уже на участке (склад отдал) — иначе пропадают с /production после handed. */
     let prodAtJobs = [];
     let prodSendJobs = [];
+    let prodWaitReceiveJobs = [];
     let handoffTab = 'active';
     let closedHandoffs = [];
     let closedPage = 1;
@@ -3024,9 +3025,9 @@
 
     function ensureTaskOnBoard(t) {
       if (!board || !t || !t.id) return;
-      board.open = board.open || [];
+      board.open = Array.isArray(board.open) ? board.open : [];
       if (!board.open.some((x) => String(x.id) === String(t.id))) board.open.unshift(t);
-      board.groups = board.groups || [];
+      board.groups = Array.isArray(board.groups) ? board.groups : [];
       if (board.groups.some((g) => (g.items || []).some((i) => String(i.id) === String(t.id)))) {
         return;
       }
@@ -4244,7 +4245,7 @@
     /** Обновить счётчики групп без перерисовки открытой детали (иначе сбивается набор). */
     function patchOpenBoardMeta() {
       const box = document.getElementById('groups');
-      const groups = (board && board.groups) || [];
+      const groups = Array.isArray(board && board.groups) ? board.groups : [];
       if (!box || !groups.length) return;
       groups.forEach((g) => {
         const type = String(g.type || '');
@@ -4276,12 +4277,23 @@
 
     function isProductionTask(t) {
       const ch = String((t && t.channel) || '');
-      return ch === 'production_send' || ch === 'production_receive';
+      return (
+        ch === 'production_send' ||
+        ch === 'production_receive' ||
+        ch === 'production_at' ||
+        ch === 'production_wait_receive'
+      );
     }
 
     function productionOpenCount() {
-      const open = (board && board.open) || [];
-      return open.filter(isProductionTask).length + (Array.isArray(prodAtJobs) ? prodAtJobs.length : 0);
+      const open = Array.isArray(board && board.open) ? board.open : [];
+      const fromBoard = open.filter(isProductionTask).length;
+      const atN = Array.isArray(prodAtJobs) ? prodAtJobs.length : 0;
+      const sendN = Array.isArray(prodSendJobs) ? prodSendJobs.length : 0;
+      const waitN = Array.isArray(prodWaitReceiveJobs) ? prodWaitReceiveJobs.length : 0;
+      // board уже содержит await_send/receive tasks — не двойной счёт, если open непустой
+      if (fromBoard > 0) return fromBoard + atN + waitN;
+      return sendN + atN + waitN;
     }
 
     /** Карточка для job со статусом at_production (задание склада уже закрыто). */
@@ -4313,8 +4325,75 @@
       };
     }
 
+    /** await_send: карточка по send_task_id, если light /pick/today не отдал open. */
+    function productionSendJobAsCard(job) {
+      const j = job || {};
+      const jobId = String(j.id || '').trim();
+      const taskId = String(j.send_task_id || '').trim();
+      if (!jobId || !taskId) return null;
+      const consume = Array.isArray(j.consume) ? j.consume : [];
+      const produce = Array.isArray(j.produce) ? j.produce : [];
+      return {
+        id: taskId,
+        stock_doc_id: jobId,
+        number: j.number || '',
+        deal_id: j.deal_id || '',
+        channel: 'production_send',
+        production_phase: 'await_send',
+        production_kind_label: j.kind_label || j.kind || '',
+        production_number: j.number || '',
+        production_produce: produce,
+        lines: consume.map((l) => ({
+          sku: l.sku,
+          name: l.name,
+          qty: l.qty,
+          code: l.code || '',
+          cell_code: l.cell_code || '',
+        })),
+        created_at: j.updated_at || j.created_at || '',
+        route_from: 'Основной',
+        route_to: 'Производство',
+        title: j.deal_id ? 'Заказ №' + j.deal_id : j.number || 'Производство',
+      };
+    }
+
+    /** await_receive: производство готово, ждёт приёмку складом. */
+    function productionWaitReceiveJobAsCard(job) {
+      const j = job || {};
+      const id = String(j.id || '').trim();
+      const receiveTaskId = String(j.receive_task_id || '').trim();
+      const consume = Array.isArray(j.consume) ? j.consume : [];
+      const produce = Array.isArray(j.produce) ? j.produce : [];
+      if (!id) return null;
+      return {
+        // Реальный W-xxxx, если есть — иначе склад не сможет закрыть приёмку.
+        id: receiveTaskId || 'job-wait:' + id,
+        stock_doc_id: id,
+        number: j.number || '',
+        deal_id: j.deal_id || '',
+        channel: receiveTaskId ? 'production_receive' : 'production_wait_receive',
+        production_phase: 'await_receive',
+        production_kind_label: j.kind_label || j.kind || '',
+        production_produce: produce,
+        lines: (produce.length ? produce : consume).map((l) => ({
+          sku: l.sku,
+          name: l.name,
+          qty: l.qty,
+          code: l.code || '',
+          cell_code: l.cell_code || '',
+        })),
+        created_at: j.updated_at || j.created_at || '',
+        route_from: 'Производство',
+        route_to: 'Основной',
+        title: j.deal_id ? 'Заказ №' + j.deal_id : j.number || 'Производство',
+      };
+    }
+
     function boardGroupsForUi() {
-      const groups = (board && board.groups) || [];
+      // light /pick/today раньше отдавал groups:{} — forEach падал и ломал весь экран.
+      const raw = board && board.groups;
+      const groups = Array.isArray(raw) ? raw : [];
+      if (board && !Array.isArray(board.groups)) board.groups = groups;
       const pickerOnly = !!(me && me.picker_only);
       // /production и picker_only: только задания производства
       if (!pickerOnly && !IS_PROD_SCREEN) return groups;
@@ -4506,11 +4585,18 @@
       const atProd =
         String(t.production_phase || t.channel || '') === 'at_production' ||
         String(t.channel || '') === 'production_at';
-      const from = String(t.route_from || (atProd ? 'Производство' : 'Основной')).trim() || 'Основной';
-      const to = String(t.route_to || (atProd ? 'Основной' : 'Производство')).trim() || 'Производство';
+      const waitReceive =
+        String(t.production_phase || '') === 'await_receive' ||
+        String(t.channel || '') === 'production_wait_receive';
+      const from = String(
+        t.route_from || (atProd || waitReceive ? 'Производство' : 'Основной')
+      ).trim() || 'Основной';
+      const to = String(
+        t.route_to || (atProd || waitReceive ? 'Основной' : 'Производство')
+      ).trim() || 'Производство';
       const consume = Array.isArray(t.lines) ? t.lines : [];
       const deal = t.deal && typeof t.deal === 'object' ? t.deal : null;
-      const kindLbl = 'Произвести';
+      const kindLbl = waitReceive ? 'Ждёт склад' : 'Произвести';
       // buyer_name у production_send раньше писали как маршрут — не использовать как шапку
       const title =
         String((deal && (deal.title || deal.name)) || '').trim() ||
@@ -4523,13 +4609,17 @@
         dest_warehouse_name: to,
         route_label: from + ' → ' + to,
       };
-      const badge = atProd
-        ? '<span class="handoff-reserve-badge" style="background:#fef3c7;color:#92400e">В производстве</span>'
-        : '<span class="handoff-reserve-badge" style="background:#dbeafe;color:#1e40af">На производство</span>';
-      const sendTitle = atProd
-        ? '<div class="prod-send-title">Уже на участке · что ушло</div>'
-        : '<div class="prod-send-title">Уходит на производство</div>';
-      const printBtn = atProd
+      const badge = waitReceive
+        ? '<span class="handoff-reserve-badge" style="background:#ecfdf5;color:#047857">Ждёт склад</span>'
+        : atProd
+          ? '<span class="handoff-reserve-badge" style="background:#fef3c7;color:#92400e">В производстве</span>'
+          : '<span class="handoff-reserve-badge" style="background:#dbeafe;color:#1e40af">На производство</span>';
+      const sendTitle = waitReceive
+        ? '<div class="prod-send-title">Готово · ждёт приёмку на Основной (склад · /pick)</div>'
+        : atProd
+          ? '<div class="prod-send-title">Уже на участке · что ушло</div>'
+          : '<div class="prod-send-title">Уходит на производство</div>';
+      const printBtn = atProd || waitReceive
         ? ''
         : '<div class="handoff-actionbar-secondary">' +
           '<button type="button" class="handoff-secondary is-print" data-prod-print="' +
@@ -4544,7 +4634,12 @@
           esc(String(pendingRet.reason || 'возврат').slice(0, 120)) +
           '</span></div>'
         : '';
-      const prodDoneDisabled = pendingRet ? ' disabled aria-disabled="true" title="Сначала возврат на склад — производство отменено"' : '';
+      const prodDoneDisabled = pendingRet || waitReceive
+        ? ' disabled aria-disabled="true" title="' +
+          (waitReceive ? 'Уже передано на склад — оприходуйте W-xxxx на /pick' : 'Сначала возврат на склад — производство отменено') +
+          '"'
+        : '';
+      const doneLabel = waitReceive ? 'На складе · приёмка' : 'Произвели';
       return (
         '<article class="handoff-row is-production' +
         (pendingRet ? ' is-prod-stopped' : '') +
@@ -4554,6 +4649,7 @@
         esc(jobId) +
         '"' +
         (atProd ? ' data-prod-phase="at_production"' : '') +
+        (waitReceive ? ' data-prod-phase="await_receive"' : '') +
         '>' +
         handoffRouteBarHtml(routeFake) +
         '<div class="handoff-head">' +
@@ -4574,8 +4670,9 @@
         stopBanner +
         sendTitle +
         productionLinesTableHtml(consume) +
-        '<hr class="prod-result-hr" />' +
-        productionResultFormHtml(t) +
+        (waitReceive
+          ? ''
+          : '<hr class="prod-result-hr" />' + productionResultFormHtml(t)) +
         '<div class="handoff-actionbar">' +
         printBtn +
         '<div class="handoff-actionbar-main">' +
@@ -4583,7 +4680,9 @@
         esc(id) +
         '"' +
         prodDoneDisabled +
-        '>Произвели</button>' +
+        '>' +
+        esc(doneLabel) +
+        '</button>' +
         '</div></div></article>'
       );
     }
@@ -4766,6 +4865,10 @@
           const taskId = String(article.getAttribute('data-prod-task') || '').trim();
           const jobId = String(article.getAttribute('data-prod-job') || '').trim();
           const phase = String(article.getAttribute('data-prod-phase') || '').trim();
+          if (phase === 'await_receive') {
+            alert('Уже на складе: оприходуйте задание приёмки на экране Склад · задачи (/pick).');
+            return;
+          }
           const lines = collectProductionResultLines(article);
           if (!lines.length) {
             alert('Укажите артикулы деталей, которые получились');
@@ -4815,11 +4918,32 @@
                 method: 'POST',
                 body: '{}',
               });
-            } else {
-              await api('/warehouse/tasks/' + encodeURIComponent(taskId) + '/done', {
+            } else if (taskId && !String(taskId).startsWith('job:')) {
+              try {
+                await api('/warehouse/tasks/' + encodeURIComponent(taskId) + '/done', {
+                  method: 'POST',
+                  body: '{}',
+                });
+              } catch (taskErr) {
+                // Склад уже отдал (handed), карточка ещё со старым W-xxxx —
+                // закрываем производство через job/done.
+                const msg = String((taskErr && taskErr.message) || taskErr || '');
+                if (jobId && /уже закрыто|handed|не найден/i.test(msg)) {
+                  await api('/production/jobs/' + encodeURIComponent(jobId) + '/done', {
+                    method: 'POST',
+                    body: '{}',
+                  });
+                } else {
+                  throw taskErr;
+                }
+              }
+            } else if (jobId) {
+              await api('/production/jobs/' + encodeURIComponent(jobId) + '/done', {
                 method: 'POST',
                 body: '{}',
               });
+            } else {
+              throw new Error('Нет задания производства');
             }
             delete prodResultDrafts[taskId];
             selectedId = null;
@@ -4952,6 +5076,7 @@
       []
         .concat(Array.isArray(prodAtJobs) ? prodAtJobs : [])
         .concat(Array.isArray(prodSendJobs) ? prodSendJobs : [])
+        .concat(Array.isArray(prodWaitReceiveJobs) ? prodWaitReceiveJobs : [])
         .forEach((j) => {
           const id = String(j.id || '').trim();
           if (id) m.set(id, j);
@@ -5128,7 +5253,15 @@
         prodItems.map((t) => String(t.stock_doc_id || '').trim()).filter(Boolean)
       );
       const atOnly = atCards.filter((t) => !openJobIds.has(String(t.stock_doc_id || '').trim()));
-      const allProd = prodItems.concat(atOnly);
+      const sendCards = (Array.isArray(prodSendJobs) ? prodSendJobs : [])
+        .map(productionSendJobAsCard)
+        .filter(Boolean)
+        .filter((t) => !openJobIds.has(String(t.stock_doc_id || '').trim()));
+      const waitCards = (Array.isArray(prodWaitReceiveJobs) ? prodWaitReceiveJobs : [])
+        .map(productionWaitReceiveJobAsCard)
+        .filter(Boolean)
+        .filter((t) => !openJobIds.has(String(t.stock_doc_id || '').trim()));
+      const allProd = prodItems.concat(sendCards).concat(atOnly).concat(waitCards);
 
       if (allProd.length && (!otherGroups.length || IS_PROD_SCREEN)) {
         if (productionFormBusy() && document.getElementById('prod-cards')) {
@@ -5263,21 +5396,34 @@
       }
       applyPickSiteLock();
       ensureProdCardsRoot();
-      const [data, jobsRes, sendJobsRes] = await Promise.all([
-        api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)),
+      const emptyBoard = {
+        day: new Date().toISOString().slice(0, 10),
+        open: [],
+        groups: [],
+        handoffs: [],
+        returns: [],
+        counts: { open: 0, done: 0, blocked: 0 },
+      };
+      // pick/today под нагрузкой может висеть — производство берём из /production/jobs.
+      const [data, jobsRes, sendJobsRes, waitJobsRes] = await Promise.all([
+        api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)).catch(() => emptyBoard),
         api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
         api('/production/jobs?status=await_send&limit=80').catch(() => ({ items: [] })),
+        api('/production/jobs?status=await_receive&limit=80').catch(() => ({ items: [] })),
       ]);
-      board = data;
+      board = data && typeof data === 'object' ? data : emptyBoard;
+      if (!Array.isArray(board.groups)) board.groups = [];
+      if (!Array.isArray(board.open)) board.open = [];
       handoffs = [];
-      stockReturns = Array.isArray(data.returns) ? data.returns : [];
+      stockReturns = Array.isArray(board.returns) ? board.returns : [];
       rebuildPendingStockReturnMap();
       prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
       prodSendJobs = Array.isArray(sendJobsRes && sendJobsRes.items) ? sendJobsRes.items : [];
+      prodWaitReceiveJobs = Array.isArray(waitJobsRes && waitJobsRes.items) ? waitJobsRes.items : [];
       lastRefreshAt = new Date();
       updateAutoLabel();
       const dayEl = document.getElementById('day');
-      if (dayEl) dayEl.textContent = data.day || '—';
+      if (dayEl) dayEl.textContent = board.day || '—';
       const prodN = productionOpenCount();
       const countsEl = document.getElementById('counts');
       if (countsEl) {
@@ -5332,10 +5478,13 @@
       }
       let data;
       let jobsRes = { items: [] };
+      let waitJobsRes = { items: [] };
       try {
-        [data, jobsRes] = await Promise.all([
+        [data, jobsRes, waitJobsRes] = await Promise.all([
           api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)),
           api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
+          // Иначе «ждёт приёмку» видно только на /production, а /pick пустой при сбое light board.
+          api('/production/jobs?status=await_receive&limit=80').catch(() => ({ items: [] })),
         ]);
       } catch (e) {
         showErr((e && e.message) || 'Не удалось загрузить очередь');
@@ -5351,9 +5500,10 @@
       }
       board = data;
       prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
-      handoffs = Array.isArray(data.handoffs)
-        ? data.handoffs
-        : (await api('/warehouse/pick/handoffs?site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] }))).items || [];
+      prodWaitReceiveJobs = Array.isArray(waitJobsRes && waitJobsRes.items)
+        ? waitJobsRes.items
+        : [];
+      handoffs = Array.isArray(data.handoffs) ? data.handoffs : [];
       noteNewAlerts(data, handoffs);
       stockReturns = Array.isArray(data.returns) ? data.returns : [];
       ensureMainCellRacks();
@@ -5988,6 +6138,8 @@
       docId = String(docId || '').trim();
       const units = [];
       (Array.isArray(lines) ? lines : []).forEach(function (line) {
+        // Уже отгруженные (✓) не просим отмечать повторно — только позиции «к сборке».
+        if (line && (line.already_shipped || line.needs_pick === false)) return;
         expandHandoffLineUnits(line).forEach(function (u) {
           units.push(u);
         });
@@ -6159,12 +6311,33 @@
       if (filtersOn) {
         activeList = activeList.filter((h) => handoffMatchesListFilters(h));
       }
+      let activeReturns = Array.isArray(stockReturns) ? stockReturns : [];
+      if (dealQ) {
+        const q = dealQ.toLowerCase();
+        activeReturns = activeReturns.filter((r) => {
+          const hay = [
+            r.deal_id,
+            r.number,
+            r.route_label,
+            r.reason,
+            r.deal && r.deal.title,
+            r.deal && r.deal.buyer_name,
+          ]
+            .map((x) => String(x || '').toLowerCase())
+            .join(' ');
+          return hay.includes(q);
+        });
+      }
       const activeHandoffs = activeList.length;
+      const activeReturnsN = activeReturns.length;
       const openN = Number((counts && counts.open) || (board && board.counts && board.counts.open) || 0) || 0;
       const prodN = productionOpenCount();
       // picker_only скрывает обычную очередь, но производство должно быть видно.
       const queueN = pickerOnly ? prodN : openN;
-      const activeN = dealQ || filtersOn ? activeHandoffs : activeHandoffs + queueN;
+      // При поиске/фильтрах — только совпавшие расходные + возвраты (иначе «Активные 0» при живом возврате).
+      const activeN = dealQ || filtersOn
+        ? activeHandoffs + activeReturnsN
+        : activeHandoffs + queueN + activeReturnsN;
       const closedN = dealQ || filtersOn
         ? Number(closedSearchTotal != null ? closedSearchTotal : closedTotal) || 0
         : Number(handoffsCompletedTotal || closedTotal || 0) || 0;

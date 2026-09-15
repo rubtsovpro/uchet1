@@ -211,21 +211,12 @@ function enrichJob(
   opts?: { light?: boolean }
 ): Record<string, unknown> | null {
   if (!row) return null;
-  if (opts?.light) {
-    return {
-      ...row,
-      status_label: STATUS_LABELS[String(row.status)] || String(row.status),
-      kind_label: KIND_LABELS[String(row.kind)] || String(row.kind),
-      lines: [],
-      consume: [],
-      produce: [],
-      summary: String(row.number || row.id || ''),
-    };
-  }
   const lines = loadLines(String(row.id));
   const consume = lines.filter((l) => l.direction === 'consume');
   const produce = lines.filter((l) => l.direction === 'produce');
   const summary = formatJobSummary(consume, produce, String(row.kind || ''));
+  // light: те же строки (UI карточек), без лишних полей в будущем.
+  void opts;
   return {
     ...row,
     status_label: STATUS_LABELS[String(row.status)] || String(row.status),

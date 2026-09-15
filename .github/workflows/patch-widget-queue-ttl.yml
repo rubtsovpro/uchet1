@@ -15,8 +15,11 @@ jobs:
           command_timeout: 5m
           script_stop: false
           script: |
+            set +e
+            echo "=== patch widget queue TTL ==="
             python3 - <<'PY'
             from pathlib import Path
+            import re
             p = Path('/root/widget_pnevmopodveska1_ru/public_html/deal_buttons/side_panels.js')
             t = p.read_text()
             old1 = """    function isUrgentStoQueuedLocally(leadId) {
@@ -63,27 +66,22 @@ jobs:
     }"""
             n = 0
             if old1 in t:
-                t = t.replace(old1, new1, 1); n += 1
+                t = t.replace(old1, new1, 1)
+                n += 1
+                print('patched urgent ttl')
             else:
-                print('urgent fn already patched or missing')
+                print('urgent skip', 'Date.now() - ts' in t)
             if old2 in t:
-                t = t.replace(old2, new2, 1); n += 1
-            else:
-                print('sto fn already patched or missing')
+                t = t.replace(old2, new2, 1)
+                n += 1
+                print('patched sto ttl')
             p.write_text(t)
-            print('patched functions', n)
-            PY
-            python3 - <<'PY'
-            from pathlib import Path
-            p = Path('/root/widget_pnevmopodveska1_ru/public_html/deal_buttons/widget_runtime.js')
-            t = p.read_text()
-            t2 = t.replace('side_panels.js?v=20260911a', 'side_panels.js?v=20260914q')
-            t2 = t2.replace('side_panels.js?v=20260914q', 'side_panels.js?v=20260914q')
-            if 'v=20260914q' not in t2:
-                import re
-                t2 = re.sub(r'side_panels\.js\?v=[^\'"]+', 'side_panels.js?v=20260914q', t2, count=1)
-            p.write_text(t2)
-            print('runtime', '20260914q' in t2)
+            print('fn', n)
+            r = Path('/root/widget_pnevmopodveska1_ru/public_html/deal_buttons/widget_runtime.js')
+            rt = r.read_text()
+            rt2 = re.sub(r'side_panels\.js\?v=[^\'"]+', 'side_panels.js?v=20260914q', rt, count=1)
+            r.write_text(rt2)
+            print('runtime ok', '20260914q' in rt2)
             PY
             grep -n 'Date.now() - ts' /root/widget_pnevmopodveska1_ru/public_html/deal_buttons/side_panels.js | head
             grep -n 'side_panels.js?v=' /root/widget_pnevmopodveska1_ru/public_html/deal_buttons/widget_runtime.js | head

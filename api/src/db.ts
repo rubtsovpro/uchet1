@@ -29,25 +29,15 @@ function isBusyError(e: unknown): boolean {
   return /database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(msg);
 }
 
-function withBusyRetry<T>(fn: () => T, attempts = 3): T {
+function withBusyRetry<T>(fn: () => T, attempts = 2): T {
   let last: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
       return fn();
     } catch (e) {
       last = e;
-      if (!isBusyError(e) || i === attempts - 1) {
-        throw e;
-      }
-      // Не крутить while(Date.now) — это 100% CPU и 502 на весь WMS, пока PHP export держит sqlite.
-      // Короткая пауза через Atomics.wait (блокирует поток, но без spin-loop).
-      try {
-        const sab = new SharedArrayBuffer(4);
-        const ia = new Int32Array(sab);
-        Atomics.wait(ia, 0, 0, Math.min(80, 20 * 2 ** i));
-      } catch {
-        /* ignore */
-      }
+      // Под lock от PHP export не крутим CPU: один короткий retry, иначе отдаём ошибку наверх.
+      if (!isBusyError(e) || i === attempts - 1) throw e;
     }
   }
   throw last;
