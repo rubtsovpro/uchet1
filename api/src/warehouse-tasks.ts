@@ -2610,7 +2610,31 @@ function enrichHandoffLine(
         [lineWh]
       )?.name || ''
     ).trim();
-  const stock_wh = handoffDisplayWarehouses(site).map((w) => {
+  const dealCh = dealIdOpt
+    ? get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+        `SELECT IFNULL(amo_channel,'') AS amo_channel,
+                IFNULL(amo_shipment,'') AS amo_shipment,
+                IFNULL(ship_channel,'') AS ship_channel
+         FROM crm_deals WHERE id = ?`,
+        [dealIdOpt]
+      )
+    : null;
+  const shipOnly =
+    !!dealCh && !isReserveChannelDeal(dealCh) && isShipChannelDeal(dealCh);
+  let displayWhs = handoffDisplayWarehouses(site);
+  if (shipOnly) {
+    try {
+      const mainId = handoffMainWarehouseIdForSite(site);
+      const mainName =
+        get<{ name: string }>(`SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`, [
+          mainId,
+        ])?.name || 'Основной';
+      displayWhs = [{ id: mainId, label: mainName }];
+    } catch {
+      displayWhs = displayWhs.slice(0, 1);
+    }
+  }
+  const stock_wh = displayWhs.map((w) => {
     const wLoc = productPickLocations(productId, w.id);
     return {
       warehouse_id: w.id,
@@ -3252,9 +3276,14 @@ type HandoffDealLine = {
   sku: string;
 };
 
-function handoffLinesSignature(lines: Array<{ product_id: string; qty: number }>): string {
+function handoffLinesSignature(
+  lines: Array<{ product_id: string; qty: number; warehouse_id?: string }>
+): string {
   return lines
-    .map((l) => `${String(l.product_id || '').trim()}:${Math.max(0, Math.round(Number(l.qty) || 0))}`)
+    .map((l) => {
+      const wh = String(l.warehouse_id || '').trim();
+      return `${String(l.product_id || '').trim()}:${Math.max(0, Math.round(Number(l.qty) || 0))}:${wh}`;
+    })
     .join('|');
 }
 
@@ -3298,6 +3327,17 @@ function dealHandoffSourceLines(dealId: string, docWarehouseId: string): Handoff
   if (!deal) return [];
   const defaultWh = String(docWarehouseId || '').trim() || mainWarehouseId();
   const site = resolvePickSiteForDeal(deal);
+  const dealRow = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+    `SELECT IFNULL(amo_channel,'') AS amo_channel,
+            IFNULL(amo_shipment,'') AS amo_shipment,
+            IFNULL(ship_channel,'') AS ship_channel
+     FROM crm_deals WHERE id = ?`,
+    [deal]
+  );
+  // Отправка → Курьер: только с Основы; «Отложено» — для резерва/СТО.
+  const allowHold = !(
+    !isReserveChannelDeal(dealRow) && isShipChannelDeal(dealRow)
+  );
   const moved = movedQtyMapForDeal(deal);
   const rows = all<{
     product_guid: string;
@@ -3331,7 +3371,7 @@ function dealHandoffSourceLines(dealId: string, docWarehouseId: string): Handoff
       prev.qty += qty;
       continue;
     }
-    const resolved = resolveHandoffSourceWarehouseId(productId, qty, site);
+    const resolved = resolveHandoffSourceWarehouseId(productId, qty, site, { allowHold });
     agg.set(productId, {
       product_id: productId,
       qty,
@@ -3346,7 +3386,7 @@ function dealHandoffSourceLines(dealId: string, docWarehouseId: string): Handoff
     const was = moved.get(line.product_id) ?? 0;
     const need = Math.max(0, line.qty - was);
     if (need <= 0) continue;
-    const resolved = resolveHandoffSourceWarehouseId(line.product_id, need, site);
+    const resolved = resolveHandoffSourceWarehouseId(line.product_id, need, site, { allowHold });
     out.push({
       ...line,
       qty: need,
@@ -3403,8 +3443,9 @@ function syncUnpostedHandoffDocLines(docId: string): boolean {
   }
   if (!targetLines.length) return false;
 
-  const currentLines = all<{ product_id: string; qty: number }>(
-    `SELECT IFNULL(product_id,'') AS product_id, IFNULL(qty,0) AS qty
+  const currentLines = all<{ product_id: string; qty: number; warehouse_id: string }>(
+    `SELECT IFNULL(product_id,'') AS product_id, IFNULL(qty,0) AS qty,
+            IFNULL(warehouse_id,'') AS warehouse_id
      FROM stock_doc_lines
      WHERE doc_id = ?
      ORDER BY line_no ASC, id ASC`,
@@ -4008,7 +4049,6 @@ function mapHandoffPickRow(
       !isToSto &&
       !isReturn &&
       (/^STO-RS[VE]/.test(toCode) ||
-        /^STO-RS[VE]/.test(fromCode) ||
         /резерв/i.test(toNameRaw) ||
         /резерв/i.test(commentStr));
     const isReserve =
@@ -4162,7 +4202,7 @@ function mapHandoffPickRow(
   const byCodesReserve =
     !isToSto &&
     !isReturn &&
-    (/^STO-RS[VE]/.test(toCode) || /^STO-RS[VE]/.test(fromCode));
+    (/^STO-RS[VE]/.test(toCode) || /резерв/i.test(toNameRaw) || /резерв/i.test(commentStr));
   // Маршрут на карточке — склады документа. Meta — только для черновика без warehouse_to.
   const toName =
     toNameRaw ||
@@ -4392,16 +4432,34 @@ export function setHandoffPickLineSource(input: {
 
   const dealId = String(doc.deal_id || '').trim();
   const site = resolvePickSiteForDeal(dealId, String(doc.warehouse_id || '').trim());
-  const allowed = new Set(handoffDisplayWarehouses(site).map((w) => w.id));
+  const dealRow = dealId
+    ? get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+        `SELECT IFNULL(amo_channel,'') AS amo_channel,
+                IFNULL(amo_shipment,'') AS amo_shipment,
+                IFNULL(ship_channel,'') AS ship_channel
+         FROM crm_deals WHERE id = ?`,
+        [dealId]
+      )
+    : null;
+  const shipOnly =
+    !isReserveChannelDeal(dealRow) && isShipChannelDeal(dealRow);
+  const allowed = new Set<string>();
   try {
     allowed.add(handoffMainWarehouseIdForSite(site));
-    const hold = handoffHoldWarehouseIdForSite(site);
-    if (hold) allowed.add(hold);
+    if (!shipOnly) {
+      for (const w of handoffDisplayWarehouses(site)) allowed.add(w.id);
+      const hold = handoffHoldWarehouseIdForSite(site);
+      if (hold) allowed.add(hold);
+    }
   } catch {
     /* ignore */
   }
   if (allowed.size && !allowed.has(warehouseId)) {
-    throw new Error('Этот склад нельзя выбрать источником для контура');
+    throw new Error(
+      shipOnly
+        ? 'На курьера можно списать только с Основы'
+        : 'Этот склад нельзя выбрать источником для контура'
+    );
   }
 
   const line = get<{ id: string }>(

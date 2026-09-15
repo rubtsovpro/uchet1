@@ -30,6 +30,7 @@ import {
 } from './organizations.js';
 import { assertDealStockAvailable, planDealStockNeeds } from './payment-links.js';
 import { catalogArticleOf, mergeSalesDocLines, salesDocLineDisplayName } from './product-display-name.js';
+import { getDocClientName } from './doc-client-names.js';
 import { orgSignHtml, orgStampHtml } from './org-stamp.js';
 import { orgLogoHtml } from './org-logo.js';
 import { workorderWarrantyBlockHtml } from './warranty-settings.js';
@@ -982,14 +983,11 @@ function salesDocConsigneeLine(doc: Row): string {
   return addr ? `${name}, ${addr}` : name;
 }
 
-function money(n: number): string {
-  return String(Math.round(Number(n) || 0));
-}
-
-/** 87900 → «87 900» (целые рубли) */
+/** 5428.57 → «5 428,57»; 114000 → «114 000,00» (копейки, без округления до рубля). */
 export function formatRuMoney(n: number): string {
-  const r = money(n);
-  return r.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  const [r, k] = v.toFixed(2).split('.');
+  return `${String(r || '0').replace(/\B(?=(\d{3})+(?!\d))/g, ' ')},${k || '00'}`;
 }
 
 function splitVat(totalIncl: number, vatRate: number): { amount: number; vat: number; total: number } {
@@ -1912,6 +1910,15 @@ export function resolveVatRateForDeal(
   return Number(orgVatRate) || 0;
 }
 
+export type SalesDocLineNameOverride = {
+  product_guid?: string;
+  sku?: string;
+  /** Имя в документ (товар / КН). */
+  name?: string;
+  /** Явное КН — если задано, имеет приоритет над name. */
+  client_name?: string;
+};
+
 export function createSalesDocFromDeal(input: {
   dealId: string;
   docType: SalesDocType;
@@ -1924,6 +1931,8 @@ export function createSalesDocFromDeal(input: {
   createdBy?: string;
   organizationId?: string;
   counterpartyId?: string;
+  /** Переопределение наименований строк (из виджета Документы). */
+  lineNames?: SalesDocLineNameOverride[];
   /** Явный № УПД (только upd/sf); при перегенерации без override — сохраняется старый. */
   number?: string;
   /** Явная дата документа YYYY-MM-DD; при перегенерации без override — сохраняется старая. */
@@ -2046,6 +2055,20 @@ export function createSalesDocFromDeal(input: {
     line_kind: string;
   }> = [];
 
+  const cpIdForNames = String(input.counterpartyId || '').trim();
+  const lineOverrides = Array.isArray(input.lineNames) ? input.lineNames : [];
+  const overrideByGuid = new Map<string, SalesDocLineNameOverride>();
+  const overrideBySku = new Map<string, SalesDocLineNameOverride>();
+  for (const ov of lineOverrides) {
+    const g = String(ov.product_guid || '').trim();
+    const s = String(ov.sku || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '');
+    if (g) overrideByGuid.set(g, ov);
+    if (s) overrideBySku.set(s, ov);
+  }
+
   items.forEach((it, idx) => {
     const qty = Number(it.qty) || 0;
     const price = Number(it.price) || 0;
@@ -2053,7 +2076,25 @@ export function createSalesDocFromDeal(input: {
     const split = splitVat(lineTotal, vatRate);
     const sku = String(it.sku || it.code || '');
     const productGuid = String(it.product_guid || '');
-    const name = salesDocLineDisplayName(it);
+    const skuKey = sku.trim().toUpperCase().replace(/\s+/g, '');
+    const ov =
+      (productGuid && overrideByGuid.get(productGuid)) ||
+      (skuKey && overrideBySku.get(skuKey)) ||
+      undefined;
+    const savedKn = cpIdForNames
+      ? getDocClientName({
+          counterpartyId: cpIdForNames,
+          productGuid,
+          productSku: sku,
+        })
+      : '';
+    const overrideKn = String(ov?.client_name || '').trim();
+    const overrideName = String(ov?.name || '').trim();
+    const name =
+      overrideKn ||
+      overrideName ||
+      savedKn ||
+      salesDocLineDisplayName(it);
     lines.push({
       id: newGuid(),
       product_guid: productGuid,

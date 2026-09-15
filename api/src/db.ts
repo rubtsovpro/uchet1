@@ -2677,6 +2677,22 @@ export function migrate(): void {
     }
   }
 
+  // Клиентское наименование товара для документов (контрагент + товар)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS counterparty_product_doc_names (
+      id TEXT PRIMARY KEY,
+      counterparty_id TEXT NOT NULL,
+      product_guid TEXT NOT NULL DEFAULT '',
+      product_sku TEXT NOT NULL DEFAULT '',
+      client_name TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_by TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (counterparty_id) REFERENCES counterparties(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_cp_doc_names_cp ON counterparty_product_doc_names(counterparty_id);
+    CREATE INDEX IF NOT EXISTS idx_cp_doc_names_guid ON counterparty_product_doc_names(counterparty_id, product_guid);
+  `);
+
   // Гараж авто контрагента (несколько машин на клиента)
   db.exec(`
     CREATE TABLE IF NOT EXISTS counterparty_vehicles (

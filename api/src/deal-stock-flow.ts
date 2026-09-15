@@ -21,6 +21,7 @@ import { mainWarehouseId, stoWarehouseId, courierWarehouseId } from './supply-ch
 import { mappedSuccessStatus } from './amo-settings.js';
 import { rawStatusId } from './deals.js';
 import { abortOpenProductionForDeal } from './production-jobs.js';
+import { amoUserDisplayName } from './staff.js';
 import { supplierLotFieldsForLine } from './supplier-lots.js';
 
 const SUCCESS_NAME_RE = /успешн|реализован/i;
@@ -1691,19 +1692,25 @@ export function handoffHoldWarehouseIdForSite(site: PickSiteId): string {
 }
 
 /**
- * Откуда списывать позицию: если на «Отложено» хватает qty — оттуда, иначе Основной.
+ * Откуда списывать позицию.
+ * allowHold=true (резерв/СТО): если на «Отложено» хватает qty — оттуда, иначе Основной.
+ * allowHold=false (отправка → курьер): только Основной.
  */
 export function resolveHandoffSourceWarehouseId(
   productId: string,
   qty: number,
-  site: PickSiteId
+  site: PickSiteId,
+  opts?: { allowHold?: boolean }
 ): string {
   const need = Math.max(0, Number(qty) || 0);
   const mainWh = handoffMainWarehouseIdForSite(site);
-  const holdWh = handoffHoldWarehouseIdForSite(site);
-  if (holdWh && need > 0) {
-    const holdQty = productQtyOnWarehouse(productId, holdWh);
-    if (holdQty + 1e-9 >= need) return holdWh;
+  const allowHold = opts?.allowHold !== false;
+  if (allowHold) {
+    const holdWh = handoffHoldWarehouseIdForSite(site);
+    if (holdWh && need > 0) {
+      const holdQty = productQtyOnWarehouse(productId, holdWh);
+      if (holdQty + 1e-9 >= need) return holdWh;
+    }
   }
   return mainWh;
 }
@@ -1774,6 +1781,10 @@ export function createHandoffPickDraft(input: {
 
   const site = resolvePickSiteForDeal(dealId);
   const mainWh = handoffMainWarehouseIdForSite(site);
+  // Отправка → Курьер: только с Основы. «Отложено» — только для резерва / спуска на СТО.
+  const shipOnly =
+    !isReserveChannelDeal(deal) && isShipChannelDeal(deal);
+  const allowHold = !shipOnly;
 
   const rows = all<{
     product_guid: string;
@@ -1832,7 +1843,7 @@ export function createHandoffPickDraft(input: {
       }))
   ).map((l) => ({
     ...l,
-    warehouse_id: resolveHandoffSourceWarehouseId(l.product_id, l.qty, site),
+    warehouse_id: resolveHandoffSourceWarehouseId(l.product_id, l.qty, site, { allowHold }),
   }));
 
   // Правило 3: после прошлого «Готово» — только дельта (что ещё не перемещали).
@@ -1845,7 +1856,9 @@ export function createHandoffPickDraft(input: {
           return {
             ...l,
             qty: need,
-            warehouse_id: resolveHandoffSourceWarehouseId(l.product_id, need, site),
+            warehouse_id: resolveHandoffSourceWarehouseId(l.product_id, need, site, {
+              allowHold,
+            }),
           };
         })
         .filter((l): l is NonNullable<typeof l> => !!l)
@@ -3188,6 +3201,11 @@ function isStoFloorWarehouseId(warehouseId: string): boolean {
   return code === 'STO';
 }
 
+/** Пол СТО или «Резерв СТО» — склады сделок; «Отложено» сюда не входит. */
+function isStoDealLinkWarehouseId(warehouseId: string): boolean {
+  return isStoFloorWarehouseId(warehouseId) || isStoDealReserveWarehouseId(warehouseId);
+}
+
 /** Остаток на складе только по позициям с открытой сделкой (последний приход). */
 export function dealLinkedStockOnWarehouse(warehouseId: string): {
   lines: number;
@@ -3243,7 +3261,7 @@ export type OpenDealLink = {
 };
 
 function staffNamesByAmoId(amoIds: string[]): Map<string, string> {
-  const ids = [...new Set(amoIds.map(String).filter(Boolean))];
+  const ids = [...new Set(amoIds.map(String).filter((id) => id && id !== '0'))];
   const map = new Map<string, string>();
   if (!ids.length) return map;
   const rows = all<{ amo_id: string; name: string }>(
@@ -3254,6 +3272,12 @@ function staffNamesByAmoId(amoIds: string[]): Map<string, string> {
     const id = String(r.amo_id || '');
     const name = String(r.name || '').trim();
     if (id && name) map.set(id, name);
+  }
+  // fallback: meta.amo_user_directory (как в deals.responsibleNameMap)
+  for (const id of ids) {
+    if (map.has(id)) continue;
+    const n = String(amoUserDisplayName(id) || '').trim();
+    if (n) map.set(id, n);
   }
   return map;
 }
@@ -3267,8 +3291,169 @@ function enrichOpenDealLinks(links: OpenDealLink[]): OpenDealLink[] {
   }));
 }
 
+/**
+ * На полу СТО: если нет «держащего» прихода по сделке, берём открытую СТО-сделку
+ * с этой позицией в составе (Машина на СТО / записан на сто / is_sto).
+ * Закрытые «Успешно» / «не реализовано» и уже списанные по продаже — не подставляем.
+ */
+function fillStoFloorOpenDealFallbacks(
+  out: Map<string, OpenDealLink[]>,
+  rows: Array<{ product_id: string; warehouse_id: string }>
+): void {
+  const missingByWh = new Map<string, string[]>();
+  for (const r of rows) {
+    const pid = String(r.product_id || '').trim();
+    const wh = String(r.warehouse_id || '').trim();
+    if (!pid || !wh || !isStoDealLinkWarehouseId(wh) || isStoHoldWarehouseId(wh)) continue;
+    const key = `${pid}\0${wh}`;
+    if (out.has(key)) continue;
+    const list = missingByWh.get(wh) || [];
+    list.push(pid);
+    missingByWh.set(wh, list);
+  }
+  if (!missingByWh.size) return;
+  const pendingKeys: string[] = [];
+  const pending: OpenDealLink[] = [];
+  for (const [wh, pidsRaw] of missingByWh) {
+    const pids = [...new Set(pidsRaw)];
+    if (!pids.length) continue;
+    const cand = all<{
+      product_id: string;
+      deal_id: string;
+      deal_name: string;
+      status_name: string;
+      amo_channel: string;
+      responsible_user_id: string;
+    }>(
+      `WITH ranked AS (
+         SELECT di.product_guid AS product_id,
+                deal.id AS deal_id,
+                IFNULL(deal.name,'') AS deal_name,
+                IFNULL(deal.status_name,'') AS status_name,
+                IFNULL(deal.amo_channel,'') AS amo_channel,
+                IFNULL(deal.responsible_user_id,'') AS responsible_user_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY di.product_guid
+                  ORDER BY
+                    CASE
+                      WHEN IFNULL(deal.status_name,'') LIKE '%Машина на СТО%' THEN 0
+                      WHEN lower(IFNULL(deal.status_name,'')) LIKE '%записан на сто%' THEN 1
+                      ELSE 2
+                    END,
+                    datetime(IFNULL(deal.updated_at, deal.created_at)) DESC
+                ) AS rn
+         FROM crm_deal_items di
+         INNER JOIN crm_deals deal ON deal.id = di.deal_id
+         WHERE di.product_guid IN (${pids.map(() => '?').join(',')})
+           AND IFNULL(di.qty, 0) > 0
+           AND IFNULL(deal.status_name,'') NOT LIKE '%Успешно%'
+           AND IFNULL(deal.status_name,'') NOT LIKE '%не реализован%'
+           AND (
+             IFNULL(deal.status_name,'') LIKE '%Машина на СТО%'
+             OR lower(IFNULL(deal.status_name,'')) LIKE '%записан на сто%'
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM stock_docs d_wo
+             INNER JOIN stock_doc_lines l_wo ON l_wo.doc_id = d_wo.id
+             WHERE d_wo.deal_id = deal.id
+               AND IFNULL(d_wo.posted, 0) = 1
+               AND d_wo.doc_type = 'out'
+               AND IFNULL(d_wo.comment, '') LIKE '%Списание по продаже%'
+               AND l_wo.product_id = di.product_guid
+           )
+       )
+       SELECT product_id, deal_id, deal_name, status_name, amo_channel, responsible_user_id
+       FROM ranked
+       WHERE rn = 1`,
+      pids
+    );
+    for (const row of cand) {
+      const key = `${row.product_id}\0${wh}`;
+      if (out.has(key)) continue;
+      pendingKeys.push(key);
+      pending.push({
+        deal_id: String(row.deal_id || ''),
+        deal_name: String(row.deal_name || ''),
+        status_name: String(row.status_name || ''),
+        amo_channel: String(row.amo_channel || ''),
+        responsible_user_id: String(row.responsible_user_id || ''),
+        responsible_name: '',
+      });
+    }
+  }
+  enrichOpenDealLinks(pending).forEach((link, i) => {
+    const key = pendingKeys[i];
+    if (key && link.deal_id) out.set(key, [link]);
+  });
+}
+
+/**
+ * Последний приход на пол СТО с deal_id (даже если уже списан) — чтобы в остатках
+ * не было «—». Без сделки на СТО по процессу быть не должно.
+ */
+function fillStoFloorLastInboundFallbacks(
+  out: Map<string, OpenDealLink[]>,
+  rows: Array<{ product_id: string; warehouse_id: string }>
+): void {
+  const missing: Array<{ product_id: string; warehouse_id: string }> = [];
+  for (const r of rows) {
+    const pid = String(r.product_id || '').trim();
+    const wh = String(r.warehouse_id || '').trim();
+    if (!pid || !wh || !isStoDealLinkWarehouseId(wh) || isStoHoldWarehouseId(wh)) continue;
+    if (out.has(`${pid}\0${wh}`)) continue;
+    missing.push({ product_id: pid, warehouse_id: wh });
+  }
+  if (!missing.length) return;
+  const pendingKeys: string[] = [];
+  const pending: OpenDealLink[] = [];
+  for (const { product_id: pid, warehouse_id: wh } of missing) {
+    const row = get<{
+      deal_id: string;
+      deal_name: string;
+      status_name: string;
+      amo_channel: string;
+      responsible_user_id: string;
+    }>(
+      `SELECT IFNULL(d.deal_id,'') AS deal_id,
+              IFNULL(deal.name,'') AS deal_name,
+              IFNULL(deal.status_name,'') AS status_name,
+              IFNULL(deal.amo_channel,'') AS amo_channel,
+              IFNULL(deal.responsible_user_id,'') AS responsible_user_id
+       FROM stock_doc_lines l
+       INNER JOIN stock_docs d ON d.id = l.doc_id
+       LEFT JOIN crm_deals deal ON deal.id = d.deal_id
+       WHERE l.product_id = ?
+         AND IFNULL(d.posted, 0) = 1
+         AND IFNULL(d.deal_id, '') != ''
+         AND (
+           (d.doc_type = 'transfer' AND d.warehouse_to_id = ?)
+           OR (d.doc_type = 'in' AND IFNULL(l.warehouse_id, d.warehouse_id) = ?)
+         )
+       ORDER BY datetime(IFNULL(d.created_at, d.doc_date)) DESC, d.number DESC
+       LIMIT 1`,
+      [pid, wh, wh]
+    );
+    if (!row?.deal_id) continue;
+    pendingKeys.push(`${pid}\0${wh}`);
+    pending.push({
+      deal_id: String(row.deal_id),
+      deal_name: String(row.deal_name || ''),
+      status_name: String(row.status_name || ''),
+      amo_channel: String(row.amo_channel || ''),
+      responsible_user_id: String(row.responsible_user_id || ''),
+      responsible_name: '',
+    });
+  }
+  enrichOpenDealLinks(pending).forEach((link, i) => {
+    const key = pendingKeys[i];
+    if (key && link.deal_id) out.set(key, [link]);
+  });
+}
+
 /** Привязка строк остатков к сделке переноса (товар+склад → последний проведённый приход).
- * «Отложено под СТО» — без сделок в UI (это не склад сделок). */
+ * «Отложено под СТО» — без сделок в UI (это не склад сделок).
+ * Пол СТО: дополнительно открытые СТО-сделки с позицией в составе. */
 export function openDealLinksForStockRows(
   rows: Array<{ product_id: string; warehouse_id: string }>
 ): Map<string, OpenDealLink[]> {
@@ -3335,6 +3520,8 @@ export function openDealLinksForStockRows(
     const key = pendingKeys[i];
     if (key) out.set(key, [link]);
   });
+  fillStoFloorOpenDealFallbacks(out, rows);
+  fillStoFloorLastInboundFallbacks(out, rows);
   return out;
 }
 

@@ -300,6 +300,7 @@ import {
   ensureWorkorderCarPlate,
   type SalesDocType,
 } from './sales-docs.js';
+import { mapDocClientNames, upsertDocClientName } from './doc-client-names.js';
 import {
   deleteDocTemplate,
   docTemplatesPublic,
@@ -6709,10 +6710,17 @@ api.post('/sales-docs/from-deal', async (c) => {
     buyer_ogrn?: string;
     comment?: string;
     organization_id?: string;
+    counterparty_id?: string;
     template_id?: string;
     created_by?: string;
     number?: string;
     doc_date?: string;
+    line_names?: Array<{
+      product_guid?: string;
+      sku?: string;
+      name?: string;
+      client_name?: string;
+    }>;
   };
   const dealId = String(body.deal_id || '').trim();
   const docType = String(body.doc_type || '').trim() as SalesDocType;
@@ -6750,6 +6758,8 @@ api.post('/sales-docs/from-deal', async (c) => {
             comment: body.comment,
             createdBy,
             organizationId: body.organization_id,
+            counterpartyId: body.counterparty_id,
+            lineNames: Array.isArray(body.line_names) ? body.line_names : undefined,
             number: body.number,
             doc_date: body.doc_date,
           });
@@ -6777,6 +6787,111 @@ api.post('/sales-docs/from-deal', async (c) => {
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
   }
+});
+
+/** Позиции заказа + КН (клиентское наименование) для виджета Документы. */
+api.get('/sales-docs/deal-lines', (c) => {
+  if (!salesDocsWidgetAuthOk(c)) {
+    return c.json({ error: 'Недостаточно прав на документы' }, 403);
+  }
+  const dealId = String(c.req.query('deal_id') || '').trim();
+  const counterpartyId = String(c.req.query('counterparty_id') || '').trim();
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  const deal = getDeal(dealId) as
+    | (Record<string, unknown> & { items?: Array<Record<string, unknown>> })
+    | null;
+  if (!deal) return c.json({ error: 'Сделка не найдена' }, 404);
+  const items = Array.isArray(deal.items) ? deal.items : [];
+  const knMap = counterpartyId
+    ? mapDocClientNames(
+        counterpartyId,
+        items.map((it) => ({
+          product_guid: String(it.product_guid || it.product_id || ''),
+          sku: String(it.sku || it.code || ''),
+        }))
+      )
+    : {};
+  const lines = items.map((it, idx) => {
+    const productGuid = String(it.product_guid || it.product_id || '').trim();
+    const sku = String(it.sku || it.code || '').trim();
+    const skuKey = sku.toUpperCase().replace(/\s+/g, '');
+    const clientName =
+      (productGuid && knMap[`g:${productGuid}`]) ||
+      (skuKey && knMap[`s:${skuKey}`]) ||
+      '';
+    const baseName = String(
+      it.display_name || it.name_display || it.name || ''
+    ).trim();
+    return {
+      line_no: Number(it.line_no) || idx + 1,
+      item_id: String(it.id || ''),
+      product_guid: productGuid,
+      sku,
+      name: baseName,
+      client_name: clientName,
+      qty: Number(it.qty) || 0,
+      price: Number(it.price) || 0,
+      amount: Number(it.amount) || 0,
+      unit: String(it.unit || 'шт'),
+    };
+  });
+  return c.json({
+    ok: true,
+    deal_id: dealId,
+    counterparty_id: counterpartyId,
+    lines,
+    count: lines.length,
+  });
+});
+
+api.post('/sales-docs/client-product-names', async (c) => {
+  if (!salesDocsWidgetAuthOk(c)) {
+    return c.json({ error: 'Недостаточно прав на документы' }, 403);
+  }
+  const actor = actorFromContext(c);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    counterparty_id?: string;
+    product_guid?: string;
+    sku?: string;
+    client_name?: string;
+    items?: Array<{
+      product_guid?: string;
+      sku?: string;
+      client_name?: string;
+    }>;
+  };
+  const counterpartyId = String(body.counterparty_id || '').trim();
+  if (!counterpartyId) return c.json({ error: 'counterparty_id обязателен' }, 400);
+  const updatedBy =
+    actorDisplayName(actor) || actor?.login || actor?.name || 'amo-widget';
+  const batch = Array.isArray(body.items)
+    ? body.items
+    : [
+        {
+          product_guid: body.product_guid,
+          sku: body.sku,
+          client_name: body.client_name,
+        },
+      ];
+  const saved: Array<{ product_guid: string; sku: string; client_name: string }> = [];
+  for (const row of batch) {
+    const res = upsertDocClientName({
+      counterpartyId,
+      productGuid: String(row.product_guid || ''),
+      productSku: String(row.sku || ''),
+      clientName: String(row.client_name || ''),
+      updatedBy,
+    });
+    if (!res.ok) {
+      return c.json({ error: res.error }, 400);
+    }
+    saved.push({
+      product_guid: String(row.product_guid || ''),
+      sku: String(row.sku || ''),
+      client_name: res.client_name,
+    });
+  }
+  return c.json({ ok: true, items: saved });
 });
 
 /**
@@ -10499,7 +10614,8 @@ api.get('/products', (c) => {
     'p',
     sourceDepartmentsForCompany(deptCompanyId)
   );
-  // Остаток по всем складам (stock_balances + Get/Rests без дублей)
+  // Остаток по всем складам (stock_balances + Get/Rests без дублей).
+  // Rests только если WMS ещё не вёл пару товар+склад (строка в balances, даже qty=0).
   const stockJoin = `
     LEFT JOIN (
       SELECT x.product_id AS product_id, SUM(x.qty) AS stock_qty,
@@ -10516,7 +10632,6 @@ api.get('/products', (c) => {
             SELECT 1 FROM stock_balances b2
             WHERE b2.product_id = r.product_id
               AND b2.warehouse_id = r.warehouse_id
-              AND b2.qty != 0
           )
       ) x
       JOIN warehouses w ON w.id = x.warehouse_id
@@ -11020,7 +11135,6 @@ api.get('/products/:id', (c) => {
            SELECT 1 FROM stock_balances b2
            WHERE b2.product_id = r.product_id
              AND b2.warehouse_id = r.warehouse_id
-             AND b2.qty != 0
          )
      ) x
      LEFT JOIN warehouses w ON w.id = x.warehouse_id
@@ -11745,7 +11859,8 @@ api.get('/balances', (c) => {
   where.push(sqlExcludeServices('p', 'u'));
   where.push(sqlExcludeCrossContourProducts('p', 'co'));
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  // stock_balances приоритетнее; если по паре товар+склад нет движений — берём Get/Rests из 1С
+  // stock_balances приоритетнее. Get/Rests — только если WMS ещё не вёл пару товар+склад
+  // (есть строка в stock_balances, даже qty=0 после списания → rests не «воскрешают» остаток).
   const from = `
     FROM (
       SELECT b.warehouse_id AS warehouse_id, b.product_id AS product_id, b.qty AS qty
@@ -11759,7 +11874,6 @@ api.get('/balances', (c) => {
           SELECT 1 FROM stock_balances b2
           WHERE b2.product_id = r.product_id
             AND b2.warehouse_id = r.warehouse_id
-            AND b2.qty != 0
         )
     ) x
     JOIN products p ON p.id = x.product_id
