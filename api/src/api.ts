@@ -6327,6 +6327,112 @@ api.post('/company/ensure-client-orgs', (c) => {
   return c.json({ ok: true, ...result, snapshot: listClientOrgSnapshot() });
 });
 
+/** Позиции заказа + КН (клиентское наименование) для виджета Документы.
+ *  Важно: ДО /sales-docs/:id — иначе «deal-lines» съедается как id. */
+api.get('/sales-docs/deal-lines', (c) => {
+  if (!salesDocsWidgetAuthOk(c)) {
+    return c.json({ error: 'Недостаточно прав на документы' }, 403);
+  }
+  const dealId = String(c.req.query('deal_id') || '').trim();
+  const counterpartyId = String(c.req.query('counterparty_id') || '').trim();
+  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
+  const deal = getDeal(dealId) as
+    | (Record<string, unknown> & { items?: Array<Record<string, unknown>> })
+    | null;
+  if (!deal) return c.json({ error: 'Сделка не найдена' }, 404);
+  const items = Array.isArray(deal.items) ? deal.items : [];
+  const knMap = counterpartyId
+    ? mapDocClientNames(
+        counterpartyId,
+        items.map((it) => ({
+          product_guid: String(it.product_guid || it.product_id || ''),
+          sku: String(it.sku || it.code || ''),
+        }))
+      )
+    : {};
+  const lines = items.map((it, idx) => {
+    const productGuid = String(it.product_guid || it.product_id || '').trim();
+    const sku = String(it.sku || it.code || '').trim();
+    const skuKey = sku.toUpperCase().replace(/\s+/g, '');
+    const clientName =
+      (productGuid && knMap[`g:${productGuid}`]) ||
+      (skuKey && knMap[`s:${skuKey}`]) ||
+      '';
+    const baseName = String(
+      it.display_name || it.name_display || it.name || ''
+    ).trim();
+    return {
+      line_no: Number(it.line_no) || idx + 1,
+      item_id: String(it.id || ''),
+      product_guid: productGuid,
+      sku,
+      name: baseName,
+      client_name: clientName,
+      qty: Number(it.qty) || 0,
+      price: Number(it.price) || 0,
+      amount: Number(it.amount) || 0,
+      unit: String(it.unit || 'шт'),
+    };
+  });
+  return c.json({
+    ok: true,
+    deal_id: dealId,
+    counterparty_id: counterpartyId,
+    lines,
+    count: lines.length,
+  });
+});
+
+api.post('/sales-docs/client-product-names', async (c) => {
+  if (!salesDocsWidgetAuthOk(c)) {
+    return c.json({ error: 'Недостаточно прав на документы' }, 403);
+  }
+  const actor = actorFromContext(c);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    counterparty_id?: string;
+    product_guid?: string;
+    sku?: string;
+    client_name?: string;
+    items?: Array<{
+      product_guid?: string;
+      sku?: string;
+      client_name?: string;
+    }>;
+  };
+  const counterpartyId = String(body.counterparty_id || '').trim();
+  if (!counterpartyId) return c.json({ error: 'counterparty_id обязателен' }, 400);
+  const updatedBy =
+    actorDisplayName(actor) || actor?.login || actor?.name || 'amo-widget';
+  const batch = Array.isArray(body.items)
+    ? body.items
+    : [
+        {
+          product_guid: body.product_guid,
+          sku: body.sku,
+          client_name: body.client_name,
+        },
+      ];
+  const saved: Array<{ product_guid: string; sku: string; client_name: string }> = [];
+  for (const row of batch) {
+    const res = upsertDocClientName({
+      counterpartyId,
+      productGuid: String(row.product_guid || ''),
+      productSku: String(row.sku || ''),
+      clientName: String(row.client_name || ''),
+      updatedBy,
+    });
+    if (!res.ok) {
+      return c.json({ error: res.error }, 400);
+    }
+    saved.push({
+      product_guid: String(row.product_guid || ''),
+      sku: String(row.sku || ''),
+      client_name: res.client_name,
+    });
+  }
+  return c.json({ ok: true, items: saved });
+});
+
 api.get('/sales-docs/:id', (c) => {
   const id = c.req.param('id');
   let doc = getSalesDoc(id);
@@ -6787,111 +6893,6 @@ api.post('/sales-docs/from-deal', async (c) => {
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'create failed' }, 400);
   }
-});
-
-/** Позиции заказа + КН (клиентское наименование) для виджета Документы. */
-api.get('/sales-docs/deal-lines', (c) => {
-  if (!salesDocsWidgetAuthOk(c)) {
-    return c.json({ error: 'Недостаточно прав на документы' }, 403);
-  }
-  const dealId = String(c.req.query('deal_id') || '').trim();
-  const counterpartyId = String(c.req.query('counterparty_id') || '').trim();
-  if (!dealId) return c.json({ error: 'deal_id required' }, 400);
-  const deal = getDeal(dealId) as
-    | (Record<string, unknown> & { items?: Array<Record<string, unknown>> })
-    | null;
-  if (!deal) return c.json({ error: 'Сделка не найдена' }, 404);
-  const items = Array.isArray(deal.items) ? deal.items : [];
-  const knMap = counterpartyId
-    ? mapDocClientNames(
-        counterpartyId,
-        items.map((it) => ({
-          product_guid: String(it.product_guid || it.product_id || ''),
-          sku: String(it.sku || it.code || ''),
-        }))
-      )
-    : {};
-  const lines = items.map((it, idx) => {
-    const productGuid = String(it.product_guid || it.product_id || '').trim();
-    const sku = String(it.sku || it.code || '').trim();
-    const skuKey = sku.toUpperCase().replace(/\s+/g, '');
-    const clientName =
-      (productGuid && knMap[`g:${productGuid}`]) ||
-      (skuKey && knMap[`s:${skuKey}`]) ||
-      '';
-    const baseName = String(
-      it.display_name || it.name_display || it.name || ''
-    ).trim();
-    return {
-      line_no: Number(it.line_no) || idx + 1,
-      item_id: String(it.id || ''),
-      product_guid: productGuid,
-      sku,
-      name: baseName,
-      client_name: clientName,
-      qty: Number(it.qty) || 0,
-      price: Number(it.price) || 0,
-      amount: Number(it.amount) || 0,
-      unit: String(it.unit || 'шт'),
-    };
-  });
-  return c.json({
-    ok: true,
-    deal_id: dealId,
-    counterparty_id: counterpartyId,
-    lines,
-    count: lines.length,
-  });
-});
-
-api.post('/sales-docs/client-product-names', async (c) => {
-  if (!salesDocsWidgetAuthOk(c)) {
-    return c.json({ error: 'Недостаточно прав на документы' }, 403);
-  }
-  const actor = actorFromContext(c);
-  const body = (await c.req.json().catch(() => ({}))) as {
-    counterparty_id?: string;
-    product_guid?: string;
-    sku?: string;
-    client_name?: string;
-    items?: Array<{
-      product_guid?: string;
-      sku?: string;
-      client_name?: string;
-    }>;
-  };
-  const counterpartyId = String(body.counterparty_id || '').trim();
-  if (!counterpartyId) return c.json({ error: 'counterparty_id обязателен' }, 400);
-  const updatedBy =
-    actorDisplayName(actor) || actor?.login || actor?.name || 'amo-widget';
-  const batch = Array.isArray(body.items)
-    ? body.items
-    : [
-        {
-          product_guid: body.product_guid,
-          sku: body.sku,
-          client_name: body.client_name,
-        },
-      ];
-  const saved: Array<{ product_guid: string; sku: string; client_name: string }> = [];
-  for (const row of batch) {
-    const res = upsertDocClientName({
-      counterpartyId,
-      productGuid: String(row.product_guid || ''),
-      productSku: String(row.sku || ''),
-      clientName: String(row.client_name || ''),
-      updatedBy,
-    });
-    if (!res.ok) {
-      return c.json({ error: res.error }, 400);
-    }
-    saved.push({
-      product_guid: String(row.product_guid || ''),
-      sku: String(row.sku || ''),
-      client_name: res.client_name,
-    });
-  }
-  return c.json({ ok: true, items: saved });
 });
 
 /**
