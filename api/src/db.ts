@@ -2094,9 +2094,12 @@ export function migrate(): void {
   );
   if (!waitWh) {
     run(
-      `INSERT INTO warehouses (id, name, code, is_active) VALUES (?, 'Ожидание оплаты', 'WAIT-PAY', 1)`,
+      `INSERT INTO warehouses (id, name, code, is_active) VALUES (?, 'Ожидание оплаты', 'WAIT-PAY', 0)`,
       [cryptoRandomId()]
     );
+  } else {
+    // Резерв WAIT-PAY отключён — склад не светим в активных.
+    run(`UPDATE warehouses SET is_active = 0 WHERE id = ?`, [waitWh.id]);
   }
 
   // ——— Мультиорг: справочник организаций + organization_id на ключевых документах ———

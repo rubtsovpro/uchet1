@@ -8835,7 +8835,9 @@ function whIsActive(w) {
 }
 
 function whIsWaitPay(w) {
-  return String(w?.code || '') === 'WAIT-PAY' || String(w?.name || '') === 'Ожидание оплаты';
+  const code = String(w?.code || '').trim().toUpperCase();
+  if (code === 'WAIT-PAY' || code.startsWith('WAIT-PAY.')) return true;
+  return /ожидание\s*оплат/i.test(String(w?.name || '').trim());
 }
 
 /** Подпись склада в UI (карточка, крошки, селекты) — единственный источник.
@@ -9071,6 +9073,8 @@ function whIsEmptyJunk(w) {
     code === 'BUS' ||
     code === 'IN-TRANSIT' ||
     code.startsWith('IN-TRANSIT.') ||
+    code === 'WAIT-PAY' ||
+    code.startsWith('WAIT-PAY.') ||
     code === 'PROD-WIP' ||
     code.startsWith('PROD-WIP.') ||
     code === 'НФ-000033' ||
@@ -9081,6 +9085,7 @@ function whIsEmptyJunk(w) {
   ) {
     return true;
   }
+  if (/ожидание\s*оплат/i.test(name)) return true;
   if (/^в\s*пути/i.test(name)) return true;
   if (/сборк.*разбор|разбор.*сборк/i.test(name)) return true;
   if (/доукомплект/i.test(name)) return true;
@@ -9141,7 +9146,7 @@ function whAutoSysTip(w) {
     return whStoDealReserveTip();
   }
   if (whIsWaitPay(w)) {
-    return 'Системный склад: создаётся автоматически для резерва по ссылкам на оплату';
+    return 'Склад «Ожидание оплаты» больше не используется: резерв по ссылкам/счетам отключён.';
   }
   const code = String(w?.code || '').trim().toUpperCase();
   const name = String(w?.name || '').trim();

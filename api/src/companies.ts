@@ -262,14 +262,19 @@ export function ensureCompanySysWarehouses(companyId: string): void {
       if (!existing.company_id) {
         run(`UPDATE warehouses SET company_id = ? WHERE id = ?`, [companyId, existing.id]);
       }
+      // WAIT-PAY больше не используем — не реактивируем карточку в списке складов.
+      if (base === 'WAIT-PAY') {
+        run(`UPDATE warehouses SET is_active = 0 WHERE id = ?`, [existing.id]);
+      }
       continue;
     }
     // Имя уникально не требуется; для не-default — суффикс в имени
     const whName =
       companyId === getDefaultCompanyId() ? name : `${name} · ${company.name}`;
+    const active = base === 'WAIT-PAY' ? 0 : 1;
     run(
-      `INSERT INTO warehouses (id, name, code, is_active, company_id) VALUES (?, ?, ?, 1, ?)`,
-      [newGuid(), whName, code, companyId]
+      `INSERT INTO warehouses (id, name, code, is_active, company_id) VALUES (?, ?, ?, ?, ?)`,
+      [newGuid(), whName, code, active, companyId]
     );
   }
 }
