@@ -4033,6 +4033,22 @@ function mapHandoffPickRow(
           : isShip
             ? 'Отправка · склад курьера'
             : '';
+    // Трек/PDF из кэша виджета (файл) — без HTTP. Иначе UI пишет «СДЭК не создан» при живом треке.
+    const shipCh = String(slimDeal?.ship_channel || '').trim().toLowerCase();
+    const shipAmo = String(slimDeal?.amo_shipment || '').trim();
+    const looksCdek =
+      shipCh === 'cdek_prepaid' ||
+      shipCh === 'cdek_cod' ||
+      /сдэк|cdek/i.test(shipAmo);
+    let cdek_number = '';
+    let cdek_barcode_url = '';
+    if (dealId && looksCdek) {
+      const cached = loadCdekDealFromWidgetCache(dealId);
+      cdek_number = String(cached?.cdek_number || '').trim();
+      cdek_barcode_url =
+        String(cached?.cdek_barcode_url || '').trim() ||
+        (cdek_number ? cdekBarcodePublicUrl(dealId, cdek_number) : '');
+    }
     return {
       id,
       number: String(row.number || ''),
@@ -4066,6 +4082,8 @@ function mapHandoffPickRow(
       print_label: isReturn ? 'Приходная' : 'Расходная',
       completed,
       lines,
+      cdek_number,
+      cdek_barcode_url,
       deal: dealId
         ? {
             id: dealId,
@@ -4080,6 +4098,8 @@ function mapHandoffPickRow(
               slimDeal?.buyer_name,
               ''
             ),
+            cdek_number,
+            cdek_barcode_url,
           }
         : null,
       cells_label: completed ? parseCellFromDocComment(commentStr) : '',
