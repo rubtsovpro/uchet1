@@ -2647,21 +2647,20 @@ export function mountSupplyChainRoutes(api: Hono): void {
     }
   });
 
-  api.get('/courier/runs', (c) => {
+  api.get('/courier/runs', async (c) => {
     const actor = (c as { get: (k: string) => unknown }).get('actor') as { id?: string } | undefined;
     const scopeRaw = String(c.req.query('scope') || 'active').trim().toLowerCase();
     const scope =
       scopeRaw === 'closed' || scopeRaw === 'all' ? scopeRaw : 'active';
-    return import('./sto-parts-flow.js').then(({ listCourierRuns }) => {
-      const data = listCourierRuns({
-        status: c.req.query('status') || undefined,
-        scope: c.req.query('status') ? 'all' : (scope as 'active' | 'closed' | 'all'),
-        q: c.req.query('q') || undefined,
-        courier_staff_id: actor?.id,
-        limit: Number(c.req.query('limit') || 0) || undefined,
-      });
-      return c.json(data);
+    const { listCourierRuns } = await import('./sto-parts-flow.js');
+    const data = await listCourierRuns({
+      status: c.req.query('status') || undefined,
+      scope: c.req.query('status') ? 'all' : (scope as 'active' | 'closed' | 'all'),
+      q: c.req.query('q') || undefined,
+      courier_staff_id: actor?.id,
+      limit: Number(c.req.query('limit') || 0) || undefined,
     });
+    return c.json(data);
   });
 
   api.get('/courier/runs/print', async (c) => {
