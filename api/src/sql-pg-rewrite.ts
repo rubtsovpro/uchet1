@@ -2,6 +2,102 @@
  * SQL dialect bridge: SQLite → Postgres (best-effort, runtime).
  * Placeholders: ? → $1,$2,…
  */
+
+/** Rewrite datetime(expr) with nested parens (COALESCE/IFNULL args contain commas). */
+function rewriteDatetimeCalls(sql: string): string {
+  let s = String(sql || '');
+  const re = /\bdatetime\s*\(/gi;
+  let out = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) {
+    const start = m.index;
+    let i = start + m[0].length;
+    let depth = 1;
+    let inSq = false;
+    let inDq = false;
+    while (i < s.length && depth > 0) {
+      const ch = s[i];
+      if (ch === "'" && !inDq) {
+        if (inSq && s[i + 1] === "'") {
+          i += 2;
+          continue;
+        }
+        inSq = !inSq;
+        i += 1;
+        continue;
+      }
+      if (ch === '"' && !inSq) {
+        inDq = !inDq;
+        i += 1;
+        continue;
+      }
+      if (!inSq && !inDq) {
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth -= 1;
+      }
+      i += 1;
+    }
+    if (depth !== 0) break;
+    const inner = s.slice(start + m[0].length, i - 1).trim();
+    out += s.slice(last, start);
+    const nowLit = /^['"]now['"]$/i.test(inner);
+    if (nowLit) {
+      out += 'NOW()';
+    } else if (/^['"]now['"]\s*,\s*\?/i.test(inner)) {
+      out += `(NOW() + (?::text)::interval)`;
+    } else if (/^\?\s*,\s*\?$/.test(inner)) {
+      out += `((?)::timestamptz + (?::text)::interval)`;
+    } else if (/^([^,]+?)\s*,\s*\?$/.test(inner)) {
+      const expr = inner.replace(/^([^,]+?)\s*,\s*\?$/, '$1').trim();
+      out += `((${expr})::timestamptz + (?::text)::interval)`;
+    } else if (/,/.test(inner) && /^['"]now['"]/i.test(inner)) {
+      // already handled by earlier literal interval replaces; leave for safety
+      out += s.slice(start, i);
+    } else if (!/,/.test(inner) || /\(/.test(inner)) {
+      // single expr OR nested COALESCE(...) — cast whole inner
+      const topComma = (() => {
+        let d = 0;
+        let sq = false;
+        let dq = false;
+        for (let j = 0; j < inner.length; j++) {
+          const c = inner[j];
+          if (c === "'" && !dq) {
+            if (sq && inner[j + 1] === "'") {
+              j += 1;
+              continue;
+            }
+            sq = !sq;
+            continue;
+          }
+          if (c === '"' && !sq) {
+            dq = !dq;
+            continue;
+          }
+          if (!sq && !dq) {
+            if (c === '(') d += 1;
+            else if (c === ')') d -= 1;
+            else if (c === ',' && d === 0) return true;
+          }
+        }
+        return false;
+      })();
+      if (topComma) {
+        // two-arg datetime not matched above — keep original (should be rare)
+        out += s.slice(start, i);
+      } else {
+        out += `((${inner})::timestamptz)`;
+      }
+    } else {
+      out += s.slice(start, i);
+    }
+    last = i;
+    re.lastIndex = i;
+  }
+  out += s.slice(last);
+  return out;
+}
+
 export function rewriteSqlForPg(sql: string): string {
   let s = String(sql || '');
 
@@ -14,12 +110,7 @@ export function rewriteSqlForPg(sql: string): string {
       return `(NOW() + INTERVAL '${n} ${u}')`;
     }
   );
-  // datetime('now', ?) — параметр вида '-120 seconds' / '+1 day'
-  s = s.replace(
-    /\bdatetime\s*\(\s*['"]now['"]\s*,\s*\?\s*\)/gi,
-    `(NOW() + (?::text)::interval)`
-  );
-  // datetime(col, '+N unit') / datetime(col, ?)
+  // datetime(col, '+N unit')
   s = s.replace(
     /\bdatetime\s*\(\s*([^,?]+?)\s*,\s*['"]([+-]?\d+)\s+(day|days|hour|hours|minute|minutes|second|seconds)['"]\s*\)/gi,
     (_m, expr, n, unit) => {
@@ -27,20 +118,9 @@ export function rewriteSqlForPg(sql: string): string {
       return `((${expr})::timestamptz + INTERVAL '${n} ${u}')`;
     }
   );
-  s = s.replace(
-    /\bdatetime\s*\(\s*([^,?]+?)\s*,\s*\?\s*\)/gi,
-    `(($1)::timestamptz + (?::text)::interval)`
-  );
-  // datetime('now') / date('now')
-  s = s.replace(/datetime\s*\(\s*['"]now['"]\s*\)/gi, 'NOW()');
+  // Balanced datetime(...) incl. COALESCE / ?,? / now,?
+  s = rewriteDatetimeCalls(s);
   s = s.replace(/date\s*\(\s*['"]now['"]\s*\)/gi, 'CURRENT_DATE');
-  // datetime(?, ?) — оба плейсхолдера (ts + interval text)
-  s = s.replace(
-    /\bdatetime\s*\(\s*\?\s*,\s*\?\s*\)/gi,
-    `((?)::timestamptz + (?::text)::interval)`
-  );
-  // datetime(single_expr) — после двухаргументных; cast: в дампе часто text
-  s = s.replace(/\bdatetime\s*\(\s*([^,)]+)\s*\)/gi, '(($1)::timestamptz)');
   s = s.replace(/\bdate\s*\(\s*['"]now['"]\s*,\s*['"]([+-]?\d+)\s+(day|days)['"]\s*\)/gi, (_m, n) => {
     return `(CURRENT_DATE + INTERVAL '${n} days')`;
   });
