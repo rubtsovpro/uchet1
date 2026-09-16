@@ -16,10 +16,8 @@ export function rewriteSqlForPg(sql: string): string {
   );
   s = s.replace(/datetime\s*\(\s*['"]now['"]\s*\)/gi, 'NOW()');
   s = s.replace(/date\s*\(\s*['"]now['"]\s*\)/gi, 'CURRENT_DATE');
-  // datetime(expr) → cast (sqlite affinity helper)
-  s = s.replace(/\bdatetime\s*\(/gi, '(');
-  // leftover: was datetime(x) → (x)  — ok for text compare; for < NOW() often enough
-  // Prefer timestamptz when comparing to NOW — wrap common pattern expires_at < datetime('now') already NOW()
+  // datetime(single_expr) → text cast (не трогаем двухаргументные — в PG это record)
+  s = s.replace(/\bdatetime\s*\(\s*([^,)]+)\s*\)/gi, '($1)');
   s = s.replace(/\bdate\s*\(\s*['"]now['"]\s*,\s*['"]([+-]?\d+)\s+(day|days)['"]\s*\)/gi, (_m, n) => {
     return `(CURRENT_DATE + INTERVAL '${n} days')`;
   });
@@ -97,12 +95,24 @@ export function qmarksToOrdinal(sql: string): { sql: string; count: number } {
 }
 
 export function toPgSql(sqliteSql: string): string {
-  const rewritten = rewriteSqlForPg(sqliteSql);
+  let rewritten = rewriteSqlForPg(sqliteSql);
+  // Postgres 9.1+… actually IF NOT EXISTS for ADD COLUMN since PG 9.1? → PG 11+
+  rewritten = rewritten.replace(
+    /\bALTER\s+TABLE\s+(\S+)\s+ADD\s+COLUMN\s+(?!IF\s+NOT\s+EXISTS)/gi,
+    'ALTER TABLE $1 ADD COLUMN IF NOT EXISTS '
+  );
   return qmarksToOrdinal(rewritten).sql;
 }
 
-/** SQLite-only statements that must not hit Postgres. */
+/** Parse PRAGMA table_info(name) → table name, or null. */
+export function parsePragmaTableInfo(sql: string): string | null {
+  const m = String(sql || '').match(/^\s*PRAGMA\s+table_info\s*\(\s*["`]?(\w+)["`]?\s*\)\s*;?\s*$/i);
+  return m ? m[1] : null;
+}
+
+/** Other PRAGMA — ignore on Postgres. */
 export function isSqliteOnlySql(sql: string): boolean {
+  if (parsePragmaTableInfo(sql)) return false;
   return /^\s*PRAGMA\b/i.test(sql);
 }
 

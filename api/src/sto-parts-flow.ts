@@ -182,9 +182,18 @@ function warehouseTgChatIds(): string[] {
 }
 
 export function ensureStoPartsSchema() {
-  const cols = all<{ name: string }>('PRAGMA table_info(sto_transfer_requests)').map((c) => c.name);
+  const cols = all<{ name: string }>('PRAGMA table_info(sto_transfer_requests)').map((c) =>
+    String(c.name || '')
+  );
   const add = (name: string, ddl: string) => {
-    if (!cols.includes(name)) run(`ALTER TABLE sto_transfer_requests ADD COLUMN ${ddl}`);
+    if (cols.includes(name)) return;
+    try {
+      run(`ALTER TABLE sto_transfer_requests ADD COLUMN ${ddl}`);
+      cols.push(name);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/already exists/i.test(msg)) throw e;
+    }
   };
   add('source', `source TEXT NOT NULL DEFAULT 'warehouse'`);
   add('needs_rebrand', `needs_rebrand INTEGER NOT NULL DEFAULT 0`);

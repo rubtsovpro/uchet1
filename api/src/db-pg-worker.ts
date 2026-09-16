@@ -2,7 +2,7 @@
  * Worker thread: async `pg` pool. Main thread talks via Atomics.wait (sync API).
  */
 import { parentPort, workerData } from 'node:worker_threads';
-import { toPgSql, isSqliteOnlySql } from './sql-pg-rewrite.js';
+import { toPgSql, isSqliteOnlySql, parsePragmaTableInfo } from './sql-pg-rewrite.js';
 import type { Pool } from 'pg';
 
 type Ctrl = Int32Array;
@@ -61,6 +61,26 @@ parentPort!.on('message', (msg: Req) => {
       if (msg.op === 'ping') {
         await getPool();
         const len = writePayload(msg.payload, { ok: true });
+        notify(control, 1, len);
+        return;
+      }
+      const pragmaTable = parsePragmaTableInfo(msg.sql);
+      if (pragmaTable) {
+        const p = await getPool();
+        const r = await p.query(
+          `SELECT
+             (ordinal_position - 1)::int AS cid,
+             column_name AS name,
+             data_type AS type,
+             CASE WHEN is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
+             column_default AS dflt_value,
+             0 AS pk
+           FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = $1
+           ORDER BY ordinal_position`,
+          [pragmaTable]
+        );
+        const len = writePayload(msg.payload, { rows: r.rows });
         notify(control, 1, len);
         return;
       }
