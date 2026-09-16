@@ -927,19 +927,22 @@ export async function listWarehousesWithCells(): Promise<Array<{
 }>> {
   await ensureWarehouseCellsSchema();
   return (await all<{ id: string; name: string; code: string; allow_inbound: number }>(
-    `SELECT DISTINCT w.id, IFNULL(w.name,'') AS name, IFNULL(w.code,'') AS code,
+    `SELECT w.id, IFNULL(w.name,'') AS name, IFNULL(w.code,'') AS code,
             IFNULL(w.allow_inbound, 0) AS allow_inbound
      FROM warehouses w
-     INNER JOIN warehouse_cells c ON c.warehouse_id = w.id AND IFNULL(c.is_active, 1) = 1
      WHERE IFNULL(w.is_active, 1) = 1
        AND IFNULL(w.allow_inbound, 0) = 1
+       AND EXISTS (
+         SELECT 1 FROM warehouse_cells c
+         WHERE c.warehouse_id = w.id AND IFNULL(c.is_active, 1) = 1
+       )
      ORDER BY
        CASE
          WHEN IFNULL(w.code,'') = 'НФ-000032' THEN 0
          WHEN IFNULL(w.code,'') LIKE 'STO-RES-%' THEN 1
          ELSE 2
        END,
-       w.name COLLATE NOCASE`
+       IFNULL(w.name,'')`,
   )).map((r) => ({
     id: String(r.id),
     name: String(r.name || ''),

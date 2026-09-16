@@ -701,11 +701,12 @@ export async function getDealAlreadyMovedLines(dealId: string): Promise<DealAlre
     created_at: string;
   }>(
     `SELECT l.product_id, SUM(l.qty) AS qty,
-            IFNULL(p.sku,'') AS sku, IFNULL(p.name,'') AS name,
-            d.id AS doc_id, d.number, IFNULL(d.comment,'') AS comment, d.doc_type,
-            IFNULL(wf.name,'') AS from_name, IFNULL(wf.code,'') AS from_code,
-            IFNULL(wt.name,'') AS to_name, IFNULL(wt.code,'') AS to_code,
-            IFNULL(d.created_at,'') AS created_at
+            MAX(IFNULL(p.sku,'')) AS sku, MAX(IFNULL(p.name,'')) AS name,
+            d.id AS doc_id, MAX(d.number) AS number, MAX(IFNULL(d.comment,'')) AS comment,
+            MAX(d.doc_type) AS doc_type,
+            MAX(IFNULL(wf.name,'')) AS from_name, MAX(IFNULL(wf.code,'')) AS from_code,
+            MAX(IFNULL(wt.name,'')) AS to_name, MAX(IFNULL(wt.code,'')) AS to_code,
+            MAX(IFNULL(d.created_at,'')) AS created_at
      FROM stock_doc_lines l
      INNER JOIN stock_docs d ON d.id = l.doc_id
      LEFT JOIN products p ON p.id = l.product_id
@@ -724,7 +725,7 @@ export async function getDealAlreadyMovedLines(dealId: string): Promise<DealAlre
              AND IFNULL(d.comment,'') LIKE '%ГОТОВО%')
        )
      GROUP BY l.product_id, d.id
-     ORDER BY datetime(d.created_at) ASC, d.number ASC`,
+     ORDER BY MAX(datetime(d.created_at)) ASC, MAX(d.number) ASC`,
     [id]
   );
   const byProduct = new Map<string, DealAlreadyMovedLine>();
@@ -4119,14 +4120,15 @@ export async function runStoSaleWriteoffCron(limit = 80): Promise<{
 }> {
   const cap = Math.min(200, Math.max(1, limit));
   const candidates = await all<{ id: string }>(
-    `SELECT DISTINCT d.id
+    `SELECT d.id
      FROM crm_deals d
      INNER JOIN stock_docs sd ON sd.deal_id = d.id
        AND sd.doc_type = 'transfer' AND IFNULL(sd.posted,0) = 1
      INNER JOIN warehouses wt ON wt.id = sd.warehouse_to_id
        AND UPPER(IFNULL(wt.code,'')) = 'STO'
      WHERE datetime(COALESCE(NULLIF(sd.doc_date,''), sd.created_at)) >= datetime('now', '-180 days')
-     ORDER BY datetime(sd.created_at) DESC
+     GROUP BY d.id
+     ORDER BY MAX(datetime(sd.created_at)) DESC
      LIMIT ?`,
     [cap * 8]
   );

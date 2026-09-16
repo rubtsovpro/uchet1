@@ -1640,58 +1640,194 @@ type PickSiteRow = {
   warehouse_codes: string[];
   warehouse_ids: string[];
   company_ids: string[];
+  branch_like: string[];
+  sto_like: string[];
 };
 
-let pickSitesCache: PickSiteRow[] | null = null;
+const PICK_SITE_SEED: Array<{
+  id: PickSiteId;
+  label: string;
+  sort_order: number;
+  company_codes: string[];
+  warehouse_codes: string[];
+  branch_like: string[];
+  sto_like: string[];
+}> = [
+  {
+    id: 'strela',
+    label: 'Стрела',
+    sort_order: 1,
+    company_codes: ['STRELA', 'СТРЕЛА'],
+    warehouse_codes: ['MAIN', 'KRD', '00-000002', 'STO', 'WAIT-PAY.6f66468a', 'IN-TRANSIT.6f66468a'],
+    branch_like: ['%стрела%', '%strela%', '%фадеева%'],
+    sto_like: ['%стрела%', '%strela%', '%фадеева%'],
+  },
+  {
+    id: 'fogel',
+    label: 'Фогель',
+    sort_order: 2,
+    company_codes: ['ФОГЕЛЬ', 'FOGEL'],
+    warehouse_codes: ['WAIT-PAY.54291ec9', 'IN-TRANSIT.54291ec9'],
+    branch_like: ['%фогель%', '%fogel%'],
+    sto_like: ['%фогель%', '%fogel%'],
+  },
+  {
+    id: 'msk',
+    label: 'МСК',
+    sort_order: 3,
+    company_codes: ['PNEVMO', 'ПНЕВМО'],
+    warehouse_codes: ['НФ-000032', '00-000001'],
+    branch_like: ['%москва%', '%можай%', '%msk%'],
+    sto_like: ['%можай%', '%моск%', '%подвеск%'],
+  },
+];
 
-/** Контуры сборки: Стрела / Фогель / МСК (юрлица Учёта №1). */
+let pickSitesCache: PickSiteRow[] | null = null;
+let pickSitesEnsured = false;
+
+function parseJsonStringArray(raw: unknown): string[] {
+  try {
+    const v = typeof raw === 'string' ? JSON.parse(raw || '[]') : raw;
+    if (!Array.isArray(v)) return [];
+    return v.map((x) => String(x || '').trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function ensurePickSitesSchema(): Promise<void> {
+  if (pickSitesEnsured) return;
+  // DDL через Atomics-bridge на проде часто зависает — сначала лёгкий SELECT.
+  try {
+    const n = await get<{ c: number }>(`SELECT COUNT(*) AS c FROM pick_sites`);
+    if (Number(n?.c) > 0) {
+      pickSitesEnsured = true;
+      return;
+    }
+  } catch {
+    /* таблицы ещё нет — попробуем создать ниже */
+  }
+  try {
+    await run(`
+      CREATE TABLE IF NOT EXISTS pick_sites (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        company_codes_json TEXT NOT NULL DEFAULT '[]',
+        warehouse_codes_json TEXT NOT NULL DEFAULT '[]',
+        branch_like_json TEXT NOT NULL DEFAULT '[]',
+        sto_like_json TEXT NOT NULL DEFAULT '[]',
+        is_active INTEGER NOT NULL DEFAULT 1
+      )
+    `);
+    try {
+      await run(`ALTER TABLE warehouses ADD COLUMN IF NOT EXISTS pick_site TEXT`);
+    } catch {
+      try {
+        await run(`ALTER TABLE warehouses ADD COLUMN pick_site TEXT`);
+      } catch {
+        /* already exists */
+      }
+    }
+    for (const s of PICK_SITE_SEED) {
+      await run(
+        `INSERT INTO pick_sites (
+           id, label, sort_order, company_codes_json, warehouse_codes_json,
+           branch_like_json, sto_like_json, is_active
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+         ON CONFLICT (id) DO NOTHING`,
+        [
+          s.id,
+          s.label,
+          s.sort_order,
+          JSON.stringify(s.company_codes),
+          JSON.stringify(s.warehouse_codes),
+          JSON.stringify(s.branch_like),
+          JSON.stringify(s.sto_like),
+        ]
+      );
+    }
+    for (const s of PICK_SITE_SEED) {
+      if (!s.warehouse_codes.length) continue;
+      const ph = s.warehouse_codes.map(() => '?').join(',');
+      await run(
+        `UPDATE warehouses SET pick_site = ?
+         WHERE code IN (${ph})
+           AND (pick_site IS NULL OR TRIM(IFNULL(pick_site,'')) = '')`,
+        [s.id, ...s.warehouse_codes]
+      );
+    }
+  } catch (e) {
+    console.warn(
+      '[pick_sites] ensure schema skipped:',
+      e instanceof Error ? e.message : e
+    );
+  }
+  pickSitesEnsured = true;
+}
+
+/** Контуры сборки: Стрела / Фогель / МСК — из БД (pick_sites + warehouses.pick_site). */
 export async function pickSitesCatalog(): Promise<PickSiteRow[]> {
   if (pickSitesCache) return pickSitesCache;
-  const defs: Array<{
-    id: PickSiteId;
+  await ensurePickSitesSchema();
+  const rows = await all<{
+    id: string;
     label: string;
-    company_codes: string[];
-    warehouse_codes: string[];
-  }> = [
-    {
-      id: 'strela',
-      label: 'Стрела',
-      company_codes: ['STRELA', 'СТРЕЛА'],
-      warehouse_codes: ['MAIN', 'KRD', '00-000002', 'STO', 'WAIT-PAY.6f66468a', 'IN-TRANSIT.6f66468a'],
-    },
-    {
-      id: 'fogel',
-      label: 'Фогель',
-      company_codes: ['ФОГЕЛЬ', 'FOGEL'],
-      warehouse_codes: ['WAIT-PAY.54291ec9', 'IN-TRANSIT.54291ec9'],
-    },
-    {
-      id: 'msk',
-      label: 'МСК',
-      company_codes: ['PNEVMO', 'ПНЕВМО'],
-      warehouse_codes: ['НФ-000032', '00-000001'],
-    },
-  ];
-  pickSitesCache = (await Promise.all(defs.map(async (d) => {
-    const warehouse_ids: string[] = [];
-    for (const code of d.warehouse_codes) {
-      const row = await get<{ id: string }>(`SELECT id FROM warehouses WHERE code = ? LIMIT 1`, [code]);
-      const id = String(row?.id || '').trim();
-      if (id && !warehouse_ids.includes(id)) warehouse_ids.push(id);
-    }
-    const company_ids: string[] = [];
-    for (const code of d.company_codes) {
-      const row = await get<{ id: string }>(
-        `SELECT id FROM companies WHERE UPPER(IFNULL(code,'')) = UPPER(?) OR IFNULL(name,'') LIKE ? LIMIT 1`,
-        [code, `%${code}%`]
+    company_codes_json: string;
+    warehouse_codes_json: string;
+    branch_like_json: string;
+    sto_like_json: string;
+  }>(
+    `SELECT id, label, company_codes_json, warehouse_codes_json, branch_like_json, sto_like_json
+     FROM pick_sites
+     WHERE IFNULL(is_active,1)=1
+     ORDER BY sort_order ASC, id ASC`
+  );
+  pickSitesCache = await Promise.all(
+    rows.map(async (r) => {
+      const id = String(r.id || '').trim() as PickSiteId;
+      const company_codes = parseJsonStringArray(r.company_codes_json);
+      const warehouse_codes = parseJsonStringArray(r.warehouse_codes_json);
+      const branch_like = parseJsonStringArray(r.branch_like_json);
+      const sto_like = parseJsonStringArray(r.sto_like_json);
+      const byCol = await all<{ id: string }>(
+        `SELECT id FROM warehouses WHERE pick_site = ? AND IFNULL(is_active,1)=1`,
+        [id]
       );
-
-      const id = String(row?.id || '').trim();
-      if (id && !company_ids.includes(id)) company_ids.push(id);
-    }
-    return { ...d, warehouse_ids, company_ids };
-  })));
+      const warehouse_ids: string[] = byCol.map((w) => String(w.id || '').trim()).filter(Boolean);
+      for (const code of warehouse_codes) {
+        const row = await get<{ id: string }>(`SELECT id FROM warehouses WHERE code = ? LIMIT 1`, [code]);
+        const wid = String(row?.id || '').trim();
+        if (wid && !warehouse_ids.includes(wid)) warehouse_ids.push(wid);
+      }
+      const company_ids: string[] = [];
+      for (const code of company_codes) {
+        const row = await get<{ id: string }>(
+          `SELECT id FROM companies WHERE UPPER(IFNULL(code,'')) = UPPER(?) OR IFNULL(name,'') LIKE ? LIMIT 1`,
+          [code, `%${code}%`]
+        );
+        const cid = String(row?.id || '').trim();
+        if (cid && !company_ids.includes(cid)) company_ids.push(cid);
+      }
+      return {
+        id,
+        label: String(r.label || id),
+        company_codes,
+        warehouse_codes,
+        warehouse_ids,
+        company_ids,
+        branch_like,
+        sto_like,
+      };
+    })
+  );
   return pickSitesCache;
+}
+
+/** Сброс кэша после правок справочника (админка / seed). */
+export function invalidatePickSitesCatalog(): void {
+  pickSitesCache = null;
+  pickSitesEnsured = false;
 }
 
 export async function pickSiteLabel(site: PickSiteId | string): Promise<string> {
@@ -1727,6 +1863,13 @@ function companyBlobToPickSite(code: string, name: string): PickSiteId | null {
 export async function resolvePickSiteForWarehouse(warehouseId: string): Promise<PickSiteId> {
   const id = String(warehouseId || '').trim();
   if (!id) return 'strela';
+  await ensurePickSitesSchema();
+  const tagged = await get<{ pick_site: string }>(
+    `SELECT IFNULL(pick_site,'') AS pick_site FROM warehouses WHERE id = ?`,
+    [id]
+  );
+  const fromCol = normalizePickSiteFilter(String(tagged?.pick_site || ''));
+  if (fromCol === 'strela' || fromCol === 'fogel' || fromCol === 'msk') return fromCol;
   for (const site of await pickSitesCatalog()) {
     if (site.warehouse_ids.includes(id)) return site.id;
   }
@@ -3765,33 +3908,25 @@ function handoffPickDocSql(posted: boolean): string {
 }
 
 /**
- * SQL-фильтр площадки для COUNT/списка (приближение resolvePickSiteForDeal):
- * филиал Amo → СТО → юрлицо → склад документа.
+ * SQL-фильтр площадки для COUNT: склады из БД (warehouses.pick_site) + филиал/СТО/юрлицо из pick_sites.
  */
 async function handoffPickSiteMatchSql(
   siteFilter: PickSiteId
 ): Promise<{ sql: string; params: string[] }> {
   const site = (await pickSitesCatalog()).find((s) => s.id === siteFilter);
   const companyIds = (site?.company_ids || []).filter(Boolean);
-  const whIds = (site?.warehouse_ids || []).filter(Boolean);
-  const branchLike: Record<PickSiteId, string[]> = {
-    fogel: ['%фогель%', '%fogel%'],
-    strela: ['%стрела%', '%strela%', '%фадеева%'],
-    // без '%пневмо%' — слишком широко, захватывает чужие площадки
-    msk: ['%москва%', '%можай%', '%msk%'],
-  };
-  const stoLike: Record<PickSiteId, string[]> = {
-    fogel: ['%фогель%', '%fogel%'],
-    strela: ['%стрела%', '%strela%', '%фадеева%'],
-    msk: ['%можай%', '%моск%', '%подвеск%'],
-  };
-  const parts: string[] = [];
-  const params: string[] = [];
-  for (const p of branchLike[siteFilter] || []) {
+  const branchLike = site?.branch_like || [];
+  const stoLike = site?.sto_like || [];
+  const parts: string[] = [
+    `d.warehouse_id IN (SELECT id FROM warehouses WHERE pick_site = ?)`,
+    `d.warehouse_to_id IN (SELECT id FROM warehouses WHERE pick_site = ?)`,
+  ];
+  const params: string[] = [siteFilter, siteFilter];
+  for (const p of branchLike) {
     parts.push(`lower(IFNULL(cd.amo_branch,'')) LIKE ?`);
     params.push(p);
   }
-  for (const p of stoLike[siteFilter] || []) {
+  for (const p of stoLike) {
     parts.push(`lower(IFNULL(cd.amo_sto,'')) LIKE ?`);
     params.push(p);
   }
@@ -3799,14 +3934,7 @@ async function handoffPickSiteMatchSql(
     parts.push(`cd.org_company_id IN (${companyIds.map(() => '?').join(',')})`);
     params.push(...companyIds);
   }
-  if (whIds.length) {
-    parts.push(`d.warehouse_id IN (${whIds.map(() => '?').join(',')})`);
-    params.push(...whIds);
-    parts.push(`d.warehouse_to_id IN (${whIds.map(() => '?').join(',')})`);
-    params.push(...whIds);
-  }
   if (siteFilter === 'strela') {
-    // как amoBranchToPickSite: «краснодар» без фогель/стрела → strela
     parts.push(
       `(lower(IFNULL(cd.amo_branch,'')) LIKE '%краснодар%'
         AND lower(IFNULL(cd.amo_branch,'')) NOT LIKE '%фогель%'
@@ -3815,7 +3943,6 @@ async function handoffPickSiteMatchSql(
         AND lower(IFNULL(cd.amo_branch,'')) NOT LIKE '%strela%')`
     );
   }
-  if (!parts.length) return { sql: '', params: [] };
   return { sql: parts.join(' OR '), params };
 }
 

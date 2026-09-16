@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { pgAll, pgExec, pgGet, pgRun, pgWarm } from './db-pg-bridge.js';
 
@@ -27,19 +26,7 @@ export function isPostgresSot(): boolean {
   return dbSourceOfTruth() === 'postgres';
 }
 
-function openSqlite(): DatabaseSync {
-  const d = new DatabaseSync(dbPath);
-  d.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
-    PRAGMA foreign_keys = ON;
-    PRAGMA busy_timeout = 800;
-    PRAGMA wal_autocheckpoint = 200;
-  `);
-  return d;
-}
-
-type PgShim = {
+type AnyDb = {
   prepare: (sql: string) => {
     all: (...params: SqlParam[]) => Row[];
     get: (...params: SqlParam[]) => Row | undefined;
@@ -48,7 +35,44 @@ type PgShim = {
   exec: (sql: string) => void;
 };
 
-export const db: DatabaseSync | PgShim = isPostgresSot()
+function openSqlite(): AnyDb {
+  // Lazy: не тянуть node:sqlite / mmap 733MB файла при Postgres SoT.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { DatabaseSync } = require('node:sqlite') as {
+    DatabaseSync: new (path: string) => {
+      exec: (sql: string) => void;
+      prepare: (sql: string) => {
+        all: (...p: SqlParam[]) => Row[];
+        get: (...p: SqlParam[]) => Row | undefined;
+        run: (...p: SqlParam[]) => unknown;
+      };
+    };
+  };
+  const d = new DatabaseSync(dbPath);
+  d.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+    PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 800;
+    PRAGMA wal_autocheckpoint = 200;
+  `);
+  return {
+    prepare(sql: string) {
+      const stmt = d.prepare(sql);
+      return {
+        all: (...params: SqlParam[]) => stmt.all(...params) as Row[],
+        get: (...params: SqlParam[]) => stmt.get(...params) as Row | undefined,
+        run: (...params: SqlParam[]) => {
+          stmt.run(...params);
+          return { changes: 0 };
+        },
+      };
+    },
+    exec: (sql: string) => d.exec(sql),
+  };
+}
+
+export const db: AnyDb = isPostgresSot()
   ? {
       prepare(sql: string) {
         return {
@@ -89,12 +113,12 @@ function withBusyRetry<T>(fn: () => T, attempts = 2): T {
 
 export function all<T extends Row = Row>(sql: string, params: SqlParam[] = []): T[] {
   if (isPostgresSot()) return pgAll<T>(sql, params);
-  return withBusyRetry(() => (db as DatabaseSync).prepare(sql).all(...params) as T[]);
+  return withBusyRetry(() => db.prepare(sql).all(...params) as T[]);
 }
 
 export function get<T extends Row = Row>(sql: string, params: SqlParam[] = []): T | undefined {
   if (isPostgresSot()) return pgGet<T>(sql, params);
-  return withBusyRetry(() => (db as DatabaseSync).prepare(sql).get(...params) as T | undefined);
+  return withBusyRetry(() => db.prepare(sql).get(...params) as T | undefined);
 }
 
 export function run(sql: string, params: SqlParam[] = []): void {
@@ -103,7 +127,7 @@ export function run(sql: string, params: SqlParam[] = []): void {
     return;
   }
   withBusyRetry(() => {
-    (db as DatabaseSync).prepare(sql).run(...params);
+    db.prepare(sql).run(...params);
   });
 }
 
@@ -112,7 +136,7 @@ export function migrate(): void {
     console.log('[db] migrate skipped — Postgres SoT (schema from 1:1 dump)');
     return;
   }
-  (db as DatabaseSync).exec(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
