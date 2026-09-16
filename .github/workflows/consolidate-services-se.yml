@@ -58,11 +58,13 @@ jobs:
             fwrite(STDERR, 'dupes='.count($dupes)."\n");
             $i=0; foreach ($dupes as $oid=>$t) { if($i++>=15) break; $o=null; foreach($all as $r){if($r['id']===$oid){$o=$r;break;}} fwrite(STDERR, ($o['sku']??'?').' -> '.$t['sku']."\n"); }
             if (!$apply) { fwrite(STDERR, "dry-run\n"); exit(0); }
-            $tables=[['stock_doc_lines','product_id'],['sales_doc_lines','product_id'],['crm_deal_items','product_guid'],['warehouse_task_lines','product_id'],['sto_wo_materials','product_id'],['product_prices','product_id'],['product_properties','product_id'],['product_applicability','product_id'],['product_alt_codes','product_id'],['product_supplier_lots','product_id'],['stock_cell_balances','product_id']];
+            $tables=[['stock_doc_lines','product_id'],['sales_doc_lines','product_guid'],['crm_deal_items','product_guid'],['warehouse_task_lines','product_id'],['sto_wo_materials','product_id'],['product_prices','product_id'],['product_properties','product_id'],['product_applicability','product_id'],['product_alt_codes','product_id'],['product_supplier_lots','product_id'],['stock_cell_balances','product_id']];
             $pdo->beginTransaction();
             $stats=[];
             foreach ($dupes as $oldId=>$target) {
               $newId=(string)$target['id'];
+              $newSku=(string)$target['sku'];
+              $newName=(string)$target['name'];
               foreach (['stock_balances','product_store_rests'] as $table) {
                 try {
                   $rows=$pdo->prepare("SELECT warehouse_id, qty FROM {$table} WHERE product_id=?");
@@ -91,10 +93,18 @@ jobs:
                   $n=$st->rowCount(); if($n) $stats[$table]=($stats[$table]??0)+$n;
                 } catch (Throwable $e) { fwrite(STDERR, "warn $table ".$e->getMessage()."\n"); }
               }
+              try {
+                $st=$pdo->prepare('UPDATE sales_doc_lines SET sku=?, name=? WHERE product_guid=?');
+                $st->execute([$newSku,$newName,$newId]);
+                if ($st->rowCount()) $stats['sales_doc_lines_sku']=($stats['sales_doc_lines_sku']??0)+$st->rowCount();
+              } catch (Throwable $e) { fwrite(STDERR, 'warn sales sku '.$e->getMessage()."\n"); }
               $pdo->prepare('UPDATE products SET is_active=0 WHERE id=?')->execute([$oldId]);
             }
             $pdo->commit();
             fwrite(STDERR, 'links='.json_encode($stats, JSON_UNESCAPED_UNICODE)."\n");
+            $left=$pdo->query("SELECT COUNT(*) c FROM products WHERE IFNULL(is_active,1)=1 AND (IFNULL(item_kind,'') IN ('service','услуга') OR lower(IFNULL(name,'')) LIKE 'услуг%') AND lower(IFNULL(sku,'')) NOT LIKE 'se-%'")->fetch(PDO::FETCH_ASSOC);
+            $seAct=$pdo->query("SELECT COUNT(*) c FROM products WHERE lower(IFNULL(sku,'')) LIKE 'se-%' AND IFNULL(is_active,1)=1")->fetch(PDO::FETCH_ASSOC);
+            fwrite(STDERR, "active_se={$seAct['c']} active_non_se_services={$left['c']}\n");
             try {
               $my=new PDO('mysql:host=localhost;dbname=brooklynba_amo1c;charset=utf8mb4','brooklynba_amo1c','Qq112211',[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
               $off=0;
@@ -105,7 +115,6 @@ jobs:
                 $st->execute([(string)$o['sku']]); $off+=$st->rowCount();
               }
               $my->exec("UPDATE products SET notupload=0 WHERE department='pnevmopodveska_2025' AND sku LIKE 'se-%'");
-              // se-0014 hide if present
               $my->exec("UPDATE products SET notupload=1 WHERE department='pnevmopodveska_2025' AND sku='se-0014'");
               fwrite(STDERR, "amo_off=$off\n");
             } catch (Throwable $e) { fwrite(STDERR, 'amo '.$e->getMessage()."\n"); }
