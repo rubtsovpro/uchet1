@@ -9598,6 +9598,20 @@ api.post('/units', async (c) => {
   return c.json({ id }, 201);
 });
 
+api.get('/pick-sites', async (c) => {
+  const actor = await actorFromContext(c);
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+  const { pickSitesCatalog } = await import('./warehouse-tasks.js');
+  const sites = await pickSitesCatalog();
+  return c.json({
+    items: sites.map((s) => ({
+      id: s.id,
+      label: s.label,
+      warehouse_ids: s.warehouse_ids,
+    })),
+  });
+});
+
 api.get('/warehouses', async (c) => {
   await ensureCompaniesSchema();
   const archived = (c.req.query('archived') || '0').trim();
@@ -9638,11 +9652,18 @@ api.get('/warehouses', async (c) => {
   } catch {
     hsPodveskaIds = new Set();
   }
+  const { pickSiteLabel } = await import('./warehouse-tasks.js');
   rows = await Promise.all(rows.map(async (w) => {
     const id = String(w.id);
     const links = await warehouseLinkInfo(id);
+    const pickSite = String(w.pick_site || '').trim().toLowerCase();
     return {
       ...w,
+      pick_site: pickSite || '',
+      pick_site_label:
+        pickSite === 'msk' || pickSite === 'fogel' || pickSite === 'strela'
+          ? await pickSiteLabel(pickSite)
+          : '',
       has_links: links.linked,
       can_delete: !links.linked,
       link_counts: links.counts,
@@ -9987,6 +10008,7 @@ api.patch('/warehouses/:id', async (c) => {
     is_active?: boolean | number;
     show_in_widget?: boolean | number;
     allow_inbound?: boolean | number;
+    pick_site?: string | null;
   }>();
   const patchSets: string[] = [];
   const patchParams: Array<string | number> = [];
@@ -10002,9 +10024,29 @@ api.patch('/warehouses/:id', async (c) => {
     patchSets.push('allow_inbound = ?');
     patchParams.push(body.allow_inbound === true || body.allow_inbound === 1 ? 1 : 0);
   }
+  if (body.pick_site !== undefined) {
+    const raw = String(body.pick_site ?? '')
+      .trim()
+      .toLowerCase();
+    const site =
+      raw === 'msk' || raw === 'fogel' || raw === 'strela'
+        ? raw
+        : raw === '' || raw === 'none' || raw === '-'
+          ? ''
+          : null;
+    if (site === null) {
+      return c.json({ error: 'pick_site: strela | fogel | msk | пусто' }, 400);
+    }
+    patchSets.push('pick_site = ?');
+    patchParams.push(site);
+  }
   if (patchSets.length) {
     patchSets.push("updated_at = datetime('now')");
     await run(`UPDATE warehouses SET ${patchSets.join(', ')} WHERE id = ?`, [...patchParams, id]);
+    if (body.pick_site !== undefined) {
+      const { invalidatePickSitesCatalog } = await import('./warehouse-tasks.js');
+      invalidatePickSitesCatalog();
+    }
   }
   if (body.is_active != null) {
     const active = body.is_active === true || body.is_active === 1 ? 1 : 0;

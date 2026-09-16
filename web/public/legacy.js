@@ -9986,7 +9986,7 @@ async function renderWarehouses() {
               ? 'На складах нет остатка этого товара.'
               : 'Нет активных складов'
           }</p>`
-        : `<table><tbody><tr><td colspan="4" class="muted">${
+        : `<table><tbody><tr><td colspan="7" class="muted">${
             productFilter?.id
               ? 'На складах нет остатка этого товара.'
               : 'Нет активных складов'
@@ -10032,6 +10032,9 @@ async function renderWarehouses() {
                     isStoVirt ? 'Сделок' : 'Сделок'
                   }</span><strong class="mono wh-deals" data-wh="${esc(w.id)}">…</strong></div>`
             }
+            <div><span class="muted">Площадка</span><strong>${esc(
+              String(w.pick_site_label || '').trim() || '—'
+            )}</strong></div>
           </div>
         </article>`;
       })
@@ -10039,7 +10042,7 @@ async function renderWarehouses() {
   } else {
     listHtml = `<div class="table-scroll"><table class="data-table is-dense" data-table-key="warehouses" data-no-col-filter="1">
       <thead><tr>
-        <th>Код</th><th>Название</th>
+        <th>Код</th><th>Название</th><th>Площадка</th>
         ${productFilter?.id ? '<th>Остаток товара</th>' : ''}
         <th>Кол-во поз.</th><th>Кол-во</th><th>Сделок</th><th>Статус</th>
       </tr></thead>
@@ -10055,6 +10058,7 @@ async function renderWarehouses() {
               ? `<td class="mono"><strong>${esc(String(qtyByWh.get(w.id) ?? 0))}</strong></td>`
               : '';
             const statusCell = whSourceBadge(w, true);
+            const siteLbl = String(w.pick_site_label || '').trim() || '—';
             const tip = isStoRsv
               ? whStoDealReserveTip()
               : isStoRes
@@ -10072,6 +10076,7 @@ async function renderWarehouses() {
             }${isStoRes || isStoRsv ? ' is-sto-hold' : ''}${isStoVirt ? ' is-sto-floor' : ''}" data-wh-open="${esc(w.id)}" title="${esc(tip)}">
             <td class="mono">${esc(w.code)}</td>
             <td>${esc(whDisplayName(w))} <span class="wh-name-mark">${whSourceBadge(w, true)}</span></td>
+            <td>${esc(siteLbl)}</td>
             ${productQtyCell}
             ${linesCell(w.id)}
             ${qtyCell(w.id)}
@@ -12796,6 +12801,14 @@ async function renderBalances() {
               Приходуем сюда (размещение прихода)
             </label>
           </div>
+          <label class="span-2">Площадка сборки (/pick · /courier)
+            <select id="wh-card-pick-site">
+              <option value=""${!String(whRow?.pick_site || '').trim() ? ' selected' : ''}>— не задана —</option>
+              <option value="strela"${String(whRow?.pick_site || '') === 'strela' ? ' selected' : ''}>Стрела</option>
+              <option value="fogel"${String(whRow?.pick_site || '') === 'fogel' ? ' selected' : ''}>Фогель</option>
+              <option value="msk"${String(whRow?.pick_site || '') === 'msk' ? ' selected' : ''}>МСК</option>
+            </select>
+          </label>
           <label>Статус<input value="${Number(whRow?.is_active) === 0 ? 'Архив' : 'Активен'}" readonly /></label>
           <label>Создан<input value="${esc(createdWhen)}" readonly /></label>
           <label>Кто создал<input value="${createdWho}" readonly /></label>
@@ -12842,6 +12855,8 @@ async function renderBalances() {
             patch.show_in_widget = document.getElementById('wh-card-widget')?.checked ? 1 : 0;
           }
           patch.allow_inbound = document.getElementById('wh-card-inbound')?.checked ? 1 : 0;
+          const siteEl = document.getElementById('wh-card-pick-site');
+          if (siteEl) patch.pick_site = String(siteEl.value || '').trim();
           await api(`/warehouses/${encodeURIComponent(wh)}`, {
             method: 'PATCH',
             body: JSON.stringify(patch),

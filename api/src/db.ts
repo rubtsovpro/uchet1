@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pgAll, pgExec, pgGet, pgRun, pgWarm } from './db-pg.js';
 
+export { pgWarm };
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** SQLite по умолчанию в корне репо (data/), не в api/ — удобнее бэкапы и WMS_DATA_DIR на проде. */
 const dataDir = process.env.WMS_DATA_DIR

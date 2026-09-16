@@ -1,0 +1,22 @@
+[Unit]
+Description=Warehouse WMS sync worker (Amo queue)
+After=network.target warehouse-wms.service
+Wants=warehouse-wms.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/1c_pnevmopodveska1_ru/warehouse/api
+EnvironmentFile=/etc/warehouse-wms.env
+Environment=WMS_SYNC_PUMP=1
+Environment=WMS_SYNC_MAX_CONCURRENT=1
+Environment=WMS_SYNC_CHILD_TIMEOUT_MS=25000
+Environment=WMS_EVENT_LOOP_KILL_MS=8000
+Environment=WMS_EVENT_LOOP_KILL_AFTER_MS=30000
+ExecStart=/usr/bin/node dist/worker.js
+TimeoutStopSec=30
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

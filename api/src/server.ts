@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { api } from './api.js';
 import { db, get, isPostgresSot, migrate, run } from './db.js';
+import { ensurePgHotIndexes } from './pg-hot-indexes.js';
 import { repairPodveskaMskWarehouses } from './hs.js';
 import { deactivateLegacyServices, purgeServiceLinesFromOutDocs, reclassifyAllProductKinds } from './product-kind.js';
 import {
@@ -94,6 +95,13 @@ function sendLegacyCss(c: Context) {
 }
 
 migrate();
+if (isPostgresSot()) {
+  try {
+    await ensurePgHotIndexes();
+  } catch (e) {
+    console.warn('[startup] pg-indexes:', e instanceof Error ? e.message : e);
+  }
+}
 if (!isPostgresSot()) {
 try {
   const repaired = await repairPodveskaMskWarehouses();
@@ -258,7 +266,11 @@ async function startBackgroundJobs() {
     console.warn('[cron] purchase-drive init:', e instanceof Error ? e.message : e);
   }
 
-  // Примечания Amo после /pick: при лимите — очередь, слив по 1 шт. ~раз в 45с
+  // Примечания Amo после /pick: при лимите — очередь, слив по 1 шт. ~раз в 45с.
+  // Если крутится warehouse-wms-worker (WMS_BACKGROUND_WORKER=1) — там, не здесь.
+  if (String(process.env.WMS_BACKGROUND_WORKER || '').trim() === '1') {
+    console.log('[cron] amo-note-queue: delegated to background worker');
+  } else {
   const runAmoNoteQueue = async () => {
     try {
       const { drainAmoLeadNoteQueue, amoLeadNoteQueueSize } = await import('./amo-note-queue.js');
@@ -283,7 +295,8 @@ async function startBackgroundJobs() {
   }, 45_000);
   setTimeout(() => {
     void runAmoNoteQueue();
-  }, 25_000);
+  }, 12_000);
+  }
 }
 
 const PORT = Number(process.env.WMS_PORT || 3101);
