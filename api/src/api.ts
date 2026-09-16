@@ -30,7 +30,7 @@ import {
 import { catalogArticleOf, warehouseArticleOf, salesDocLineDisplayName } from './product-display-name.js';
 import {
   looksLike1cProductCode,
-  sqlProductTextSearch,
+  resolveSkuForProduction, sqlProductTextSearch,
 } from './product-search.js';
 import {
   dmCodesForBalanceRows,
@@ -10583,6 +10583,12 @@ api.delete('/counterparties/:id', (c) => {
     },
     405
   );
+});
+
+/** Резолв артикула для производства: факт (номер на складе) → мастер. */
+api.get('/products/resolve-production-sku', async (c) => {
+  const q = String(c.req.query('q') || c.req.query('sku') || '').trim();
+  return c.json(await resolveSkuForProduction(q));
 });
 
 api.get('/products', async (c) => {
