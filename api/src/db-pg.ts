@@ -146,5 +146,17 @@ export async function pgRun(sql: string, params: SqlParam[] = []): Promise<numbe
 }
 
 export async function pgExec(sql: string): Promise<void> {
-  await pgRun(sql, []);
+  // Multi-statement DDL (CREATE…; CREATE INDEX…) — run one by one; node-pg
+  // may return undefined rows for bare DDL and choke on batched scripts.
+  const parts = String(sql || '')
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && !/^--/.test(s));
+  if (parts.length <= 1) {
+    await pgRun(sql, []);
+    return;
+  }
+  for (const part of parts) {
+    await pgRun(part, []);
+  }
 }
