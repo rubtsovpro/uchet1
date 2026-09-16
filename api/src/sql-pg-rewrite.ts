@@ -33,8 +33,8 @@ export function rewriteSqlForPg(sql: string): string {
   );
   s = s.replace(/datetime\s*\(\s*['"]now['"]\s*\)/gi, 'NOW()');
   s = s.replace(/date\s*\(\s*['"]now['"]\s*\)/gi, 'CURRENT_DATE');
-  // datetime(single_expr) — после двухаргументных
-  s = s.replace(/\bdatetime\s*\(\s*([^,)]+)\s*\)/gi, '($1)');
+  // datetime(single_expr) — после двухаргументных; cast: в дампе часто text
+  s = s.replace(/\bdatetime\s*\(\s*([^,)]+)\s*\)/gi, '(($1)::timestamptz)');
   s = s.replace(/\bdate\s*\(\s*['"]now['"]\s*,\s*['"]([+-]?\d+)\s+(day|days)['"]\s*\)/gi, (_m, n) => {
     return `(CURRENT_DATE + INTERVAL '${n} days')`;
   });
