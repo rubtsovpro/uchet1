@@ -11,7 +11,7 @@
   <title>Склад · задачи · Учёт №1</title>
   <!-- pick-ui rev=pick-production-nom-check-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc93';
+    window.__PICK_UI_REV = 'pc94';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -4902,11 +4902,14 @@
         if (!hit || !hit.ok) {
           whereEl.classList.add('is-bad');
           whereEl.setAttribute('data-nom', '0');
+          const msg = String((hit && hit.message) || '').trim();
+          // Старый 404 «not found» (маршрут/карточка) — понятный текст, не сырой error.
           whereEl.innerHTML =
-            (hit && hit.message) ||
-            'Нет мастера для «' +
-              esc(sku) +
-              '» — <b>нельзя произвести</b>. Укажите мастер-артикул.';
+            msg && !/^not found$/i.test(msg)
+              ? msg
+              : 'Нет мастера для «' +
+                esc(sku) +
+                '» — <b>нельзя произвести</b>. Укажите мастер-артикул.';
           return { ok: false, sku };
         }
         const masterSku = String(hit.master_sku || sku).trim();
@@ -4964,7 +4967,10 @@
         }
         whereEl.classList.add('is-bad');
         whereEl.setAttribute('data-nom', '0');
-        whereEl.textContent = (e && e.message) || 'Не удалось проверить номенклатуру';
+        const errMsg = String((e && e.message) || '').trim();
+        whereEl.textContent = /^not found$/i.test(errMsg)
+          ? 'Не удалось проверить номенклатуру — обновите страницу'
+          : errMsg || 'Не удалось проверить номенклатуру';
         return { ok: false, sku };
       }
     }
@@ -5396,8 +5402,29 @@
     function bindProductionCardLookups(root) {
       if (!root) return;
       root.querySelectorAll('[data-prod-result-row]').forEach((row) => {
-        const sku = String((row.querySelector('[data-prod-sku]') || {}).value || '').trim();
-        if (sku.length >= 2) lookupProdSkuWhere(row);
+        const skuInput = row.querySelector('[data-prod-sku]');
+        const sku = String((skuInput && skuInput.value) || '').trim();
+        if (sku.length < 2) return;
+        const idx = row.getAttribute('data-prod-result-row');
+        const article = row.closest('[data-prod-task]');
+        const whereEl =
+          (article && article.querySelector('[data-prod-where="' + idx + '"]')) || null;
+        // Уже ок для этого артикула — не дёргать API на каждом auto-refresh (иначе 499-шторм).
+        if (
+          whereEl &&
+          whereEl.classList.contains('is-ok') &&
+          whereEl.getAttribute('data-nom') === '1'
+        ) {
+          const master = String(whereEl.getAttribute('data-master-sku') || '').trim();
+          const resolved = String((skuInput && skuInput.getAttribute('data-resolved-master')) || '').trim();
+          if (
+            (master && master.toLowerCase() === sku.toLowerCase()) ||
+            (resolved && resolved.toLowerCase() === sku.toLowerCase())
+          ) {
+            return;
+          }
+        }
+        lookupProdSkuWhere(row);
       });
     }
 
@@ -5488,8 +5515,8 @@
       void cellsPromise.then(() => {
         if (!document.getElementById('prod-cards')) return;
         refreshProdCellSelects(root);
+        // Не повторять lookup здесь: второй вызов abort'ит первый (nginx 499).
         bindProductionCardActions(root);
-        bindProductionCardLookups(root);
       });
 
       if (!toEnrich.length) return;

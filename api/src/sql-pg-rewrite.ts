@@ -31,13 +31,22 @@ export function rewriteSqlForPg(sql: string): string {
     /\bdatetime\s*\(\s*([^,?]+?)\s*,\s*\?\s*\)/gi,
     `(($1)::timestamptz + (?::text)::interval)`
   );
+  // datetime('now') / date('now')
   s = s.replace(/datetime\s*\(\s*['"]now['"]\s*\)/gi, 'NOW()');
   s = s.replace(/date\s*\(\s*['"]now['"]\s*\)/gi, 'CURRENT_DATE');
+  // datetime(?, ?) — оба плейсхолдера (ts + interval text)
+  s = s.replace(
+    /\bdatetime\s*\(\s*\?\s*,\s*\?\s*\)/gi,
+    `((?)::timestamptz + (?::text)::interval)`
+  );
   // datetime(single_expr) — после двухаргументных; cast: в дампе часто text
   s = s.replace(/\bdatetime\s*\(\s*([^,)]+)\s*\)/gi, '(($1)::timestamptz)');
   s = s.replace(/\bdate\s*\(\s*['"]now['"]\s*,\s*['"]([+-]?\d+)\s+(day|days)['"]\s*\)/gi, (_m, n) => {
     return `(CURRENT_DATE + INTERVAL '${n} days')`;
   });
+  // julianday('now') / julianday(expr) — для разницы в секундах через * 86400
+  s = s.replace(/\bjulianday\s*\(\s*['"]now['"]\s*\)/gi, '(EXTRACT(EPOCH FROM NOW()) / 86400.0)');
+  s = s.replace(/\bjulianday\s*\(\s*([^)]+)\s*\)/gi, '(EXTRACT(EPOCH FROM (($1)::timestamptz)) / 86400.0)');
 
 
   if (/\bINSERT\s+OR\s+IGNORE\s+INTO\b/i.test(s)) {
