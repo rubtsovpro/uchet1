@@ -1,0 +1,24 @@
+name: Verify se services
+on:
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            DB=/root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite
+            echo '=== active se-* ==='
+            sqlite3 -separator $'\t' "$DB" "SELECT sku, IFNULL(is_active,1), name,
+              IFNULL((SELECT price FROM product_prices WHERE product_id=p.id AND price_type IN ('retail','розница','sale') ORDER BY CASE price_type WHEN 'retail' THEN 0 WHEN 'розница' THEN 0 ELSE 1 END LIMIT 1), IFNULL(p.price,0))
+              FROM products p WHERE lower(IFNULL(sku,'')) LIKE 'se-%' ORDER BY sku;"
+            echo '=== active non-se services ==='
+            sqlite3 -separator $'\t' "$DB" "SELECT sku, name FROM products WHERE IFNULL(is_active,1)=1 AND (IFNULL(item_kind,'') IN ('service','услуга') OR lower(IFNULL(name,'')) LIKE 'услуг%') AND lower(IFNULL(sku,'')) NOT LIKE 'se-%' ORDER BY sku LIMIT 50;"
+            echo '=== counts ==='
+            sqlite3 "$DB" "SELECT 'se_all='||COUNT(*) FROM products WHERE lower(sku) LIKE 'se-%'; SELECT 'se_act='||COUNT(*) FROM products WHERE lower(sku) LIKE 'se-%' AND IFNULL(is_active,1)=1; SELECT 'svc_act_nonse='||COUNT(*) FROM products WHERE IFNULL(is_active,1)=1 AND IFNULL(item_kind,'') IN ('service','услуга') AND lower(sku) NOT LIKE 'se-%';"
