@@ -1,0 +1,118 @@
+name: Consolidate services to se-*
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: '1=apply WMS+amo, 0=dry-run'
+        required: true
+        default: '1'
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Consolidate on tech35
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            APPLY='${{ github.event.inputs.apply }}'
+            APP=/root/1c_pnevmopodveska1_ru/warehouse
+            cat > /tmp/consolidate_services_to_se.php <<'PHPEOF'
+            <?php
+            declare(strict_types=1);
+            $apply = in_array('--apply', $argv, true);
+            $dbPath = '/root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite';
+            function normName(string $s): string {
+              $s = mb_strtolower(trim($s), 'UTF-8');
+              $s = str_replace(['ё'], ['е'], $s);
+              $s = preg_replace('/\s+/u', ' ', $s) ?? $s;
+              return $s;
+            }
+            $pdo = new PDO('sqlite:'.$dbPath, null, null, [PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
+            $pdo->exec('PRAGMA busy_timeout=60000');
+            $all = $pdo->query("SELECT id, sku, IFNULL(name,'') name, IFNULL(is_active,1) act, IFNULL(item_kind,'') kind FROM products WHERE IFNULL(item_kind,'') IN ('service','услуга') OR lower(IFNULL(sku,'')) LIKE 'se-%' ORDER BY sku")->fetchAll(PDO::FETCH_ASSOC);
+            $seByName = [];
+            foreach ($all as $r) {
+              if (!preg_match('/^se-\d+/i', (string)$r['sku'])) continue;
+              if (strtoupper((string)$r['sku']) === 'SE-0014') continue;
+              $n = normName((string)$r['name']);
+              if ($n==='') continue;
+              $seByName[$n] = $r;
+            }
+            $seByName[normName('Замена Масла ДВС')] = $seByName[normName('Замена масла в Двс')] ?? ($seByName[normName('Замена Масла ДВС')] ?? null);
+            $aliases = [normName('Замена Масла ДВС') => normName('Замена масла в Двс')];
+            $dupes = [];
+            foreach ($all as $r) {
+              $id=(string)$r['id']; $n=normName((string)$r['name']);
+              if (isset($aliases[$n])) $n=$aliases[$n];
+              if ($n==='' || !isset($seByName[$n]) || !$seByName[$n]) continue;
+              $t=$seByName[$n];
+              if ($id === (string)$t['id']) continue;
+              $dupes[$id]=$t;
+            }
+            fwrite(STDERR, 'dupes='.count($dupes)."\n");
+            $i=0; foreach ($dupes as $oid=>$t) { if($i++>=15) break; $o=null; foreach($all as $r){if($r['id']===$oid){$o=$r;break;}} fwrite(STDERR, ($o['sku']??'?').' -> '.$t['sku']."\n"); }
+            if (!$apply) { fwrite(STDERR, "dry-run\n"); exit(0); }
+            $tables=[['stock_doc_lines','product_id'],['sales_doc_lines','product_id'],['crm_deal_items','product_guid'],['warehouse_task_lines','product_id'],['sto_wo_materials','product_id'],['product_prices','product_id'],['product_properties','product_id'],['product_applicability','product_id'],['product_alt_codes','product_id'],['product_supplier_lots','product_id'],['stock_cell_balances','product_id']];
+            $pdo->beginTransaction();
+            $stats=[];
+            foreach ($dupes as $oldId=>$target) {
+              $newId=(string)$target['id'];
+              foreach (['stock_balances','product_store_rests'] as $table) {
+                try {
+                  $rows=$pdo->prepare("SELECT warehouse_id, qty FROM {$table} WHERE product_id=?");
+                  $rows->execute([$oldId]);
+                  foreach ($rows->fetchAll(PDO::FETCH_ASSOC) as $br) {
+                    $wh=$br['warehouse_id']; $qty=(float)$br['qty'];
+                    $chk=$pdo->prepare("SELECT qty FROM {$table} WHERE warehouse_id=? AND product_id=?");
+                    $chk->execute([$wh,$newId]);
+                    if ($chk->fetch()) {
+                      $pdo->prepare("UPDATE {$table} SET qty=qty+? WHERE warehouse_id=? AND product_id=?")->execute([$qty,$wh,$newId]);
+                      $pdo->prepare("DELETE FROM {$table} WHERE warehouse_id=? AND product_id=?")->execute([$wh,$oldId]);
+                    } else {
+                      $pdo->prepare("UPDATE {$table} SET product_id=? WHERE warehouse_id=? AND product_id=?")->execute([$newId,$wh,$oldId]);
+                    }
+                    $stats[$table]=($stats[$table]??0)+1;
+                  }
+                } catch (Throwable $e) { fwrite(STDERR, "warn $table ".$e->getMessage()."\n"); }
+              }
+              foreach ($tables as [$table,$col]) {
+                try {
+                  if ($table==='product_prices') {
+                    $pdo->exec("DELETE FROM product_prices WHERE product_id=".$pdo->quote($oldId)." AND price_type IN (SELECT price_type FROM product_prices WHERE product_id=".$pdo->quote($newId).")");
+                  }
+                  $st=$pdo->prepare("UPDATE {$table} SET {$col}=? WHERE {$col}=?");
+                  $st->execute([$newId,$oldId]);
+                  $n=$st->rowCount(); if($n) $stats[$table]=($stats[$table]??0)+$n;
+                } catch (Throwable $e) { fwrite(STDERR, "warn $table ".$e->getMessage()."\n"); }
+              }
+              $pdo->prepare('UPDATE products SET is_active=0 WHERE id=?')->execute([$oldId]);
+            }
+            $pdo->commit();
+            fwrite(STDERR, 'links='.json_encode($stats, JSON_UNESCAPED_UNICODE)."\n");
+            try {
+              $my=new PDO('mysql:host=localhost;dbname=brooklynba_amo1c;charset=utf8mb4','brooklynba_amo1c','Qq112211',[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
+              $off=0;
+              foreach ($dupes as $oldId=>$t) {
+                $o=null; foreach($all as $r){if($r['id']===$oldId){$o=$r;break;}}
+                if(!$o) continue;
+                $st=$my->prepare("UPDATE products SET notupload=1 WHERE department='pnevmopodveska_2025' AND sku=? AND sku NOT LIKE 'se-%'");
+                $st->execute([(string)$o['sku']]); $off+=$st->rowCount();
+              }
+              $my->exec("UPDATE products SET notupload=0 WHERE department='pnevmopodveska_2025' AND sku LIKE 'se-%'");
+              // se-0014 hide if present
+              $my->exec("UPDATE products SET notupload=1 WHERE department='pnevmopodveska_2025' AND sku='se-0014'");
+              fwrite(STDERR, "amo_off=$off\n");
+            } catch (Throwable $e) { fwrite(STDERR, 'amo '.$e->getMessage()."\n"); }
+            fwrite(STDERR, "DONE\n");
+            PHPEOF
+            ARGS=()
+            if [[ "$APPLY" == "1" || "$APPLY" == "true" ]]; then ARGS+=(--apply); fi
+            php /tmp/consolidate_services_to_se.php "${ARGS[@]}"
+            rm -f /tmp/consolidate_services_to_se.php
+            echo OK
