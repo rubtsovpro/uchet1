@@ -11,7 +11,7 @@
   <title>Склад · задачи · Учёт №1</title>
   <!-- pick-ui rev=pick-production-nom-check-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc94';
+    window.__PICK_UI_REV = 'pc95';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -2861,6 +2861,8 @@
     let mainCellRacksLoading = null;
     /** Черновик формы результата производства: taskId -> lines[] */
     let prodResultDrafts = {};
+    /** Кэш резолва артикула производства: lower(sku) -> hit (ok/fail) */
+    const prodSkuResolveCache = new Map();
     // Обработчики «+ деталь» / готово — один раз на #prod-cards (dataset.prodActionsBound).
     // Раньше флаг сбрасывали при каждом render → N слушателей → N новых строк за клик.
     /** @type {Map<string, { stamp: string }>} */
@@ -4862,9 +4864,8 @@
       return out;
     }
 
-    async function lookupProdSkuWhere(row) {
+    function applyProdSkuWhereHit(row, hit, sku) {
       const skuInput = row.querySelector('[data-prod-sku]');
-      const sku = String((skuInput && skuInput.value) || '').trim();
       const idx = row.getAttribute('data-prod-result-row');
       const article = row.closest('[data-prod-task]');
       const whereEl =
@@ -4880,9 +4881,105 @@
         skuInput.removeAttribute('data-resolved-master');
         skuInput.removeAttribute('data-resolved-product-id');
       }
+      if (!hit || !hit.ok) {
+        whereEl.classList.add('is-bad');
+        whereEl.setAttribute('data-nom', '0');
+        const msg = String((hit && hit.message) || '').trim();
+        whereEl.innerHTML =
+          msg && !/^not found$/i.test(msg)
+            ? msg
+            : 'Нет мастера для «' +
+              esc(sku) +
+              '» — <b>нельзя произвести</b>. Укажите мастер-артикул.';
+        return { ok: false, sku };
+      }
+      const masterSku = String(hit.master_sku || sku).trim();
+      const name = String(hit.name || '').trim();
+      const kind = String(hit.kind || 'master');
+      whereEl.classList.add('is-ok');
+      if (kind === 'fact') whereEl.classList.add('is-fact');
+      whereEl.setAttribute('data-nom', '1');
+      whereEl.setAttribute('data-kind', kind);
+      whereEl.setAttribute('data-product-id', String(hit.product_id || ''));
+      whereEl.setAttribute('data-master-sku', masterSku);
+      if (skuInput) {
+        skuInput.setAttribute('data-resolved-master', masterSku);
+        skuInput.setAttribute('data-resolved-product-id', String(hit.product_id || ''));
+      }
+      if (kind === 'fact') {
+        whereEl.innerHTML =
+          'Это <b>номер на складе (факт)</b> «' +
+          esc(sku) +
+          '» → в результат подставляем мастер <b>' +
+          esc(masterSku) +
+          '</b>' +
+          (name ? ' — ' + esc(name) : '');
+        if (skuInput && masterSku && masterSku !== sku) {
+          skuInput._skipSkuLookup = true;
+          skuInput.value = masterSku;
+          skuInput.removeAttribute('data-entered-fact');
+          setTimeout(() => {
+            skuInput._skipSkuLookup = false;
+          }, 0);
+        }
+      } else {
+        whereEl.innerHTML =
+          'Мастер: <b>' +
+          esc(masterSku) +
+          '</b>' +
+          (name ? ' — ' + esc(name) : '');
+        if (skuInput) skuInput.removeAttribute('data-entered-fact');
+      }
+      return {
+        ok: true,
+        sku: masterSku,
+        product_id: hit.product_id,
+        name,
+        kind,
+      };
+    }
+
+    async function lookupProdSkuWhere(row) {
+      const skuInput = row.querySelector('[data-prod-sku]');
+      const sku = String((skuInput && skuInput.value) || '').trim();
+      const idx = row.getAttribute('data-prod-result-row');
+      const article = row.closest('[data-prod-task]');
+      const whereEl =
+        (article && article.querySelector('[data-prod-where="' + idx + '"]')) ||
+        null;
+      if (!whereEl) return { ok: false, sku };
       if (sku.length < 2) {
+        whereEl.classList.remove('is-ok', 'is-bad', 'is-fact');
         whereEl.textContent = '';
         return { ok: false, sku };
+      }
+      const cacheKey = sku.toLowerCase();
+      const cached = prodSkuResolveCache.get(cacheKey);
+      if (cached) {
+        return applyProdSkuWhereHit(row, cached, sku);
+      }
+      // Уже ок для этого артикула в DOM — не дёргать сеть.
+      if (
+        whereEl.classList.contains('is-ok') &&
+        whereEl.getAttribute('data-nom') === '1'
+      ) {
+        const master = String(whereEl.getAttribute('data-master-sku') || '').trim();
+        const resolved = String((skuInput && skuInput.getAttribute('data-resolved-master')) || '').trim();
+        if (
+          (master && master.toLowerCase() === cacheKey) ||
+          (resolved && resolved.toLowerCase() === cacheKey)
+        ) {
+          return { ok: true, sku: master || resolved || sku };
+        }
+      }
+      whereEl.classList.remove('is-ok', 'is-bad', 'is-fact');
+      whereEl.removeAttribute('data-nom');
+      whereEl.removeAttribute('data-product-id');
+      whereEl.removeAttribute('data-kind');
+      whereEl.removeAttribute('data-master-sku');
+      if (skuInput) {
+        skuInput.removeAttribute('data-resolved-master');
+        skuInput.removeAttribute('data-resolved-product-id');
       }
       whereEl.textContent = 'Проверяю номенклатуру…';
       if (row._skuAbort) {
@@ -4899,65 +4996,17 @@
           { quiet: true, signal: row._skuAbort ? row._skuAbort.signal : undefined }
         );
         if (seq !== row._skuSeq) return { ok: false, sku };
-        if (!hit || !hit.ok) {
-          whereEl.classList.add('is-bad');
-          whereEl.setAttribute('data-nom', '0');
-          const msg = String((hit && hit.message) || '').trim();
-          // Старый 404 «not found» (маршрут/карточка) — понятный текст, не сырой error.
-          whereEl.innerHTML =
-            msg && !/^not found$/i.test(msg)
-              ? msg
-              : 'Нет мастера для «' +
-                esc(sku) +
-                '» — <b>нельзя произвести</b>. Укажите мастер-артикул.';
-          return { ok: false, sku };
-        }
-        const masterSku = String(hit.master_sku || sku).trim();
-        const name = String(hit.name || '').trim();
-        const kind = String(hit.kind || 'master');
-        whereEl.classList.add('is-ok');
-        if (kind === 'fact') whereEl.classList.add('is-fact');
-        whereEl.setAttribute('data-nom', '1');
-        whereEl.setAttribute('data-kind', kind);
-        whereEl.setAttribute('data-product-id', String(hit.product_id || ''));
-        whereEl.setAttribute('data-master-sku', masterSku);
-        if (skuInput) {
-          skuInput.setAttribute('data-resolved-master', masterSku);
-          skuInput.setAttribute('data-resolved-product-id', String(hit.product_id || ''));
-        }
-        if (kind === 'fact') {
-          whereEl.classList.add('is-fact');
-          whereEl.innerHTML =
-            'Это <b>номер на складе (факт)</b> «' +
-            esc(sku) +
-            '» → в результат подставляем мастер <b>' +
-            esc(masterSku) +
-            '</b>' +
-            (name ? ' — ' + esc(name) : '');
-          // В поле — только мастер; без повторного lookup (иначе залипнет подпись факта)
-          if (skuInput && masterSku && masterSku !== sku) {
-            skuInput._skipSkuLookup = true;
-            skuInput.value = masterSku;
-            skuInput.removeAttribute('data-entered-fact');
-            setTimeout(() => {
-              skuInput._skipSkuLookup = false;
-            }, 0);
+        if (hit && typeof hit === 'object') {
+          prodSkuResolveCache.set(cacheKey, hit);
+          if (hit.ok && hit.master_sku) {
+            prodSkuResolveCache.set(String(hit.master_sku).toLowerCase(), {
+              ...hit,
+              kind: 'master',
+              fact_sku: '',
+            });
           }
-        } else {
-          whereEl.innerHTML =
-            'Мастер: <b>' +
-            esc(masterSku) +
-            '</b>' +
-            (name ? ' — ' + esc(name) : '');
-          if (skuInput) skuInput.removeAttribute('data-entered-fact');
         }
-        return {
-          ok: true,
-          sku: masterSku,
-          product_id: hit.product_id,
-          name,
-          kind,
-        };
+        return applyProdSkuWhereHit(row, hit, sku);
       } catch (e) {
         if (e && (e.name === 'AbortError' || e.message === 'aborted')) {
           if (seq === row._skuSeq && whereEl.textContent === 'Проверяю номенклатуру…') {
