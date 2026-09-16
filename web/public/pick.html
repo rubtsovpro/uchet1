@@ -2952,6 +2952,7 @@
 
     async function api(path, opts) {
       opts = opts || {};
+      const method = String(opts.method || 'GET').toUpperCase();
       const external = opts.signal;
       const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const t = ctrl ? setTimeout(() => ctrl.abort(), 25000) : 0;
@@ -2965,11 +2966,17 @@
         else external.addEventListener('abort', onExtAbort, { once: true });
       }
       try {
-        const { signal: _ignoreSignal, quiet: _quiet, ...rest } = opts;
+        const { signal: _ignoreSignal, quiet: _quiet, etag: etagOpt, headers: optHeaders, ...rest } = opts;
+        const headers = Object.assign({ 'Content-Type': 'application/json' }, optHeaders || {});
+        if (method === 'GET' && etagOpt !== false) {
+          const prev = apiEtagCache.get(path);
+          if (prev) headers['If-None-Match'] = prev;
+        }
         const res = await fetch('/api' + path, {
-          headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
           ...rest,
+          method,
+          headers,
           signal: ctrl ? ctrl.signal : external || undefined,
         });
         if (res.status === 401) {
@@ -2979,8 +2986,23 @@
           }
           throw new Error('login');
         }
+        if (method === 'GET') {
+          const et = res.headers.get('ETag');
+          if (et) apiEtagCache.set(path, et);
+        }
+        if (res.status === 304) {
+          const cached = apiBodyCache.get(path);
+          if (cached && typeof cached === 'object') {
+            return Object.assign({}, cached, { __notModified: true });
+          }
+          apiEtagCache.delete(path);
+          throw new Error('not modified');
+        }
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || res.statusText);
+        if (method === 'GET' && data && typeof data === 'object') {
+          apiBodyCache.set(path, data);
+        }
         return data;
       } catch (e) {
         if (e && e.name === 'AbortError') {
@@ -2999,6 +3021,9 @@
         if (external) external.removeEventListener('abort', onExtAbort);
       }
     }
+
+    const apiEtagCache = new Map();
+    const apiBodyCache = new Map();
 
     function esc(s) {
       return String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -5808,6 +5833,20 @@
         api('/production/jobs?status=await_send&limit=80&site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] })),
         api('/production/jobs?status=await_receive&limit=80&site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] })),
       ]);
+      if (
+        data &&
+        data.__notModified &&
+        jobsRes &&
+        jobsRes.__notModified &&
+        sendJobsRes &&
+        sendJobsRes.__notModified &&
+        waitJobsRes &&
+        waitJobsRes.__notModified
+      ) {
+        lastRefreshAt = new Date();
+        updateAutoLabel();
+        return;
+      }
       board = data && typeof data === 'object' ? data : emptyBoard;
       if (!Array.isArray(board.groups)) board.groups = [];
       if (!Array.isArray(board.open)) board.open = [];
@@ -5908,6 +5947,25 @@
         if (h && /Загрузка/.test(h.textContent || '')) {
           h.innerHTML = '<p class="handoffs-empty">Не удалось загрузить расходные.</p>';
         }
+        return;
+      }
+      // Poll без изменений (ETag 304) — не перерисовываем DOM.
+      if (
+        data &&
+        data.__notModified &&
+        handoffsRes &&
+        handoffsRes.__notModified &&
+        returnsRes &&
+        returnsRes.__notModified &&
+        jobsRes &&
+        jobsRes.__notModified &&
+        sendJobsRes &&
+        sendJobsRes.__notModified &&
+        waitJobsRes &&
+        waitJobsRes.__notModified
+      ) {
+        lastRefreshAt = new Date();
+        updateAutoLabel();
         return;
       }
       board = data;
@@ -9425,7 +9483,7 @@
     }
 
     function scheduleBoardAutoRefresh() {
-      const TICK_MS = 12000;
+      const TICK_MS = 25000;
       setInterval(() => {
         if (document.visibilityState === 'hidden') return;
         if (scanBusy || camWanted || handoffCancelEditing()) return;

@@ -2664,7 +2664,15 @@ export function mountSupplyChainRoutes(api: Hono): void {
       courier_staff_id: actor?.id,
       limit: Number(c.req.query('limit') || 0) || undefined,
     });
-    return c.json(data);
+    const { jsonWithEtag, listRowsEtag } = await import('./http-etag.js');
+    const items = Array.isArray(data.items) ? (data.items as Array<Record<string, unknown>>) : [];
+    const etag = listRowsEtag(items, [
+      scope,
+      c.req.query('site') || '',
+      c.req.query('q') || '',
+      JSON.stringify(data.counts || {}),
+    ]);
+    return jsonWithEtag(c, data, etag);
   });
 
   api.get('/courier/runs/print', async (c) => {

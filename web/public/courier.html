@@ -453,18 +453,46 @@
       }
     }
 
+    const apiEtagCache = new Map();
+    const apiBodyCache = new Map();
+
     async function api(path, opts) {
+      const method = String((opts && opts.method) || 'GET').toUpperCase();
+      const headers = Object.assign(
+        { 'Content-Type': 'application/json' },
+        (opts && opts.headers) || {}
+      );
+      if (method === 'GET' && !(opts && opts.etag === false)) {
+        const prev = apiEtagCache.get(path);
+        if (prev) headers['If-None-Match'] = prev;
+      }
       const r = await fetch('/api' + path, {
         credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
         ...(opts || {}),
+        method,
+        headers,
       });
       if (r.status === 401) {
         location.href = '/login?next=/courier.html';
         throw new Error('auth');
       }
+      if (method === 'GET') {
+        const et = r.headers.get('ETag');
+        if (et) apiEtagCache.set(path, et);
+      }
+      if (r.status === 304) {
+        const cached = apiBodyCache.get(path);
+        if (cached && typeof cached === 'object') {
+          return Object.assign({}, cached, { __notModified: true });
+        }
+        apiEtagCache.delete(path);
+        throw new Error('not modified');
+      }
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || r.statusText);
+      if (method === 'GET' && data && typeof data === 'object') {
+        apiBodyCache.set(path, data);
+      }
       return data;
     }
 
@@ -654,6 +682,11 @@
         if (q) qs.set('q', q);
         if (tab === 'closed') qs.set('limit', '80');
         const data = await api('/courier/runs?' + qs.toString());
+        if (data && data.__notModified) {
+          lastRefreshAt = new Date();
+          updateAutoLabel(false);
+          return;
+        }
         if (data && data.pick_site && !pickSiteLockFromMe()) {
           const ps = String(data.pick_site || '').trim().toLowerCase();
           if (ps === 'msk' || ps === 'fogel' || ps === 'strela') pickSite = ps;
@@ -735,7 +768,7 @@
       if (document.visibilityState === 'hidden') return;
       if (tab !== 'active') return;
       refresh({ soft: true }).catch(() => {});
-    }, 8000);
+    }, 25000);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') refresh({ soft: true }).catch(() => {});
     });

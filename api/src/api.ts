@@ -647,6 +647,7 @@ import {
   TASK_STATUSES,
   tasksKpdReport,
 } from './warehouse-tasks.js';
+import { jsonWithEtag, listRowsEtag, weakEtagFromParts } from './http-etag.js';
 import {
   aboutProgram,
   allDictionariesIndex,
@@ -14087,7 +14088,10 @@ api.post('/crm/deals/:id/stock-flow/return-complete', async (c) => {
 api.get('/warehouse/pick/returns', async (c) => {
   const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  return c.json({ items: await stockReturnsForPick(80) });
+  const items = await stockReturnsForPick(80);
+  const body = { items };
+  const etag = listRowsEtag(items as Array<Record<string, unknown>>, ['returns']);
+  return jsonWithEtag(c, body, etag);
 });
 
 api.get('/warehouse/pick/returns/:dealId/print', async (c) => {
@@ -14505,11 +14509,14 @@ api.put('/currencies/:code', async (c) => {
 
 /* ——— Паритет меню / экран сборщика (без правок ops UI) ——— */
 
-/** Кэш счётчика «завершённых» — UI /pick дергает today каждые ~12с. */
+/** Кэш счётчика «завершённых» — UI /pick дергает today каждые ~25с. */
 const pickCompletedTotalCache = new Map<string, { at: number; n: number }>();
 const PICK_COMPLETED_TOTAL_TTL_MS = 120_000;
 /** Полный ответ /pick/today — собираем в фоне, не на HTTP-потоке. */
-const pickTodayPayloadCache = new Map<string, { at: number; body: Record<string, unknown> }>();
+const pickTodayPayloadCache = new Map<
+  string,
+  { at: number; body: Record<string, unknown>; etag: string }
+>();
 const PICK_TODAY_TTL_MS = 30_000;
 let pickTodayBuilding = 0;
 let pickHandoffsWarming = 0;
@@ -14566,6 +14573,27 @@ async function buildPickTodayPayload(
   return { ...board, handoffs, handoffs_completed_total, returns };
 }
 
+function pickTodayBodyEtag(body: Record<string, unknown>): string {
+  const open = Array.isArray(body.open) ? (body.open as Array<Record<string, unknown>>) : [];
+  const groups = Array.isArray(body.groups) ? (body.groups as Array<Record<string, unknown>>) : [];
+  const parts: Array<string | number> = [
+    String(body.day || ''),
+    JSON.stringify(body.counts || {}),
+    String(body.handoffs_completed_total ?? ''),
+  ];
+  for (const t of open) {
+    parts.push(`o:${t.id}:${t.status}:${t.updated_at || t.urgency || ''}`);
+  }
+  for (const g of groups) {
+    const tasks = Array.isArray(g.tasks) ? (g.tasks as Array<Record<string, unknown>>) : [];
+    parts.push(`g:${g.key || g.id || ''}:${g.count ?? tasks.length}`);
+    for (const t of tasks) {
+      parts.push(`t:${t.id}:${t.status}:${t.updated_at || ''}`);
+    }
+  }
+  return weakEtagFromParts(parts);
+}
+
 /** Фоновый прогрев полного /pick/today — по одному сайту за тик, с yield. */
 export function warmPickTodayCaches(): void {
   if (pickTodayBuilding > 0) return;
@@ -14582,8 +14610,9 @@ export function warmPickTodayCaches(): void {
     try {
       const body = await buildPickTodayPayload(day, site, null);
       const at = Date.now();
-      pickTodayPayloadCache.set(`${day}|${site || 'all'}|||`, { at, body });
-      pickTodayPayloadCache.set(`${day}|${site || 'all'}|admin||`, { at, body });
+      const etag = pickTodayBodyEtag(body);
+      pickTodayPayloadCache.set(`${day}|${site || 'all'}|||`, { at, body, etag });
+      pickTodayPayloadCache.set(`${day}|${site || 'all'}|admin||`, { at, body, etag });
     } catch (e) {
       console.warn('[pick/today] warm', site, e instanceof Error ? e.message : e);
     }
@@ -14602,7 +14631,7 @@ api.get('/warehouse/pick/today', async (c) => {
     pickTodayPayloadCache.get(cacheKey) ||
     pickTodayPayloadCache.get(`${d}|${site || 'all'}|||`);
   if (hit && Date.now() - hit.at < PICK_TODAY_TTL_MS) {
-    return c.json(hit.body);
+    return jsonWithEtag(c, hit.body, hit.etag || pickTodayBodyEtag(hit.body));
   }
   // Не считаем handoffs на HTTP-потоке: под нагрузкой это кладёт event loop.
   // production_send/receive — лёгкий SQL, кладём сразу (иначе W-xxxx пропадают с /pick).
@@ -14627,8 +14656,9 @@ api.get('/warehouse/pick/today', async (c) => {
     handoffs: [],
     handoffs_completed_total: pickCompletedTotalCache.get('all||')?.n ?? 0,
   };
-  pickTodayPayloadCache.set(cacheKey, { at: Date.now(), body });
-  return c.json(body);
+  const etag = pickTodayBodyEtag(body);
+  pickTodayPayloadCache.set(cacheKey, { at: Date.now(), body, etag });
+  return jsonWithEtag(c, body, etag);
 });
 
 async function enrichPickHandoffsWithCdek(
@@ -14687,12 +14717,18 @@ api.get('/warehouse/pick/handoffs', async (c) => {
     completed_total = await warehouseHandoffsPickTotal(site, actor, true);
     pickCompletedTotalCache.set(cacheKey, { at: Date.now(), n: completed_total });
   }
-  return c.json({
+  const body = {
     items,
     count: items.length,
     completed_total,
     pick_sites: (await pickSitesCatalog()).map((s) => ({ id: s.id, label: s.label })),
-  });
+  };
+  const etag = listRowsEtag(items as Array<Record<string, unknown>>, [
+    site || 'all',
+    completed_total,
+    limit,
+  ]);
+  return jsonWithEtag(c, body, etag);
 });
 
 /** Завершённые передачи на склад (проведённые) — архив для /pick.

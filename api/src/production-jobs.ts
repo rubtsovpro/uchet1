@@ -834,14 +834,21 @@ export function mountProductionJobRoutes(api: Hono): void {
     const actor = await actorFromContext(c);
     const d = denyProduction(c, actor);
     if (d) return d;
-    return c.json(
-      await listProductionJobs({
-        status: c.req.query('status') || '',
-        deal_id: c.req.query('deal_id') || '',
-        limit: Number(c.req.query('limit') || 50),
-        site: c.req.query('site') || '',
-      })
-    );
+    const body = await listProductionJobs({
+      status: c.req.query('status') || '',
+      deal_id: c.req.query('deal_id') || '',
+      limit: Number(c.req.query('limit') || 50),
+      site: c.req.query('site') || '',
+    });
+    const { jsonWithEtag, listRowsEtag } = await import('./http-etag.js');
+    const items = Array.isArray(body.items) ? (body.items as Array<Record<string, unknown>>) : [];
+    const etag = listRowsEtag(items, [
+      c.req.query('status') || '',
+      c.req.query('site') || '',
+      c.req.query('deal_id') || '',
+      c.req.query('limit') || '50',
+    ]);
+    return jsonWithEtag(c, body, etag);
   });
 
   api.get('/production/jobs/:id', async (c) => {
