@@ -27,22 +27,11 @@ export async function pgPool(): Promise<Pool> {
     max: Math.max(2, Number(process.env.WMS_PG_POOL_MAX || 8) || 8),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 8_000,
-    statement_timeout: Math.max(
+    // Per-connection statement_timeout (avoids racing SET on 'connect').
+    options: `-c statement_timeout=${Math.max(
       3_000,
       Number(process.env.WMS_PG_STATEMENT_TIMEOUT_MS || 8_000) || 8_000
-    ),
-    query_timeout: Math.max(
-      3_000,
-      Number(process.env.WMS_PG_STATEMENT_TIMEOUT_MS || 8_000) || 8_000
-    ),
-  });
-  // pg driver: statement_timeout via startup options isn't always honored — set on connect.
-  pool.on('connect', (client) => {
-    const ms = Math.max(
-      3_000,
-      Number(process.env.WMS_PG_STATEMENT_TIMEOUT_MS || 8_000) || 8_000
-    );
-    void client.query(`SET statement_timeout TO ${ms}`);
+    )}`,
   });
   await pool.query('SELECT 1');
   console.log(
@@ -81,7 +70,7 @@ async function execQuery<T extends QueryResultRow = PgRow>(
        ORDER BY ordinal_position`,
       [pragmaTable]
     );
-    return { rows: r.rows, rowCount: r.rowCount ?? r.rows.length };
+    return { rows: r.rows ?? [], rowCount: r.rowCount ?? r.rows?.length ?? 0 };
   }
   if (isSqliteOnlySql(sql)) {
     return { rows: [], rowCount: 0 };
@@ -90,7 +79,7 @@ async function execQuery<T extends QueryResultRow = PgRow>(
   const q = toPgSql(sql);
   const args = mapParams(params);
   const r = await (txClient || p).query<T>(q, args);
-  return { rows: r.rows, rowCount: r.rowCount ?? r.rows.length };
+  return { rows: r.rows ?? [], rowCount: r.rowCount ?? r.rows?.length ?? 0 };
 }
 
 export async function pgAll<T extends PgRow = PgRow>(
