@@ -3764,6 +3764,61 @@ function handoffPickDocSql(posted: boolean): string {
        AND d.doc_type = 'out'`;
 }
 
+/**
+ * SQL-фильтр площадки для COUNT/списка (приближение resolvePickSiteForDeal):
+ * филиал Amo → СТО → юрлицо → склад документа.
+ */
+async function handoffPickSiteMatchSql(
+  siteFilter: PickSiteId
+): Promise<{ sql: string; params: string[] }> {
+  const site = (await pickSitesCatalog()).find((s) => s.id === siteFilter);
+  const companyIds = (site?.company_ids || []).filter(Boolean);
+  const whIds = (site?.warehouse_ids || []).filter(Boolean);
+  const branchLike: Record<PickSiteId, string[]> = {
+    fogel: ['%фогель%', '%fogel%'],
+    strela: ['%стрела%', '%strela%', '%фадеева%'],
+    // без '%пневмо%' — слишком широко, захватывает чужие площадки
+    msk: ['%москва%', '%можай%', '%msk%'],
+  };
+  const stoLike: Record<PickSiteId, string[]> = {
+    fogel: ['%фогель%', '%fogel%'],
+    strela: ['%стрела%', '%strela%', '%фадеева%'],
+    msk: ['%можай%', '%моск%', '%подвеск%'],
+  };
+  const parts: string[] = [];
+  const params: string[] = [];
+  for (const p of branchLike[siteFilter] || []) {
+    parts.push(`lower(IFNULL(cd.amo_branch,'')) LIKE ?`);
+    params.push(p);
+  }
+  for (const p of stoLike[siteFilter] || []) {
+    parts.push(`lower(IFNULL(cd.amo_sto,'')) LIKE ?`);
+    params.push(p);
+  }
+  if (companyIds.length) {
+    parts.push(`cd.org_company_id IN (${companyIds.map(() => '?').join(',')})`);
+    params.push(...companyIds);
+  }
+  if (whIds.length) {
+    parts.push(`d.warehouse_id IN (${whIds.map(() => '?').join(',')})`);
+    params.push(...whIds);
+    parts.push(`d.warehouse_to_id IN (${whIds.map(() => '?').join(',')})`);
+    params.push(...whIds);
+  }
+  if (siteFilter === 'strela') {
+    // как amoBranchToPickSite: «краснодар» без фогель/стрела → strela
+    parts.push(
+      `(lower(IFNULL(cd.amo_branch,'')) LIKE '%краснодар%'
+        AND lower(IFNULL(cd.amo_branch,'')) NOT LIKE '%фогель%'
+        AND lower(IFNULL(cd.amo_branch,'')) NOT LIKE '%fogel%'
+        AND lower(IFNULL(cd.amo_branch,'')) NOT LIKE '%стрела%'
+        AND lower(IFNULL(cd.amo_branch,'')) NOT LIKE '%strela%')`
+    );
+  }
+  if (!parts.length) return { sql: '', params: [] };
+  return { sql: parts.join(' OR '), params };
+}
+
 /** Справочники для фильтров списка передач на /pick. */
 export async function warehouseHandoffPickFilterFacets(
   site?: string,
@@ -3910,6 +3965,24 @@ export async function warehouseHandoffsPickTotal(
       [posted ? 1 : 0]
     );
     return Number(row?.c) || 0;
+  }
+
+  // Площадка: COUNT в SQL по филиалу/юрлицу/складу — без 2500× resolvePickSiteForDeal.
+  if (!listActive && !searchClause.whereSql && siteFilter !== 'all' && !actorCompanyFilter) {
+    const siteSql = await handoffPickSiteMatchSql(siteFilter as PickSiteId);
+    if (siteSql.sql) {
+      const row = await get<{ c: number }>(
+        `SELECT COUNT(*) AS c
+         FROM stock_docs d
+         LEFT JOIN crm_deals cd ON cd.id = d.deal_id
+         WHERE IFNULL(d.posted,0) = ?
+           AND TRIM(IFNULL(d.deal_id,'')) != ''
+           AND ${handoffPickDocSql(posted)}
+           AND (${siteSql.sql})`,
+        [posted ? 1 : 0, ...siteSql.params]
+      );
+      return Number(row?.c) || 0;
+    }
   }
 
   // Потолок: полный скан stock_docs + resolvePickSiteForDeal на каждую строку = 100% CPU / 502.

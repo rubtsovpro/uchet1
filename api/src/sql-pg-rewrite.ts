@@ -144,6 +144,13 @@ export function rewriteSqlForPg(sql: string): string {
   s = s.replace(/\bgroup_concat\s*\(\s*([^,]+)\s*,\s*([^)]+)\)/gi, 'string_agg(($1)::text, $2)');
   s = s.replace(/\bgroup_concat\s*\(\s*DISTINCT\s+([^)]+)\)/gi, "string_agg(DISTINCT ($1)::text, ',')");
   s = s.replace(/\bgroup_concat\s*\(\s*([^)]+)\)/gi, "string_agg(($1)::text, ',')");
+  // SQLite COLLATE NOCASE → PG lower() sort / compare
+  s = s.replace(/\bCOLLATE\s+NOCASE\b/gi, '');
+  // sqlite_master → PG catalogs (только простые SELECT name FROM … WHERE type/name)
+  s = s.replace(
+    /\bFROM\s+sqlite_master\b/gi,
+    'FROM (SELECT tablename AS name, \'table\' AS type FROM pg_tables WHERE schemaname = \'public\') AS sqlite_master'
+  );
   return s;
 }
 

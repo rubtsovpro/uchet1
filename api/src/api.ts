@@ -14551,7 +14551,8 @@ async function buildPickTodayPayload(
   if (cached && Date.now() - cached.at < PICK_COMPLETED_TOTAL_TTL_MS) {
     handoffs_completed_total = cached.n;
   } else {
-    handoffs_completed_total = await warehouseHandoffsPickTotal(undefined, null, true);
+    // Счётчик «Закрытые» — только по выбранной площадке (Стрела / Фогель / МСК).
+    handoffs_completed_total = await warehouseHandoffsPickTotal(site, actor, true);
     pickCompletedTotalCache.set(totalKey, { at: Date.now(), n: handoffs_completed_total });
   }
   const tTotal = Date.now();
@@ -14570,7 +14571,7 @@ export function warmPickTodayCaches(): void {
   if (pickTodayBuilding > 0) return;
   pickTodayBuilding = 1;
   const day = new Date().toISOString().slice(0, 10);
-  const sites: Array<string | undefined> = [undefined, 'msk', 'strela', 'vogel'];
+  const sites: Array<string | undefined> = [undefined, 'msk', 'strela', 'fogel'];
   let i = 0;
   const step = async () => {
     if (i >= sites.length) {
@@ -14677,12 +14678,12 @@ api.get('/warehouse/pick/handoffs', async (c) => {
   const site = (c.req.query('site') || '').trim() || undefined;
   // Только light: полный enrich валит event loop при опросе с нескольких вкладок.
   const items = await warehouseHandoffsForPick(limit, site, actor, { light: true });
-  const cacheKey = `all|${site || ''}|`;
-  let completed_total = pickCompletedTotalCache.get(cacheKey)?.n;
-  if (completed_total == null) {
-    completed_total = pickCompletedTotalCache.get('all||')?.n;
-  }
-  if (completed_total == null) {
+  const cacheKey = `${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`;
+  const cached = pickCompletedTotalCache.get(cacheKey);
+  let completed_total: number;
+  if (cached && Date.now() - cached.at < PICK_COMPLETED_TOTAL_TTL_MS) {
+    completed_total = cached.n;
+  } else {
     completed_total = await warehouseHandoffsPickTotal(site, actor, true);
     pickCompletedTotalCache.set(cacheKey, { at: Date.now(), n: completed_total });
   }

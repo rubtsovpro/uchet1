@@ -11,7 +11,7 @@
   <title>Склад · задачи · Учёт №1</title>
   <!-- pick-ui rev=pick-production-nom-check-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc95';
+    window.__PICK_UI_REV = 'pc96';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -5928,11 +5928,14 @@
       const fromTodayReturns = Array.isArray(data.returns) ? data.returns : [];
       stockReturns = fromReturnsApi.length ? fromReturnsApi : fromTodayReturns;
       ensureMainCellRacks();
-      handoffsCompletedTotal =
-        Number(handoffsRes && handoffsRes.completed_total) ||
-        Number(data.handoffs_completed_total) ||
-        handoffsCompletedTotal ||
-        0;
+      // Не оставлять total прошлой площадки через || — у Фогеля/Стрелы может быть 0.
+      if (handoffsRes && handoffsRes.completed_total != null) {
+        handoffsCompletedTotal = Number(handoffsRes.completed_total) || 0;
+      } else if (data && data.handoffs_completed_total != null) {
+        handoffsCompletedTotal = Number(data.handoffs_completed_total) || 0;
+      } else {
+        handoffsCompletedTotal = 0;
+      }
       syncSiteSwitch();
       loadHandoffFilterFacets();
       if (pendingTaskId) {
@@ -6091,16 +6094,28 @@
     function setPickSite(site) {
       if (pickSiteLockFromMe()) return;
       const s = String(site || '').trim().toLowerCase();
-      if (s === 'msk') pickSite = 'msk';
-      else if (s === 'fogel') pickSite = 'fogel';
-      else pickSite = 'strela';
+      const next =
+        s === 'msk' ? 'msk' : s === 'fogel' ? 'fogel' : 'strela';
+      if (next === pickSite) return;
+      pickSite = next;
       try { localStorage.setItem(SITE_KEY, pickSite); } catch (_) {}
       try {
         const u = new URL(location.href);
         u.searchParams.set('site', pickSite);
         history.replaceState(null, '', u.pathname + u.search + u.hash);
       } catch (_) {}
+      // Сброс архива «Закрытые» — иначе остаётся чужая площадка.
+      closedHandoffs = [];
+      closedTotal = 0;
+      closedPages = 1;
+      closedPage = 1;
+      closedSearchTotal = null;
+      handoffsCompletedTotal = 0;
       syncSiteSwitch();
+      renderPickTabs(board && board.counts ? board.counts : {});
+      if (handoffTab === 'closed') {
+        loadClosedHandoffs(1);
+      }
       load();
     }
 
