@@ -11,7 +11,8 @@ export const DEFAULT_INSTALL_SERVICE_SKU = 'SVC-INSTALL';
 export const DEFAULT_INSTALL_SERVICE_NAME = 'Снятие / установка';
 
 export async function ensureProductServiceLinksSchema(): Promise<void> {
-  /* PG: replace prepare */ db.exec(`
+  await Promise.resolve(
+    db.exec(`
     CREATE TABLE IF NOT EXISTS product_service_links (
       id TEXT PRIMARY KEY,
       product_id TEXT NOT NULL,
@@ -25,17 +26,24 @@ export async function ensureProductServiceLinksSchema(): Promise<void> {
       UNIQUE(product_id, service_product_id, role)
     );
     CREATE INDEX IF NOT EXISTS idx_psl_product ON product_service_links(product_id);
-  `);
+  `)
+  );
   try {
     const cols = (await all<{ name: string }>('PRAGMA table_info(products)')).map((c) => c.name);
     if (!cols.includes('install_price')) {
-      /* PG: replace prepare */ db.exec(`ALTER TABLE products ADD COLUMN install_price REAL NOT NULL DEFAULT 0`);
+      await Promise.resolve(
+        db.exec(`ALTER TABLE products ADD COLUMN install_price REAL NOT NULL DEFAULT 0`)
+      );
     }
     if (!cols.includes('price_min')) {
-      /* PG: replace prepare */ db.exec(`ALTER TABLE products ADD COLUMN price_min REAL NOT NULL DEFAULT 0`);
+      await Promise.resolve(
+        db.exec(`ALTER TABLE products ADD COLUMN price_min REAL NOT NULL DEFAULT 0`)
+      );
     }
     if (!cols.includes('price_max')) {
-      /* PG: replace prepare */ db.exec(`ALTER TABLE products ADD COLUMN price_max REAL NOT NULL DEFAULT 0`);
+      await Promise.resolve(
+        db.exec(`ALTER TABLE products ADD COLUMN price_max REAL NOT NULL DEFAULT 0`)
+      );
     }
   } catch {
     /* ignore */
@@ -43,10 +51,14 @@ export async function ensureProductServiceLinksSchema(): Promise<void> {
   try {
     const dic = (await all<{ name: string }>('PRAGMA table_info(crm_deal_items)')).map((c) => c.name);
     if (!dic.includes('parent_item_id')) {
-      /* PG: replace prepare */ db.exec(`ALTER TABLE crm_deal_items ADD COLUMN parent_item_id TEXT NOT NULL DEFAULT ''`);
+      await Promise.resolve(
+        db.exec(`ALTER TABLE crm_deal_items ADD COLUMN parent_item_id TEXT NOT NULL DEFAULT ''`)
+      );
     }
     if (!dic.includes('auto_service')) {
-      /* PG: replace prepare */ db.exec(`ALTER TABLE crm_deal_items ADD COLUMN auto_service INTEGER NOT NULL DEFAULT 0`);
+      await Promise.resolve(
+        db.exec(`ALTER TABLE crm_deal_items ADD COLUMN auto_service INTEGER NOT NULL DEFAULT 0`)
+      );
     }
   } catch {
     /* ignore */

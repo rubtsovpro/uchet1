@@ -169,7 +169,7 @@ try {
   console.warn('[migrate] out services purge failed:', e instanceof Error ? e.message : e);
 }
 try {
-  const hidden = deactivateLegacyServices();
+  const hidden = await deactivateLegacyServices();
   if (hidden > 0) {
     console.log(`[startup] legacy services hidden (not se-*): ${hidden}`);
   }

@@ -2,7 +2,7 @@
  * Классификация номенклатуры: товар | услуга.
  * Источник истины после прогона — products.item_kind.
  */
-import { all, db, get, run } from './db.js';
+import { all, get, run } from './db.js';
 import { newGuid } from './ids.js';
 
 /**
@@ -289,16 +289,16 @@ export function sqlExcludeCrossContourProducts(productAlias = 'p', companyAlias 
 }
 
 /** Оставить активными только общие услуги se-* (23 шт.). Остальное — legacy из 1С. */
-export function deactivateLegacyServices(): number {
+export async function deactivateLegacyServices(): Promise<number> {
   // Только реально активные — иначе каждый boot «меняет» сотни строк (WAL/CPU).
-  const r = /* PG: replace prepare */ db.prepare(
+  await run(
     `UPDATE products SET is_active = 0
      WHERE IFNULL(item_kind,'product') = 'service'
        AND IFNULL(is_active,1) != 0
        AND lower(IFNULL(sku,'')) NOT LIKE 'se-%'
        AND lower(IFNULL(code,'')) NOT LIKE 'se-%'`
-  ).run();
-  return Number(r.changes) || 0;
+  );
+  return 0;
 }
 
 /** Быстрая проверка по id (с учётом актуального item_kind и эвристик). */

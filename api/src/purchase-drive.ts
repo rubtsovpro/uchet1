@@ -40,7 +40,7 @@ function deny(c: { json: (b: unknown, s: number) => Response }, actor: Actor | n
 }
 
 export async function ensurePurchaseDriveSchema(): Promise<void> {
-  /* PG: replace prepare */ db.exec(`
+  await Promise.resolve(db.exec(`
     CREATE TABLE IF NOT EXISTS purchase_drive_folders (
       id TEXT PRIMARY KEY,
       drive_folder_id TEXT NOT NULL UNIQUE,
@@ -86,7 +86,7 @@ export async function ensurePurchaseDriveSchema(): Promise<void> {
       source_file TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_pph_article ON purchase_price_history(supplier_id, article, observed_at DESC);
-  `);
+  `));
   await addCol('purchase_price_imports', 'drive_file_id', `drive_file_id TEXT NOT NULL DEFAULT ''`);
   await addCol('purchase_price_imports', 'drive_folder_id', `drive_folder_id TEXT NOT NULL DEFAULT ''`);
 }

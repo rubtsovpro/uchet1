@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Hono } from 'hono';
-import { all, get, run, db } from './db.js';
+import { all, get, run } from './db.js';
 import { newGuid, nextCode, ensureSeqAtLeast } from './ids.js';
 import { actorFromContext, canDo, type Actor } from './auth.js';
 import { canUsePurchaseIntake } from './staff.js';
@@ -360,13 +360,11 @@ async function matchProduct(opts: {
   return null;
 }
 
-function ensurePurchaseIntakeSchema(): void {
+async function ensurePurchaseIntakeSchema(): Promise<void> {
   try {
-    const cols = db
-      .prepare(`PRAGMA table_info(purchase_price_rows)`)
-      .all() as Array<{ name: string }>;
+    const cols = (await all<{ name: string }>('PRAGMA table_info(purchase_price_rows)'));
     if (!cols.some((c) => c.name === 'picture_path')) {
-      /* PG: replace prepare */ db.exec(
+      await run(
         `ALTER TABLE purchase_price_rows ADD COLUMN picture_path TEXT NOT NULL DEFAULT ''`
       );
     }
@@ -388,7 +386,7 @@ async function applyMapAndMatch(
   matched_count: number;
   pictures: number;
 }> {
-  ensurePurchaseIntakeSchema();
+  await ensurePurchaseIntakeSchema();
   await run('DELETE FROM purchase_price_rows WHERE import_id = ?', [importId]);
   const picsDir = join(importDir(importId), 'pics');
   try {
@@ -896,7 +894,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
-    ensurePurchaseIntakeSchema();
+    await ensurePurchaseIntakeSchema();
     const id = c.req.param('id');
     const status = String(c.req.query('status') || '').trim();
     const q = String(c.req.query('q') || '').trim();
@@ -941,7 +939,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
-    ensurePurchaseIntakeSchema();
+    await ensurePurchaseIntakeSchema();
     const id = c.req.param('id');
     const rowId = c.req.param('rowId');
     const row = await get<{ picture_path: string; import_id: string }>(
@@ -1418,7 +1416,7 @@ ${lines
       const importRowId = String(L.import_row_id || '').trim();
       if (importRowId) {
         try {
-          ensurePurchaseIntakeSchema();
+          await ensurePurchaseIntakeSchema();
           const prow = await get<{ picture_path: string; import_id: string }>(
             `SELECT picture_path, import_id FROM purchase_price_rows WHERE id = ?`,
             [importRowId]

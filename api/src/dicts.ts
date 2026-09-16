@@ -64,7 +64,7 @@ export async function rebuildDictionaries(): Promise<DictRebuildResult> {
     );
     for (const p of props) {
       const id = guidFromKey(`property:${p.property}`);
-      insertProp.run(id, p.property, p.c);
+      await Promise.resolve(insertProp.run(id, p.property, p.c));
       const vals = await all<{ value: string; c: number }>(
         `SELECT value, COUNT(DISTINCT product_id) AS c
          FROM product_properties WHERE property = ?
@@ -73,7 +73,7 @@ export async function rebuildDictionaries(): Promise<DictRebuildResult> {
       );
       for (const v of vals) {
         const vid = guidFromKey(`propval:${p.property}|${v.value}`);
-        insertVal.run(vid, id, v.value, v.c);
+        await Promise.resolve(insertVal.run(vid, id, v.value, v.c));
       }
     }
 
@@ -84,7 +84,7 @@ export async function rebuildDictionaries(): Promise<DictRebuildResult> {
     );
     for (const m of marks) {
       const mid = guidFromKey(`mark:${m.mark}`);
-      insertMark.run(mid, m.mark, m.c);
+      await Promise.resolve(insertMark.run(mid, m.mark, m.c));
       const models = await all<{ model: string; only_model: string; c: number }>(
         `SELECT model, only_model, COUNT(DISTINCT product_id) AS c
          FROM product_applicability
@@ -95,7 +95,7 @@ export async function rebuildDictionaries(): Promise<DictRebuildResult> {
       for (const mo of models) {
         const name = mo.model || mo.only_model;
         const id = guidFromKey(`model:${m.mark}|${mo.model}|${mo.only_model}`);
-        insertModel.run(id, mid, name, mo.only_model || '', mo.c);
+        await Promise.resolve(insertModel.run(id, mid, name, mo.only_model || '', mo.c));
       }
     }
 
@@ -105,7 +105,7 @@ export async function rebuildDictionaries(): Promise<DictRebuildResult> {
        GROUP BY generation ORDER BY generation`
     );
     for (const g of gens) {
-      insertGen.run(guidFromKey(`gen:${g.generation}`), g.generation, g.c);
+      await Promise.resolve(insertGen.run(guidFromKey(`gen:${g.generation}`), g.generation, g.c));
     }
 
     const brands = await all<{ brand: string; c: number }>(
@@ -114,7 +114,7 @@ export async function rebuildDictionaries(): Promise<DictRebuildResult> {
        GROUP BY brand ORDER BY brand`
     );
     for (const b of brands) {
-      insertBrand.run(guidFromKey(`brand:${b.brand}`), b.brand, b.c);
+      await Promise.resolve(insertBrand.run(guidFromKey(`brand:${b.brand}`), b.brand, b.c));
     }
 
     const priceTypes = await all<{ price_type: string; c: number }>(
@@ -127,7 +127,7 @@ export async function rebuildDictionaries(): Promise<DictRebuildResult> {
        ON CONFLICT(name) DO UPDATE SET products_count = excluded.products_count`
     );
     for (const pt of priceTypes) {
-      upsertPt.run(guidFromKey(`pricetype:${pt.price_type}`), pt.price_type, pt.c);
+      await Promise.resolve(upsertPt.run(guidFromKey(`pricetype:${pt.price_type}`), pt.price_type, pt.c));
     }
 
     await run('COMMIT');

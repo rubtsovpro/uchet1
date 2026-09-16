@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import type { Actor } from './auth.js';
-import { all, db, get, run } from './db.js';
+import { all, get, run } from './db.js';
 import { newGuid, nextCode } from './ids.js';
 import { DEFAULT_COMPANY_ID } from './companies.js';
 import { nextDealDocNumber, nextTransferNumber, logStoTransferEvent, listStoTransferEvents } from './deal-doc-numbers.js';
@@ -215,15 +215,15 @@ export async function busWarehouseId(): Promise<string> {
 }
 
 /** Склады BUS/CDEK больше не используем — отправка только через «Склад курьера». */
-export function archiveObsoleteLogisticsWarehouses(): number {
+export async function archiveObsoleteLogisticsWarehouses(): Promise<number> {
   let n = 0;
-  const upd = /* PG: replace prepare */ db.prepare(
-    `UPDATE warehouses SET is_active = 0, updated_at = datetime('now')
-     WHERE UPPER(IFNULL(code,'')) = ? AND IFNULL(is_active,1) != 0`
-  );
   for (const code of ['CDEK', 'BUS']) {
-    const r = upd.run(code.toUpperCase());
-    n += Number(r.changes) || 0;
+    await run(
+      `UPDATE warehouses SET is_active = 0, updated_at = datetime('now')
+       WHERE UPPER(IFNULL(code,'')) = ? AND IFNULL(is_active,1) != 0`,
+      [code.toUpperCase()]
+    );
+    n += 1;
   }
   return n;
 }

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pgAll, pgExec, pgGet, pgRun, pgWarm } from './db-pg-bridge.js';
+import { pgAll, pgExec, pgGet, pgRun, pgWarm } from './db-pg.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** SQLite по умолчанию в корне репо (data/), не в api/ — удобнее бэкапы и WMS_DATA_DIR на проде. */
@@ -26,16 +26,29 @@ export function isPostgresSot(): boolean {
   return dbSourceOfTruth() === 'postgres';
 }
 
-type AnyDb = {
-  prepare: (sql: string) => {
-    all: (...params: SqlParam[]) => Row[];
-    get: (...params: SqlParam[]) => Row | undefined;
-    run: (...params: SqlParam[]) => { changes: number };
-  };
+type SyncStmt = {
+  all: (...params: SqlParam[]) => Row[];
+  get: (...params: SqlParam[]) => Row | undefined;
+  run: (...params: SqlParam[]) => { changes: number };
+};
+
+type SyncDb = {
+  prepare: (sql: string) => SyncStmt;
   exec: (sql: string) => void;
 };
 
-function openSqlite(): AnyDb {
+type AsyncStmt = {
+  all: (...params: SqlParam[]) => Promise<Row[]>;
+  get: (...params: SqlParam[]) => Promise<Row | undefined>;
+  run: (...params: SqlParam[]) => Promise<{ changes: number }>;
+};
+
+type AsyncDb = {
+  prepare: (sql: string) => AsyncStmt;
+  exec: (sql: string) => Promise<void>;
+};
+
+function openSqlite(): SyncDb {
   // Lazy: не тянуть node:sqlite / mmap 733MB файла при Postgres SoT.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { DatabaseSync } = require('node:sqlite') as {
@@ -72,25 +85,36 @@ function openSqlite(): AnyDb {
   };
 }
 
-export const db: AnyDb = isPostgresSot()
+let sqliteDb: SyncDb | null = null;
+function sqlite(): SyncDb {
+  if (!sqliteDb) sqliteDb = openSqlite();
+  return sqliteDb;
+}
+
+/** Legacy prepare API — на PG методы async (нужен await у call site). */
+export const db: SyncDb | AsyncDb = isPostgresSot()
   ? {
       prepare(sql: string) {
         return {
           all: (...params: SqlParam[]) => pgAll(sql, params),
           get: (...params: SqlParam[]) => pgGet(sql, params),
-          run: (...params: SqlParam[]) => ({ changes: pgRun(sql, params) }),
+          run: async (...params: SqlParam[]) => ({ changes: await pgRun(sql, params) }),
         };
       },
       exec: (sql: string) => pgExec(sql),
     }
-  : openSqlite();
+  : new Proxy({} as SyncDb, {
+      get(_t, prop) {
+        const real = sqlite();
+        const v = (real as unknown as Record<string | symbol, unknown>)[prop];
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(real) : v;
+      },
+    });
 
 if (isPostgresSot()) {
-  try {
-    pgWarm();
-  } catch (e) {
+  void pgWarm().catch((e) => {
     console.error('[db] postgres warm failed', e instanceof Error ? e.message : e);
-  }
+  });
 }
 
 function isBusyError(e: unknown): boolean {
@@ -111,23 +135,29 @@ function withBusyRetry<T>(fn: () => T, attempts = 2): T {
   throw last;
 }
 
-export function all<T extends Row = Row>(sql: string, params: SqlParam[] = []): T[] {
+export async function all<T extends Row = Row>(
+  sql: string,
+  params: SqlParam[] = []
+): Promise<T[]> {
   if (isPostgresSot()) return pgAll<T>(sql, params);
-  return withBusyRetry(() => db.prepare(sql).all(...params) as T[]);
+  return withBusyRetry(() => sqlite().prepare(sql).all(...params) as T[]);
 }
 
-export function get<T extends Row = Row>(sql: string, params: SqlParam[] = []): T | undefined {
+export async function get<T extends Row = Row>(
+  sql: string,
+  params: SqlParam[] = []
+): Promise<T | undefined> {
   if (isPostgresSot()) return pgGet<T>(sql, params);
-  return withBusyRetry(() => db.prepare(sql).get(...params) as T | undefined);
+  return withBusyRetry(() => sqlite().prepare(sql).get(...params) as T | undefined);
 }
 
-export function run(sql: string, params: SqlParam[] = []): void {
+export async function run(sql: string, params: SqlParam[] = []): Promise<void> {
   if (isPostgresSot()) {
-    pgRun(sql, params);
+    await pgRun(sql, params);
     return;
   }
   withBusyRetry(() => {
-    db.prepare(sql).run(...params);
+    sqlite().prepare(sql).run(...params);
   });
 }
 
@@ -136,6 +166,17 @@ export function migrate(): void {
     console.log('[db] migrate skipped — Postgres SoT (schema from 1:1 dump)');
     return;
   }
+  // Local sync handle — migrate is SQLite-only (PG SoT returns above).
+  const db = sqlite();
+  const mAll = <T extends Row = Row>(sql: string, params: SqlParam[] = []): T[] =>
+    withBusyRetry(() => db.prepare(sql).all(...params) as T[]);
+  const mGet = <T extends Row = Row>(sql: string, params: SqlParam[] = []): T | undefined =>
+    withBusyRetry(() => db.prepare(sql).get(...params) as T | undefined);
+  const mRun = (sql: string, params: SqlParam[] = []): void => {
+    withBusyRetry(() => {
+      db.prepare(sql).run(...params);
+    });
+  };
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
@@ -439,7 +480,7 @@ export function migrate(): void {
   `);
 
   // Миграция для уже существующих БД
-  const cols = all<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
+  const cols = mAll<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
   const addCol = (name: string, ddl: string) => {
     if (!cols.includes(name)) db.exec(`ALTER TABLE products ADD COLUMN ${ddl}`);
   };
@@ -580,7 +621,7 @@ export function migrate(): void {
   `);
 
   // audit_log: доп. поля для KPI / истории (логин, UA, path, meta)
-  const auditCols = all<{ name: string }>('PRAGMA table_info(audit_log)').map((c) => c.name);
+  const auditCols = mAll<{ name: string }>('PRAGMA table_info(audit_log)').map((c) => c.name);
   const addAuditCol = (name: string, ddl: string) => {
     if (!auditCols.includes(name)) db.exec(`ALTER TABLE audit_log ADD COLUMN ${ddl}`);
   };
@@ -591,7 +632,7 @@ export function migrate(): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_day_actor ON audit_log(created_at, actor_id)`);
 
   // Колонки пароля у уже существующей staff (индексы — только после ALTER)
-  const staffCols = all<{ name: string }>('PRAGMA table_info(staff)').map((c) => c.name);
+  const staffCols = mAll<{ name: string }>('PRAGMA table_info(staff)').map((c) => c.name);
   const addStaffCol = (name: string, ddl: string) => {
     if (!staffCols.includes(name)) db.exec(`ALTER TABLE staff ADD COLUMN ${ddl}`);
   };
@@ -621,13 +662,13 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_2fa_actor ON auth_2fa_challenges(actor_id);
   `);
 
-  const docCols = all<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
+  const docCols = mAll<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
   if (!docCols.includes('amount')) db.exec(`ALTER TABLE stock_docs ADD COLUMN amount REAL NOT NULL DEFAULT 0`);
   if (!docCols.includes('source')) db.exec(`ALTER TABLE stock_docs ADD COLUMN source TEXT NOT NULL DEFAULT 'local'`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_docs_source ON stock_docs(source)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_docs_type_date ON stock_docs(doc_type, doc_date)`);
 
-  const lineCols = all<{ name: string }>('PRAGMA table_info(stock_doc_lines)').map((c) => c.name);
+  const lineCols = mAll<{ name: string }>('PRAGMA table_info(stock_doc_lines)').map((c) => c.name);
   if (!lineCols.includes('price')) db.exec(`ALTER TABLE stock_doc_lines ADD COLUMN price REAL NOT NULL DEFAULT 0`);
   if (!lineCols.includes('amount')) db.exec(`ALTER TABLE stock_doc_lines ADD COLUMN amount REAL NOT NULL DEFAULT 0`);
   if (!lineCols.includes('line_no')) db.exec(`ALTER TABLE stock_doc_lines ADD COLUMN line_no INTEGER NOT NULL DEFAULT 0`);
@@ -636,7 +677,7 @@ export function migrate(): void {
     `CREATE INDEX IF NOT EXISTS idx_docs_type_product_date ON stock_docs(doc_type, doc_date)`
   );
 
-  const mediaCols = all<{ name: string }>('PRAGMA table_info(product_media)').map((c) => c.name);
+  const mediaCols = mAll<{ name: string }>('PRAGMA table_info(product_media)').map((c) => c.name);
   const addMediaCol = (name: string, ddl: string) => {
     if (!mediaCols.includes(name)) db.exec(`ALTER TABLE product_media ADD COLUMN ${ddl}`);
   };
@@ -705,7 +746,7 @@ export function migrate(): void {
   `);
 
   // Позиция сделки: склад / поставщик / партия (приход) + применимость
-  const dealItemCols = all<{ name: string }>('PRAGMA table_info(crm_deal_items)').map((c) => c.name);
+  const dealItemCols = mAll<{ name: string }>('PRAGMA table_info(crm_deal_items)').map((c) => c.name);
   const addDealItemCol = (name: string, ddl: string) => {
     if (dealItemCols.length && !dealItemCols.includes(name)) {
       db.exec(`ALTER TABLE crm_deal_items ADD COLUMN ${ddl}`);
@@ -735,7 +776,7 @@ export function migrate(): void {
   }
 
   // покупатель / юрлицо на сделке
-  const dealCols = all<{ name: string }>('PRAGMA table_info(crm_deals)').map((c) => c.name);
+  const dealCols = mAll<{ name: string }>('PRAGMA table_info(crm_deals)').map((c) => c.name);
   const dealExtra: Array<[string, string]> = [
     ['company_id', "TEXT NOT NULL DEFAULT ''"],
     ['company_name', "TEXT NOT NULL DEFAULT ''"],
@@ -818,7 +859,7 @@ export function migrate(): void {
   }
 
   {
-    const migrated = get<{ value: string }>(
+    const migrated = mGet<{ value: string }>(
       `SELECT value FROM meta WHERE key = ?`,
       ['client_role_migrated_v1']
     );
@@ -848,7 +889,7 @@ export function migrate(): void {
           SET is_legal_entity = 1
           WHERE client_role IN ('partner','partner_delay') AND lower(IFNULL(buyer_kind,'')) IN ('legal','ip');
         `);
-        run(
+        mRun(
           `INSERT INTO meta (key, value) VALUES ('client_role_migrated_v1', datetime('now'))`
         );
       } catch {
@@ -893,7 +934,7 @@ export function migrate(): void {
   `);
 
   {
-    const fiscalCols = all<{ name: string }>('PRAGMA table_info(fiscal_receipts)').map((c) => c.name);
+    const fiscalCols = mAll<{ name: string }>('PRAGMA table_info(fiscal_receipts)').map((c) => c.name);
     if (fiscalCols.length && !fiscalCols.includes('parent_receipt_id')) {
       db.exec(`ALTER TABLE fiscal_receipts ADD COLUMN parent_receipt_id TEXT NOT NULL DEFAULT ''`);
     }
@@ -938,15 +979,15 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_sales_lines_doc ON sales_doc_lines(doc_id);
   `);
 
-  const salesLineCols = all<{ name: string }>('PRAGMA table_info(sales_doc_lines)').map((c) => c.name);
+  const salesLineCols = mAll<{ name: string }>('PRAGMA table_info(sales_doc_lines)').map((c) => c.name);
   if (salesLineCols.length && !salesLineCols.includes('line_kind')) {
     db.exec(`ALTER TABLE sales_doc_lines ADD COLUMN line_kind TEXT NOT NULL DEFAULT 'goods'`);
   }
 
   // реквизиты ИП Безматерных (как в бланках 1С), если ещё не заданы
-  const orgRow = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['org_profile']);
+  const orgRow = mGet<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['org_profile']);
   if (!orgRow?.value) {
-    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    mRun('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
       'org_profile',
       JSON.stringify({
         name: 'Индивидуальный предприниматель Безматерных Роман Павлович',
@@ -969,7 +1010,7 @@ export function migrate(): void {
   }
 
   // ——— Маркировка / Честный знак (Этапы 4–5) ———
-  const prodColsMark = all<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
+  const prodColsMark = mAll<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
   if (prodColsMark.length && !prodColsMark.includes('gtin')) {
     db.exec(`ALTER TABLE products ADD COLUMN gtin TEXT NOT NULL DEFAULT ''`);
   }
@@ -980,7 +1021,7 @@ export function migrate(): void {
     db.exec(`ALTER TABLE products ADD COLUMN serial_tracked INTEGER NOT NULL DEFAULT 0`);
   }
 
-  const lineColsSerial = all<{ name: string }>('PRAGMA table_info(stock_doc_lines)').map(
+  const lineColsSerial = mAll<{ name: string }>('PRAGMA table_info(stock_doc_lines)').map(
     (c) => c.name
   );
   if (lineColsSerial.length && !lineColsSerial.includes('serials_json')) {
@@ -1016,12 +1057,12 @@ export function migrate(): void {
   `);
 
   // Применимость партии на экземпляре: [] = как в каталоге; иначе урезание (Audi/Bentley…)
-  const unitCols = all<{ name: string }>('PRAGMA table_info(product_units)').map((c) => c.name);
+  const unitCols = mAll<{ name: string }>('PRAGMA table_info(product_units)').map((c) => c.name);
   if (unitCols.length && !unitCols.includes('apps_json')) {
     db.exec(`ALTER TABLE product_units ADD COLUMN apps_json TEXT NOT NULL DEFAULT '[]'`);
   }
   // На строке прихода — шаблон применимости для создаваемых марок
-  const lineColsApps = all<{ name: string }>('PRAGMA table_info(stock_doc_lines)').map((c) => c.name);
+  const lineColsApps = mAll<{ name: string }>('PRAGMA table_info(stock_doc_lines)').map((c) => c.name);
   if (lineColsApps.length && !lineColsApps.includes('apps_json')) {
     db.exec(`ALTER TABLE stock_doc_lines ADD COLUMN apps_json TEXT NOT NULL DEFAULT '[]'`);
   }
@@ -1119,7 +1160,7 @@ export function migrate(): void {
   `);
 
   // ——— Э1: задания склада ———
-  const dealColsLock = all<{ name: string }>('PRAGMA table_info(crm_deals)').map((c) => c.name);
+  const dealColsLock = mAll<{ name: string }>('PRAGMA table_info(crm_deals)').map((c) => c.name);
   if (dealColsLock.length && !dealColsLock.includes('amount_locked')) {
     db.exec(`ALTER TABLE crm_deals ADD COLUMN amount_locked INTEGER NOT NULL DEFAULT 0`);
   }
@@ -1306,7 +1347,7 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_chat_attachments_msg ON chat_attachments(message_id);
   `);
 
-  const chatMsgCols = all<{ name: string }>('PRAGMA table_info(chat_messages)').map((c) => c.name);
+  const chatMsgCols = mAll<{ name: string }>('PRAGMA table_info(chat_messages)').map((c) => c.name);
   if (chatMsgCols.length) {
     for (const [name, ddl] of [
       ['ref_type', "ref_type TEXT NOT NULL DEFAULT ''"],
@@ -1318,7 +1359,7 @@ export function migrate(): void {
     }
   }
 
-  const presenceCols = all<{ name: string }>('PRAGMA table_info(user_presence)').map((c) => c.name);
+  const presenceCols = mAll<{ name: string }>('PRAGMA table_info(user_presence)').map((c) => c.name);
   for (const [name, ddl] of [
     ['client_ip', "client_ip TEXT NOT NULL DEFAULT ''"],
     ['user_agent', "user_agent TEXT NOT NULL DEFAULT ''"],
@@ -1332,7 +1373,7 @@ export function migrate(): void {
   }
 
   // КПД склада: метки этапов created → picked → packed → ready → handed
-  const wtCols = all<{ name: string }>('PRAGMA table_info(warehouse_tasks)').map((c) => c.name);
+  const wtCols = mAll<{ name: string }>('PRAGMA table_info(warehouse_tasks)').map((c) => c.name);
   if (wtCols.length) {
     for (const [name, ddl] of [
       ['picked_at', "picked_at TEXT NOT NULL DEFAULT ''"],
@@ -1380,7 +1421,7 @@ export function migrate(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_currency_rates_pair ON currency_rates(base_code, quote_code, rate_date);
   `);
-  const curCols = all<{ name: string }>('PRAGMA table_info(currencies)').map((c) => c.name);
+  const curCols = mAll<{ name: string }>('PRAGMA table_info(currencies)').map((c) => c.name);
   for (const [name, ddl] of [
     ['alt_code', "alt_code TEXT NOT NULL DEFAULT ''"],
     ['rate_mode', "rate_mode TEXT NOT NULL DEFAULT 'manual'"],
@@ -1397,9 +1438,9 @@ export function migrate(): void {
     if (!curCols.includes(name)) db.exec(`ALTER TABLE currencies ADD COLUMN ${ddl}`);
   }
 
-  const curCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM currencies')?.c ?? 0;
+  const curCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM currencies')?.c ?? 0;
   if (!curCount) {
-    run(
+    mRun(
       `INSERT INTO currencies (
         code, name, symbol, numeric_code, alt_code, rate_mode,
         spell_unit_1, spell_unit_2, spell_unit_5,
@@ -1425,9 +1466,9 @@ export function migrate(): void {
       sort: number,
       spell: [string, string, string, string, string, string]
     ) => {
-      const row = get<{ code: string }>('SELECT code FROM currencies WHERE code = ?', [code]);
+      const row = mGet<{ code: string }>('SELECT code FROM currencies WHERE code = ?', [code]);
       if (!row) {
-        run(
+        mRun(
           `INSERT INTO currencies (
             code, name, symbol, numeric_code, alt_code, rate_mode,
             spell_unit_1, spell_unit_2, spell_unit_5,
@@ -1437,14 +1478,14 @@ export function migrate(): void {
           [code, name, symbol, numeric, alt, mode, ...spell, sort]
         );
       } else if (code === 'CNY') {
-        run(
+        mRun(
           `UPDATE currencies SET alt_code = CASE WHEN alt_code = '' THEN 'RMB' ELSE alt_code END,
             rate_mode = CASE WHEN rate_mode = 'manual' OR rate_mode = '' THEN 'internet' ELSE rate_mode END,
             updated_at = datetime('now')
            WHERE code = 'CNY'`
         );
       } else if (code === 'USD') {
-        run(
+        mRun(
           `UPDATE currencies SET
             rate_mode = CASE WHEN rate_mode = 'manual' OR rate_mode = '' THEN 'internet' ELSE rate_mode END,
             updated_at = datetime('now')
@@ -1479,7 +1520,7 @@ export function migrate(): void {
   }
 
   // ——— Паритет меню УНФ: ГТД / мин.остаток / касса / ПП / должности / графики / производство / CRM ———
-  const lineColsParity = all<{ name: string }>('PRAGMA table_info(stock_doc_lines)').map((c) => c.name);
+  const lineColsParity = mAll<{ name: string }>('PRAGMA table_info(stock_doc_lines)').map((c) => c.name);
   if (!lineColsParity.includes('gtd_key')) {
     db.exec(`ALTER TABLE stock_doc_lines ADD COLUMN gtd_key TEXT NOT NULL DEFAULT ''`);
   }
@@ -1491,7 +1532,7 @@ export function migrate(): void {
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_doc_lines_gtd ON stock_doc_lines(gtd_key)`);
 
-  const cpCols = all<{ name: string }>('PRAGMA table_info(counterparties)').map((c) => c.name);
+  const cpCols = mAll<{ name: string }>('PRAGMA table_info(counterparties)').map((c) => c.name);
   if (!cpCols.includes('lead_time_days')) {
     db.exec(`ALTER TABLE counterparties ADD COLUMN lead_time_days INTEGER NOT NULL DEFAULT 0`);
   }
@@ -1575,7 +1616,7 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_cp_amo_links_contact ON counterparty_amo_links(contact_id);
   `);
 
-  const prodColsMin = all<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
+  const prodColsMin = mAll<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
   if (prodColsMin.length && !prodColsMin.includes('min_stock')) {
     db.exec(`ALTER TABLE products ADD COLUMN min_stock REAL NOT NULL DEFAULT 0`);
   }
@@ -1595,7 +1636,7 @@ export function migrate(): void {
   }
   // Расходные — только товары; услуги не храним в stock_doc_lines out
   try {
-    run(
+    mRun(
       `DELETE FROM stock_doc_lines
        WHERE doc_id IN (SELECT id FROM stock_docs WHERE doc_type = 'out')
          AND product_id IN (
@@ -1899,7 +1940,7 @@ export function migrate(): void {
   `);
 
   {
-    const taskCols = all<{ name: string }>('PRAGMA table_info(crm_tasks)').map((c) => c.name);
+    const taskCols = mAll<{ name: string }>('PRAGMA table_info(crm_tasks)').map((c) => c.name);
     const addTaskCol = (name: string, ddl: string) => {
       if (taskCols.length && !taskCols.includes(name)) {
         db.exec(`ALTER TABLE crm_tasks ADD COLUMN ${ddl}`);
@@ -1912,7 +1953,7 @@ export function migrate(): void {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_crm_tasks_assignee ON crm_tasks(assignee_amo_id, status)`);
   }
 
-  const cashArtCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM cash_articles')?.c ?? 0;
+  const cashArtCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM cash_articles')?.c ?? 0;
   if (!cashArtCount) {
     const seeds = [
       ['Поступление от покупателя', 'in'],
@@ -1921,7 +1962,7 @@ export function migrate(): void {
       ['Прочий расход', 'out'],
     ] as const;
     for (const [name, kind] of seeds) {
-      run(`INSERT INTO cash_articles (id, name, kind, is_active) VALUES (?, ?, ?, 1)`, [
+      mRun(`INSERT INTO cash_articles (id, name, kind, is_active) VALUES (?, ?, ?, 1)`, [
         cryptoRandomId(),
         name,
         kind,
@@ -1929,50 +1970,50 @@ export function migrate(): void {
     }
   }
 
-  const cashRegCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM cash_registers')?.c ?? 0;
+  const cashRegCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM cash_registers')?.c ?? 0;
   if (!cashRegCount) {
-    run(
+    mRun(
       `INSERT INTO cash_registers (id, name, kind, organization_id, is_active) VALUES (?, ?, 'cash', '', 1)`,
       [cryptoRandomId(), 'Основная касса']
     );
   }
 
   // ПКО/РКО → касса: колонка + старые документы на «Основная касса»
-  const cashDocCols = all<{ name: string }>('PRAGMA table_info(cash_docs)').map((c) => c.name);
+  const cashDocCols = mAll<{ name: string }>('PRAGMA table_info(cash_docs)').map((c) => c.name);
   if (cashDocCols.length && !cashDocCols.includes('cash_register_id')) {
     db.exec(`ALTER TABLE cash_docs ADD COLUMN cash_register_id TEXT NOT NULL DEFAULT ''`);
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_cash_docs_register ON cash_docs(cash_register_id)`);
-  const orphanCash = get<{ c: number }>(
+  const orphanCash = mGet<{ c: number }>(
     `SELECT COUNT(*) AS c FROM cash_docs WHERE IFNULL(cash_register_id,'') = ''`
   )?.c;
   if (orphanCash) {
     const mainReg =
-      get<{ id: string }>(
+      mGet<{ id: string }>(
         `SELECT id FROM cash_registers WHERE name = 'Основная касса' ORDER BY rowid LIMIT 1`
       ) ||
-      get<{ id: string }>(
+      mGet<{ id: string }>(
         `SELECT id FROM cash_registers WHERE is_active = 1 ORDER BY name LIMIT 1`
       );
     if (mainReg?.id) {
-      run(`UPDATE cash_docs SET cash_register_id = ? WHERE IFNULL(cash_register_id,'') = ''`, [
+      mRun(`UPDATE cash_docs SET cash_register_id = ? WHERE IFNULL(cash_register_id,'') = ''`, [
         mainReg.id,
       ]);
     }
   }
 
   // Кассы → юрлицо
-  const cashRegCols = all<{ name: string }>('PRAGMA table_info(cash_registers)').map((c) => c.name);
+  const cashRegCols = mAll<{ name: string }>('PRAGMA table_info(cash_registers)').map((c) => c.name);
   if (cashRegCols.length && !cashRegCols.includes('organization_id')) {
     db.exec(`ALTER TABLE cash_registers ADD COLUMN organization_id TEXT NOT NULL DEFAULT ''`);
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_cash_registers_org ON cash_registers(organization_id)`);
-  run(
+  mRun(
     `UPDATE cash_registers SET name = 'Операционная касса'
      WHERE name = 'Операционная касса (Точка)'`
   );
   // Пользователю не нужна «касса Точки» — удаляем пустые операционные заготовки
-  run(
+  mRun(
     `DELETE FROM cash_registers
      WHERE kind = 'operating'
        AND (name = 'Операционная касса' OR name LIKE 'Операционная касса%Точка%')
@@ -1981,7 +2022,7 @@ export function migrate(): void {
        )`
   );
 
-  const timeKindsCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM time_kinds')?.c ?? 0;
+  const timeKindsCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM time_kinds')?.c ?? 0;
   if (!timeKindsCount) {
     for (const [code, name] of [
       ['Я', 'Явка'],
@@ -1989,7 +2030,7 @@ export function migrate(): void {
       ['О', 'Отпуск'],
       ['Б', 'Больничный'],
     ] as const) {
-      run(`INSERT INTO time_kinds (id, code, name, is_active) VALUES (?, ?, ?, 1)`, [
+      mRun(`INSERT INTO time_kinds (id, code, name, is_active) VALUES (?, ?, ?, 1)`, [
         cryptoRandomId(),
         code,
         name,
@@ -1997,28 +2038,28 @@ export function migrate(): void {
     }
   }
 
-  const shiftsCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM work_shifts')?.c ?? 0;
+  const shiftsCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM work_shifts')?.c ?? 0;
   if (!shiftsCount) {
-    run(
+    mRun(
       `INSERT INTO work_shifts (id, name, hours_from, hours_to, is_active) VALUES (?, ?, '09:00', '18:00', 1)`,
       [cryptoRandomId(), 'Дневная']
     );
-    run(
+    mRun(
       `INSERT INTO work_shifts (id, name, hours_from, hours_to, is_active) VALUES (?, ?, '18:00', '22:00', 1)`,
       [cryptoRandomId(), 'Вечерняя']
     );
   }
 
-  const jobCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM job_titles')?.c ?? 0;
+  const jobCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM job_titles')?.c ?? 0;
   if (!jobCount) {
     for (const name of ['Кладовщик', 'Менеджер', 'Мастер СТО', 'Администратор']) {
-      run(`INSERT INTO job_titles (id, name, is_active) VALUES (?, ?, 1)`, [cryptoRandomId(), name]);
+      mRun(`INSERT INTO job_titles (id, name, is_active) VALUES (?, ?, 1)`, [cryptoRandomId(), name]);
     }
   }
 
-  const schedCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM work_schedules')?.c ?? 0;
+  const schedCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM work_schedules')?.c ?? 0;
   if (!schedCount) {
-    run(
+    mRun(
       `INSERT INTO work_schedules (id, name, hours_json, is_active) VALUES (?, ?, ?, 1)`,
       [
         cryptoRandomId(),
@@ -2028,16 +2069,16 @@ export function migrate(): void {
     );
   }
 
-  const bankAccCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM company_bank_accounts')?.c ?? 0;
+  const bankAccCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM company_bank_accounts')?.c ?? 0;
   if (!bankAccCount) {
-    run(
+    mRun(
       `INSERT INTO company_bank_accounts (id, name, bank_name, currency, is_active)
        VALUES (?, ?, ?, 'RUB', 1)`,
       [cryptoRandomId(), 'Расчётный счёт Точка', 'Точка Банк']
     );
   }
 
-  const orderStCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM order_status_types')?.c ?? 0;
+  const orderStCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM order_status_types')?.c ?? 0;
   if (!orderStCount) {
     const sales = [
       'Новый',
@@ -2048,28 +2089,28 @@ export function migrate(): void {
       'Отменён',
     ];
     sales.forEach((name, i) => {
-      run(
+      mRun(
         `INSERT INTO order_status_types (id, name, kind, sort_order, is_active) VALUES (?, ?, 'sales', ?, 1)`,
         [cryptoRandomId(), name, i + 1]
       );
     });
     const sto = ['Записан', 'В работе', 'Ожидает запчасть', 'Готов', 'Выдан', 'Отменён'];
     sto.forEach((name, i) => {
-      run(
+      mRun(
         `INSERT INTO order_status_types (id, name, kind, sort_order, is_active) VALUES (?, ?, 'sto', ?, 1)`,
         [cryptoRandomId(), name, i + 1]
       );
     });
   }
 
-  const stoResCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM sto_resources')?.c ?? 0;
+  const stoResCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM sto_resources')?.c ?? 0;
   if (!stoResCount) {
     for (const [name, kind] of [
       ['Подъёмник 1', 'lift'],
       ['Подъёмник 2', 'lift'],
       ['Пост диагностики', 'bay'],
     ] as const) {
-      run(`INSERT INTO sto_resources (id, name, kind, is_active) VALUES (?, ?, ?, 1)`, [
+      mRun(`INSERT INTO sto_resources (id, name, kind, is_active) VALUES (?, ?, ?, 1)`, [
         cryptoRandomId(),
         name,
         kind,
@@ -2124,7 +2165,7 @@ export function migrate(): void {
 
   // Старые БД: добавить sales_doc_id и снять FK на payment_links
   {
-    const srCols = all<{ name: string }>('PRAGMA table_info(stock_reserves)').map((c) => c.name);
+    const srCols = mAll<{ name: string }>('PRAGMA table_info(stock_reserves)').map((c) => c.name);
     if (srCols.length && !srCols.includes('sales_doc_id')) {
       db.exec(`
         CREATE TABLE stock_reserves__mig (
@@ -2158,7 +2199,7 @@ export function migrate(): void {
         CREATE INDEX IF NOT EXISTS idx_stock_reserves_product ON stock_reserves(product_id, status);
       `);
     }
-    const srCols2 = all<{ name: string }>('PRAGMA table_info(stock_reserves)').map((c) => c.name);
+    const srCols2 = mAll<{ name: string }>('PRAGMA table_info(stock_reserves)').map((c) => c.name);
     if (srCols2.includes('sales_doc_id')) {
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_stock_reserves_doc ON stock_reserves(sales_doc_id, status);
@@ -2167,17 +2208,17 @@ export function migrate(): void {
     }
   }
 
-  const waitWh = get<{ id: string }>(
+  const waitWh = mGet<{ id: string }>(
     `SELECT id FROM warehouses WHERE code = 'WAIT-PAY' OR name = 'Ожидание оплаты' LIMIT 1`
   );
   if (!waitWh) {
-    run(
+    mRun(
       `INSERT INTO warehouses (id, name, code, is_active) VALUES (?, 'Ожидание оплаты', 'WAIT-PAY', 0)`,
       [cryptoRandomId()]
     );
   } else {
     // Резерв WAIT-PAY отключён — склад не светим в активных.
-    run(`UPDATE warehouses SET is_active = 0 WHERE id = ?`, [waitWh.id]);
+    mRun(`UPDATE warehouses SET is_active = 0 WHERE id = ?`, [waitWh.id]);
   }
 
   // ——— Мультиорг: справочник организаций + organization_id на ключевых документах ———
@@ -2210,7 +2251,7 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_organizations_active ON organizations(is_active, is_default);
   `);
   {
-    const orgColsEmail = all<{ name: string }>('PRAGMA table_info(organizations)').map((c) => c.name);
+    const orgColsEmail = mAll<{ name: string }>('PRAGMA table_info(organizations)').map((c) => c.name);
     if (orgColsEmail.length && !orgColsEmail.includes('email')) {
       db.exec(`ALTER TABLE organizations ADD COLUMN email TEXT NOT NULL DEFAULT ''`);
     }
@@ -2237,12 +2278,12 @@ export function migrate(): void {
       );
       CREATE INDEX IF NOT EXISTS idx_companies_active ON companies(is_active, is_default);
     `);
-    const orgColsCo = all<{ name: string }>('PRAGMA table_info(organizations)').map((c) => c.name);
+    const orgColsCo = mAll<{ name: string }>('PRAGMA table_info(organizations)').map((c) => c.name);
     if (orgColsCo.length && !orgColsCo.includes('company_id')) {
       db.exec(`ALTER TABLE organizations ADD COLUMN company_id TEXT NOT NULL DEFAULT ''`);
     }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_organizations_company ON organizations(company_id)`);
-    const whColsCo = all<{ name: string }>('PRAGMA table_info(warehouses)').map((c) => c.name);
+    const whColsCo = mAll<{ name: string }>('PRAGMA table_info(warehouses)').map((c) => c.name);
     if (whColsCo.length && !whColsCo.includes('company_id')) {
       db.exec(`ALTER TABLE warehouses ADD COLUMN company_id TEXT NOT NULL DEFAULT ''`);
     }
@@ -2261,7 +2302,7 @@ export function migrate(): void {
     if (whColsCo.length && !whColsCo.includes('allow_inbound')) {
       db.exec(`ALTER TABLE warehouses ADD COLUMN allow_inbound INTEGER NOT NULL DEFAULT 0`);
       // По умолчанию приходуем на Основной и «Отложено под СТО»
-      run(
+      mRun(
         `UPDATE warehouses SET allow_inbound = 1
          WHERE IFNULL(code,'') = 'НФ-000032'
             OR IFNULL(code,'') LIKE 'STO-RES-%'
@@ -2273,24 +2314,24 @@ export function migrate(): void {
     // Виджет Amo · Москва (pnevmopodveska_2025) — whitelist в wms_picker_widget_store_columns.
     // Краснодар (fogel_2025) — MySQL stores.show_in_widget, WMS-флаги не трогаем.
     db.exec(`CREATE INDEX IF NOT EXISTS idx_warehouses_company ON warehouses(company_id)`);
-    const coCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM companies')?.c ?? 0;
+    const coCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM companies')?.c ?? 0;
     if (!coCount) {
-      run(
+      mRun(
         `INSERT INTO companies (id, name, code, is_default, is_active) VALUES (?, 'Пневмоподвеска', 'PNEVMO', 1, 1)`,
         [DEFAULT_COMPANY_ID]
       );
     }
     const defCo =
-      get<{ id: string }>(
+      mGet<{ id: string }>(
         `SELECT id FROM companies WHERE is_default = 1 AND is_active = 1 LIMIT 1`
       )?.id ||
-      get<{ id: string }>(`SELECT id FROM companies WHERE is_active = 1 ORDER BY name LIMIT 1`)?.id ||
+      mGet<{ id: string }>(`SELECT id FROM companies WHERE is_active = 1 ORDER BY name LIMIT 1`)?.id ||
       DEFAULT_COMPANY_ID;
-    run(`UPDATE organizations SET company_id = ? WHERE IFNULL(company_id,'') = ''`, [defCo]);
-    run(`UPDATE warehouses SET company_id = ? WHERE IFNULL(company_id,'') = ''`, [defCo]);
+    mRun(`UPDATE organizations SET company_id = ? WHERE IFNULL(company_id,'') = ''`, [defCo]);
+    mRun(`UPDATE warehouses SET company_id = ? WHERE IFNULL(company_id,'') = ''`, [defCo]);
   }
 
-  const salesOrgCols = all<{ name: string }>('PRAGMA table_info(sales_docs)').map((c) => c.name);
+  const salesOrgCols = mAll<{ name: string }>('PRAGMA table_info(sales_docs)').map((c) => c.name);
   if (salesOrgCols.length && !salesOrgCols.includes('organization_id')) {
     db.exec(`ALTER TABLE sales_docs ADD COLUMN organization_id TEXT NOT NULL DEFAULT ''`);
   }
@@ -2338,7 +2379,7 @@ export function migrate(): void {
       }
     }
   }
-  const stockOrgCols = all<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
+  const stockOrgCols = mAll<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
   if (stockOrgCols.length && !stockOrgCols.includes('organization_id')) {
     db.exec(`ALTER TABLE stock_docs ADD COLUMN organization_id TEXT NOT NULL DEFAULT ''`);
   }
@@ -2350,7 +2391,7 @@ export function migrate(): void {
     db.exec(`ALTER TABLE stock_docs ADD COLUMN basis_order_id TEXT NOT NULL DEFAULT ''`);
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_stock_docs_deal ON stock_docs(deal_id)`);
-  const payOrgCols = all<{ name: string }>('PRAGMA table_info(payment_links)').map((c) => c.name);
+  const payOrgCols = mAll<{ name: string }>('PRAGMA table_info(payment_links)').map((c) => c.name);
   if (payOrgCols.length && !payOrgCols.includes('organization_id')) {
     db.exec(`ALTER TABLE payment_links ADD COLUMN organization_id TEXT NOT NULL DEFAULT ''`);
   }
@@ -2461,12 +2502,12 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_sto_work_logs_lift ON sto_work_logs(lift_id);
   `);
 
-  const stoMatCols = all<{ name: string }>('PRAGMA table_info(sto_wo_materials)').map((c) => c.name);
+  const stoMatCols = mAll<{ name: string }>('PRAGMA table_info(sto_wo_materials)').map((c) => c.name);
   if (stoMatCols.length && !stoMatCols.includes('work_log_id')) {
     db.exec(`ALTER TABLE sto_wo_materials ADD COLUMN work_log_id TEXT NOT NULL DEFAULT ''`);
   }
 
-  const stoCatCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM sto_work_catalog')?.c ?? 0;
+  const stoCatCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM sto_work_catalog')?.c ?? 0;
   if (!stoCatCount) {
     const seeds = [
       ['Диагностика подвески', 1, 1],
@@ -2477,7 +2518,7 @@ export function migrate(): void {
       ['Сход-развал', 1, 6],
     ] as const;
     for (const [name, hours, sort] of seeds) {
-      run(
+      mRun(
         `INSERT INTO sto_work_catalog (id, name, hours_default, is_active, sort_order)
          VALUES (?, ?, ?, 1, ?)`,
         [cryptoRandomId(), name, hours, sort]
@@ -2485,7 +2526,7 @@ export function migrate(): void {
     }
   }
 
-  const stoWoCols = all<{ name: string }>('PRAGMA table_info(sto_work_orders)').map((c) => c.name);
+  const stoWoCols = mAll<{ name: string }>('PRAGMA table_info(sto_work_orders)').map((c) => c.name);
   if (stoWoCols.length) {
     const addWo: Array<[string, string]> = [
       ['plate', "TEXT NOT NULL DEFAULT ''"],
@@ -2504,7 +2545,7 @@ export function migrate(): void {
   }
 
   // Сид из org_profile / реквизитов ИП Безматерных, если справочник пуст
-  const orgCount = get<{ c: number }>('SELECT COUNT(*) AS c FROM organizations')?.c ?? 0;
+  const orgCount = mGet<{ c: number }>('SELECT COUNT(*) AS c FROM organizations')?.c ?? 0;
   if (!orgCount) {
     let seed = {
       name: 'Индивидуальный предприниматель Безматерных Роман Павлович',
@@ -2526,7 +2567,7 @@ export function migrate(): void {
       master_title: 'Мастер-приемщик Пневмоподвеска №1',
       vat_rate: 5,
     };
-    const orgRow = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['org_profile']);
+    const orgRow = mGet<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['org_profile']);
     if (orgRow?.value) {
       try {
         seed = { ...seed, ...(JSON.parse(orgRow.value) as typeof seed) };
@@ -2535,10 +2576,10 @@ export function migrate(): void {
       }
     }
     const defCoId =
-      get<{ id: string }>(
+      mGet<{ id: string }>(
         `SELECT id FROM companies WHERE is_default = 1 AND is_active = 1 LIMIT 1`
       )?.id || '00000000-0000-4000-8000-000000000001';
-    run(
+    mRun(
       `INSERT INTO organizations (
          id, code, company_id, name, short_name, inn, kpp, ogrnip, address, site_address, work_hours,
          phone, email, bank, bik, rs, ks, director, accountant, master_title, vat_rate,
@@ -2571,17 +2612,17 @@ export function migrate(): void {
 
   // Кассы без юрлица → организация по умолчанию (после сида organizations)
   {
-    const orphanRegOrg = get<{ c: number }>(
+    const orphanRegOrg = mGet<{ c: number }>(
       `SELECT COUNT(*) AS c FROM cash_registers WHERE IFNULL(organization_id,'') = ''`
     )?.c;
     if (orphanRegOrg) {
       const defOrg =
-        get<{ id: string }>(
+        mGet<{ id: string }>(
           `SELECT id FROM organizations WHERE is_default = 1 AND is_active = 1 LIMIT 1`
         ) ||
-        get<{ id: string }>(`SELECT id FROM organizations WHERE is_active = 1 ORDER BY name LIMIT 1`);
+        mGet<{ id: string }>(`SELECT id FROM organizations WHERE is_active = 1 ORDER BY name LIMIT 1`);
       if (defOrg?.id) {
-        run(`UPDATE cash_registers SET organization_id = ? WHERE IFNULL(organization_id,'') = ''`, [
+        mRun(`UPDATE cash_registers SET organization_id = ? WHERE IFNULL(organization_id,'') = ''`, [
           defOrg.id,
         ]);
       }
@@ -2590,11 +2631,11 @@ export function migrate(): void {
 
   // ——— Цепочка поставок: ШК партий, заказы поставщику, заявки на СТО ———
   {
-    const cpCols = all<{ name: string }>('PRAGMA table_info(counterparties)').map((c) => c.name);
+    const cpCols = mAll<{ name: string }>('PRAGMA table_info(counterparties)').map((c) => c.name);
     if (cpCols.length && !cpCols.includes('barcode_prefix')) {
       db.exec(`ALTER TABLE counterparties ADD COLUMN barcode_prefix TEXT NOT NULL DEFAULT ''`);
     }
-    const stockCols = all<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
+    const stockCols = mAll<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
     if (stockCols.length && !stockCols.includes('source_supplier_order_id')) {
       db.exec(`ALTER TABLE stock_docs ADD COLUMN source_supplier_order_id TEXT NOT NULL DEFAULT ''`);
     }
@@ -2722,13 +2763,13 @@ export function migrate(): void {
     `);
 
     const ensureWh = (code: string, name: string) => {
-      const row = get<{ id: string }>(
+      const row = mGet<{ id: string }>(
         `SELECT id FROM warehouses WHERE code = ? OR name = ? LIMIT 1`,
         [code, name]
       );
       if (row?.id) return row.id;
       const id = cryptoRandomId();
-      run(`INSERT INTO warehouses (id, name, code, is_active) VALUES (?, ?, ?, 1)`, [id, name, code]);
+      mRun(`INSERT INTO warehouses (id, name, code, is_active) VALUES (?, ?, ?, 1)`, [id, name, code]);
       return id;
     };
     ensureWh('MAIN', 'Основной');
@@ -2742,7 +2783,7 @@ export function migrate(): void {
 
   // Операции по картам ↔ заказ / расходная
   {
-    const cardCols = all<{ name: string }>('PRAGMA table_info(card_ops)').map((c) => c.name);
+    const cardCols = mAll<{ name: string }>('PRAGMA table_info(card_ops)').map((c) => c.name);
     if (cardCols.length) {
       if (!cardCols.includes('deal_id')) {
         db.exec(`ALTER TABLE card_ops ADD COLUMN deal_id TEXT NOT NULL DEFAULT ''`);
@@ -2800,7 +2841,7 @@ export function migrate(): void {
   `);
 
   {
-    const cpVehCols = all<{ name: string }>('PRAGMA table_info(counterparty_vehicles)').map((c) => c.name);
+    const cpVehCols = mAll<{ name: string }>('PRAGMA table_info(counterparty_vehicles)').map((c) => c.name);
     if (cpVehCols.length && !cpVehCols.includes('car_mileage')) {
       db.exec(`ALTER TABLE counterparty_vehicles ADD COLUMN car_mileage TEXT NOT NULL DEFAULT ''`);
     }
@@ -2897,7 +2938,7 @@ export function migrate(): void {
 
   // Дедуп номенклатуры: мастер / алиас (из Google Sheet «Закупка ТОП MRA…»)
   {
-    const pcols = all<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
+    const pcols = mAll<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
     const addP = (name: string, ddl: string) => {
       if (!pcols.includes(name)) db.exec(`ALTER TABLE products ADD COLUMN ${ddl}`);
     };
@@ -2993,7 +3034,7 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_iapik_hash ON integration_api_keys(key_hash);
   `);
   {
-    const iak = all<{ name: string }>('PRAGMA table_info(integration_api_keys)').map((c) => c.name);
+    const iak = mAll<{ name: string }>('PRAGMA table_info(integration_api_keys)').map((c) => c.name);
     if (iak.length && !iak.includes('staff_id')) {
       db.exec(`ALTER TABLE integration_api_keys ADD COLUMN staff_id TEXT NOT NULL DEFAULT ''`);
     }
@@ -3004,7 +3045,7 @@ export function migrate(): void {
     }
   }
   {
-    const ncs = all<{ name: string }>('PRAGMA table_info(nomen_catalog_sheet)').map((c) => c.name);
+    const ncs = mAll<{ name: string }>('PRAGMA table_info(nomen_catalog_sheet)').map((c) => c.name);
     if (!ncs.includes('supplier')) {
       db.exec(`ALTER TABLE nomen_catalog_sheet ADD COLUMN supplier TEXT NOT NULL DEFAULT ''`);
     }
@@ -3013,7 +3054,7 @@ export function migrate(): void {
     }
   }
   {
-    const pdm = all<{ name: string }>('PRAGMA table_info(product_dedup_members)').map((c) => c.name);
+    const pdm = mAll<{ name: string }>('PRAGMA table_info(product_dedup_members)').map((c) => c.name);
     if (!pdm.includes('attrs_json')) {
       db.exec(`ALTER TABLE product_dedup_members ADD COLUMN attrs_json TEXT NOT NULL DEFAULT ''`);
     }
@@ -3021,7 +3062,7 @@ export function migrate(): void {
 
   // Единица «услуга» для item_kind=service (не «шт»)
   {
-    let svcUnit = get<{ id: string }>(
+    let svcUnit = mGet<{ id: string }>(
       `SELECT id FROM units
        WHERE lower(trim(short_name)) IN ('услуга', 'усл')
           OR lower(trim(name)) IN ('услуга', 'услуги')
@@ -3029,11 +3070,11 @@ export function migrate(): void {
     )?.id;
     if (!svcUnit) {
       svcUnit = cryptoRandomId();
-      run(`INSERT INTO units (id, name, short_name) VALUES (?, 'Услуга', 'услуга')`, [
+      mRun(`INSERT INTO units (id, name, short_name) VALUES (?, 'Услуга', 'услуга')`, [
         svcUnit,
       ]);
     }
-    run(
+    mRun(
       `UPDATE products SET unit_id = ?
        WHERE IFNULL(item_kind, 'product') = 'service' AND IFNULL(unit_id, '') != ?`,
       [svcUnit, svcUnit]
@@ -3042,7 +3083,7 @@ export function migrate(): void {
 
   // Не копить огромный WAL (на проде бывало 20+ МБ → тормоза SQLite)
   try {
-    get('PRAGMA wal_checkpoint(TRUNCATE)');
+    mGet('PRAGMA wal_checkpoint(TRUNCATE)');
   } catch {
     /* ignore */
   }
@@ -3151,13 +3192,13 @@ export function migrate(): void {
       CREATE INDEX IF NOT EXISTS idx_prod_job_events ON production_job_events(job_id, created_at);
     `);
     const ensureWh = (code: string, name: string) => {
-      const row = get<{ id: string }>(
+      const row = mGet<{ id: string }>(
         `SELECT id FROM warehouses WHERE code = ? OR name = ? LIMIT 1`,
         [code, name]
       );
       if (row?.id) return row.id;
       const id = cryptoRandomId();
-      run(`INSERT INTO warehouses (id, name, code, is_active) VALUES (?, ?, ?, 1)`, [id, name, code]);
+      mRun(`INSERT INTO warehouses (id, name, code, is_active) VALUES (?, ?, ?, 1)`, [id, name, code]);
       return id;
     };
     ensureWh('PROD-WIP', 'Производство (сборка/разбор)');
@@ -3167,9 +3208,9 @@ export function migrate(): void {
 
   // Снять дедуп-мастера/алиасы — номенклатура только из 1С
   try {
-    const purged = get<{ value: string }>(`SELECT value FROM meta WHERE key = 'dedup_purged_v1'`);
+    const purged = mGet<{ value: string }>(`SELECT value FROM meta WHERE key = 'dedup_purged_v1'`);
     if (!purged?.value) {
-      run(
+      mRun(
         `UPDATE products SET is_active = 1
          WHERE IFNULL(dedup_role,'') = 'alias'
            AND NOT (
@@ -3178,15 +3219,15 @@ export function migrate(): void {
              AND lower(IFNULL(code,'')) NOT LIKE 'se-%'
            )`
       );
-      run(
+      mRun(
         `UPDATE products SET dedup_role = '', master_product_id = '', dedup_group = '', is_main = 1
          WHERE IFNULL(dedup_role,'') != '' OR IFNULL(master_product_id,'') != '' OR IFNULL(dedup_group,'') != ''`
       );
-      run(`DELETE FROM product_dedup_members`);
-      run(`DELETE FROM product_dedup_groups`);
-      run(`DELETE FROM product_code_masters`);
-      run(`DELETE FROM nomen_catalog_sheet`);
-      run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('dedup_purged_v1', datetime('now'))`);
+      mRun(`DELETE FROM product_dedup_members`);
+      mRun(`DELETE FROM product_dedup_groups`);
+      mRun(`DELETE FROM product_code_masters`);
+      mRun(`DELETE FROM nomen_catalog_sheet`);
+      mRun(`INSERT OR REPLACE INTO meta (key, value) VALUES ('dedup_purged_v1', datetime('now'))`);
     }
   } catch {
     /* ignore */
@@ -3194,11 +3235,11 @@ export function migrate(): void {
 
   // Коррекции остатков (документы admin_only, журнал stock_adjustments)
   try {
-    const docCols = all<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
+    const docCols = mAll<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
     if (!docCols.includes('admin_only')) {
-      run(`ALTER TABLE stock_docs ADD COLUMN admin_only INTEGER NOT NULL DEFAULT 0`);
+      mRun(`ALTER TABLE stock_docs ADD COLUMN admin_only INTEGER NOT NULL DEFAULT 0`);
     }
-    run(`
+    mRun(`
       CREATE TABLE IF NOT EXISTS stock_adjustments (
         id TEXT PRIMARY KEY,
         warehouse_id TEXT NOT NULL,
@@ -3215,8 +3256,8 @@ export function migrate(): void {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
-    run(`CREATE INDEX IF NOT EXISTS idx_stock_adj_wh ON stock_adjustments(warehouse_id, created_at)`);
-    run(`CREATE INDEX IF NOT EXISTS idx_stock_adj_doc ON stock_adjustments(doc_id)`);
+    mRun(`CREATE INDEX IF NOT EXISTS idx_stock_adj_wh ON stock_adjustments(warehouse_id, created_at)`);
+    mRun(`CREATE INDEX IF NOT EXISTS idx_stock_adj_doc ON stock_adjustments(doc_id)`);
   } catch {
     /* ignore */
   }

@@ -26,10 +26,30 @@ export async function pgPool(): Promise<Pool> {
     connectionString: pgUrl(),
     max: Math.max(2, Number(process.env.WMS_PG_POOL_MAX || 8) || 8),
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 15_000,
+    connectionTimeoutMillis: 8_000,
+    statement_timeout: Math.max(
+      3_000,
+      Number(process.env.WMS_PG_STATEMENT_TIMEOUT_MS || 8_000) || 8_000
+    ),
+    query_timeout: Math.max(
+      3_000,
+      Number(process.env.WMS_PG_STATEMENT_TIMEOUT_MS || 8_000) || 8_000
+    ),
+  });
+  // pg driver: statement_timeout via startup options isn't always honored — set on connect.
+  pool.on('connect', (client) => {
+    const ms = Math.max(
+      3_000,
+      Number(process.env.WMS_PG_STATEMENT_TIMEOUT_MS || 8_000) || 8_000
+    );
+    void client.query(`SET statement_timeout TO ${ms}`);
   });
   await pool.query('SELECT 1');
-  console.log('[db] postgres in-process pool ready · max=%s', pool.options.max);
+  console.log(
+    '[db] postgres in-process pool ready · max=%s · statement_timeout=%sms',
+    pool.options.max,
+    process.env.WMS_PG_STATEMENT_TIMEOUT_MS || 8000
+  );
   return pool;
 }
 

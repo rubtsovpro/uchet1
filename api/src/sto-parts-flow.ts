@@ -225,7 +225,7 @@ export async function ensureStoPartsSchema() {
   // Склад курьера — единственная точка для отправки; BUS/CDEK не используем
   try {
     await courierWarehouseId();
-    archiveObsoleteLogisticsWarehouses();
+    await archiveObsoleteLogisticsWarehouses();
   } catch {
     /* ignore */
   }

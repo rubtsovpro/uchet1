@@ -15,6 +15,15 @@ import { newGuid } from './ids.js';
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+
+type PrepParams = string | number | bigint | null | Uint8Array;
+type PrepRunStmt = {
+  run: (...params: PrepParams[]) => { changes: number } | Promise<{ changes: number }>;
+};
+async function prepRun(stmt: PrepRunStmt, ...params: PrepParams[]): Promise<{ changes: number }> {
+  return await Promise.resolve(stmt.run(...params));
+}
+
 type HsStoreRef = { wmsId: string; hsGuid: string };
 
 const PODBveska_STORE_CODES = ['НФ-000032', 'НФ-000034', 'НФ-000037', '00-000001'] as const;
@@ -647,7 +656,7 @@ async function syncEmployees(): Promise<number> {
     for (const row of raw as Array<{ guid?: string; code?: string; name?: string }>) {
       const id = String(row.guid || '').trim();
       if (!UUID_RE.test(id)) continue;
-      ins.run(id, String(row.code || '').trim(), String(row.name || id).trim());
+      await prepRun(ins, id, String(row.code || '').trim(), String(row.name || id).trim());
       n += 1;
     }
     await run('COMMIT');
@@ -857,7 +866,7 @@ export async function syncApplicabilityAndProperties(
           const years = String(fit.years || '').trim();
           if (!mark && !model && !onlyModel && !generation && !years) continue;
           const id = `${pid}|${mark}|${model}|${onlyModel}|${generation}|${years}`;
-          const r = insertApp.run(id, pid, mark, model, onlyModel, generation, years);
+          const r = await prepRun(insertApp, id, pid, mark, model, onlyModel, generation, years);
           if (r.changes) appCount += 1;
         }
 
@@ -869,7 +878,7 @@ export async function syncApplicabilityAndProperties(
               : String((a as { guid?: string; id?: string }).guid || (a as { id?: string }).id || '').trim();
           const relatedId = await hsProductIdForDepartment(rid, profile.sourceDepartment);
           if (rid && UUID_RE.test(rid) && relatedId !== pid) {
-            const r = insertRelated.run(pid, relatedId);
+            const r = await prepRun(insertRelated, pid, relatedId);
             if (r.changes) relatedCount += 1;
           }
         }
@@ -890,7 +899,7 @@ export async function syncApplicabilityAndProperties(
           const value = String(p.value ?? '').trim();
           if (!property) continue;
           const id = `${pid}|${property}|${value}`;
-          const r = insertProp.run(id, pid, property, value);
+          const r = await prepRun(insertProp, id, pid, property, value);
           if (r.changes) propCount += 1;
           const plower = property.toLowerCase();
           if (plower === 'бренд' || plower.startsWith('бренд ')) brandFromProp = value;
@@ -899,9 +908,9 @@ export async function syncApplicabilityAndProperties(
           if (property === 'Глубина упаковки') pl = numOrNull(value);
           if (property === 'Вес упаковки') pwg = numOrNull(value);
         }
-        if (brandFromProp) updateBrand.run(brandFromProp, pid);
+        if (brandFromProp) await prepRun(updateBrand, brandFromProp, pid);
         if (pw != null || ph != null || pl != null || pwg != null) {
-          updatePkg.run(pw, ph, pl, pwg, pid);
+          await prepRun(updatePkg, pw, ph, pl, pwg, pid);
         }
       }
 
@@ -915,7 +924,7 @@ export async function syncApplicabilityAndProperties(
           if (!priceType) continue;
           const price = Number(p.price);
           if (!Number.isFinite(price)) continue;
-          insertPrice.run(`${pid}|${priceType}`, pid, priceType, price);
+          await prepRun(insertPrice, `${pid}|${priceType}`, pid, priceType, price);
           priceCount += 1;
         }
       }
@@ -932,7 +941,7 @@ export async function syncApplicabilityAndProperties(
 
   const rests = await syncRestsInternal(catIds, profile, storeRefs);
 
-  const legacyServicesHidden = deactivateLegacyServices();
+  const legacyServicesHidden = await deactivateLegacyServices();
   if (legacyServicesHidden > 0) {
     console.log(`HS: скрыто legacy-услуг (не se-*): ${legacyServicesHidden}`);
   }
@@ -1082,12 +1091,12 @@ async function syncRestsInternal(
       for (const row of rests) {
         const catalogGuid = String(row.product || '').trim();
         const pid = await hsProductIdForDepartment(catalogGuid, profile.sourceDepartment);
-        if (!pid || !productExists.get(pid)) continue;
+        if (!pid || !await Promise.resolve(productExists.get(pid))) continue;
         if (await productIsService(pid)) continue;
         const qty = Number(row.quantity);
         if (!Number.isFinite(qty)) continue;
-        insertRest.run(pid, wh.wmsId, qty);
-        insertBal.run(wh.wmsId, pid, qty);
+        await prepRun(insertRest, pid, wh.wmsId, qty);
+        await prepRun(insertBal, wh.wmsId, pid, qty);
         rows += 1;
       }
       await run('COMMIT');
@@ -1238,13 +1247,13 @@ export async function syncPricesOnly(): Promise<{
     try {
       for (const row of prices) {
         const pid = productGuid(row);
-        if (!pid || !productExists.get(pid)) continue;
+        if (!pid || !await Promise.resolve(productExists.get(pid))) continue;
         for (const p of Array.isArray(row.array) ? row.array : []) {
           const priceType = String(p.typeprice || '').trim();
           if (!priceType) continue;
           const price = Number(p.price);
           if (!Number.isFinite(price)) continue;
-          insertPrice.run(`${pid}|${priceType}`, pid, priceType, price);
+          await prepRun(insertPrice, `${pid}|${priceType}`, pid, priceType, price);
           priceCount += 1;
         }
       }
