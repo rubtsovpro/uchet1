@@ -13,12 +13,16 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             set -euo pipefail
-            DB=/root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite
-            echo '=== active se-* ==='
-            sqlite3 -separator $'\t' "$DB" "SELECT sku, IFNULL(is_active,1), name,
-              IFNULL((SELECT price FROM product_prices WHERE product_id=p.id AND price_type IN ('retail','розница','sale') ORDER BY CASE price_type WHEN 'retail' THEN 0 WHEN 'розница' THEN 0 ELSE 1 END LIMIT 1), IFNULL(p.price,0))
-              FROM products p WHERE lower(IFNULL(sku,'')) LIKE 'se-%' ORDER BY sku;"
-            echo '=== active non-se services ==='
-            sqlite3 -separator $'\t' "$DB" "SELECT sku, name FROM products WHERE IFNULL(is_active,1)=1 AND (IFNULL(item_kind,'') IN ('service','услуга') OR lower(IFNULL(name,'')) LIKE 'услуг%') AND lower(IFNULL(sku,'')) NOT LIKE 'se-%' ORDER BY sku LIMIT 50;"
-            echo '=== counts ==='
-            sqlite3 "$DB" "SELECT 'se_all='||COUNT(*) FROM products WHERE lower(sku) LIKE 'se-%'; SELECT 'se_act='||COUNT(*) FROM products WHERE lower(sku) LIKE 'se-%' AND IFNULL(is_active,1)=1; SELECT 'svc_act_nonse='||COUNT(*) FROM products WHERE IFNULL(is_active,1)=1 AND IFNULL(item_kind,'') IN ('service','услуга') AND lower(sku) NOT LIKE 'se-%';"
+            php -r '
+            $pdo=new PDO("sqlite:/root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite");
+            echo "=== se-* ===\n";
+            $q=$pdo->query("SELECT sku, IFNULL(is_active,1) act, name FROM products WHERE lower(IFNULL(sku,\"\")) LIKE \"se-%\" ORDER BY sku");
+            foreach($q as $r) echo $r["sku"]."\t".$r["act"]."\t".$r["name"]."\n";
+            echo "=== active non-se services ===\n";
+            $q=$pdo->query("SELECT sku, name FROM products WHERE IFNULL(is_active,1)=1 AND IFNULL(item_kind,\"\") IN (\"service\",\"услуга\") AND lower(IFNULL(sku,\"\")) NOT LIKE \"se-%\" ORDER BY sku LIMIT 40");
+            foreach($q as $r) echo ($r["sku"]?:"(empty)")."\t".$r["name"]."\n";
+            $seAll=$pdo->query("SELECT COUNT(*) c FROM products WHERE lower(sku) LIKE \"se-%\"")->fetch()["c"];
+            $seAct=$pdo->query("SELECT COUNT(*) c FROM products WHERE lower(sku) LIKE \"se-%\" AND IFNULL(is_active,1)=1")->fetch()["c"];
+            $non=$pdo->query("SELECT COUNT(*) c FROM products WHERE IFNULL(is_active,1)=1 AND IFNULL(item_kind,\"\") IN (\"service\",\"услуга\") AND lower(sku) NOT LIKE \"se-%\"")->fetch()["c"];
+            echo "counts se_all=$seAll se_act=$seAct svc_act_nonse=$non\n";
+            '
