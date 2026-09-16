@@ -36934,7 +36934,7 @@ function renderHelpHub() {
     </div>`
       : `
     <p class="muted" style="margin:0 0 14px;font-size:13px;max-width:640px">
-      Рабочие экраны для склада и фото, внешний API для интеграций.
+      Рабочие экраны для склада и курьера.
     </p>
     <div class="help-role-cards" aria-label="Разделы помощи">
       ${pickCard}
@@ -36950,26 +36950,9 @@ function renderHelpHub() {
         <span class="help-role-desc">Принял → забрал → сдал на склад</span>
         <span class="help-role-go">uchetn1.ru/courier →</span>
       </a>
-      <a class="help-role-card" href="/reception-photo" target="_blank" rel="noopener">
-        <span class="help-role-ico" aria-hidden="true">Ав</span>
-        <span class="help-role-title">Фото авто · приёмка</span>
-        <span class="help-role-desc">Пуш: СТС или авто → снять с телефона → в заказ</span>
-        <span class="help-role-go">uchetn1.ru/reception-photo →</span>
-      </a>
-      <button type="button" class="help-role-card" id="help-open-api" style="text-align:left;width:100%;font:inherit;cursor:pointer">
-        <span class="help-role-ico" aria-hidden="true">API</span>
-        <span class="help-role-title">Интеграции и API</span>
-        <span class="help-role-desc">Ключ API, вебхуки, публичные методы · доступ извне</span>
-        <span class="help-role-go">Открыть раздел →</span>
-      </button>
     </div>`;
     view.innerHTML = formChrome('Рабочие экраны', body, { closable: true });
   bindFormChrome(() => showSection('help'));
-  if (!whPick) {
-    document.getElementById('help-open-api')?.addEventListener('click', () => {
-      openTab('help-integrations');
-    });
-  }
   } catch (e) {
     console.error('[help-hub]', e);
     showForm();
