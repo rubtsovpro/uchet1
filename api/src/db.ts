@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { pgAll, pgExec, pgGet, pgRun, pgWarm } from './db-pg-bridge.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** SQLite по умолчанию в корне репо (data/), не в api/ — удобнее бэкапы и WMS_DATA_DIR на проде. */
@@ -11,18 +12,62 @@ const dbPath = path.join(dataDir, 'warehouse.sqlite');
 
 fs.mkdirSync(dataDir, { recursive: true });
 
-export const db = new DatabaseSync(dbPath);
-// Короткий busy_timeout: иначе конкурентный sync держит WAL и event loop WMS «молчит».
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA synchronous = NORMAL;
-  PRAGMA foreign_keys = ON;
-  PRAGMA busy_timeout = 800;
-  PRAGMA wal_autocheckpoint = 200;
-`);
-
 export type Row = Record<string, unknown>;
 type SqlParam = string | number | bigint | null | Uint8Array;
+
+export function dbSourceOfTruth(): 'postgres' | 'sqlite' {
+  const raw = String(process.env.WMS_SOURCE_OF_TRUTH || process.env.WMS_DB || 'sqlite')
+    .trim()
+    .toLowerCase();
+  if (raw === 'postgres' || raw === 'pg' || raw === 'postgresql') return 'postgres';
+  return 'sqlite';
+}
+
+export function isPostgresSot(): boolean {
+  return dbSourceOfTruth() === 'postgres';
+}
+
+function openSqlite(): DatabaseSync {
+  const d = new DatabaseSync(dbPath);
+  d.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+    PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 800;
+    PRAGMA wal_autocheckpoint = 200;
+  `);
+  return d;
+}
+
+type PgShim = {
+  prepare: (sql: string) => {
+    all: (...params: SqlParam[]) => Row[];
+    get: (...params: SqlParam[]) => Row | undefined;
+    run: (...params: SqlParam[]) => { changes: number };
+  };
+  exec: (sql: string) => void;
+};
+
+export const db: DatabaseSync | PgShim = isPostgresSot()
+  ? {
+      prepare(sql: string) {
+        return {
+          all: (...params: SqlParam[]) => pgAll(sql, params),
+          get: (...params: SqlParam[]) => pgGet(sql, params),
+          run: (...params: SqlParam[]) => ({ changes: pgRun(sql, params) }),
+        };
+      },
+      exec: (sql: string) => pgExec(sql),
+    }
+  : openSqlite();
+
+if (isPostgresSot()) {
+  try {
+    pgWarm();
+  } catch (e) {
+    console.error('[db] postgres warm failed', e instanceof Error ? e.message : e);
+  }
+}
 
 function isBusyError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
@@ -36,7 +81,6 @@ function withBusyRetry<T>(fn: () => T, attempts = 2): T {
       return fn();
     } catch (e) {
       last = e;
-      // Под lock от PHP export не крутим CPU: один короткий retry, иначе отдаём ошибку наверх.
       if (!isBusyError(e) || i === attempts - 1) throw e;
     }
   }
@@ -44,21 +88,31 @@ function withBusyRetry<T>(fn: () => T, attempts = 2): T {
 }
 
 export function all<T extends Row = Row>(sql: string, params: SqlParam[] = []): T[] {
-  return withBusyRetry(() => db.prepare(sql).all(...params) as T[]);
+  if (isPostgresSot()) return pgAll<T>(sql, params);
+  return withBusyRetry(() => (db as DatabaseSync).prepare(sql).all(...params) as T[]);
 }
 
 export function get<T extends Row = Row>(sql: string, params: SqlParam[] = []): T | undefined {
-  return withBusyRetry(() => db.prepare(sql).get(...params) as T | undefined);
+  if (isPostgresSot()) return pgGet<T>(sql, params);
+  return withBusyRetry(() => (db as DatabaseSync).prepare(sql).get(...params) as T | undefined);
 }
 
 export function run(sql: string, params: SqlParam[] = []): void {
+  if (isPostgresSot()) {
+    pgRun(sql, params);
+    return;
+  }
   withBusyRetry(() => {
-    db.prepare(sql).run(...params);
+    (db as DatabaseSync).prepare(sql).run(...params);
   });
 }
 
 export function migrate(): void {
-  db.exec(`
+  if (isPostgresSot()) {
+    console.log('[db] migrate skipped — Postgres SoT (schema from 1:1 dump)');
+    return;
+  }
+  (db as DatabaseSync).exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL

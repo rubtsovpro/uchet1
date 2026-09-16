@@ -1,0 +1,26 @@
+# Локальный Postgres для dry-run миграции Учёта №1 (не прод).
+# Usage:
+#   docker compose -f deploy/postgres/docker-compose.yml up -d
+#   python3 tools/sqlite_schema_to_pg.py --sqlite data/warehouse.sqlite --out deploy/postgres/schema_from_sqlite.sql
+
+services:
+  wms-pg:
+    image: postgres:16-alpine
+    container_name: uchetn1-pg
+    environment:
+      POSTGRES_USER: wms
+      POSTGRES_PASSWORD: wms_dev
+      POSTGRES_DB: warehouse
+    ports:
+      - '5433:5432'
+    volumes:
+      - wms_pg_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wms -d warehouse']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  wms_pg_data:

@@ -7,7 +7,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { api } from './api.js';
-import { db, get, migrate, run } from './db.js';
+import { db, get, isPostgresSot, migrate, run } from './db.js';
 import { repairPodveskaMskWarehouses } from './hs.js';
 import { deactivateLegacyServices, purgeServiceLinesFromOutDocs, reclassifyAllProductKinds } from './product-kind.js';
 import {
@@ -94,6 +94,7 @@ function sendLegacyCss(c: Context) {
 }
 
 migrate();
+if (!isPostgresSot()) {
 try {
   const repaired = repairPodveskaMskWarehouses();
   if (repaired.fixed > 0) {
@@ -175,6 +176,9 @@ try {
 } catch (e) {
   console.warn('[startup] deactivateLegacyServices failed:', e instanceof Error ? e.message : e);
 }
+} else {
+  console.log('[startup] postgres SoT — skip sqlite ensure*/one-shot repairs');
+}
 
 /** Фоновые задачи внутри процесса (курсы ЦБ + истечение резервов оплаты). */
 function startBackgroundJobs() {
@@ -237,8 +241,9 @@ function startBackgroundJobs() {
 
   // WAL checkpoint — иначе /pick тормозит при разросшемся warehouse.sqlite-wal
   const runWalCheckpoint = () => {
+    if (isPostgresSot()) return;
     try {
-      db.exec('PRAGMA wal_checkpoint(PASSIVE)');
+      (db as { exec: (s: string) => void }).exec('PRAGMA wal_checkpoint(PASSIVE)');
     } catch (e) {
       console.warn('[cron] wal_checkpoint failed', e instanceof Error ? e.message : e);
     }
