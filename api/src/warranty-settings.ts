@@ -98,8 +98,8 @@ export const WARRANTY_DEFAULTS: WarrantySettings = {
   ],
 };
 
-function readRaw(): Partial<WarrantySettings> {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
+async function readRaw(): Promise<Partial<WarrantySettings>> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
   if (!row?.value) return {};
   try {
     const parsed = JSON.parse(row.value) as Partial<WarrantySettings>;
@@ -141,8 +141,8 @@ export function warrantyLineAppliesToSeller(line: WarrantyLine, sellerInn?: stri
   return inns.some((i) => normalizeSellerInn(i) === dig);
 }
 
-export function warrantyLinesForSeller(sellerInn?: string | null): WarrantyLine[] {
-  return getWarrantySettings().lines.filter((l) => warrantyLineAppliesToSeller(l, sellerInn));
+export async function warrantyLinesForSeller(sellerInn?: string | null): Promise<WarrantyLine[]> {
+  return (await getWarrantySettings()).lines.filter((l) => warrantyLineAppliesToSeller(l, sellerInn));
 }
 
 /** Юр. формулировка по рейкам для оферты / договора (только М.П.). */
@@ -159,49 +159,49 @@ export function formatSteeringRackLegalClause(sellerInn?: string | null): string
 }
 
 /** Блок строк таблицы 10.7 по рейкам (или пусто у Романа). */
-export function formatSteeringRackTableBlock(
+export async function formatSteeringRackTableBlock(
   sellerInn?: string | null,
   startGoods = 'с даты выдачи АМТС'
-): string {
-  const line = warrantyLinesForSeller(sellerInn).find((l) => l.id === 'steering_rack');
+): Promise<string> {
+  const line = (await warrantyLinesForSeller(sellerInn)).find((l) => l.id === 'steering_rack');
   if (!line) return '';
   const term = String(line.term || '').trim() || '____';
   const note = line.note ? ` (${line.note})` : '';
   return `Рулевые рейки\n${term}${note}\n${startGoods}`;
 }
 
-export function getWarrantySettings(): WarrantySettings {
-  const raw = readRaw();
+export async function getWarrantySettings(): Promise<WarrantySettings> {
+  const raw = await readRaw();
   return {
     lines: mergeLines(raw.lines),
     updated_at: raw.updated_at,
   };
 }
 
-export function saveWarrantySettings(patch: { lines?: WarrantyLine[] }): WarrantySettings {
-  const cur = getWarrantySettings();
+export async function saveWarrantySettings(patch: { lines?: WarrantyLine[] }): Promise<WarrantySettings> {
+  const cur = await getWarrantySettings();
   const next: WarrantySettings = {
     lines: mergeLines(patch.lines != null ? patch.lines : cur.lines),
     updated_at: new Date().toISOString(),
   };
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(next)]);
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(next)]);
   return next;
 }
 
-export function warrantyLineTerm(id: string, fallback = '____', sellerInn?: string | null): string {
-  const line = warrantyLinesForSeller(sellerInn).find((l) => l.id === id);
+export async function warrantyLineTerm(id: string, fallback = '____', sellerInn?: string | null): Promise<string> {
+  const line = (await warrantyLinesForSeller(sellerInn)).find((l) => l.id === id);
   const t = String(line?.term || '').trim();
   return t || fallback;
 }
 
 /** Текст для {{ГарантияРаботы}} — услуги. */
-export function formatWarrantyWorksTerm(): string {
-  return warrantyLineTerm('services', '7 календарных дней');
+export async function formatWarrantyWorksTerm(): Promise<string> {
+  return await warrantyLineTerm('services', '7 календарных дней');
 }
 
 /** Краткая сводка по основным товарам. */
-export function formatWarrantyGoodsSummary(sellerInn?: string | null): string {
-  const goods = warrantyLinesForSeller(sellerInn).filter(
+export async function formatWarrantyGoodsSummary(sellerInn?: string | null): Promise<string> {
+  const goods = (await warrantyLinesForSeller(sellerInn)).filter(
     (l) => l.group === 'goods' && String(l.term || '').trim()
   );
   if (!goods.length) return '';
@@ -209,21 +209,21 @@ export function formatWarrantyGoodsSummary(sellerInn?: string | null): string {
 }
 
 /** Таблица 10.7 / гарантийный талон (текст). */
-export function formatWarrantyTableText(opts?: {
+export async function formatWarrantyTableText(opts?: {
   startWorks?: string;
   startGoods?: string;
   sellerInn?: string | null;
-}): string {
+}): Promise<string> {
   const startWorks = opts?.startWorks || 'с даты выдачи АМТС';
   const startGoods = opts?.startGoods || 'с даты выдачи АМТС';
-  const lines = warrantyLinesForSeller(opts?.sellerInn).filter((l) => l.group !== 'exclusion');
+  const lines = (await warrantyLinesForSeller(opts?.sellerInn)).filter((l) => l.group !== 'exclusion');
   const rows = lines.map((l) => {
     const term = String(l.term || '').trim() || '____';
     const start = l.group === 'services' ? startWorks : startGoods;
     const note = l.note ? ` (${l.note})` : '';
     return `${l.label}\t${term}${note}\t${start}`;
   });
-  const excl = warrantyLinesForSeller(opts?.sellerInn).find((l) => l.id === 'client_parts');
+  const excl = (await warrantyLinesForSeller(opts?.sellerInn)).find((l) => l.id === 'client_parts');
   if (excl) {
     const term = String(excl.term || '').trim() || 'гарантия производителя запчасти';
     const note = excl.note ? ` ${excl.note}` : '';
@@ -236,12 +236,12 @@ export function formatWarrantyTableText(opts?: {
 }
 
 /** HTML-таблица для печати ЗН. */
-export function warrantyTableHtml(opts?: {
+export async function warrantyTableHtml(opts?: {
   startWorks?: string;
   startGoods?: string;
   sellerInn?: string | null;
   esc?: (s: string) => string;
-}): string {
+}): Promise<string> {
   const esc = opts?.esc || ((s: string) =>
     String(s)
       .replace(/&/g, '&amp;')
@@ -250,7 +250,7 @@ export function warrantyTableHtml(opts?: {
       .replace(/"/g, '&quot;'));
   const startWorks = opts?.startWorks || 'с даты выдачи АМТС';
   const startGoods = opts?.startGoods || 'с даты выдачи АМТС';
-  const lines = warrantyLinesForSeller(opts?.sellerInn);
+  const lines = await warrantyLinesForSeller(opts?.sellerInn);
   const bodyRows = lines
     .filter((l) => l.group !== 'exclusion')
     .map((l) => {

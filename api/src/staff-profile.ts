@@ -25,12 +25,12 @@ function avatarsDir(): string {
   return dir;
 }
 
-function metaGet(key: string): string {
-  return String(get<{ v: string }>('SELECT value AS v FROM meta WHERE key = ?', [key])?.v || '');
+async function metaGet(key: string): Promise<string> {
+  return String((await get<{ v: string }>('SELECT value AS v FROM meta WHERE key = ?', [key]))?.v || '');
 }
 
-function metaSet(key: string, value: string): void {
-  run(
+async function metaSet(key: string, value: string): Promise<void> {
+  await run(
     `INSERT INTO meta (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     [key, value]
@@ -39,16 +39,16 @@ function metaSet(key: string, value: string): void {
 
 type AdminProfile = { phone?: string; avatar_url?: string; avatar_path?: string };
 
-function readAdminProfile(): AdminProfile {
+async function readAdminProfile(): Promise<AdminProfile> {
   try {
-    return JSON.parse(metaGet(META_ADMIN) || '{}') as AdminProfile;
+    return JSON.parse(await metaGet(META_ADMIN) || '{}') as AdminProfile;
   } catch {
     return {};
   }
 }
 
-function writeAdminProfile(p: AdminProfile): void {
-  metaSet(META_ADMIN, JSON.stringify(p));
+async function writeAdminProfile(p: AdminProfile): Promise<void> {
+  await metaSet(META_ADMIN, JSON.stringify(p));
 }
 
 export type MeProfile = {
@@ -60,9 +60,9 @@ export type MeProfile = {
   can_set_pin: boolean;
 };
 
-export function meProfileExtras(actorId: string): MeProfile {
+export async function meProfileExtras(actorId: string): Promise<MeProfile> {
   if (actorId === '__admin__') {
-    const p = readAdminProfile();
+    const p = await readAdminProfile();
     return {
       phone: String(p.phone || ''),
       avatar_url: String(p.avatar_url || ''),
@@ -72,7 +72,7 @@ export function meProfileExtras(actorId: string): MeProfile {
       can_set_pin: false,
     };
   }
-  const row = get<{
+  const row = await get<{
     phone: string;
     avatar_url: string;
     password_hash: string;
@@ -93,17 +93,17 @@ export function meProfileExtras(actorId: string): MeProfile {
   };
 }
 
-export function updateOwnPhone(actorId: string, phoneRaw: string): string {
-  const phone = normalizePhoneForStorage(phoneRaw);
+export async function updateOwnPhone(actorId: string, phoneRaw: string): Promise<string> {
+  const phone = await normalizePhoneForStorage(phoneRaw);
   if (actorId === '__admin__') {
-    const p = readAdminProfile();
+    const p = await readAdminProfile();
     p.phone = phone;
-    writeAdminProfile(p);
+    await writeAdminProfile(p);
     return phone;
   }
-  const row = get('SELECT id FROM staff WHERE id = ?', [actorId]);
+  const row = await get('SELECT id FROM staff WHERE id = ?', [actorId]);
   if (!row) throw new Error('Сотрудник не найден');
-  run(`UPDATE staff SET phone = ? WHERE id = ?`, [phone, actorId]);
+  await run(`UPDATE staff SET phone = ? WHERE id = ?`, [phone, actorId]);
   return phone;
 }
 
@@ -160,23 +160,23 @@ export async function saveOwnAvatar(
   }
 
   if (actorId === '__admin__') {
-    const p = readAdminProfile();
+    const p = await readAdminProfile();
     p.avatar_url = url;
     p.avatar_path = localPath || p.avatar_path;
-    writeAdminProfile(p);
+    await writeAdminProfile(p);
     return { avatar_url: url };
   }
 
-  run(`UPDATE staff SET avatar_url = ? WHERE id = ?`, [url, actorId]);
+  await run(`UPDATE staff SET avatar_url = ? WHERE id = ?`, [url, actorId]);
   if (localPath) {
     // путь не светим наружу — достаточен avatar_url
   }
   return { avatar_url: url };
 }
 
-export function clearOwnAvatar(actorId: string): void {
+export async function clearOwnAvatar(actorId: string): Promise<void> {
   if (actorId === '__admin__') {
-    const p = readAdminProfile();
+    const p = await readAdminProfile();
     if (p.avatar_path && fs.existsSync(p.avatar_path)) {
       try {
         fs.unlinkSync(p.avatar_path);
@@ -186,7 +186,7 @@ export function clearOwnAvatar(actorId: string): void {
     }
     p.avatar_url = '';
     p.avatar_path = '';
-    writeAdminProfile(p);
+    await writeAdminProfile(p);
     return;
   }
   for (const ext of ['jpg', 'jpeg', 'png', 'webp']) {
@@ -199,13 +199,13 @@ export function clearOwnAvatar(actorId: string): void {
       }
     }
   }
-  run(`UPDATE staff SET avatar_url = '' WHERE id = ?`, [actorId]);
+  await run(`UPDATE staff SET avatar_url = '' WHERE id = ?`, [actorId]);
 }
 
 /** Локальный файл аватара (если не S3). */
-export function resolveLocalAvatarPath(actorId: string): { path: string; mime: string } | null {
+export async function resolveLocalAvatarPath(actorId: string): Promise<{ path: string; mime: string } | null> {
   if (actorId === '__admin__') {
-    const p = readAdminProfile();
+    const p = await readAdminProfile();
     if (p.avatar_path && fs.existsSync(p.avatar_path)) {
       const ext = path.extname(p.avatar_path).toLowerCase();
       const mime =
@@ -225,38 +225,38 @@ export function resolveLocalAvatarPath(actorId: string): { path: string; mime: s
   return null;
 }
 
-export function publicAvatarUrl(actorId: string): string {
-  if (actorId === '__admin__') return String(readAdminProfile().avatar_url || '');
+export async function publicAvatarUrl(actorId: string): Promise<string> {
+  if (actorId === '__admin__') return String((await readAdminProfile()).avatar_url || '');
   return String(
-    get<{ u: string }>('SELECT IFNULL(avatar_url,\'\') AS u FROM staff WHERE id = ?', [actorId])
+    (await get<{ u: string }>('SELECT IFNULL(avatar_url,\'\') AS u FROM staff WHERE id = ?', [actorId]))
       ?.u || ''
   );
 }
 
-function staffPasswordHash(actorId: string): string {
+async function staffPasswordHash(actorId: string): Promise<string> {
   return (
-    get<{ password_hash: string }>('SELECT password_hash FROM staff WHERE id = ?', [actorId])
+    (await get<{ password_hash: string }>('SELECT password_hash FROM staff WHERE id = ?', [actorId]))
       ?.password_hash || ''
   );
 }
 
-function staffPinHash(actorId: string): string {
+async function staffPinHash(actorId: string): Promise<string> {
   return (
-    get<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = ?', [actorId])?.pin_hash ||
+    (await get<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = ?', [actorId]))?.pin_hash ||
     ''
   );
 }
 
 /** Смена / установка своего PIN. Нужен текущий пароль или текущий PIN. */
-export function changeOwnPin(
+export async function changeOwnPin(
   actorId: string,
   opts: { pin?: string | null; current_password?: string; current_pin?: string }
-): void {
+): Promise<void> {
   if (actorId === '__admin__') {
     throw new Error('Системному admin PIN не задаётся');
   }
-  const passHash = staffPasswordHash(actorId);
-  const pinHash = staffPinHash(actorId);
+  const passHash = await staffPasswordHash(actorId);
+  const pinHash = await staffPinHash(actorId);
   const curPass = String(opts.current_password || '');
   const curPin = String(opts.current_pin || '').replace(/\D/g, '');
   let ok = false;
@@ -267,11 +267,11 @@ export function changeOwnPin(
     throw new Error('Укажите текущий пароль');
   }
   if (opts.pin === null || String(opts.pin || '').trim() === '') {
-    clearStaffPin(actorId);
+    await clearStaffPin(actorId);
     return;
   }
   validatePinFormat(String(opts.pin));
-  setStaffPin(actorId, String(opts.pin));
+  await setStaffPin(actorId, String(opts.pin));
 }
 
 export { staffHasPin, hashPassword };

@@ -4,11 +4,13 @@
  *
  * Sheet: https://docs.google.com/spreadsheets/d/1KRNwQIi-jYBDtKYl5rQ9is6zngbPds0ZZvBXWCApn7I
  *
- * - Карточка = MRAER мастер (A)
+ * - Карточка = MRAER мастер (A). Если A пусто — строку пропускаем (факт B ≠ номенклатура).
+ * - «Номер на складе (факт)» (B) — только лот / warehouse_sku у мастера, не отдельная карточка.
  * - Лоты = факт B + поставщик + qty + ячейка + склад + поставка + ОЕ
  * - Цены с листа: C «Цена» (розница), D «Партнерская», E «Снятие/Установка»
  *   (fallback: amo1c products.price / price_install)
- * - Остатки затираются по затронутым master/fact
+ * - Остатки (qty/ячейка/склад): только при создании новой карточки — один раз.
+ *   Уже существующие товары — остатки с листа никогда не перезаписываем.
  * - Старые коды из таблицы (факт≠мастер, колонки старых MRAER) → is_active=0
  * - Фогель не трогаем
  *
@@ -266,7 +268,7 @@ $iMarks = colIndex($header, ['марки'], false);
 $iModel = colIndex($header, ['модель'], false);
 $iBody = colIndex($header, ['кузова']);
 $iYears = colIndex($header, ['годы'], false);
-// Столбец Y «ПРИМЕНИМОСТЬ (все машины)» — не путать с G «Применимость программная».
+// Столбец Y «ПРИМЕНИМОСТЬ (все машины)» — единственный источник применимости.
 $iApp = colIndex($header, ['применимость (все машины)'], false);
 if ($iApp === null) {
     foreach ($header as $hi => $hh) {
@@ -689,6 +691,7 @@ try {
 
     $masterIds = [];
     $touchedProductIds = [];
+    $newProductIds = []; // остатки с листа — только для них
     $touchedFactSkus = [];
 
     foreach ($masters as $sku => $m) {
@@ -716,6 +719,7 @@ try {
                 $setInstallNew->execute();
             }
             $stats['created_products']++;
+            $newProductIds[$id] = true;
         } else {
             $id = (string) $prod['id'];
             $updProduct->bindValue(':id', $id, SQLITE3_TEXT);
@@ -813,15 +817,17 @@ try {
             $insAlt->execute();
         }
 
-        $delLots->bindValue(':sku', $sku, SQLITE3_TEXT);
-        $delLots->execute();
+        if (isset($newProductIds[$id])) {
+            $delLots->bindValue(':sku', $sku, SQLITE3_TEXT);
+            $delLots->execute();
+        }
     }
 
-    // clear stock for touched masters
+    // Остатки с листа — только для НОВЫХ карточек (один раз). Существующие не трогаем.
     $delBal = $db->prepare('DELETE FROM stock_balances WHERE product_id = :pid');
     $delRest = $db->prepare('DELETE FROM product_store_rests WHERE product_id = :pid');
     $delCellByPid = $db->prepare('DELETE FROM stock_cell_balances WHERE product_id = :pid');
-    foreach (array_keys($touchedProductIds) as $pid) {
+    foreach (array_keys($newProductIds) as $pid) {
         $delBal->bindValue(':pid', $pid, SQLITE3_TEXT);
         $delBal->execute();
         $delRest->bindValue(':pid', $pid, SQLITE3_TEXT);
@@ -829,20 +835,19 @@ try {
         $delCellByPid->bindValue(':pid', $pid, SQLITE3_TEXT);
         $delCellByPid->execute();
     }
-    // also clear cell balances by fact sku
-    $delCellBySku = $db->prepare('DELETE FROM stock_cell_balances WHERE sku = :sku COLLATE NOCASE');
-    foreach (array_keys($factSkus) as $fs) {
-        $delCellBySku->bindValue(':sku', $fs, SQLITE3_TEXT);
-        $delCellBySku->execute();
-        $touchedFactSkus[$fs] = true;
-    }
 
     $balAgg = []; // pid|wh => qty
+    $stats['stock_seed_rows'] = 0;
+    $stats['stock_skipped_existing'] = 0;
 
     foreach ($rows as $item) {
         $master = $item['master'];
         $pid = $masterIds[$master] ?? null;
         if (!$pid) {
+            continue;
+        }
+        if (!isset($newProductIds[$pid])) {
+            $stats['stock_skipped_existing']++;
             continue;
         }
         $wh = $mapWh($item['warehouse']);
@@ -919,6 +924,7 @@ try {
         $insLot->bindValue(':row', $item['row'], SQLITE3_INTEGER);
         $insLot->execute();
         $stats['lots']++;
+        $stats['stock_seed_rows']++;
 
         $k = $pid . '|' . $whId;
         $balAgg[$k] = ($balAgg[$k] ?? 0) + $item['qty'];

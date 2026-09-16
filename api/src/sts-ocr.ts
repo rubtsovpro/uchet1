@@ -449,9 +449,9 @@ function extractJson(text: string): unknown {
   return {};
 }
 
-function resolvedOcrMode(): 'local' | 'cloud' | 'off' {
+async function resolvedOcrMode(): Promise<'local' | 'cloud' | 'off'> {
   try {
-    const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [
+    const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [
       'ocr_local_settings',
     ]);
     if (row?.value) {
@@ -467,20 +467,20 @@ function resolvedOcrMode(): 'local' | 'cloud' | 'off' {
   return 'local';
 }
 
-export function deepseekConfigured(settings?: DeepseekSettings): boolean {
-  const mode = resolvedOcrMode();
+export async function deepseekConfigured(settings?: DeepseekSettings): Promise<boolean> {
+  const mode = await resolvedOcrMode();
   if (mode === 'local') return true;
   if (mode === 'off') return false;
   if (String(process.env.CF_STS_OCR_URL || '').trim()) return true;
-  const s = settings || getDeepseekSettings();
+  const s = settings || await getDeepseekSettings();
   return Boolean(s.api_key);
 }
 
 /** Официальный api.deepseek.com — только текст, image_url не принимает. */
-export function deepseekVisionEndpointOk(settings?: DeepseekSettings): boolean {
-  if (resolvedOcrMode() === 'local') return true;
+export async function deepseekVisionEndpointOk(settings?: DeepseekSettings): Promise<boolean> {
+  if (await resolvedOcrMode() === 'local') return true;
   if (String(process.env.CF_STS_OCR_URL || '').trim()) return true;
-  const s = settings || getDeepseekSettings();
+  const s = settings || await getDeepseekSettings();
   const base = String(s.base_url || '')
     .trim()
     .toLowerCase()
@@ -649,7 +649,7 @@ export async function recognizeStsFromImages(
 
   // On-prem OCR (фото не уходят с сервера) — приоритет при OCR_MODE=local
   const { getOcrLocalSettings, recognizeStsViaLocal } = await import('./doc-ocr-local.js');
-  const ocr = getOcrLocalSettings();
+  const ocr = await getOcrLocalSettings();
   if (ocr.mode === 'off') {
     throw new Error('OCR выключен (Настройки → OCR документов). Введите поля вручную.');
   }
@@ -665,14 +665,14 @@ export async function recognizeStsFromImages(
     .trim()
     .replace(/\/+$/, '');
   if (cfBridge) {
-    return recognizeViaCfBridge(cfBridge, buffers);
+    return await recognizeViaCfBridge(cfBridge, buffers);
   }
 
-  const s = settings || getDeepseekSettings();
+  const s = settings || await getDeepseekSettings();
   if (!s.api_key) {
     throw new Error('Не задан ключ DeepSeek (DEEPSEEK_API_KEY или Настройки → DeepSeek)');
   }
-  if (!deepseekVisionEndpointOk(s)) {
+  if (!await deepseekVisionEndpointOk(s)) {
     throw new Error(deepseekVisionHint(s));
   }
 

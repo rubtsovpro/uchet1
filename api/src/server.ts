@@ -96,7 +96,7 @@ function sendLegacyCss(c: Context) {
 migrate();
 if (!isPostgresSot()) {
 try {
-  const repaired = repairPodveskaMskWarehouses();
+  const repaired = await repairPodveskaMskWarehouses();
   if (repaired.fixed > 0) {
     console.log('[startup] repair podveska MSK warehouses:', repaired.fixed);
   }
@@ -104,51 +104,51 @@ try {
   console.warn('[startup] repair podveska warehouses:', e instanceof Error ? e.message : e);
 }
 try {
-  ensureStoPartsSchema();
+  await ensureStoPartsSchema();
 } catch (e) {
   console.warn('[migrate] sto-parts schema:', e instanceof Error ? e.message : e);
 }
 try {
-  ensureStaffNotificationsSchema();
+  await ensureStaffNotificationsSchema();
 } catch (e) {
   console.warn('[migrate] staff-notifications:', e instanceof Error ? e.message : e);
 }
 try {
-  ensureWebPushSchema();
+  await ensureWebPushSchema();
 } catch (e) {
   console.warn('[migrate] web-push:', e instanceof Error ? e.message : e);
 }
 try {
-  ensureProductServiceLinksSchema();
+  await ensureProductServiceLinksSchema();
 } catch (e) {
   console.warn('[migrate] product-service-links:', e instanceof Error ? e.message : e);
 }
 try {
-  ensureTaxSchema();
+  await ensureTaxSchema();
 } catch (e) {
   console.warn('[migrate] tax schema:', e instanceof Error ? e.message : e);
 }
-ensureStaffRoleDefaults();
-ensureOrgProfileSeeded();
+await ensureStaffRoleDefaults();
+await ensureOrgProfileSeeded();
 try {
-  ensureDevPlanSchema();
+  await ensureDevPlanSchema();
 } catch (e) {
   console.warn('[ensureDevPlanSchema]', e instanceof Error ? e.message : e);
 }
 try {
-  ensureClientOrgContours();
+  await ensureClientOrgContours();
 } catch (e) {
   console.warn('[ensureClientOrgContours]', e instanceof Error ? e.message : e);
 }
 // Разово: починить «Диагностика» и т.п. в расходных (\b не ловил кириллицу)
 try {
-  const done = get<{ value: string }>(
+  const done = await get<{ value: string }>(
     `SELECT value FROM meta WHERE key = 'out_services_purge_v2'`
   );
   if (!done) {
-    const kind = reclassifyAllProductKinds();
-    const purged = purgeServiceLinesFromOutDocs();
-    run(
+    const kind = await reclassifyAllProductKinds();
+    const purged = await purgeServiceLinesFromOutDocs();
+    await run(
       `INSERT INTO meta (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       [
@@ -181,7 +181,7 @@ try {
 }
 
 /** Фоновые задачи внутри процесса (курсы ЦБ + истечение резервов оплаты). */
-function startBackgroundJobs() {
+async function startBackgroundJobs() {
   const runCbr = async (reason: string) => {
     try {
       const r = await syncRatesFromCbr({ force: false });
@@ -196,9 +196,9 @@ function startBackgroundJobs() {
       console.warn('[cron] cbr failed', e instanceof Error ? e.message : e);
     }
   };
-  const runExpire = () => {
+  const runExpire = async () => {
     try {
-      const r = expireDuePaymentLinks(100);
+      const r = await expireDuePaymentLinks(100);
       if (r.expired > 0) console.log(`[cron] expire-payment: ${r.expired}`);
     } catch (e) {
       console.warn('[cron] expire-payment failed', e instanceof Error ? e.message : e);
@@ -219,14 +219,14 @@ function startBackgroundJobs() {
 
   // Списание СТО по успешным сделкам — раз в сутки ~21:00 МСК (подстраховка)
   let lastStoWriteoffDay = '';
-  const runStoWriteoffIfEvening = () => {
+  const runStoWriteoffIfEvening = async () => {
     try {
       const msk = new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Moscow' });
       const [day, hourStr] = [msk.slice(0, 10), msk.slice(11, 13)];
       const hour = Number(hourStr);
       if (hour !== 21 || day === lastStoWriteoffDay) return;
       lastStoWriteoffDay = day;
-      const r = runStoSaleWriteoffCron(120);
+      const r = await runStoSaleWriteoffCron(120);
       if (r.written > 0 || r.errors.length) {
         console.log(
           `[cron] sto-sale-writeoffs: written=${r.written} skipped=${r.skipped} errors=${r.errors.length}`
@@ -253,7 +253,7 @@ function startBackgroundJobs() {
 
   // Google Drive прайсы Жени → purchase-intake (раз в 3 мин)
   try {
-    startPurchaseDrivePoller();
+    await startPurchaseDrivePoller();
   } catch (e) {
     console.warn('[cron] purchase-drive init:', e instanceof Error ? e.message : e);
   }
@@ -262,12 +262,12 @@ function startBackgroundJobs() {
   const runAmoNoteQueue = async () => {
     try {
       const { drainAmoLeadNoteQueue, amoLeadNoteQueueSize } = await import('./amo-note-queue.js');
-      if (amoLeadNoteQueueSize() <= 0) return;
+      if (await amoLeadNoteQueueSize() <= 0) return;
       const { sendAmoLeadNoteOnce, sendAmoLeadTaskOnce } = await import('./amo-pick-handoff.js');
       const r = await drainAmoLeadNoteQueue({
         max: 1,
-        sendNote: (item) => sendAmoLeadNoteOnce({ dealId: item.deal_id, text: item.text }),
-        sendTask: (item) => sendAmoLeadTaskOnce({ dealId: item.deal_id, text: item.text }),
+        sendNote: async (item) => await sendAmoLeadNoteOnce({ dealId: item.deal_id, text: item.text }),
+        sendTask: async (item) => await sendAmoLeadTaskOnce({ dealId: item.deal_id, text: item.text }),
       });
       if (r.sent || r.dropped || r.deferred) {
         console.log(
@@ -352,9 +352,9 @@ function clientMeta(c: { req: { header: (n: string) => string | undefined } }) {
   };
 }
 
-function isAuthed(c: Parameters<typeof getCookie>[0]): boolean {
+async function isAuthed(c: Parameters<typeof getCookie>[0]): Promise<boolean> {
   const sid = getCookie(c, COOKIE_SID);
-  if (actorFromSession(sid)) return true;
+  if (await actorFromSession(sid)) return true;
   // переходный период: старый cookie системного admin
   return getCookie(c, LEGACY_COOKIE) === LEGACY_OK;
 }
@@ -431,11 +431,11 @@ app.use('*', async (c, next) => {
   ) {
     return next();
   }
-  if (!isAuthed(c) && p.startsWith('/api/')) {
-    if (machineApiKeyOkForPath(c)) return next();
+  if (!await isAuthed(c) && p.startsWith('/api/')) {
+    if (await machineApiKeyOkForPath(c)) return next();
     return c.json({ error: 'unauthorized' }, 401);
   }
-  if (!isAuthed(c)) {
+  if (!await isAuthed(c)) {
     const hostHdr = c.req.header('x-forwarded-host') || c.req.header('host');
     const screen = screenForHost(hostHdr);
     let nextPath = p && p !== '/login' ? p : '/';
@@ -478,7 +478,7 @@ function clearSessionCookies(c: Parameters<typeof setCookie>[0]) {
   }
 }
 
-function finishLogin(
+async function finishLogin(
   c: Parameters<typeof setCookie>[0],
   actor: Actor,
   sid: string,
@@ -497,7 +497,7 @@ function finishLogin(
     maxAge: 60 * 60 * 24 * 14,
   });
   deleteCookie(c, LEGACY_COOKIE, { path: '/', secure: https, sameSite: 'Lax' });
-  writeAudit({
+  await writeAudit({
     action: 'auth.login',
     entity: 'session',
     entityId: actor.id,
@@ -508,7 +508,7 @@ function finishLogin(
   const parsed = parseUserAgent(meta.ua);
   const homePath = homePathForLogin(host, actor);
   const screen = screenForHost(host);
-  touchPresence({
+  await touchPresence({
     actor,
     path: homePath,
     title: 'Вход',
@@ -525,7 +525,7 @@ function finishLogin(
       email: actor.email,
       login: actor.login,
       role: actor.role,
-      has_pin: staffHasPinPublic(actor.id),
+      has_pin: await staffHasPinPublic(actor.id),
     },
     home_path: homePath,
     screen: screen.id,
@@ -556,10 +556,10 @@ app.post('/api/login', async (c) => {
   const password = String(body.password || '');
 
   const result = pin
-    ? authenticatePin(username, pin)
-    : authenticatePassword(username, password);
+    ? await authenticatePin(username, pin)
+    : await authenticatePassword(username, password);
   if (!result.ok) {
-    writeAudit({
+    await writeAudit({
       action: 'auth.login_failed',
       entity: 'session',
       summary: `Неудачный вход: ${username}${pin ? ' (PIN)' : ''}`,
@@ -569,10 +569,10 @@ app.post('/api/login', async (c) => {
   }
 
   // PIN-вход на планшете — без Telegram 2FA (короткий код уже фактор)
-  if (!pin && admin2faRequired(result.actor)) {
+  if (!pin && await admin2faRequired(result.actor)) {
     const challenge = await startAdmin2faChallenge(result.actor, meta);
     if (!challenge.ok) {
-      writeAudit({
+      await writeAudit({
         action: 'auth.login_2fa_failed',
         entity: 'session',
         entityId: result.actor.id,
@@ -585,7 +585,7 @@ app.post('/api/login', async (c) => {
         503
       );
     }
-    writeAudit({
+    await writeAudit({
       action: 'auth.login_2fa_sent',
       entity: 'session',
       entityId: result.actor.id,
@@ -604,20 +604,20 @@ app.post('/api/login', async (c) => {
     });
   }
 
-  const sid = createSession(result.actor.id, meta);
-  return c.json(finishLogin(c, result.actor, sid, meta));
+  const sid = await createSession(result.actor.id, meta);
+  return c.json(await finishLogin(c, result.actor, sid, meta));
 });
 
 app.post('/api/login/2fa', async (c) => {
   const body = await c.req.json<{ challenge_id?: string; code?: string }>();
   const meta = clientMeta(c);
-  const verified = verifyAdmin2faChallenge(
+  const verified = await verifyAdmin2faChallenge(
     String(body.challenge_id || ''),
     String(body.code || ''),
     meta
   );
   if (!verified.ok) {
-    writeAudit({
+    await writeAudit({
       action: 'auth.login_2fa_failed',
       entity: 'session',
       summary: `2FA отказ: ${verified.error}`,
@@ -625,9 +625,9 @@ app.post('/api/login/2fa', async (c) => {
     });
     return c.json({ error: verified.error }, 401);
   }
-  const actor = actorFromSession(verified.sid);
+  const actor = await actorFromSession(verified.sid);
   if (!actor) return c.json({ error: 'Сессия не создана' }, 500);
-  writeAudit({
+  await writeAudit({
     action: 'auth.login_2fa_ok',
     entity: 'session',
     entityId: actor.id,
@@ -635,16 +635,16 @@ app.post('/api/login/2fa', async (c) => {
     actor,
     ip: meta.ip,
   });
-  return c.json(finishLogin(c, actor, verified.sid, meta));
+  return c.json(await finishLogin(c, actor, verified.sid, meta));
 });
 
-app.post('/api/logout', (c) => {
+app.post('/api/logout', async (c) => {
   const sid = getCookie(c, COOKIE_SID);
-  const actor = actorFromSession(sid);
-  destroySession(sid);
+  const actor = await actorFromSession(sid);
+  await destroySession(sid);
   clearSessionCookies(c);
   if (actor) {
-    writeAudit({
+    await writeAudit({
       action: 'auth.logout',
       entity: 'session',
       entityId: actor.id,
@@ -835,12 +835,12 @@ app.get('/reception-photo-sw.js', (c, next) => {
   return sendPublicHtml('reception-photo-sw.js')(c, next);
 });
 /** СТО: подъёмник / приёмщик (HTML может появиться от параллельной задачи) */
-app.get('/lift', (c) => sendScreenHtml(c, 'lift.html', 'Подъёмник', '/lift'));
-app.get('/lift.html', (c) => sendScreenHtml(c, 'lift.html', 'Подъёмник', '/lift'));
-app.get('/sto/lift', (c) => sendScreenHtml(c, 'lift.html', 'Подъёмник', '/lift'));
-app.get('/reception', (c) => sendScreenHtml(c, 'reception.html', 'Приёмщик', '/reception'));
-app.get('/reception.html', (c) => sendScreenHtml(c, 'reception.html', 'Приёмщик', '/reception'));
-app.get('/sto/reception', (c) => sendScreenHtml(c, 'reception.html', 'Приёмщик', '/reception'));
+app.get('/lift', async (c) => await sendScreenHtml(c, 'lift.html', 'Подъёмник', '/lift'));
+app.get('/lift.html', async (c) => await sendScreenHtml(c, 'lift.html', 'Подъёмник', '/lift'));
+app.get('/sto/lift', async (c) => await sendScreenHtml(c, 'lift.html', 'Подъёмник', '/lift'));
+app.get('/reception', async (c) => await sendScreenHtml(c, 'reception.html', 'Приёмщик', '/reception'));
+app.get('/reception.html', async (c) => await sendScreenHtml(c, 'reception.html', 'Приёмщик', '/reception'));
+app.get('/sto/reception', async (c) => await sendScreenHtml(c, 'reception.html', 'Приёмщик', '/reception'));
 /** Промежуточная страница оплаты (СБП + карта + таймер) — публичная, по токену */
 app.get('/pay', sendPublicHtml('pay.html'));
 app.get('/pay/*', sendPublicHtml('pay.html'));
@@ -930,5 +930,5 @@ app.get('*', async (c, next) => {
 });
 
 console.log(`WMS listening on :${PORT}`);
-startBackgroundJobs();
+await startBackgroundJobs();
 serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' });

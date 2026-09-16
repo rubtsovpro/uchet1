@@ -48,8 +48,8 @@ export type PaymentLinkSettings = {
   payment_link_default_organization_id: string;
 };
 
-export function getPaymentLinkSettings(): PaymentLinkSettings {
-  const s = getUiSettings() as PaymentLinkSettings & { phone_format?: string };
+export async function getPaymentLinkSettings(): Promise<PaymentLinkSettings> {
+  const s = await getUiSettings() as PaymentLinkSettings & { phone_format?: string };
   const mins = Number(s.payment_link_timer_minutes);
   return {
     payment_link_timer_minutes:
@@ -63,8 +63,8 @@ export function getPaymentLinkSettings(): PaymentLinkSettings {
   };
 }
 
-export function savePaymentLinkSettings(patch: Partial<PaymentLinkSettings>): PaymentLinkSettings {
-  const cur = getPaymentLinkSettings();
+export async function savePaymentLinkSettings(patch: Partial<PaymentLinkSettings>): Promise<PaymentLinkSettings> {
+  const cur = await getPaymentLinkSettings();
   const next: PaymentLinkSettings = { ...cur };
   if (patch.payment_link_timer_minutes != null) {
     const m = Math.floor(Number(patch.payment_link_timer_minutes));
@@ -82,18 +82,18 @@ export function savePaymentLinkSettings(patch: Partial<PaymentLinkSettings>): Pa
       patch.payment_link_default_organization_id || ''
     );
   }
-  saveUiSettings(next as Parameters<typeof saveUiSettings>[0]);
-  return getPaymentLinkSettings();
+  await saveUiSettings(next as Parameters<typeof saveUiSettings>[0]);
+  return await getPaymentLinkSettings();
 }
 
-export function ensureWaitingPaymentWarehouse(): { id: string; name: string; code: string } {
-  const row = get<{ id: string; name: string; code: string }>(
+export async function ensureWaitingPaymentWarehouse(): Promise<{ id: string; name: string; code: string }> {
+  const row = await get<{ id: string; name: string; code: string }>(
     `SELECT id, name, code FROM warehouses
      WHERE code = ? OR name = ? LIMIT 1`,
     [WAIT_PAY_CODE, WAIT_PAY_NAME]
   );
   if (row) {
-    run(`UPDATE warehouses SET is_active = 1, name = ?, code = ? WHERE id = ?`, [
+    await run(`UPDATE warehouses SET is_active = 1, name = ?, code = ? WHERE id = ?`, [
       WAIT_PAY_NAME,
       WAIT_PAY_CODE,
       row.id,
@@ -101,7 +101,7 @@ export function ensureWaitingPaymentWarehouse(): { id: string; name: string; cod
     return { id: row.id, name: WAIT_PAY_NAME, code: WAIT_PAY_CODE };
   }
   const id = newGuid();
-  run(`INSERT INTO warehouses (id, name, code, is_active) VALUES (?, ?, ?, 1)`, [
+  await run(`INSERT INTO warehouses (id, name, code, is_active) VALUES (?, ?, ?, 1)`, [
     id,
     WAIT_PAY_NAME,
     WAIT_PAY_CODE,
@@ -113,15 +113,15 @@ function newPublicToken(): string {
   return randomBytes(24).toString('base64url');
 }
 
-function resolveProductId(item: Record<string, unknown>): string | null {
+async function resolveProductId(item: Record<string, unknown>): Promise<string | null> {
   const guid = String(item.product_guid || item.product_id || '').trim();
   if (guid) {
-    const byId = get<{ id: string }>('SELECT id FROM products WHERE id = ?', [guid]);
+    const byId = await get<{ id: string }>('SELECT id FROM products WHERE id = ?', [guid]);
     if (byId) return byId.id;
   }
   const sku = String(item.sku || item.code || '').trim();
   if (sku) {
-    const bySku = get<{ id: string }>('SELECT id FROM products WHERE sku = ? OR code = ? LIMIT 1', [
+    const bySku = await get<{ id: string }>('SELECT id FROM products WHERE sku = ? OR code = ? LIMIT 1', [
       sku,
       sku,
     ]);
@@ -131,9 +131,9 @@ function resolveProductId(item: Record<string, unknown>): string | null {
 }
 
 /** Первое фото товара из product_media (публичный URL S3). */
-function productThumbUrl(productId: string | null): string {
+async function productThumbUrl(productId: string | null): Promise<string> {
   if (!productId) return '';
-  const row = get<{ url: string }>(
+  const row = await get<{ url: string }>(
     `SELECT url FROM product_media
      WHERE product_id = ? AND kind = 'image' AND IFNULL(url,'') != ''
      ORDER BY sort_order ASC, synced_at ASC
@@ -144,20 +144,20 @@ function productThumbUrl(productId: string | null): string {
 }
 
 /** Склад-источник с достаточным остатком (кроме WAIT-PAY). */
-export function pickSourceWarehouse(
+export async function pickSourceWarehouse(
   productId: string,
   qty: number,
   preferredId: string,
   waitId: string
-): string | null {
+): Promise<string | null> {
   if (preferredId && preferredId !== waitId) {
-    const bal = get<{ qty: number }>(
+    const bal = await get<{ qty: number }>(
       `SELECT qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?`,
       [preferredId, productId]
     );
     if (bal && Number(bal.qty) + 0.0001 >= qty) return preferredId;
   }
-  const rows = all<{ warehouse_id: string; qty: number }>(
+  const rows = await all<{ warehouse_id: string; qty: number }>(
     `SELECT warehouse_id, qty FROM stock_balances
      WHERE product_id = ? AND warehouse_id != ? AND qty >= ?
      ORDER BY qty DESC LIMIT 5`,
@@ -169,12 +169,12 @@ export function pickSourceWarehouse(
 const WORK_NAME_RE =
   /(снять\/установить|проверить\/исправить|осмотр|диагностик|ремонт|регулир|замен[аы].*работ|н\/ч|нормочас|услуг)/i;
 
-function isGoodsLine(it: Record<string, unknown>): boolean {
+async function isGoodsLine(it: Record<string, unknown>): Promise<boolean> {
   const kind = String(it.line_kind || it.kind || it.item_kind || '').toLowerCase();
   if (kind === 'work' || kind === 'service') return false;
   const productId = String(it.product_guid || it.product_id || '').trim();
   if (productId) {
-    const row = get<{ item_kind: string }>(
+    const row = await get<{ item_kind: string }>(
       `SELECT CASE WHEN IFNULL(item_kind,'product') = 'service' THEN 'service' ELSE 'product' END AS item_kind
        FROM products WHERE id = ?`,
       [productId]
@@ -190,17 +190,17 @@ function isGoodsLine(it: Record<string, unknown>): boolean {
 export type StockNeed = { productId: string; qty: number; name: string; sourceWh: string | null };
 
 /** Проверка остатков по позициям сделки (услуги пропускаем). */
-export function planDealStockNeeds(
+export async function planDealStockNeeds(
   deal: Record<string, unknown>,
   preferredWh = ''
-): { needs: StockNeed[]; missing: string[] } {
-  const waitWh = ensureWaitingPaymentWarehouse();
+): Promise<{ needs: StockNeed[]; missing: string[] }> {
+  const waitWh = await ensureWaitingPaymentWarehouse();
   const items = (deal.items as Array<Record<string, unknown>>) || [];
   const needs: StockNeed[] = [];
   const missing: string[] = [];
   for (const it of items) {
-    if (!isGoodsLine(it)) continue;
-    const productId = resolveProductId(it);
+    if (!await isGoodsLine(it)) continue;
+    const productId = await resolveProductId(it);
     const qty = Number(it.qty || it.quantity || 0) || 0;
     if (!(qty > 0)) continue;
     if (!productId) {
@@ -209,7 +209,7 @@ export function planDealStockNeeds(
     }
     const lineWh = String(it.warehouse_id || '').trim();
     const sourceWh =
-      lineWh || pickSourceWarehouse(productId, qty, preferredWh, waitWh.id);
+      lineWh || await pickSourceWarehouse(productId, qty, preferredWh, waitWh.id);
     const name = String(it.name || it.sku || productId);
     needs.push({ productId, qty, name, sourceWh });
     if (!sourceWh) missing.push(`${name} × ${qty}`);
@@ -218,8 +218,8 @@ export function planDealStockNeeds(
 }
 
 /** Нельзя выставлять счёт / ссылку, если товара нет на складе. */
-export function assertDealStockAvailable(dealId: string, preferredWh?: string): void {
-  const st = getDealInvoiceStockStatus(dealId, preferredWh);
+export async function assertDealStockAvailable(dealId: string, preferredWh?: string): Promise<void> {
+  const st = await getDealInvoiceStockStatus(dealId, preferredWh);
   if (!st.ok) {
     throw new Error(
       `Нет на складе — счёт / оплату выставить нельзя: ${st.missing.slice(0, 5).join('; ')}`
@@ -228,8 +228,8 @@ export function assertDealStockAvailable(dealId: string, preferredWh?: string): 
 }
 
 /** Активный резерв по сделке (ссылка оплаты или счёт юрлица). */
-export function dealActiveReserveQtyByProduct(dealId: string): Map<string, number> {
-  const rows = all<{ product_id: string; qty: number }>(
+export async function dealActiveReserveQtyByProduct(dealId: string): Promise<Map<string, number>> {
+  const rows = await all<{ product_id: string; qty: number }>(
     `SELECT product_id, qty FROM stock_reserves
      WHERE deal_id = ? AND status = 'active'`,
     [dealId]
@@ -246,26 +246,26 @@ export function dealActiveReserveQtyByProduct(dealId: string): Map<string, numbe
 /**
  * Готовность к счёту: есть свободный остаток (резерв WAIT-PAY больше не требуется).
  */
-export function getDealInvoiceStockStatus(
+export async function getDealInvoiceStockStatus(
   dealId: string,
   preferredWh?: string
-): {
+): Promise<{
   ok: boolean;
   reserved: boolean;
   missing: string[];
   needs_count: number;
   reserves: Array<Record<string, unknown>>;
-} {
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+}> {
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) {
     return { ok: false, reserved: false, missing: ['Сделка не найдена'], needs_count: 0, reserves: [] };
   }
-  const settings = getPaymentLinkSettings();
+  const settings = await getPaymentLinkSettings();
   const preferred =
     preferredWh || settings.payment_link_default_warehouse_id || '';
-  const waitWh = ensureWaitingPaymentWarehouse();
-  const { needs } = planDealStockNeeds(deal, preferred);
-  const reservedMap = dealActiveReserveQtyByProduct(dealId);
+  const waitWh = await ensureWaitingPaymentWarehouse();
+  const { needs } = await planDealStockNeeds(deal, preferred);
+  const reservedMap = await dealActiveReserveQtyByProduct(dealId);
   const missing: string[] = [];
   let fullyReserved = needs.length > 0;
   for (const n of needs) {
@@ -273,11 +273,11 @@ export function getDealInvoiceStockStatus(
     if (have + 0.0001 >= n.qty) continue;
     fullyReserved = false;
     const still = Math.round((n.qty - have) * 1000) / 1000;
-    const wh = pickSourceWarehouse(n.productId, still, preferred, waitWh.id);
+    const wh = await pickSourceWarehouse(n.productId, still, preferred, waitWh.id);
     if (!wh) missing.push(`${n.name} × ${still}`);
   }
   if (!needs.length) fullyReserved = false;
-  const reserves = all(
+  const reserves = await all(
     `SELECT * FROM stock_reserves WHERE deal_id = ? AND status = 'active'
      ORDER BY datetime(created_at) DESC`,
     [dealId]
@@ -308,19 +308,19 @@ export function paymentLinkPublicUrl(token: string): string {
  * Та же публичная оплата, что виджет Amo: pay…/?l={leadId}
  * (QR / карта / рассрочка на PHP-форме, не /pay/{token} Учёта).
  */
-export function amoWidgetPayUrl(opts: {
+export async function amoWidgetPayUrl(opts: {
   dealId: string;
   inn?: string | null;
   companyCode?: string | null;
   companyName?: string | null;
   organizationId?: string | null;
-}): string {
+}): Promise<string> {
   const dealId = String(opts.dealId || '').trim();
   if (!dealId) return '';
   let brand: 'fogel' | 'pnevmo' = 'pnevmo';
   const orgId = String(opts.organizationId || '').trim();
   if (orgId) {
-    const org = getOrganization(orgId);
+    const org = await getOrganization(orgId);
     if (org) {
       const inn = String(org.inn || '').replace(/\D/g, '');
       const code = String(org.code || org.name || org.short_name || '')
@@ -349,9 +349,9 @@ export function amoWidgetPayUrl(opts: {
 }
 
 /** Фогель / Краснодар: ссылка на оплату без резерва на WAIT-PAY (самовывоз / СТО). */
-export function isFogelBranchDeal(deal: Record<string, unknown> | null | undefined): boolean {
+export async function isFogelBranchDeal(deal: Record<string, unknown> | null | undefined): Promise<boolean> {
   if (!deal) return false;
-  const branch = resolveAmoBranchForDeal(deal).toLowerCase().replace(/ё/g, 'е');
+  const branch = (await resolveAmoBranchForDeal(deal)).toLowerCase().replace(/ё/g, 'е');
   if (/фогель|fogel/.test(branch)) return true;
   const sto = String(deal.amo_sto || '')
     .toLowerCase()
@@ -359,7 +359,7 @@ export function isFogelBranchDeal(deal: Record<string, unknown> | null | undefin
   if (/фогель|fogel/.test(sto)) return true;
   const orgId = String(deal.org_company_id || '').trim();
   if (orgId) {
-    const org = getOrganization(orgId);
+    const org = await getOrganization(orgId);
     if (org) {
       const inn = String(org.inn || '').replace(/\D/g, '');
       const code = String(org.code || org.name || org.short_name || '')
@@ -406,10 +406,10 @@ export async function sendPaymentLinkSms(input: {
     throw new Error('SMS временно недоступна (TargetSMS не настроен)');
   }
   const dealId = String(input.dealId || '').trim();
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
 
-  const before = get(
+  const before = await get(
     `SELECT id FROM payment_links
      WHERE deal_id = ? AND status = 'pending'
        AND datetime(expires_at) > datetime('now')
@@ -439,20 +439,20 @@ export async function sendPaymentLinkSms(input: {
       throw e instanceof Error ? e : new Error(msg);
     }
     /* технический сбой Учёта → та же ссылка, что виджет Amo */
-    url = amoWidgetPayUrl({
+    url = await amoWidgetPayUrl({
       dealId,
       organizationId: orgId || undefined,
     });
     source = 'amo_widget';
   }
   if (!url) {
-    url = amoWidgetPayUrl({ dealId, organizationId: orgId || undefined });
+    url = await amoWidgetPayUrl({ dealId, organizationId: orgId || undefined });
     source = 'amo_widget';
   }
   if (!url) throw new Error('Не удалось получить ссылку на оплату');
 
   const phone = phoneForPaymentSms(deal.buyer_phone);
-  const org = orgId ? getOrganization(orgId) : undefined;
+  const org = orgId ? await getOrganization(orgId) : undefined;
   const sender = smsSenderForOrg({
     inn: org?.inn,
     companyCode: org?.code,
@@ -472,7 +472,7 @@ export async function sendPaymentLinkSms(input: {
   });
   if (!sent.ok) throw new Error(sent.error);
 
-  writeAudit({
+  await writeAudit({
     action: 'deal.payment_link_sms',
     entity: 'crm_deal',
     entityId: dealId,
@@ -569,8 +569,8 @@ export async function tryCreateAcquiringLink(input: {
   }
 }
 
-function mergePaymentLinkMeta(linkId: string, patch: Record<string, unknown>) {
-  const row = get<{ meta_json: string }>(
+async function mergePaymentLinkMeta(linkId: string, patch: Record<string, unknown>) {
+  const row = await get<{ meta_json: string }>(
     `SELECT IFNULL(meta_json,'') AS meta_json FROM payment_links WHERE id = ?`,
     [linkId]
   );
@@ -580,27 +580,27 @@ function mergePaymentLinkMeta(linkId: string, patch: Record<string, unknown>) {
   } catch {
     meta = {};
   }
-  run(`UPDATE payment_links SET meta_json = ? WHERE id = ?`, [
+  await run(`UPDATE payment_links SET meta_json = ? WHERE id = ?`, [
     JSON.stringify({ ...meta, ...patch }),
     linkId,
   ]);
 }
 
 /** Снять все pending-ссылки, когда заказ уже оплачен (не создавать повторно QR). */
-export function expirePendingPaymentLinksForDeal(dealId: string, reason = 'already_paid') {
+export async function expirePendingPaymentLinksForDeal(dealId: string, reason = 'already_paid') {
   const id = String(dealId || '').trim();
   if (!id) return { expired: 0 };
-  const pending = all<{ id: string }>(
+  const pending = await all<{ id: string }>(
     `SELECT id FROM payment_links WHERE deal_id = ? AND status = 'pending'`,
     [id]
   );
   for (const row of pending) {
-    expirePaymentLink(String(row.id), reason);
+    await expirePaymentLink(String(row.id), reason);
   }
   return { expired: pending.length };
 }
 
-export function createPaymentLinkFromDeal(input: {
+export async function createPaymentLinkFromDeal(input: {
   dealId: string;
   timerMinutes?: number;
   reserve?: boolean;
@@ -613,7 +613,7 @@ export function createPaymentLinkFromDeal(input: {
   reserves: Array<Record<string, unknown>>;
   acquiring: { ok: boolean; url?: string; error?: string };
 }> {
-  return createPaymentLinkFromDealInner(input);
+  return await createPaymentLinkFromDealInner(input);
 }
 
 async function createPaymentLinkFromDealInner(input: {
@@ -623,15 +623,15 @@ async function createPaymentLinkFromDealInner(input: {
   sourceWarehouseId?: string;
   organizationId?: string;
 }) {
-  const deal = getDeal(input.dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(input.dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
-  const splitGuard = getDealPaymentSplit(input.dealId);
+  const splitGuard = await getDealPaymentSplit(input.dealId);
   if (
     splitGuard.fully_paid ||
     Number(deal.paid) === 1 ||
     String(deal.payment_status || '').toLowerCase() === 'paid'
   ) {
-    expirePendingPaymentLinksForDeal(input.dealId, 'already_paid');
+    await expirePendingPaymentLinksForDeal(input.dealId, 'already_paid');
     throw new Error('Заказ уже оплачен — ссылка не нужна');
   }
   // Компания в Amo / юр / ИП / партнёр ≠ блокер: ссылка (QR · карта · Сплит) доступна всем.
@@ -644,19 +644,19 @@ async function createPaymentLinkFromDealInner(input: {
   }
 
   // Резерв на «Ожидание оплаты» отключён — ссылка только на оплату.
-  const settings = getPaymentLinkSettings();
-  const organizationId = organizationIdForDealRecord(
+  const settings = await getPaymentLinkSettings();
+  const organizationId = await organizationIdForDealRecord(
     deal,
     input.organizationId || settings.payment_link_default_organization_id
   );
-  const payOrg = getOrganization(organizationId);
+  const payOrg = await getOrganization(organizationId);
   const customerCode = String(payOrg?.code || '').trim();
   const timerMinutes =
     input.timerMinutes != null && Number(input.timerMinutes) > 0
       ? Math.min(Math.floor(Number(input.timerMinutes)), 24 * 60)
       : settings.payment_link_timer_minutes;
 
-  const split = getDealPaymentSplit(input.dealId);
+  const split = await getDealPaymentSplit(input.dealId);
   const due = Number(split?.due_total) || 0;
   const amount = due > 0.009 ? due : Number(deal.price) || 0;
   if (!(amount > 0.009)) {
@@ -668,7 +668,7 @@ async function createPaymentLinkFromDealInner(input: {
   }
 
   // активная pending-ссылка → вернуть её
-  const existing = get(
+  const existing = await get(
     `SELECT * FROM payment_links
      WHERE deal_id = ? AND status = 'pending'
        AND datetime(expires_at) > datetime('now')
@@ -677,13 +677,13 @@ async function createPaymentLinkFromDealInner(input: {
   ) as Record<string, unknown> | undefined;
   if (existing) {
     const payment = existing.payment_id
-      ? get('SELECT * FROM deal_payments WHERE id = ?', [String(existing.payment_id)])
+      ? await get('SELECT * FROM deal_payments WHERE id = ?', [String(existing.payment_id)])
       : null;
     return {
       link: existing,
       url: paymentLinkPublicUrl(String(existing.token)),
       payment: payment as Record<string, unknown> | null,
-      reserves: all(`SELECT * FROM stock_reserves WHERE payment_link_id = ?`, [
+      reserves: await all(`SELECT * FROM stock_reserves WHERE payment_link_id = ?`, [
         String(existing.id),
       ]) as Array<Record<string, unknown>>,
       acquiring: {
@@ -726,7 +726,7 @@ async function createPaymentLinkFromDealInner(input: {
     originalQtys[iid] = Number(it.qty || it.quantity || 0) || 0;
   }
 
-  run(
+  await run(
     `INSERT INTO payment_links (
        id, token, deal_id, status, amount, expires_at, timer_minutes,
        payment_id, acquiring_url, acquiring_error, meta_json, organization_id
@@ -752,7 +752,7 @@ async function createPaymentLinkFromDealInner(input: {
     ]
   );
 
-  const link = get('SELECT * FROM payment_links WHERE id = ?', [id]) as Record<string, unknown>;
+  const link = await get('SELECT * FROM payment_links WHERE id = ?', [id]) as Record<string, unknown>;
   return {
     link,
     url: paymentLinkPublicUrl(token),
@@ -762,16 +762,16 @@ async function createPaymentLinkFromDealInner(input: {
   };
 }
 
-export function getPaymentLinkByToken(token: string) {
+export async function getPaymentLinkByToken(token: string) {
   return (
-    (get('SELECT * FROM payment_links WHERE token = ?', [String(token || '').trim()]) as
+    (await get('SELECT * FROM payment_links WHERE token = ?', [String(token || '').trim()]) as
       | Record<string, unknown>
       | undefined) || null
   );
 }
 
-export function listPaymentLinksForDeal(dealId: string) {
-  return all(
+export async function listPaymentLinksForDeal(dealId: string) {
+  return await all(
     `SELECT id, token, status, amount, expires_at, timer_minutes, payment_id,
             acquiring_url, acquiring_error, created_at, paid_at, expired_at
      FROM payment_links WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 20`,
@@ -819,10 +819,10 @@ function parseLinkMeta(link: Record<string, unknown>): {
   }
 }
 
-function ensureOriginalQtys(
+async function ensureOriginalQtys(
   link: Record<string, unknown>,
   dealItems: Array<Record<string, unknown>>
-): Record<string, number> {
+): Promise<Record<string, number>> {
   const meta = parseLinkMeta(link);
   if (meta.original_qtys && Object.keys(meta.original_qtys).length) {
     return meta.original_qtys;
@@ -834,29 +834,29 @@ function ensureOriginalQtys(
     originalQtys[iid] = Number(it.qty || it.quantity || 0) || 0;
   }
   const nextMeta = { ...meta, original_qtys: originalQtys };
-  run(`UPDATE payment_links SET meta_json = ? WHERE id = ?`, [
+  await run(`UPDATE payment_links SET meta_json = ? WHERE id = ?`, [
     JSON.stringify(nextMeta),
     String(link.id),
   ]);
   return originalQtys;
 }
 
-function isStockLine(it: Record<string, unknown>): boolean {
+async function isStockLine(it: Record<string, unknown>): Promise<boolean> {
   const kind = String(it.item_kind || 'product').toLowerCase();
   if (kind === 'service') return false;
-  return Boolean(resolveProductId(it));
+  return Boolean(await resolveProductId(it));
 }
 
 /** Публичное представление ссылки (без внутренних id склада как секрета — ок). */
-export function getPublicPaymentLinkView(token: string) {
-  const link = getPaymentLinkByToken(token);
+export async function getPublicPaymentLinkView(token: string) {
+  const link = await getPaymentLinkByToken(token);
   if (!link) return null;
 
   const dealId = String(link.deal_id);
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   const paymentId = String(link.payment_id || '');
   const payment = paymentId
-    ? (get(
+    ? (await get(
         `SELECT id, kind, amount, status, qrc_id, payload,
                 CASE WHEN length(image_png_base64)>0 THEN 1 ELSE 0 END AS has_image
          FROM deal_payments WHERE id = ?`,
@@ -866,15 +866,15 @@ export function getPublicPaymentLinkView(token: string) {
 
   const dealItems = ((deal?.items as Array<Record<string, unknown>>) || []).slice();
   const originalQtys =
-    String(link.status) === 'pending' ? ensureOriginalQtys(link, dealItems) : {};
+    String(link.status) === 'pending' ? await ensureOriginalQtys(link, dealItems) : {};
   const editable =
     String(link.status) === 'pending' && secondsLeft(String(link.expires_at)) > 0;
 
-  const items = dealItems.map((it) => {
+  const items = await Promise.all(dealItems.map(async (it) => {
     const id = String(it.id || '');
     const qty = Number(it.qty || it.quantity || 0) || 0;
-    const productId = resolveProductId(it);
-    const stock = isStockLine(it);
+    const productId = await resolveProductId(it);
+    const stock = await isStockLine(it);
     const maxQty = Math.max(qty, Number(originalQtys[id]) || qty);
     return {
       id,
@@ -887,9 +887,9 @@ export function getPublicPaymentLinkView(token: string) {
       unit: String(it.unit || ''),
       item_kind: stock ? 'product' : String(it.item_kind || 'service'),
       editable: editable && stock && Boolean(id),
-      image_url: productThumbUrl(productId),
+      image_url: await productThumbUrl(productId),
     };
-  });
+  }));
 
   const status = String(link.status);
   const expiresAt = String(link.expires_at);
@@ -900,7 +900,7 @@ export function getPublicPaymentLinkView(token: string) {
   const managerName = String(deal?.responsible_name || '').trim();
   const rid = String(deal?.responsible_user_id || '').trim();
   const manager = rid
-    ? (get<{ email?: string; name?: string }>(
+    ? (await get<{ email?: string; name?: string }>(
         `SELECT email, name FROM staff WHERE amo_id = ? LIMIT 1`,
         [rid]
       ) as { email?: string; name?: string } | undefined)
@@ -954,12 +954,12 @@ export function getPublicPaymentLinkView(token: string) {
     yandex_pay: {
       available:
         Boolean(String(link.yandex_pay_url || '').trim()) ||
-        (yandexPayAvailableForOrganization(String(link.organization_id || '')) &&
+        (await yandexPayAvailableForOrganization(String(link.organization_id || '')) &&
           status === 'pending'),
       url: String(link.yandex_pay_url || '').trim() || null,
       order_id: String(link.yandex_order_id || '').trim() || null,
       message: String(link.yandex_pay_error || '').trim() || null,
-      configured: yandexPayAvailableForOrganization(String(link.organization_id || '')),
+      configured: await yandexPayAvailableForOrganization(String(link.organization_id || '')),
     },
     /** Т‑Банк Forma · публичная форма рассрочки (new_serv / rassrochka). */
     tbank_installment: (() => {
@@ -980,13 +980,13 @@ export function getPublicPaymentLinkView(token: string) {
 }
 
 /** Частично вернуть резерв WAIT-PAY → исходный склад (когда клиент уменьшил qty). */
-function releaseReserveDelta(
+async function releaseReserveDelta(
   link: Record<string, unknown>,
   productId: string,
   deltaQty: number
-): void {
+): Promise<void> {
   if (!(deltaQty > 0) || !productId) return;
-  const reserves = all(
+  const reserves = await all(
     `SELECT * FROM stock_reserves
      WHERE payment_link_id = ? AND product_id = ? AND status = 'active'
      ORDER BY datetime(created_at) ASC`,
@@ -1004,7 +1004,7 @@ function releaseReserveDelta(
     if (!(have > 0)) continue;
     const take = Math.min(have, left);
     try {
-      createDocument({
+      await createDocument({
         doc_type: 'transfer',
         warehouse_id: r.reserve_warehouse_id,
         warehouse_to_id: r.source_warehouse_id,
@@ -1018,13 +1018,13 @@ function releaseReserveDelta(
     }
     const nextQty = Math.round((have - take) * 1000) / 1000;
     if (nextQty <= 0.0001) {
-      run(
+      await run(
         `UPDATE stock_reserves SET status = 'released', qty = 0, released_at = datetime('now')
          WHERE id = ?`,
         [r.id]
       );
     } else {
-      run(`UPDATE stock_reserves SET qty = ? WHERE id = ?`, [nextQty, r.id]);
+      await run(`UPDATE stock_reserves SET qty = ? WHERE id = ?`, [nextQty, r.id]);
     }
     left -= take;
   }
@@ -1038,25 +1038,25 @@ export async function updatePublicPaymentLinkItems(
   token: string,
   patches: Array<{ id?: string; qty?: number }>
 ): Promise<
-  | { ok: true; view: NonNullable<ReturnType<typeof getPublicPaymentLinkView>> }
+  | { ok: true; view: NonNullable<Awaited<ReturnType<typeof getPublicPaymentLinkView>>> }
   | { ok: false; error: string; status?: number }
 > {
-  const link = getPaymentLinkByToken(token);
+  const link = await getPaymentLinkByToken(token);
   if (!link) return { ok: false, error: 'not found', status: 404 };
   if (String(link.status) !== 'pending') {
     return { ok: false, error: 'Ссылка уже не активна', status: 400 };
   }
   if (secondsLeft(String(link.expires_at)) <= 0) {
-    expirePaymentLink(String(link.id), 'timer');
+    await expirePaymentLink(String(link.id), 'timer');
     return { ok: false, error: 'Время оплаты истекло', status: 400 };
   }
 
   const dealId = String(link.deal_id);
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return { ok: false, error: 'Сделка не найдена', status: 404 };
 
   const dealItems = ((deal.items as Array<Record<string, unknown>>) || []).slice();
-  const originalQtys = ensureOriginalQtys(link, dealItems);
+  const originalQtys = await ensureOriginalQtys(link, dealItems);
   const byId = new Map(dealItems.map((it) => [String(it.id), it]));
 
   if (!Array.isArray(patches) || !patches.length) {
@@ -1071,7 +1071,7 @@ export async function updatePublicPaymentLinkItems(
       return { ok: false, error: 'Позиция не найдена', status: 400 };
     }
     const it = byId.get(id)!;
-    if (!isStockLine(it)) {
+    if (!await isStockLine(it)) {
       return { ok: false, error: 'Услуги менять нельзя — только товары со склада', status: 400 };
     }
     const cur = Number(it.qty || 0) || 0;
@@ -1093,7 +1093,7 @@ export async function updatePublicPaymentLinkItems(
   }
 
   if (!changes.length) {
-    const view = getPublicPaymentLinkView(token);
+    const view = await getPublicPaymentLinkView(token);
     if (!view) return { ok: false, error: 'not found', status: 404 };
     return { ok: true, view };
   }
@@ -1149,23 +1149,23 @@ export async function updatePublicPaymentLinkItems(
 
   for (const ch of changes) {
     const it = byId.get(ch.id)!;
-    const productId = resolveProductId(it);
+    const productId = await resolveProductId(it);
     if (ch.to <= 0) {
-      const del = deleteDealItem(dealId, ch.id);
+      const del = await deleteDealItem(dealId, ch.id);
       if (!del.ok) return { ok: false, error: del.error, status: 400 };
-      if (productId) releaseReserveDelta(link, productId, ch.from);
+      if (productId) await releaseReserveDelta(link, productId, ch.from);
     } else {
-      const upd = updateDealItem(dealId, ch.id, { qty: ch.to });
+      const upd = await updateDealItem(dealId, ch.id, { qty: ch.to });
       if (!upd.ok) return { ok: false, error: upd.error, status: 400 };
       if (productId && ch.to < ch.from) {
-        releaseReserveDelta(link, productId, ch.from - ch.to);
+        await releaseReserveDelta(link, productId, ch.from - ch.to);
       }
     }
   }
 
   // Старый QR больше не принимаем — иначе можно оплатить устаревшую сумму
   if (prevPaymentId && prevPaymentId !== paymentId) {
-    run(
+    await run(
       `UPDATE deal_payments SET status = 'cancelled'
        WHERE id = ? AND status NOT IN ('paid','confirmed','success')`,
       [prevPaymentId]
@@ -1179,7 +1179,7 @@ export async function updatePublicPaymentLinkItems(
     returnUrl: paymentLinkPublicUrl(token),
   });
 
-  run(
+  await run(
     `UPDATE payment_links SET amount = ?, payment_id = ?,
        acquiring_url = ?, acquiring_error = ?
      WHERE id = ?`,
@@ -1192,12 +1192,12 @@ export async function updatePublicPaymentLinkItems(
     ]
   );
   if (acquiring.ok && acquiring.operation_id) {
-    mergePaymentLinkMeta(String(link.id), {
+    await mergePaymentLinkMeta(String(link.id), {
       acquiring_operation_id: acquiring.operation_id,
     });
   }
 
-  writeAudit({
+  await writeAudit({
     action: 'pay.items_edit',
     entity: 'payment_link',
     entityId: String(link.id),
@@ -1207,15 +1207,15 @@ export async function updatePublicPaymentLinkItems(
     meta: { changes, amount: newAmount },
   });
 
-  const view = getPublicPaymentLinkView(token);
+  const view = await getPublicPaymentLinkView(token);
   if (!view) return { ok: false, error: 'not found', status: 404 };
   return { ok: true, view };
 }
 
-export function getPublicPaymentQrPng(token: string): Buffer | null {
-  const link = getPaymentLinkByToken(token);
+export async function getPublicPaymentQrPng(token: string): Promise<Buffer | null> {
+  const link = await getPaymentLinkByToken(token);
   if (!link?.payment_id) return null;
-  const row = get<{ image_png_base64?: string }>(
+  const row = await get<{ image_png_base64?: string }>(
     `SELECT image_png_base64 FROM deal_payments WHERE id = ?`,
     [String(link.payment_id)]
   );
@@ -1224,17 +1224,17 @@ export function getPublicPaymentQrPng(token: string): Buffer | null {
 }
 
 /** Пометить ссылку оплаченной и резервы — sold (товар остаётся на WAIT-PAY до отгрузки). */
-export function markPaymentLinkPaidForDeal(dealId: string, source = 'payment') {
-  const links = all<{ id: string }>(
+export async function markPaymentLinkPaidForDeal(dealId: string, source = 'payment') {
+  const links = await all<{ id: string }>(
     `SELECT id FROM payment_links WHERE deal_id = ? AND status = 'pending'`,
     [dealId]
   );
   for (const l of links) {
-    run(
+    await run(
       `UPDATE payment_links SET status = 'paid', paid_at = datetime('now') WHERE id = ?`,
       [l.id]
     );
-    run(
+    await run(
       `UPDATE stock_reserves SET status = 'sold', released_at = datetime('now')
        WHERE payment_link_id = ? AND status = 'active'`,
       [l.id]
@@ -1243,24 +1243,24 @@ export function markPaymentLinkPaidForDeal(dealId: string, source = 'payment') {
   return { deal_id: dealId, links: links.length, source };
 }
 
-export function markPaymentLinkPaidByPaymentId(paymentId: string) {
-  const link = get<{ id: string; deal_id: string }>(
+export async function markPaymentLinkPaidByPaymentId(paymentId: string) {
+  const link = await get<{ id: string; deal_id: string }>(
     `SELECT id, deal_id FROM payment_links WHERE payment_id = ? AND status = 'pending'`,
     [paymentId]
   );
   if (!link) return null;
-  return markPaymentLinkPaidForDeal(link.deal_id, 'payment_id');
+  return await markPaymentLinkPaidForDeal(link.deal_id, 'payment_id');
 }
 
 /** Вернуть товар с WAIT-PAY на исходный склад, снять резерв. */
-export function expirePaymentLink(linkId: string, reason = 'timer') {
-  const link = get('SELECT * FROM payment_links WHERE id = ?', [linkId]) as
+export async function expirePaymentLink(linkId: string, reason = 'timer') {
+  const link = await get('SELECT * FROM payment_links WHERE id = ?', [linkId]) as
     | Record<string, unknown>
     | undefined;
   if (!link) return null;
   if (String(link.status) !== 'pending') return link;
 
-  const reserves = all(
+  const reserves = await all(
     `SELECT * FROM stock_reserves WHERE payment_link_id = ? AND status = 'active'`,
     [linkId]
   ) as Array<{
@@ -1288,7 +1288,7 @@ export function expirePaymentLink(linkId: string, reason = 'timer') {
     }
     let docId = '';
     try {
-      docId = createDocument({
+      docId = await createDocument({
         doc_type: 'transfer',
         warehouse_id: waitId,
         warehouse_to_id: sourceWh,
@@ -1302,7 +1302,7 @@ export function expirePaymentLink(linkId: string, reason = 'timer') {
       console.warn('[payment-links] return transfer failed', e);
     }
     for (const l of lines) {
-      run(
+      await run(
         `UPDATE stock_reserves SET status = 'released', return_doc_id = ?, released_at = datetime('now')
          WHERE id = ?`,
         [docId, l.id]
@@ -1310,7 +1310,7 @@ export function expirePaymentLink(linkId: string, reason = 'timer') {
     }
   }
 
-  run(
+  await run(
     `UPDATE payment_links SET status = 'expired', expired_at = datetime('now') WHERE id = ?`,
     [linkId]
   );
@@ -1319,11 +1319,11 @@ export function expirePaymentLink(linkId: string, reason = 'timer') {
   // снимали active stock_reserves (старые ссылки). Истёкшая ссылка без резерва — тихо.
   const dealId = String(link.deal_id || '').trim();
   if (dealId && reserves.length > 0 && (reason === 'timer' || reason === 'expired')) {
-    const deal = get<{ name?: string }>('SELECT name FROM crm_deals WHERE id = ?', [dealId]);
+    const deal = await get<{ name?: string }>('SELECT name FROM crm_deals WHERE id = ?', [dealId]);
     const mins = Number(link.timer_minutes) || DEFAULT_PAYMENT_LINK_TIMER_MINUTES;
     const dealLabel = String(deal?.name || '').trim() || dealId;
     try {
-      notifyDealResponsible({
+      await notifyDealResponsible({
         deal_id: dealId,
         kind: 'reserve_released',
         title: 'Снят с резерва · нет оплаты',
@@ -1336,16 +1336,16 @@ export function expirePaymentLink(linkId: string, reason = 'timer') {
     }
   }
 
-  return get('SELECT * FROM payment_links WHERE id = ?', [linkId]);
+  return await get('SELECT * FROM payment_links WHERE id = ?', [linkId]);
 }
 
 /** Cron: истекшие pending-ссылки → expired; возврат со склада WAIT-PAY только если ещё был active-резерв (новые ссылки резерв не держат). */
-export function expireDuePaymentLinks(limit = 50): {
+export async function expireDuePaymentLinks(limit = 50): Promise<{
   ok: boolean;
   expired: number;
   items: Array<{ id: string; deal_id: string; token: string }>;
-} {
-  const due = all<{ id: string; deal_id: string; token: string }>(
+}> {
+  const due = await all<{ id: string; deal_id: string; token: string }>(
     `SELECT id, deal_id, token FROM payment_links
      WHERE status = 'pending' AND datetime(expires_at) <= datetime('now')
      ORDER BY datetime(expires_at) ASC LIMIT ?`,
@@ -1353,7 +1353,7 @@ export function expireDuePaymentLinks(limit = 50): {
   );
   const items: Array<{ id: string; deal_id: string; token: string }> = [];
   for (const row of due) {
-    expirePaymentLink(row.id, 'timer');
+    await expirePaymentLink(row.id, 'timer');
     items.push(row);
   }
   return { ok: true, expired: items.length, items };
@@ -1369,18 +1369,18 @@ export async function renewPublicPaymentReserve(token: string): Promise<
       available: true;
       url: string;
       token: string;
-      view: NonNullable<ReturnType<typeof getPublicPaymentLinkView>>;
+      view: NonNullable<Awaited<ReturnType<typeof getPublicPaymentLinkView>>>;
     }
   | {
       ok: true;
       available: false;
       missing: string[];
       message: string;
-      view: NonNullable<ReturnType<typeof getPublicPaymentLinkView>> | null;
+      view: NonNullable<Awaited<ReturnType<typeof getPublicPaymentLinkView>>> | null;
     }
   | { ok: false; error: string; status?: number }
 > {
-  const link = getPaymentLinkByToken(token);
+  const link = await getPaymentLinkByToken(token);
   if (!link) return { ok: false, error: 'not found', status: 404 };
 
   const status = String(link.status || '');
@@ -1390,7 +1390,7 @@ export async function renewPublicPaymentReserve(token: string): Promise<
 
   // ещё активна — просто вернуть текущую
   if (status === 'pending' && secondsLeft(String(link.expires_at)) > 0) {
-    const view = getPublicPaymentLinkView(token);
+    const view = await getPublicPaymentLinkView(token);
     if (!view) return { ok: false, error: 'not found', status: 404 };
     return {
       ok: true,
@@ -1403,11 +1403,11 @@ export async function renewPublicPaymentReserve(token: string): Promise<
 
   // добить истечение, если pending просрочен
   if (status === 'pending') {
-    expirePaymentLink(String(link.id), 'timer');
+    await expirePaymentLink(String(link.id), 'timer');
   }
 
   const dealId = String(link.deal_id);
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return { ok: false, error: 'Сделка не найдена', status: 404 };
 
   // антиспам: не чаще раза в 45 сек с этой ссылки
@@ -1426,13 +1426,13 @@ export async function renewPublicPaymentReserve(token: string): Promise<
     };
   }
 
-  const settings = getPaymentLinkSettings();
+  const settings = await getPaymentLinkSettings();
   const preferred = settings.payment_link_default_warehouse_id || '';
-  const { missing } = planDealStockNeeds(deal, preferred);
-  const viewOld = getPublicPaymentLinkView(token);
+  const { missing } = await planDealStockNeeds(deal, preferred);
+  const viewOld = await getPublicPaymentLinkView(token);
 
   if (missing.length) {
-    writeAudit({
+    await writeAudit({
       action: 'pay.renew_unavailable',
       entity: 'payment_link',
       entityId: String(link.id),
@@ -1458,14 +1458,14 @@ export async function renewPublicPaymentReserve(token: string): Promise<
       organizationId: String(link.organization_id || '') || undefined,
     });
     const newToken = String(created.link.token || '');
-    run(
+    await run(
       `UPDATE payment_links SET meta_json = ? WHERE id = ?`,
       [
         JSON.stringify({ ...meta, last_renew_at: new Date().toISOString() }),
         String(link.id),
       ]
     );
-    writeAudit({
+    await writeAudit({
       action: 'pay.renew_reserve',
       entity: 'payment_link',
       entityId: String(created.link.id),
@@ -1474,7 +1474,7 @@ export async function renewPublicPaymentReserve(token: string): Promise<
       path: '/api/public/pay/.../renew-reserve',
       meta: { from_token: token, new_token: newToken },
     });
-    const view = getPublicPaymentLinkView(newToken);
+    const view = await getPublicPaymentLinkView(newToken);
     if (!view) return { ok: false, error: 'Ссылка создана, но не открывается', status: 500 };
     return {
       ok: true,
@@ -1491,13 +1491,13 @@ export async function renewPublicPaymentReserve(token: string): Promise<
 
 /** Публичный poll: статус оплаты по токену (+ опрос Точки). */
 export async function pollPublicPaymentLink(token: string) {
-  const link = getPaymentLinkByToken(token);
+  const link = await getPaymentLinkByToken(token);
   if (!link) return null;
 
   if (String(link.status) === 'pending') {
     const left = secondsLeft(String(link.expires_at));
     if (left <= 0) {
-      expirePaymentLink(String(link.id), 'timer');
+      await expirePaymentLink(String(link.id), 'timer');
     } else if (link.payment_id || link.deal_id) {
       try {
         await pollPendingSbpPayments({ dealId: String(link.deal_id), limit: 5 });
@@ -1512,11 +1512,11 @@ export async function pollPublicPaymentLink(token: string) {
     }
   }
 
-  return getPublicPaymentLinkView(token);
+  return await getPublicPaymentLinkView(token);
 }
 
 export async function ensureAcquiringForPublicToken(token: string) {
-  const link = getPaymentLinkByToken(token);
+  const link = await getPaymentLinkByToken(token);
   if (!link) return null;
   if (String(link.status) !== 'pending') {
     return {
@@ -1534,25 +1534,25 @@ export async function ensureAcquiringForPublicToken(token: string) {
     returnUrl: paymentLinkPublicUrl(token),
   });
   if (r.ok && r.url) {
-    run(
+    await run(
       `UPDATE payment_links SET acquiring_url = ?, acquiring_error = '' WHERE id = ?`,
       [r.url, String(link.id)]
     );
     if (r.operation_id) {
-      mergePaymentLinkMeta(String(link.id), {
+      await mergePaymentLinkMeta(String(link.id), {
         acquiring_operation_id: r.operation_id,
       });
     }
     return { ok: true, url: r.url };
   }
   const err = r.error || 'эквайринг не подключён';
-  run(`UPDATE payment_links SET acquiring_error = ? WHERE id = ?`, [err, String(link.id)]);
+  await run(`UPDATE payment_links SET acquiring_error = ? WHERE id = ?`, [err, String(link.id)]);
   return { ok: false, error: err, url: null };
 }
 
 /** Суммы активного резерва по товарам на складе WAIT-PAY (для остатков). */
-export function reservedQtyByProductWarehouse(): Map<string, number> {
-  const rows = all<{ product_id: string; reserve_warehouse_id: string; qty: number }>(
+export async function reservedQtyByProductWarehouse(): Promise<Map<string, number>> {
+  const rows = await all<{ product_id: string; reserve_warehouse_id: string; qty: number }>(
     `SELECT product_id, reserve_warehouse_id, SUM(qty) AS qty
      FROM stock_reserves WHERE status = 'active'
      GROUP BY product_id, reserve_warehouse_id`
@@ -1576,9 +1576,9 @@ export type ActiveReserveOrder = {
 /**
  * Активные резервы WAIT-PAY по парам товар+склад — для ссылок на заказы покупателей.
  */
-export function activeReserveOrdersForPairs(
+export async function activeReserveOrdersForPairs(
   pairs: Array<{ product_id: string; warehouse_id: string }>
-): Map<string, ActiveReserveOrder[]> {
+): Promise<Map<string, ActiveReserveOrder[]>> {
   const map = new Map<string, ActiveReserveOrder[]>();
   const uniq = new Map<string, { product_id: string; warehouse_id: string }>();
   for (const p of pairs) {
@@ -1590,7 +1590,7 @@ export function activeReserveOrdersForPairs(
   if (!uniq.size) return map;
 
   // Один запрос по всем активным резервам нужных пар (страница остатков небольшая).
-  const rows = all<{
+  const rows = await all<{
     product_id: string;
     reserve_warehouse_id: string;
     deal_id: string;
@@ -1642,8 +1642,8 @@ export function activeReserveOrdersForPairs(
   return map;
 }
 
-export function isWaitingPaymentWarehouse(idOrCode: string): boolean {
-  const w = get<{ id: string; code: string; name: string }>(
+export async function isWaitingPaymentWarehouse(idOrCode: string): Promise<boolean> {
+  const w = await get<{ id: string; code: string; name: string }>(
     `SELECT id, code, name FROM warehouses WHERE id = ? OR code = ?`,
     [idOrCode, idOrCode]
   );
@@ -1661,7 +1661,7 @@ export async function submitPublicPayQuestion(
   | { ok: true; task_id: string; event_id: string }
   | { ok: false; error: string; status?: number }
 > {
-  const link = getPaymentLinkByToken(token);
+  const link = await getPaymentLinkByToken(token);
   if (!link) return { ok: false, error: 'not found', status: 404 };
 
   const text = String(input.text || '')
@@ -1671,7 +1671,7 @@ export async function submitPublicPayQuestion(
   if (text.length < 3) return { ok: false, error: 'Напишите вопрос (минимум 3 символа)', status: 400 };
 
   const dealId = String(link.deal_id);
-  const recent = get<{ c: number }>(
+  const recent = await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM crm_events
      WHERE deal_id = ? AND kind = 'pay_question'
        AND datetime(event_at) >= datetime('now', '-1 hour')`,
@@ -1685,7 +1685,7 @@ export async function submitPublicPayQuestion(
     };
   }
 
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   const dealNumber = publicDealNumber(deal, dealId);
   const assignee = String(deal?.responsible_user_id || '').trim();
   const contactName = String(input.contact_name || '').trim().slice(0, 120);
@@ -1701,7 +1701,7 @@ export async function submitPublicPayQuestion(
     .filter(Boolean)
     .join('\n');
 
-  const event = createCrmEvent({
+  const event = await createCrmEvent({
     kind: 'pay_question',
     title,
     deal_id: dealId,
@@ -1709,7 +1709,7 @@ export async function submitPublicPayQuestion(
   }) as { id?: string };
 
   const due = new Date(Date.now() + 60 * 60_000).toISOString();
-  const task = createCrmTask({
+  const task = await createCrmTask({
     title: `Ответить клиенту · заказ №${dealNumber}`,
     status: 'open',
     due_at: due,
@@ -1720,7 +1720,7 @@ export async function submitPublicPayQuestion(
     payment_link_id: String(link.id),
   }) as { id?: string };
 
-  writeAudit({
+  await writeAudit({
     action: 'pay.question',
     entity: 'payment_link',
     entityId: String(link.id),
@@ -1731,7 +1731,7 @@ export async function submitPublicPayQuestion(
   });
 
   if (assignee) {
-    const staff = get<{ telegram_chat_id?: string; name?: string }>(
+    const staff = await get<{ telegram_chat_id?: string; name?: string }>(
       `SELECT telegram_chat_id, name FROM staff WHERE amo_id = ? LIMIT 1`,
       [assignee]
     );

@@ -80,23 +80,23 @@ async function fetchAllPages(
   return out;
 }
 
-function ensureDefaultUnit(): string {
-  const existing = get<{ id: string }>('SELECT id FROM units WHERE short_name = ? LIMIT 1', ['шт']);
+async function ensureDefaultUnit(): Promise<string> {
+  const existing = await get<{ id: string }>('SELECT id FROM units WHERE short_name = ? LIMIT 1', ['шт']);
   if (existing) return existing.id;
   const id = 'unit-pcs';
-  run('INSERT OR IGNORE INTO units (id, name, short_name) VALUES (?, ?, ?)', [id, 'Штука', 'шт']);
+  await run('INSERT OR IGNORE INTO units (id, name, short_name) VALUES (?, ?, ?)', [id, 'Штука', 'шт']);
   return id;
 }
 
-function upsertWarehouse(row: Record<string, unknown>): void {
+async function upsertWarehouse(row: Record<string, unknown>): Promise<void> {
   const id = String(row.Ref_Key || '');
   if (!id || id === EMPTY_GUID) return;
   const name = String(row.Description || '').trim() || id;
   let code = String(row.Code || id).trim() || id;
-  const clash = get<{ id: string }>('SELECT id FROM warehouses WHERE code = ? AND id != ?', [code, id]);
+  const clash = await get<{ id: string }>('SELECT id FROM warehouses WHERE code = ? AND id != ?', [code, id]);
   if (clash) code = `${code}:${id.slice(0, 8)}`;
   const active = row.DeletionMark ? 0 : 1;
-  run(
+  await run(
     `INSERT INTO warehouses (id, name, code, is_active)
      VALUES (?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET name=excluded.name, code=excluded.code, is_active=excluded.is_active`,
@@ -104,13 +104,13 @@ function upsertWarehouse(row: Record<string, unknown>): void {
   );
 }
 
-function upsertCategory(row: Record<string, unknown>): void {
+async function upsertCategory(row: Record<string, unknown>): Promise<void> {
   const id = String(row.Ref_Key || '');
   if (!id || id === EMPTY_GUID) return;
   const name = String(row.Description || '').trim() || id;
   const parent = String(row.Parent_Key || '');
   const parentId = parent && parent !== EMPTY_GUID ? parent : null;
-  run(
+  await run(
     `INSERT INTO categories (id, name, parent_id)
      VALUES (?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET name=excluded.name, parent_id=excluded.parent_id`,
@@ -122,7 +122,7 @@ function looksLikeGuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 }
 
-function upsertProduct(row: Record<string, unknown>, unitId: string): void {
+async function upsertProduct(row: Record<string, unknown>, unitId: string): Promise<void> {
   const id = String(row.Ref_Key || '');
   if (!id || id === EMPTY_GUID) return;
   const article = String(row['Артикул'] || '').trim();
@@ -133,15 +133,15 @@ function upsertProduct(row: Record<string, unknown>, unitId: string): void {
     name = code || article || id;
   }
   let sku = code || article || id;
-  const clash = get<{ id: string }>('SELECT id FROM products WHERE sku = ? AND id != ?', [sku, id]);
+  const clash = await get<{ id: string }>('SELECT id FROM products WHERE sku = ? AND id != ?', [sku, id]);
   if (clash) sku = `${sku}:${id.slice(0, 8)}`;
   const parent = String(row.Parent_Key || '');
   let categoryId: string | null = parent && parent !== EMPTY_GUID ? parent : null;
-  if (categoryId && !get('SELECT id FROM categories WHERE id = ?', [categoryId])) {
+  if (categoryId && !await get('SELECT id FROM categories WHERE id = ?', [categoryId])) {
     categoryId = null;
   }
   const inactive = !!(row.DeletionMark || row['Недействителен']);
-  run(
+  await run(
     `INSERT INTO products (id, sku, name, category_id, unit_id, barcode, is_active)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
@@ -155,7 +155,7 @@ function upsertProduct(row: Record<string, unknown>, unitId: string): void {
   );
 }
 
-function upsertCounterparty(row: Record<string, unknown>): void {
+async function upsertCounterparty(row: Record<string, unknown>): Promise<void> {
   const id = String(row.Ref_Key || '');
   if (!id || id === EMPTY_GUID) return;
   const name = String(row.Description || '').trim() || id;
@@ -166,7 +166,7 @@ function upsertCounterparty(row: Record<string, unknown>): void {
   else if (row['Поставщик'] && row['Покупатель']) kind = 'both';
   else if (row['Поставщик']) kind = 'supplier';
   else if (row['Покупатель']) kind = 'buyer';
-  run(
+  await run(
     `INSERT INTO counterparties (id, name, inn, phone, kind)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
@@ -185,8 +185,8 @@ export type SyncResult = {
 
 export async function syncCatalogsFromOdata(cfg: OdataConfig): Promise<SyncResult> {
   const t0 = Date.now();
-  const unitId = ensureDefaultUnit();
-  run('PRAGMA foreign_keys = OFF');
+  const unitId = await ensureDefaultUnit();
+  await run('PRAGMA foreign_keys = OFF');
 
   const units = await fetchAllPages(
     cfg,
@@ -197,16 +197,16 @@ export async function syncCatalogsFromOdata(cfg: OdataConfig): Promise<SyncResul
   console.log('fetched warehouses/units', units.length);
 
   let warehouses = 0;
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const row of units) {
       if (String(row['ТипСтруктурнойЕдиницы'] || '') !== 'Склад') continue;
-      upsertWarehouse(row);
+      await upsertWarehouse(row);
       warehouses += 1;
     }
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
-    run('ROLLBACK');
+    await run('ROLLBACK');
     throw e;
   }
 
@@ -218,15 +218,15 @@ export async function syncCatalogsFromOdata(cfg: OdataConfig): Promise<SyncResul
   );
   console.log('fetched categories', folders.length);
   let categories = 0;
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const row of folders) {
-      upsertCategory(row);
+      await upsertCategory(row);
       categories += 1;
     }
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
-    run('ROLLBACK');
+    await run('ROLLBACK');
     throw e;
   }
 
@@ -238,20 +238,20 @@ export async function syncCatalogsFromOdata(cfg: OdataConfig): Promise<SyncResul
   );
   console.log('fetched products', products.length);
   let productCount = 0;
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const row of products) {
-      upsertProduct(row, unitId);
+      await upsertProduct(row, unitId);
       productCount += 1;
       if (productCount % 2000 === 0) {
-        run('COMMIT');
-        run('BEGIN');
+        await run('COMMIT');
+        await run('BEGIN');
         console.log('products upserted', productCount);
       }
     }
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
-    run('ROLLBACK');
+    await run('ROLLBACK');
     throw e;
   }
 
@@ -263,33 +263,33 @@ export async function syncCatalogsFromOdata(cfg: OdataConfig): Promise<SyncResul
   );
   console.log('fetched counterparties', counterparties.length);
   let cpCount = 0;
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const row of counterparties) {
       if (row['Недействителен']) continue;
-      upsertCounterparty(row);
+      await upsertCounterparty(row);
       cpCount += 1;
       if (cpCount % 3000 === 0) {
-        run('COMMIT');
-        run('BEGIN');
+        await run('COMMIT');
+        await run('BEGIN');
         console.log('counterparties upserted', cpCount);
       }
     }
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
-    run('ROLLBACK');
+    await run('ROLLBACK');
     throw e;
   }
 
-  run('PRAGMA foreign_keys = ON');
-  run('PRAGMA wal_checkpoint(TRUNCATE)');
-  run(
+  await run('PRAGMA foreign_keys = ON');
+  await run('PRAGMA wal_checkpoint(TRUNCATE)');
+  await run(
     'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
     ['odata_synced_at', new Date().toISOString()]
   );
 
-  const dbProducts = get<{ c: number }>('SELECT COUNT(*) AS c FROM products')?.c ?? 0;
-  const dbCp = get<{ c: number }>('SELECT COUNT(*) AS c FROM counterparties')?.c ?? 0;
+  const dbProducts = (await get<{ c: number }>('SELECT COUNT(*) AS c FROM products'))?.c ?? 0;
+  const dbCp = (await get<{ c: number }>('SELECT COUNT(*) AS c FROM counterparties'))?.c ?? 0;
   console.log('db counts products/counterparties', dbProducts, dbCp);
 
   return {
@@ -301,16 +301,16 @@ export async function syncCatalogsFromOdata(cfg: OdataConfig): Promise<SyncResul
   };
 }
 
-export function lastOdataSync(): string | null {
-  return get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['odata_synced_at'])?.value ?? null;
+export async function lastOdataSync(): Promise<string | null> {
+  return (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['odata_synced_at']))?.value ?? null;
 }
 
-export function catalogCounts() {
+export async function catalogCounts() {
   return {
-    products: get<{ c: number }>('SELECT COUNT(*) AS c FROM products WHERE is_active = 1')?.c ?? 0,
-    warehouses: get<{ c: number }>('SELECT COUNT(*) AS c FROM warehouses WHERE is_active = 1')?.c ?? 0,
-    counterparties: get<{ c: number }>('SELECT COUNT(*) AS c FROM counterparties')?.c ?? 0,
-    categories: get<{ c: number }>('SELECT COUNT(*) AS c FROM categories')?.c ?? 0,
-    lastSync: lastOdataSync(),
+    products: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM products WHERE is_active = 1'))?.c ?? 0,
+    warehouses: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM warehouses WHERE is_active = 1'))?.c ?? 0,
+    counterparties: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM counterparties'))?.c ?? 0,
+    categories: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM categories'))?.c ?? 0,
+    lastSync: await lastOdataSync(),
   };
 }

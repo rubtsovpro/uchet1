@@ -13,8 +13,8 @@ const DEFAULT_EXPORT =
 const META_AMO_USERS = 'amo_user_directory';
 
 /** Справочник Amo user id → ФИО (чтобы в селекте были имена даже без привязки staff). */
-export function getAmoUserDirectory(): Record<string, { name: string; email?: string; is_active?: boolean }> {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_AMO_USERS]);
+export async function getAmoUserDirectory(): Promise<Record<string, { name: string; email?: string; is_active?: boolean }>> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_AMO_USERS]);
   if (!row?.value) return {};
   try {
     const parsed = JSON.parse(row.value) as Record<string, { name: string; email?: string; is_active?: boolean }>;
@@ -24,10 +24,10 @@ export function getAmoUserDirectory(): Record<string, { name: string; email?: st
   }
 }
 
-export function saveAmoUserDirectory(
+export async function saveAmoUserDirectory(
   users: Array<{ id?: unknown; name?: unknown; email?: unknown; is_active?: unknown }>
-): number {
-  const cur = getAmoUserDirectory();
+): Promise<number> {
+  const cur = await getAmoUserDirectory();
   let n = 0;
   for (const u of users || []) {
     const id = String(u.id || '').trim();
@@ -41,19 +41,19 @@ export function saveAmoUserDirectory(
     };
     n += 1;
   }
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     META_AMO_USERS,
     JSON.stringify(cur),
   ]);
   return n;
 }
 
-export function amoUserDisplayName(amoId: string): string {
+export async function amoUserDisplayName(amoId: string): Promise<string> {
   const id = String(amoId || '').trim();
   if (!id) return '';
-  const dir = getAmoUserDirectory()[id];
+  const dir = (await getAmoUserDirectory())[id];
   if (dir?.name) return dir.name;
-  const st = get<{ name: string }>(
+  const st = await get<{ name: string }>(
     `SELECT name FROM staff WHERE amo_id = ? AND IFNULL(name,'') != '' LIMIT 1`,
     [id]
   );
@@ -652,13 +652,13 @@ export type StoChecklistStaffPick = {
 };
 
 /** Активные сотрудники отдела для select в чек-листе ЗН. */
-export function listStoChecklistStaffPicks(): {
+export async function listStoChecklistStaffPicks(): Promise<{
   masters: StoChecklistStaffPick[];
   admins: StoChecklistStaffPick[];
   departments: { master: string; admin: string };
   labels: { master: string; admin: string };
-} {
-  const rows = all<{
+}> {
+  const rows = await all<{
     id: string;
     name: string;
     department: string;
@@ -700,11 +700,11 @@ export function listStoChecklistStaffPicks(): {
 }
 
 /** Создать канонические отделы, если ещё нет; переименовать известные алиасы у сотрудников. */
-export function ensureCanonicalDepartments(): void {
+export async function ensureCanonicalDepartments(): Promise<void> {
   for (const name of DEFAULT_DEPARTMENTS) {
-    const exists = get<{ name: string }>('SELECT name FROM staff_departments WHERE name = ?', [name]);
+    const exists = await get<{ name: string }>('SELECT name FROM staff_departments WHERE name = ?', [name]);
     if (!exists) {
-      run(
+      await run(
         `INSERT INTO staff_departments (name, rights_json, notes, updated_at)
          VALUES (?, '{}', '', datetime('now'))`,
         [name]
@@ -713,8 +713,8 @@ export function ensureCanonicalDepartments(): void {
   }
   for (const [alias, canon] of Object.entries(DEPARTMENT_ALIASES)) {
     if (alias === canon.toLowerCase().replace(/ё/g, 'е')) continue;
-    run(`UPDATE staff SET department = ? WHERE lower(trim(department)) = ?`, [canon, alias]);
-    run(`DELETE FROM staff_departments WHERE lower(name) = ? AND name != ?`, [alias, canon]);
+    await run(`UPDATE staff SET department = ? WHERE lower(trim(department)) = ?`, [canon, alias]);
+    await run(`DELETE FROM staff_departments WHERE lower(name) = ? AND name != ?`, [alias, canon]);
   }
 }
 
@@ -728,9 +728,9 @@ export type DeptRow = {
 };
 
 /** Справочник отделов: из staff.department + сохранённые overlays. */
-export function listDepartments(): DeptRow[] {
-  ensureCanonicalDepartments();
-  const counts = all<{ name: string; c: number }>(
+export async function listDepartments(): Promise<DeptRow[]> {
+  await ensureCanonicalDepartments();
+  const counts = await all<{ name: string; c: number }>(
     `SELECT trim(department) AS name, COUNT(*) AS c FROM staff
      WHERE trim(department) != '' GROUP BY trim(department)`
   );
@@ -740,7 +740,7 @@ export function listDepartments(): DeptRow[] {
     if (!canon) continue;
     mergedCounts.set(canon, (mergedCounts.get(canon) || 0) + (Number(r.c) || 0));
   }
-  const saved = all<{ name: string; rights_json: string; notes: string }>(
+  const saved = await all<{ name: string; rights_json: string; notes: string }>(
     'SELECT name, rights_json, notes FROM staff_departments ORDER BY name'
   );
   const names = new Set<string>([
@@ -783,23 +783,23 @@ export function listDepartments(): DeptRow[] {
     });
 }
 
-export function getDeptOverlay(name: string): DeptRightsOverlay {
+export async function getDeptOverlay(name: string): Promise<DeptRightsOverlay> {
   const n = normDepartmentName(name);
   if (!n) return emptyDeptOverlay();
-  const row = get<{ rights_json: string }>(
+  const row = await get<{ rights_json: string }>(
     'SELECT rights_json FROM staff_departments WHERE name = ?',
     [n]
   );
   return row ? parseDeptOverlay(row.rights_json) : emptyDeptOverlay();
 }
 
-export function upsertDepartment(
+export async function upsertDepartment(
   name: string,
   opts: { overlay?: DeptRightsOverlay; notes?: string }
-): DeptRow {
+): Promise<DeptRow> {
   const n = normDepartmentName(name);
   if (!n) throw new Error('Укажите название отдела');
-  const prev = get<{ rights_json: string; notes: string }>(
+  const prev = await get<{ rights_json: string; notes: string }>(
     'SELECT rights_json, notes FROM staff_departments WHERE name = ?',
     [n]
   );
@@ -810,7 +810,7 @@ export function upsertDepartment(
   const clean = parseDeptOverlay(JSON.stringify(overlay));
   const notes =
     opts.notes !== undefined ? String(opts.notes).slice(0, 500) : String(prev?.notes || '');
-  run(
+  await run(
     `INSERT INTO staff_departments (name, rights_json, notes, updated_at)
      VALUES (?, ?, ?, datetime('now'))
      ON CONFLICT(name) DO UPDATE SET
@@ -819,30 +819,30 @@ export function upsertDepartment(
        updated_at = datetime('now')`,
     [n, JSON.stringify(clean), notes]
   );
-  return listDepartments().find((d) => d.name === n)!;
+  return (await listDepartments()).find((d) => d.name === n)!;
 }
 
-export function deleteDepartmentConfig(name: string): boolean {
+export async function deleteDepartmentConfig(name: string): Promise<boolean> {
   const n = normDepartmentName(name);
   if (!n) return false;
-  const before = get('SELECT name FROM staff_departments WHERE name = ?', [n]);
+  const before = await get('SELECT name FROM staff_departments WHERE name = ?', [n]);
   if (!before) return false;
-  run('DELETE FROM staff_departments WHERE name = ?', [n]);
+  await run('DELETE FROM staff_departments WHERE name = ?', [n]);
   return true;
 }
 
 /** Права сотрудника с учётом overlay отдела (админ — без overlay). */
-export function effectiveRightsForStaff(row: {
+export async function effectiveRightsForStaff(row: {
   role?: unknown;
   rights_json?: unknown;
   department?: unknown;
-}): StaffRights {
+}): Promise<StaffRights> {
   const role = String(row.role || 'none');
   const base = parseRights(String(row.rights_json || ''), role);
   if (role === 'admin') return base;
   const dept = normDepartmentName(String(row.department || ''));
   if (!dept) return base;
-  return applyDeptOverlay(base, getDeptOverlay(dept));
+  return applyDeptOverlay(base, await getDeptOverlay(dept));
 }
 
 /** Админ / системный — любой раздел; иначе sections из rights. */
@@ -930,12 +930,12 @@ export function canAccessPhotoScreen(
   return canAccessSection(actor, 'photo') || canAccessSection(actor, 'media');
 }
 
-export function staffMeta() {
-  const total = get<{ c: number }>('SELECT COUNT(*) AS c FROM staff')?.c ?? 0;
-  const amo = get<{ c: number }>(`SELECT COUNT(*) AS c FROM staff WHERE source LIKE '%amo%'`)?.c ?? 0;
-  const oneC = get<{ c: number }>(`SELECT COUNT(*) AS c FROM staff WHERE source LIKE '%1c%'`)?.c ?? 0;
-  const withLogin = get<{ c: number }>(`SELECT COUNT(*) AS c FROM staff WHERE can_login = 1`)?.c ?? 0;
-  const last = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['staff_synced_at'])?.value ?? null;
+export async function staffMeta() {
+  const total = (await get<{ c: number }>('SELECT COUNT(*) AS c FROM staff'))?.c ?? 0;
+  const amo = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM staff WHERE source LIKE '%amo%'`))?.c ?? 0;
+  const oneC = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM staff WHERE source LIKE '%1c%'`))?.c ?? 0;
+  const withLogin = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM staff WHERE can_login = 1`))?.c ?? 0;
+  const last = (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['staff_synced_at']))?.value ?? null;
   return { total, amo, oneC, withLogin, lastSync: last };
 }
 
@@ -952,15 +952,15 @@ const SECTIONS_ADDED_V4: StaffSection[] = [
 /**
  * Идемпотентно: заполняет пустой rights_json по роли; аддитивно дописывает новые разделы v4.
  */
-export function ensureStaffRoleDefaults(): { filled: number; migrated: number } {
-  const rows = all<{ id: string; role: string; rights_json: string }>(
+export async function ensureStaffRoleDefaults(): Promise<{ filled: number; migrated: number }> {
+  const rows = await all<{ id: string; role: string; rights_json: string }>(
     'SELECT id, role, rights_json FROM staff'
   );
   let filled = 0;
   let migrated = 0;
-  const ver = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [
+  const ver = (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [
     'staff_roles_version',
-  ])?.value;
+  ]))?.value;
   const needV4 = !ver || Number(ver) < 4;
   const needV5 = !ver || Number(ver) < 5;
   const needV6 = !ver || Number(ver) < 6;
@@ -972,7 +972,7 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
     const role = isStaffRole(row.role) ? row.role : 'none';
     const raw = String(row.rights_json || '').trim();
     if (!raw || raw === '{}' || raw === 'null') {
-      run('UPDATE staff SET role = ?, rights_json = ? WHERE id = ?', [
+      await run('UPDATE staff SET role = ?, rights_json = ? WHERE id = ?', [
         role,
         JSON.stringify(rightsForRole(role)),
         row.id,
@@ -982,7 +982,7 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
     }
     if (!needV4 && !needV5 && !needV6 && !needV7 && !needV8 && !needV9) continue;
     if (role === 'admin' && (needV4 || needV6 || needV7 || needV8)) {
-      run('UPDATE staff SET rights_json = ? WHERE id = ?', [
+      await run('UPDATE staff SET rights_json = ? WHERE id = ?', [
         JSON.stringify(rightsForRole('admin')),
         row.id,
       ]);
@@ -991,7 +991,7 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
     }
     // v9: закупщик — только home / purchases / help (без склада/CRM/компании)
     if (needV9 && role === 'purchaser') {
-      run('UPDATE staff SET rights_json = ? WHERE id = ?', [
+      await run('UPDATE staff SET rights_json = ? WHERE id = ?', [
         JSON.stringify(rightsForRole('purchaser')),
         row.id,
       ]);
@@ -1061,14 +1061,14 @@ export function ensureStaffRoleDefaults(): { filled: number; migrated: number } 
       rights.sections = [...have].filter((s) =>
         (STAFF_SECTIONS as readonly string[]).includes(s)
       );
-      run('UPDATE staff SET rights_json = ? WHERE id = ?', [
+      await run('UPDATE staff SET rights_json = ? WHERE id = ?', [
         JSON.stringify(rights),
         row.id,
       ]);
       migrated += 1;
     }
   }
-  run(
+  await run(
     `INSERT INTO meta (key, value) VALUES ('staff_roles_version', '9')
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   );
@@ -1085,20 +1085,20 @@ export type AccessMatrixRow = {
 };
 
 /** Снимок матрицы доступов для UI. */
-export function accessMatrixSnapshot(): {
+export async function accessMatrixSnapshot(): Promise<{
   sections: StaffSection[];
   section_labels: Record<string, string>;
   rows: AccessMatrixRow[];
-} {
-  const rows = all<Record<string, unknown>>(
+}> {
+  const rows = await all<Record<string, unknown>>(
     `SELECT id, name, role, rights_json, department, can_login
      FROM staff
      WHERE IFNULL(is_active,1) = 1
      ORDER BY name COLLATE NOCASE`
   );
-  const mapped: AccessMatrixRow[] = rows.map((row) => {
+  const mapped: AccessMatrixRow[] = await Promise.all(rows.map(async (row) => {
     const role = String(row.role || 'none');
-    const rights = effectiveRightsForStaff(row);
+    const rights = await effectiveRightsForStaff(row);
     const isAdmin = role === 'admin';
     return {
       id: String(row.id),
@@ -1108,7 +1108,7 @@ export function accessMatrixSnapshot(): {
       is_admin: isAdmin,
       sections: isAdmin ? [...STAFF_SECTIONS] : [...rights.sections],
     };
-  });
+  }));
   mapped.sort((a, b) => {
     const ra = roleSortRank(a.role);
     const rb = roleSortRank(b.role);
@@ -1123,15 +1123,15 @@ export function accessMatrixSnapshot(): {
 }
 
 /** Точечное изменение галочки раздела (админ всегда полный доступ). */
-export function setStaffSectionAccess(
+export async function setStaffSectionAccess(
   staffId: string,
   section: string,
   allowed: boolean
-): AccessMatrixRow {
+): Promise<AccessMatrixRow> {
   if (!(STAFF_SECTIONS as readonly string[]).includes(section)) {
     throw new Error('Неизвестный раздел');
   }
-  const row = get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [staffId]);
+  const row = await get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [staffId]);
   if (!row) throw new Error('Сотрудник не найден');
   const role = String(row.role || 'none');
   if (role === 'admin') {
@@ -1149,9 +1149,9 @@ export function setStaffSectionAccess(
   if (allowed) set.add(section);
   else set.delete(section);
   rights.sections = [...set].filter((s) => (STAFF_SECTIONS as readonly string[]).includes(s));
-  run('UPDATE staff SET rights_json = ? WHERE id = ?', [JSON.stringify(rights), staffId]);
-  const after = get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [staffId])!;
-  const eff = effectiveRightsForStaff(after);
+  await run('UPDATE staff SET rights_json = ? WHERE id = ?', [JSON.stringify(rights), staffId]);
+  const after = (await get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [staffId]))!;
+  const eff = await effectiveRightsForStaff(after);
   return {
     id: String(after.id),
     name: String(after.name || ''),
@@ -1171,7 +1171,7 @@ export type StaffSyncResult = {
 };
 
 /** Слияние Amo + связей + HS employees → staff. Сохраняет вручную выставленные role/rights. */
-export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncResult {
+export async function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): Promise<StaffSyncResult> {
   const t0 = Date.now();
   const exp = loadAmoExport(scriptPath);
   const users = exp.users || [];
@@ -1179,7 +1179,7 @@ export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncRes
   const authRows = exp.auth || [];
 
   try {
-    saveAmoUserDirectory(users);
+    await saveAmoUserDirectory(users);
   } catch {
     /* справочник имён — не блокируем синк */
   }
@@ -1199,13 +1199,13 @@ export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncRes
     if (name) authByName.set(name, a);
   }
 
-  const hsEmployees = all<{ id: string; code: string; name: string }>(
+  const hsEmployees = await all<{ id: string; code: string; name: string }>(
     'SELECT id, code, name FROM employees ORDER BY name'
   );
   const hsByGuid = new Map(hsEmployees.map((e) => [e.id, e]));
   const usedHs = new Set<string>();
 
-  const existing = all<{
+  const existing = await all<{
     id: string;
     name: string;
     amo_id: string;
@@ -1227,7 +1227,7 @@ export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncRes
   let upserted = 0;
   let linked = 0;
 
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const u of users) {
       const amoId = String(u.id || '').trim();
@@ -1285,7 +1285,7 @@ export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncRes
         canLogin = role !== 'none' && isActive ? 1 : 0;
       }
 
-      run(
+      await run(
         `INSERT INTO staff (
           id, amo_id, email, name, is_active, group_id,
           one_c_guid, one_c_code, one_c_name, department,
@@ -1341,7 +1341,7 @@ export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncRes
       if (byGuid.has(hs.id)) {
         // уже есть запись — обновим имя/код, не трогая права
         const prev = byGuid.get(hs.id)!;
-        run(
+        await run(
           `UPDATE staff SET one_c_code = ?, one_c_name = ?, name = COALESCE(NULLIF(name,''), ?),
             source = CASE WHEN source LIKE '%1c%' THEN source ELSE source || '+1c' END,
             synced_at = datetime('now')
@@ -1353,7 +1353,7 @@ export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncRes
       }
       const byN = byName.get(normName(hs.name));
       if (byN && !byN.one_c_guid) {
-        run(
+        await run(
           `UPDATE staff SET one_c_guid = ?, one_c_code = ?, one_c_name = ?,
             source = CASE WHEN source LIKE '%1c%' THEN source ELSE source || '+1c' END,
             synced_at = datetime('now')
@@ -1370,15 +1370,15 @@ export function syncStaffFromAmoAnd1c(scriptPath = DEFAULT_EXPORT): StaffSyncRes
       // Новые записи: Amo-ветка выше или ручное «Добавить сотрудника».
     }
 
-    run(
+    await run(
       `INSERT INTO meta (key, value) VALUES ('staff_synced_at', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       [new Date().toISOString()]
     );
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
     try {
-      run('ROLLBACK');
+      await run('ROLLBACK');
     } catch {
       /* ignore */
     }
@@ -1405,7 +1405,7 @@ export type CreateStaffInput = {
 };
 
 /** Ручное добавление сотрудника (не из Amo). */
-export function createStaffManual(input: CreateStaffInput): Record<string, unknown> {
+export async function createStaffManual(input: CreateStaffInput): Promise<Record<string, unknown>> {
   const name = String(input.name || '').trim();
   if (!name) throw new Error('Укажите ФИО');
   const role: StaffRole = isStaffRole(input.role) ? input.role : 'readonly';
@@ -1418,15 +1418,15 @@ export function createStaffManual(input: CreateStaffInput): Record<string, unkno
   const id = newGuid();
 
   if (email) {
-    const clash = get('SELECT id FROM staff WHERE lower(email) = ?', [email]);
+    const clash = await get('SELECT id FROM staff WHERE lower(email) = ?', [email]);
     if (clash) throw new Error('Email уже есть в персонале');
   }
   if (login) {
-    const clash = get('SELECT id FROM staff WHERE lower(login) = lower(?)', [login]);
+    const clash = await get('SELECT id FROM staff WHERE lower(login) = lower(?)', [login]);
     if (clash) throw new Error('Логин занят');
   }
 
-  run(
+  await run(
     `INSERT INTO staff (
       id, amo_id, email, name, is_active, group_id,
       one_c_guid, one_c_code, one_c_name, department,
@@ -1436,5 +1436,5 @@ export function createStaffManual(input: CreateStaffInput): Record<string, unkno
     [id, email, name, department, role, JSON.stringify(rights), canLogin, notes, login]
   );
 
-  return get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [id])!;
+  return (await get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [id]))!;
 }

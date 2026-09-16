@@ -396,11 +396,11 @@ function completenessCheckedLabels(ctx: StoWorkorderFillCtx): Set<string> {
 }
 
 /** 03ф — заказ-наряд для физлица. */
-export function renderStoWorkorderPersonHtml(
+export async function renderStoWorkorderPersonHtml(
   meta: StoWorkorderMeta,
   ctx: StoWorkorderFillCtx,
   opts?: { title?: string }
-): string {
+): Promise<string> {
   const v = ctxVals(ctx);
   const num = v.number || '______';
   const title = opts?.title || meta.title;
@@ -477,7 +477,7 @@ export function renderStoWorkorderPersonHtml(
     'Всего к оплате:',
     totalSumStr
   );
-  const warranty = warrantyTableHtml({
+  const warranty = await warrantyTableHtml({
     startWorks: 'с даты выдачи АМТС',
     startGoods: 'с даты выдачи АМТС',
     sellerInn: ctx.org?.inn,
@@ -575,7 +575,7 @@ export function renderStoWorkorderPersonHtml(
         : '☐ наличными &nbsp; ☐ по карте &nbsp; ☐ безналичный расчёт'
     }.</p>
   <p>7.3. Срок начала работ: «____» __________ 20____ г. Срок окончания работ: «____» __________ 20____ г., ____ ч.</p>
-  <p>7.4. Гарантийные сроки: на работы (услуги) — ${esc(formatWarrantyWorksTerm())}; на товары Исполнителя — по таблице п. 10.7. На запчасти и материалы Заказчика гарантия Исполнителем не предоставляется.</p>
+  <p>7.4. Гарантийные сроки: на работы (услуги) — ${esc(await formatWarrantyWorksTerm())}; на товары Исполнителя — по таблице п. 10.7. На запчасти и материалы Заказчика гарантия Исполнителем не предоставляется.</p>
   <p>7.5. Срок явки за АМТС после извещения о готовности — 1 (одни) сутки. По истечении этого срока плата за хранение составляет 1 000 (одну тысячу) руб. за сутки, начиная со дня, следующего за днём истечения указанного срока. Если по истечении 1 (одного) месяца с даты начала начисления платы за хранение Заказчик не забрал АМТС, Исполнитель вправе, дважды письменно предупредив Заказчика, реализовать АМТС в порядке пункта 6 статьи 720 ГК РФ.</p>
 
   <h2 class="sec">8. Согласованные условия и подтверждения Заказчика при приёме АМТС</h2>
@@ -657,11 +657,11 @@ export function renderStoWorkorderPersonHtml(
 }
 
 /** 03ю — заказ-наряд для юрлица / партнёра (структура как у 03ф, блок заказчика — юр.). */
-export function renderStoWorkorderLegalHtml(
+export async function renderStoWorkorderLegalHtml(
   meta: StoWorkorderMeta,
   ctx: StoWorkorderFillCtx,
   opts?: { title?: string }
-): string {
+): Promise<string> {
   const v = ctxVals(ctx);
   const num = v.number || '______';
   const title = opts?.title || meta.title;
@@ -750,7 +750,7 @@ export function renderStoWorkorderLegalHtml(
     'Всего к оплате:',
     totalSumStr
   );
-  const warranty = warrantyTableHtml({
+  const warranty = await warrantyTableHtml({
     startWorks: 'с даты выдачи АМТС',
     startGoods: 'с даты выдачи АМТС',
     sellerInn: ctx.org?.inn,
@@ -847,7 +847,7 @@ export function renderStoWorkorderLegalHtml(
         : '☐ безналичный расчёт &nbsp; ☐ наличными (в пределах 100 000 руб. по одному договору)'
     }.</p>
   <p>7.3. Срок начала работ: «____» __________ 20____ г. Срок окончания работ: «____» __________ 20____ г., ____ ч.</p>
-  <p>7.4. Гарантийные сроки: на работы (услуги) — ${esc(formatWarrantyWorksTerm())}; на товары Исполнителя — по таблице п. 10.7 и Гарантийной политике (приложение к Договору). На запчасти и материалы Заказчика гарантия Исполнителем не предоставляется.</p>
+  <p>7.4. Гарантийные сроки: на работы (услуги) — ${esc(await formatWarrantyWorksTerm())}; на товары Исполнителя — по таблице п. 10.7 и Гарантийной политике (приложение к Договору). На запчасти и материалы Заказчика гарантия Исполнителем не предоставляется.</p>
   <p>7.5. Срок явки за АМТС после извещения о готовности — 1 (одни) сутки. По истечении этого срока плата за хранение составляет 1 000 (одну тысячу) руб. за сутки, начиная со дня, следующего за днём истечения указанного срока. Если по истечении 1 (одного) месяца с даты начала начисления платы за хранение Заказчик не забрал АМТС, Исполнитель вправе, дважды письменно предупредив Заказчика, реализовать АМТС в порядке пункта 6 статьи 720 ГК РФ.</p>
 
   <h2 class="sec">8. Согласованные условия и подтверждения Заказчика при приёме АМТС</h2>

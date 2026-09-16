@@ -22,33 +22,33 @@ export type KassaJournalItem = {
   extra: string;
 };
 
-function tableExists(name: string): boolean {
+async function tableExists(name: string): Promise<boolean> {
   return Boolean(
-    get<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, [name])
+    await get<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, [name])
   );
 }
 
-function journalTotals(): {
+async function journalTotals(): Promise<{
   fiscal: number;
   payment: number;
   pay_link: number;
   amount_paid: number;
-} {
-  const countFiscal = tableExists('fiscal_receipts')
-    ? Number(get<{ c: number }>(`SELECT COUNT(*) AS c FROM fiscal_receipts`)?.c) || 0
+}> {
+  const countFiscal = await tableExists('fiscal_receipts')
+    ? Number((await get<{ c: number }>(`SELECT COUNT(*) AS c FROM fiscal_receipts`))?.c) || 0
     : 0;
-  const countPay = tableExists('deal_payments')
-    ? Number(get<{ c: number }>(`SELECT COUNT(*) AS c FROM deal_payments`)?.c) || 0
+  const countPay = await tableExists('deal_payments')
+    ? Number((await get<{ c: number }>(`SELECT COUNT(*) AS c FROM deal_payments`))?.c) || 0
     : 0;
-  const countLink = tableExists('payment_links')
-    ? Number(get<{ c: number }>(`SELECT COUNT(*) AS c FROM payment_links`)?.c) || 0
+  const countLink = await tableExists('payment_links')
+    ? Number((await get<{ c: number }>(`SELECT COUNT(*) AS c FROM payment_links`))?.c) || 0
     : 0;
-  const paidAmt = tableExists('deal_payments')
+  const paidAmt = await tableExists('deal_payments')
     ? Number(
-        get<{ a: number }>(
+        (await get<{ a: number }>(
           `SELECT IFNULL(SUM(amount),0) AS a FROM deal_payments
            WHERE lower(status) IN ('paid','confirmed','success','accepted')`
-        )?.a
+        ))?.a
       ) || 0
     : 0;
   return {
@@ -73,7 +73,7 @@ async function cachedAtolTokenTest(force = false): Promise<ProbeCache> {
   if (!force && atolTokenCache && Date.now() - atolTokenCache.at < PROBE_CACHE_MS) {
     return atolTokenCache;
   }
-  if (!atolConfigured()) {
+  if (!await atolConfigured()) {
     atolTokenCache = {
       at: Date.now(),
       ok: false,
@@ -83,7 +83,7 @@ async function cachedAtolTokenTest(force = false): Promise<ProbeCache> {
   }
   try {
     const result = await Promise.race([
-      testAtolConnection(),
+      await testAtolConnection(),
       new Promise<{ ok: false; message: string }>((resolve) =>
         setTimeout(() => resolve({ ok: false, message: 'Таймаут проверки АТОЛ' }), 8000)
       ),
@@ -107,7 +107,7 @@ async function cachedTochkaProbe(force = false): Promise<ProbeCache> {
   if (!force && tochkaProbeCache && Date.now() - tochkaProbeCache.at < PROBE_CACHE_MS) {
     return tochkaProbeCache;
   }
-  const bridge = tochkaBridgePublic();
+  const bridge = await tochkaBridgePublic();
   if (!bridge.configured) {
     tochkaProbeCache = {
       at: Date.now(),
@@ -118,7 +118,7 @@ async function cachedTochkaProbe(force = false): Promise<ProbeCache> {
   }
   try {
     const data = await Promise.race([
-      fetchTochkaOverview(),
+      await fetchTochkaOverview(),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Таймаут проверки Точки')), 8000)
       ),
@@ -140,17 +140,17 @@ async function cachedTochkaProbe(force = false): Promise<ProbeCache> {
   return tochkaProbeCache;
 }
 
-function fiscalHealth7d(): {
+async function fiscalHealth7d(): Promise<{
   days: number;
   done: number;
   wait: number;
   error: number;
   total: number;
-} {
-  if (!tableExists('fiscal_receipts')) {
+}> {
+  if (!await tableExists('fiscal_receipts')) {
     return { days: 7, done: 0, wait: 0, error: 0, total: 0 };
   }
-  const rows = all<{ status: string; c: number }>(
+  const rows = await all<{ status: string; c: number }>(
     `SELECT lower(IFNULL(status,'')) AS status, COUNT(*) AS c
      FROM fiscal_receipts
      WHERE datetime(created_at) >= datetime('now', '-7 days')
@@ -180,7 +180,7 @@ export async function getKassaOverview(opts?: {
   organization_id?: string;
   company_id?: string;
 }): Promise<{
-  registers: ReturnType<typeof listCashRegistersWithBalances>;
+  registers: Awaited<ReturnType<typeof listCashRegistersWithBalances>>;
   balance_total: number;
   health: {
     atol: {
@@ -191,7 +191,7 @@ export async function getKassaOverview(opts?: {
       inn: string;
       settings_path: string;
     };
-    fiscal: ReturnType<typeof fiscalHealth7d>;
+    fiscal: Awaited<ReturnType<typeof fiscalHealth7d>>;
     ofd: { mode: string; note: string };
     tochka: {
       configured: boolean;
@@ -200,20 +200,20 @@ export async function getKassaOverview(opts?: {
       balances_path: string;
     };
   };
-  totals: ReturnType<typeof journalTotals>;
+  totals: Awaited<ReturnType<typeof journalTotals>>;
   organization_id: string;
   company_id: string;
 }> {
   const orgId = String(opts?.organization_id || '').trim();
   const companyId = String(opts?.company_id || '').trim();
-  const registers = listCashRegistersWithBalances({
+  const registers = await listCashRegistersWithBalances({
     ...(orgId ? { organization_id: orgId } : {}),
     ...(!orgId && companyId ? { company_id: companyId } : {}),
   });
   const balance_total =
     Math.round(registers.reduce((s, r) => s + (Number(r.balance) || 0), 0));
-  const atolInfo = atolStatusInfo();
-  const s = getAtolSettings();
+  const atolInfo = await atolStatusInfo();
+  const s = await getAtolSettings();
   const probeAtol = opts?.probe_atol !== false;
   let tokenOk: boolean | null = null;
   let tokenMsg = '';
@@ -222,7 +222,7 @@ export async function getKassaOverview(opts?: {
     tokenOk = t.ok;
     tokenMsg = t.message;
   }
-  const bridge = tochkaBridgePublic();
+  const bridge = await tochkaBridgePublic();
   const probeTochka = opts?.probe_tochka !== false;
   let bridgeOk: boolean | null = null;
   let tochkaMsg = bridge.configured ? '' : 'ключ моста не задан';
@@ -245,7 +245,7 @@ export async function getKassaOverview(opts?: {
         inn: String(atolInfo.inn || ''),
         settings_path: '/settings/atol',
       },
-      fiscal: fiscalHealth7d(),
+      fiscal: await fiscalHealth7d(),
       ofd: {
         mode: 'via_atol',
         note: 'Прямого баланса ОФД нет — чеки уходят через АТОЛ. Баланс/сверка — в кабинете АТОЛ или ОФД.',
@@ -257,23 +257,23 @@ export async function getKassaOverview(opts?: {
         balances_path: String(bridge.balances_path || '/money/tochka'),
       },
     },
-    totals: journalTotals(),
+    totals: await journalTotals(),
   };
 }
 
-export function listKassaJournal(opts?: {
+export async function listKassaJournal(opts?: {
   q?: string;
   source?: string;
   day?: string;
   page?: number;
   limit?: number;
-}): {
+}): Promise<{
   items: KassaJournalItem[];
   total: number;
   page: number;
   limit: number;
   totals: { fiscal: number; payment: number; pay_link: number; amount_paid: number };
-} {
+}> {
   const page = Math.max(1, Number(opts?.page) || 1);
   const limit = Math.min(Math.max(Number(opts?.limit) || 50, 1), 200);
   const offset = (page - 1) * limit;
@@ -284,7 +284,7 @@ export function listKassaJournal(opts?: {
   const parts: string[] = [];
   const params: Array<string | number> = [];
 
-  if (tableExists('fiscal_receipts') && (source === 'all' || source === 'fiscal')) {
+  if (await tableExists('fiscal_receipts') && (source === 'all' || source === 'fiscal')) {
     parts.push(`
       SELECT 'fiscal' AS source, f.id AS id, f.deal_id AS deal_id,
              IFNULL(d.name,'') AS deal_name,
@@ -296,7 +296,7 @@ export function listKassaJournal(opts?: {
       LEFT JOIN crm_deals d ON d.id = f.deal_id
     `);
   }
-  if (tableExists('deal_payments') && (source === 'all' || source === 'payment')) {
+  if (await tableExists('deal_payments') && (source === 'all' || source === 'payment')) {
     parts.push(`
       SELECT 'payment' AS source, p.id AS id, p.deal_id AS deal_id,
              IFNULL(d.name,'') AS deal_name,
@@ -308,7 +308,7 @@ export function listKassaJournal(opts?: {
       LEFT JOIN crm_deals d ON d.id = p.deal_id
     `);
   }
-  if (tableExists('payment_links') && (source === 'all' || source === 'pay_link')) {
+  if (await tableExists('payment_links') && (source === 'all' || source === 'pay_link')) {
     parts.push(`
       SELECT 'pay_link' AS source, l.id AS id, l.deal_id AS deal_id,
              IFNULL(d.name,'') AS deal_name,
@@ -346,13 +346,13 @@ export function listKassaJournal(opts?: {
   }
   const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
 
-  const totalRow = get<{ c: number }>(
+  const totalRow = await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM (${union}) AS j${whereSql}`,
     params
   );
   const total = Number(totalRow?.c) || 0;
 
-  const items = all(
+  const items = await all(
     `SELECT * FROM (${union}) AS j${whereSql}
      ORDER BY datetime(created_at) DESC
      LIMIT ? OFFSET ?`,
@@ -375,6 +375,6 @@ export function listKassaJournal(opts?: {
     total,
     page,
     limit,
-    totals: journalTotals(),
+    totals: await journalTotals(),
   };
 }

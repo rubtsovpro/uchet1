@@ -72,8 +72,8 @@ export function amoNoteDedupeKey(dealId: string, text: string): string {
   return `amo_note_sent:${id}:h:${hash}`;
 }
 
-function markAmoNoteSent(key: string, text: string): void {
-  run(
+async function markAmoNoteSent(key: string, text: string): Promise<void> {
+  await run(
     `INSERT INTO meta (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     [
@@ -83,8 +83,8 @@ function markAmoNoteSent(key: string, text: string): void {
   );
 }
 
-function wasAmoNoteSent(key: string): boolean {
-  const row = get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [key]);
+async function wasAmoNoteSent(key: string): Promise<boolean> {
+  const row = await get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [key]);
   return Boolean(String(row?.value || '').trim());
 }
 
@@ -135,13 +135,13 @@ export async function sendAmoLeadNoteOnce(opts: {
   if (!dealId || !text) return { ok: false, error: 'deal_id and text required' };
 
   const key = amoNoteDedupeKey(dealId, text);
-  if (wasAmoNoteSent(key)) return { ok: true, skipped: true };
+  if (await wasAmoNoteSent(key)) return { ok: true, skipped: true };
 
   const result = await runAmoCliScript(DEFAULT_NOTE_SCRIPT, [
     `--deal=${dealId}`,
     `--text=${text}`,
   ]);
-  if (result.ok) markAmoNoteSent(key, text);
+  if (result.ok) await markAmoNoteSent(key, text);
   return result;
 }
 
@@ -152,7 +152,7 @@ export async function sendAmoLeadTaskOnce(opts: {
   const dealId = String(opts.dealId || '').replace(/\D/g, '');
   const text = String(opts.text || '').trim();
   if (!dealId || !text) return { ok: false, error: 'deal_id and text required' };
-  return runAmoCliScript(DEFAULT_TASK_SCRIPT, [`--deal=${dealId}`, `--text=${text}`]);
+  return await runAmoCliScript(DEFAULT_TASK_SCRIPT, [`--deal=${dealId}`, `--text=${text}`]);
 }
 
 /**
@@ -168,11 +168,11 @@ export async function notifyAmoWarehousePacked(opts: {
   if (!dealId || !text) return { ok: false, error: 'deal_id and text required' };
 
   const key = amoNoteDedupeKey(dealId, text);
-  if (wasAmoNoteSent(key)) return { ok: true, skipped: true };
+  if (await wasAmoNoteSent(key)) return { ok: true, skipped: true };
 
   try {
     if (await amoAlreadyHasSameStockNote(dealId, text)) {
-      markAmoNoteSent(key, text);
+      await markAmoNoteSent(key, text);
       return { ok: true, skipped: true };
     }
   } catch {
@@ -185,7 +185,7 @@ export async function notifyAmoWarehousePacked(opts: {
   const delaySec = /лимит|429|блокировк|повтор через|rate.?limit/i.test(String(once.error || ''))
     ? 45
     : 25;
-  enqueueAmoLeadNote({
+  await enqueueAmoLeadNote({
     dealId,
     text,
     kind: 'note',
@@ -214,7 +214,7 @@ export async function notifyAmoCourierDeliveredOnce(opts: {
   if (await amoHasCourierDeliveredNote(dealId)) {
     return { ok: true, skipped: true };
   }
-  return notifyAmoWarehousePacked({ dealId, text });
+  return await notifyAmoWarehousePacked({ dealId, text });
 }
 
 /** Задача менеджеру: склад не смог собрать передачу. */
@@ -229,7 +229,7 @@ export async function notifyAmoHandoffReturn(opts: {
   const once = await sendAmoLeadTaskOnce({ dealId, text });
   if (once.ok) return { ok: true, task_id: once.task_id };
 
-  enqueueAmoLeadNote({
+  await enqueueAmoLeadNote({
     dealId,
     text,
     kind: 'task',

@@ -26,38 +26,38 @@ export type DictRebuildResult = {
   priceTypes: number;
 };
 
-export function rebuildDictionaries(): DictRebuildResult {
-  run('DELETE FROM dict_property_values');
-  run('DELETE FROM dict_properties');
-  run('DELETE FROM dict_models');
-  run('DELETE FROM dict_marks');
-  run('DELETE FROM dict_generations');
-  run('DELETE FROM dict_brands');
+export async function rebuildDictionaries(): Promise<DictRebuildResult> {
+  await run('DELETE FROM dict_property_values');
+  await run('DELETE FROM dict_properties');
+  await run('DELETE FROM dict_models');
+  await run('DELETE FROM dict_marks');
+  await run('DELETE FROM dict_generations');
+  await run('DELETE FROM dict_brands');
   // dict_price_types не чистим целиком — ручные типы/переименования сохраняются
-  run('UPDATE dict_price_types SET products_count = 0');
+  await run('UPDATE dict_price_types SET products_count = 0');
 
-  const insertProp = db.prepare(
+  const insertProp = /* PG: replace prepare */ db.prepare(
     `INSERT OR IGNORE INTO dict_properties (id, name, products_count) VALUES (?, ?, ?)`
   );
-  const insertVal = db.prepare(
+  const insertVal = /* PG: replace prepare */ db.prepare(
     `INSERT OR IGNORE INTO dict_property_values (id, property_id, value, products_count) VALUES (?, ?, ?, ?)`
   );
-  const insertMark = db.prepare(
+  const insertMark = /* PG: replace prepare */ db.prepare(
     `INSERT OR IGNORE INTO dict_marks (id, name, products_count) VALUES (?, ?, ?)`
   );
-  const insertModel = db.prepare(
+  const insertModel = /* PG: replace prepare */ db.prepare(
     `INSERT OR IGNORE INTO dict_models (id, mark_id, name, only_model, products_count) VALUES (?, ?, ?, ?, ?)`
   );
-  const insertGen = db.prepare(
+  const insertGen = /* PG: replace prepare */ db.prepare(
     `INSERT OR IGNORE INTO dict_generations (id, name, products_count) VALUES (?, ?, ?)`
   );
-  const insertBrand = db.prepare(
+  const insertBrand = /* PG: replace prepare */ db.prepare(
     `INSERT OR IGNORE INTO dict_brands (id, name, products_count) VALUES (?, ?, ?)`
   );
 
-  run('BEGIN');
+  await run('BEGIN');
   try {
-    const props = all<{ property: string; c: number }>(
+    const props = await all<{ property: string; c: number }>(
       `SELECT property, COUNT(DISTINCT product_id) AS c
        FROM product_properties WHERE IFNULL(property,'') != ''
        GROUP BY property ORDER BY property`
@@ -65,7 +65,7 @@ export function rebuildDictionaries(): DictRebuildResult {
     for (const p of props) {
       const id = guidFromKey(`property:${p.property}`);
       insertProp.run(id, p.property, p.c);
-      const vals = all<{ value: string; c: number }>(
+      const vals = await all<{ value: string; c: number }>(
         `SELECT value, COUNT(DISTINCT product_id) AS c
          FROM product_properties WHERE property = ?
          GROUP BY value ORDER BY value`,
@@ -77,7 +77,7 @@ export function rebuildDictionaries(): DictRebuildResult {
       }
     }
 
-    const marks = all<{ mark: string; c: number }>(
+    const marks = await all<{ mark: string; c: number }>(
       `SELECT mark, COUNT(DISTINCT product_id) AS c
        FROM product_applicability WHERE IFNULL(mark,'') != ''
        GROUP BY mark ORDER BY mark`
@@ -85,7 +85,7 @@ export function rebuildDictionaries(): DictRebuildResult {
     for (const m of marks) {
       const mid = guidFromKey(`mark:${m.mark}`);
       insertMark.run(mid, m.mark, m.c);
-      const models = all<{ model: string; only_model: string; c: number }>(
+      const models = await all<{ model: string; only_model: string; c: number }>(
         `SELECT model, only_model, COUNT(DISTINCT product_id) AS c
          FROM product_applicability
          WHERE mark = ? AND (IFNULL(model,'') != '' OR IFNULL(only_model,'') != '')
@@ -99,7 +99,7 @@ export function rebuildDictionaries(): DictRebuildResult {
       }
     }
 
-    const gens = all<{ generation: string; c: number }>(
+    const gens = await all<{ generation: string; c: number }>(
       `SELECT generation, COUNT(DISTINCT product_id) AS c
        FROM product_applicability WHERE IFNULL(generation,'') != ''
        GROUP BY generation ORDER BY generation`
@@ -108,7 +108,7 @@ export function rebuildDictionaries(): DictRebuildResult {
       insertGen.run(guidFromKey(`gen:${g.generation}`), g.generation, g.c);
     }
 
-    const brands = all<{ brand: string; c: number }>(
+    const brands = await all<{ brand: string; c: number }>(
       `SELECT brand, COUNT(*) AS c FROM products
        WHERE is_active = 1 AND IFNULL(brand,'') != ''
        GROUP BY brand ORDER BY brand`
@@ -117,12 +117,12 @@ export function rebuildDictionaries(): DictRebuildResult {
       insertBrand.run(guidFromKey(`brand:${b.brand}`), b.brand, b.c);
     }
 
-    const priceTypes = all<{ price_type: string; c: number }>(
+    const priceTypes = await all<{ price_type: string; c: number }>(
       `SELECT price_type, COUNT(DISTINCT product_id) AS c
        FROM product_prices WHERE IFNULL(price_type,'') != ''
        GROUP BY price_type ORDER BY price_type`
     );
-    const upsertPt = db.prepare(
+    const upsertPt = /* PG: replace prepare */ db.prepare(
       `INSERT INTO dict_price_types (id, name, products_count) VALUES (?, ?, ?)
        ON CONFLICT(name) DO UPDATE SET products_count = excluded.products_count`
     );
@@ -130,43 +130,43 @@ export function rebuildDictionaries(): DictRebuildResult {
       upsertPt.run(guidFromKey(`pricetype:${pt.price_type}`), pt.price_type, pt.c);
     }
 
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
     try {
-      run('ROLLBACK');
+      await run('ROLLBACK');
     } catch {
       /* ignore */
     }
     throw e;
   }
 
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'dicts_rebuilt_at',
     new Date().toISOString(),
   ]);
 
   return {
-    properties: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_properties')?.c ?? 0,
-    propertyValues: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_property_values')?.c ?? 0,
-    marks: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_marks')?.c ?? 0,
-    models: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_models')?.c ?? 0,
-    generations: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_generations')?.c ?? 0,
-    brands: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_brands')?.c ?? 0,
-    priceTypes: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_price_types')?.c ?? 0,
+    properties: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_properties'))?.c ?? 0,
+    propertyValues: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_property_values'))?.c ?? 0,
+    marks: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_marks'))?.c ?? 0,
+    models: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_models'))?.c ?? 0,
+    generations: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_generations'))?.c ?? 0,
+    brands: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_brands'))?.c ?? 0,
+    priceTypes: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_price_types'))?.c ?? 0,
   };
 }
 
-export function dictMeta() {
+export async function dictMeta() {
   return {
-    properties: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_properties')?.c ?? 0,
-    propertyValues: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_property_values')?.c ?? 0,
-    marks: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_marks')?.c ?? 0,
-    models: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_models')?.c ?? 0,
-    generations: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_generations')?.c ?? 0,
-    brands: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_brands')?.c ?? 0,
-    priceTypes: get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_price_types')?.c ?? 0,
+    properties: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_properties'))?.c ?? 0,
+    propertyValues: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_property_values'))?.c ?? 0,
+    marks: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_marks'))?.c ?? 0,
+    models: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_models'))?.c ?? 0,
+    generations: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_generations'))?.c ?? 0,
+    brands: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_brands'))?.c ?? 0,
+    priceTypes: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM dict_price_types'))?.c ?? 0,
     lastRebuild:
-      get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['dicts_rebuilt_at'])?.value ??
+      (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['dicts_rebuilt_at']))?.value ??
       null,
   };
 }

@@ -13,10 +13,10 @@ function escapeXml(s: string): string {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function runsForQuarter(oid: string, year: number, quarter: number) {
+async function runsForQuarter(oid: string, year: number, quarter: number) {
   const m0 = (quarter - 1) * 3 + 1;
   const months = [m0, m0 + 1, m0 + 2];
-  return all<{ id: string; month: number; accrued_total: number; ndfl_total: number; contrib_total: number }>(
+  return await all<{ id: string; month: number; accrued_total: number; ndfl_total: number; contrib_total: number }>(
     `SELECT id, month, accrued_total, ndfl_total, contrib_total FROM payroll_runs
      WHERE organization_id=? AND year=? AND month IN (?,?,?) AND status IN ('draft','posted')
      ORDER BY month`,
@@ -24,15 +24,15 @@ function runsForQuarter(oid: string, year: number, quarter: number) {
   );
 }
 
-export function buildPayrollReportXml(
+export async function buildPayrollReportXml(
   organizationId: string | null | undefined,
   reportType: '6NDFL' | 'RSV' | 'EFS1' | 'PERS',
   year: number,
   quarterOrMonth: number
-): { report_id: string; xml_path: string; amount: number } {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
-  const org = getOrganization(oid);
+): Promise<{ report_id: string; xml_path: string; amount: number }> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
+  const org = await getOrganization(oid);
   const isMonth = reportType === 'PERS';
   const quarter = isMonth ? Math.ceil(quarterOrMonth / 3) : quarterOrMonth;
   const month = isMonth ? quarterOrMonth : 0;
@@ -47,29 +47,29 @@ export function buildPayrollReportXml(
   let people = 0;
 
   if (isMonth) {
-    const runRow = get<{ id: string }>(
+    const runRow = await get<{ id: string }>(
       `SELECT id FROM payroll_runs WHERE organization_id=? AND year=? AND month=?`,
       [oid, year, month]
     );
     if (runRow) {
-      const full = getPayrollRun(runRow.id);
+      const full = await getPayrollRun(runRow.id);
       accrued = Number(full?.accrued_total) || 0;
       ndfl = Number(full?.ndfl_total) || 0;
       contrib = Number(full?.contrib_total) || 0;
       people = (full?.lines as unknown[] | undefined)?.length || 0;
     }
   } else {
-    const runs = runsForQuarter(oid, year, quarter);
+    const runs = await runsForQuarter(oid, year, quarter);
     for (const r of runs) {
       accrued += Number(r.accrued_total) || 0;
       ndfl += Number(r.ndfl_total) || 0;
       contrib += Number(r.contrib_total) || 0;
     }
-    people = get<{ c: number }>(
+    people = (await get<{ c: number }>(
       `SELECT COUNT(DISTINCT staff_id) AS c FROM payroll_lines
        WHERE run_id IN (SELECT id FROM payroll_runs WHERE organization_id=? AND year=? AND month BETWEEN ? AND ?)`,
       [oid, year, (quarter - 1) * 3 + 1, quarter * 3]
-    )?.c || 0;
+    ))?.c || 0;
   }
 
   const tag = reportType;
@@ -87,7 +87,7 @@ export function buildPayrollReportXml(
 `;
   writeFileSync(xmlPath, xml, 'utf8');
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO tax_reports (id, organization_id, report_type, period_year, period_quarter, period_month, status, amount, xml_path, meta_json, built_at)
      VALUES (?,?,?,?,?,?, 'ready', ?, ?, ?, datetime('now'))`,
     [
@@ -105,15 +105,15 @@ export function buildPayrollReportXml(
   return { report_id: id, xml_path: xmlPath, amount };
 }
 
-export function listTaxReports(organizationId: string | null | undefined, reportType?: string) {
-  const oid = resolveOrganizationId(organizationId);
+export async function listTaxReports(organizationId: string | null | undefined, reportType?: string) {
+  const oid = await resolveOrganizationId(organizationId);
   if (reportType) {
-    return all(
+    return await all(
       `SELECT * FROM tax_reports WHERE organization_id=? AND report_type=? ORDER BY created_at DESC LIMIT 50`,
       [oid, reportType]
     );
   }
-  return all(
+  return await all(
     `SELECT * FROM tax_reports WHERE organization_id=? ORDER BY created_at DESC LIMIT 100`,
     [oid]
   );

@@ -54,7 +54,7 @@ function notify(control: Ctrl, status: number, len: number): void {
   Atomics.notify(control, 0);
 }
 
-parentPort!.on('message', (msg: Req) => {
+parentPort!.on('message', async (msg: Req) => {
   void (async () => {
     const control = new Int32Array(msg.control);
     try {

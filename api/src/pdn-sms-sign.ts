@@ -138,9 +138,9 @@ export type PdnSignSession = {
 
 let schemaReady = false;
 
-export function ensurePdnSmsSchema(): void {
+export async function ensurePdnSmsSchema(): Promise<void> {
   if (schemaReady) return;
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS pdn_sign_sessions (
       id TEXT PRIMARY KEY,
       token TEXT NOT NULL UNIQUE,
@@ -191,9 +191,9 @@ export function ensurePdnSmsSchema(): void {
   `);
   // identity_json — ФИО + документ, введённые клиентом на pdn.uchetn1.ru
   try {
-    const cols = all<{ name: string }>('PRAGMA table_info(pdn_sign_sessions)').map((c) => c.name);
+    const cols = (await all<{ name: string }>('PRAGMA table_info(pdn_sign_sessions)')).map((c) => c.name);
     if (!cols.includes('identity_json')) {
-      run(`ALTER TABLE pdn_sign_sessions ADD COLUMN identity_json TEXT NOT NULL DEFAULT ''`);
+      await run(`ALTER TABLE pdn_sign_sessions ADD COLUMN identity_json TEXT NOT NULL DEFAULT ''`);
     }
   } catch {
     /* ignore */
@@ -391,22 +391,22 @@ function rowToSession(row: Record<string, unknown>): PdnSignSession {
   };
 }
 
-export function getPdnSignByToken(token: string): PdnSignSession | null {
-  ensurePdnSmsSchema();
+export async function getPdnSignByToken(token: string): Promise<PdnSignSession | null> {
+  await ensurePdnSmsSchema();
   const t = String(token || '').trim();
   if (!t || t.length > 64) return null;
-  const row = get<Record<string, unknown>>(
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM pdn_sign_sessions WHERE token = ? LIMIT 1`,
     [t]
   );
   return row ? rowToSession(row) : null;
 }
 
-export function getLatestPdnSignForDeal(dealId: string): PdnSignSession | null {
-  ensurePdnSmsSchema();
+export async function getLatestPdnSignForDeal(dealId: string): Promise<PdnSignSession | null> {
+  await ensurePdnSmsSchema();
   const id = String(dealId || '').trim();
   if (!id) return null;
-  const row = get<Record<string, unknown>>(
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM pdn_sign_sessions WHERE deal_id = ?
      ORDER BY datetime(created_at) DESC LIMIT 1`,
     [id]
@@ -414,11 +414,11 @@ export function getLatestPdnSignForDeal(dealId: string): PdnSignSession | null {
   return row ? rowToSession(row) : null;
 }
 
-export function dealHasPdnSmsSigned(dealId: string): boolean {
-  ensurePdnSmsSchema();
+export async function dealHasPdnSmsSigned(dealId: string): Promise<boolean> {
+  await ensurePdnSmsSchema();
   const id = String(dealId || '').trim();
   if (!id) return false;
-  const row = get<{ n: number }>(
+  const row = await get<{ n: number }>(
     `SELECT COUNT(1) AS n FROM pdn_sign_sessions
      WHERE deal_id = ? AND status = 'signed'`,
     [id]
@@ -426,15 +426,15 @@ export function dealHasPdnSmsSigned(dealId: string): boolean {
   return Number(row?.n || 0) > 0;
 }
 
-export function pdnSmsSummary(dealId: string): {
+export async function pdnSmsSummary(dealId: string): Promise<{
   signed: boolean;
   status: PdnSignStatus | '';
   signed_at: string;
   phone_masked: string;
   link_url: string;
   sender: string;
-} {
-  const s = getLatestPdnSignForDeal(dealId);
+}> {
+  const s = await getLatestPdnSignForDeal(dealId);
   if (!s) {
     return { signed: false, status: '', signed_at: '', phone_masked: '', link_url: '', sender: '' };
   }
@@ -462,7 +462,7 @@ export async function appendPdnSignEvent(
   event: string,
   extra?: Record<string, unknown>
 ): Promise<void> {
-  ensurePdnSmsSchema();
+  await ensurePdnSmsSchema();
   let meta: ClientMeta & { accept_language: string } = {
     ip: '',
     ua: '',
@@ -498,7 +498,7 @@ export async function appendPdnSignEvent(
       if (v) headersSnap[name] = String(v).slice(0, 400);
     }
   }
-  run(
+  await run(
     `INSERT INTO pdn_sign_events (
       id, session_id, deal_id, event, ip, user_agent, os, browser, device,
       region, country, accept_language, meta_json
@@ -521,10 +521,10 @@ export async function appendPdnSignEvent(
   );
 }
 
-function markDealPdnOk(dealId: string): void {
+async function markDealPdnOk(dealId: string): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id) return;
-  const wo = get<{ id: string }>(
+  const wo = await get<{ id: string }>(
     `SELECT id FROM sales_docs
      WHERE deal_id = ? AND doc_type = 'workorder'
      ORDER BY datetime(created_at) DESC LIMIT 1`,
@@ -532,20 +532,20 @@ function markDealPdnOk(dealId: string): void {
   );
   if (wo?.id) {
     try {
-      updateSalesDocStoChecklist(String(wo.id), { checks: { pdn: true } });
+      await updateSalesDocStoChecklist(String(wo.id), { checks: { pdn: true } });
     } catch {
       /* чек-лист не блокирует */
     }
   }
 }
 
-function expireIfNeeded(session: PdnSignSession): PdnSignSession {
+async function expireIfNeeded(session: PdnSignSession): Promise<PdnSignSession> {
   if (session.status === 'signed' || session.status === 'revoked') return session;
   const exp = String(session.expires_at || '').trim();
   if (exp) {
     const expMs = Date.parse(exp.includes('T') ? exp : exp.replace(' ', 'T') + 'Z');
     if (Number.isFinite(expMs) && Date.now() > expMs) {
-      run(`UPDATE pdn_sign_sessions SET status = 'expired' WHERE id = ? AND status != 'signed'`, [
+      await run(`UPDATE pdn_sign_sessions SET status = 'expired' WHERE id = ? AND status != 'signed'`, [
         session.id,
       ]);
       return { ...session, status: 'expired' };
@@ -560,12 +560,12 @@ export async function createAndSendPdnSmsLink(input: {
   actorName?: string;
   c?: Context | null;
 }): Promise<{ session: PdnSignSession; sms_id: string }> {
-  ensurePdnSmsSchema();
+  await ensurePdnSmsSchema();
   if (!targetsmsConfigured()) {
     throw new Error('TargetSMS не настроен на сервере');
   }
   const dealId = String(input.dealId || '').trim();
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Заказ не найден');
   if (resolveBuyerRole(deal) !== 'person') {
     throw new Error('Согласие ПДн по SMS только для физлица');
@@ -597,7 +597,7 @@ export async function createAndSendPdnSmsLink(input: {
   });
   if (!sent.ok) throw new Error(sent.error);
 
-  run(
+  await run(
     `INSERT INTO pdn_sign_sessions (
       id, token, deal_id, phone, buyer_name, org_name, org_inn, sender, status,
       consent_text, consent_sha256, link_url, link_sms_id, created_by, expires_at, meta_json
@@ -627,7 +627,7 @@ export async function createAndSendPdnSmsLink(input: {
     ]
   );
 
-  const session = getPdnSignByToken(token)!;
+  const session = (await getPdnSignByToken(token))!;
   await appendPdnSignEvent(input.c || null, session, 'link_sms_sent', {
     sms_id: sent.sms_id,
     sender,
@@ -635,7 +635,7 @@ export async function createAndSendPdnSmsLink(input: {
     link,
   });
 
-  writeAudit({
+  await writeAudit({
     action: 'deal.pdn_sms_send',
     entity: 'crm_deal',
     entityId: dealId,
@@ -656,8 +656,8 @@ function brandFromSession(session: PdnSignSession): PdnBrand {
   });
 }
 
-export function publicPdnView(session: PdnSignSession): Record<string, unknown> {
-  const s = expireIfNeeded(session);
+export async function publicPdnView(session: PdnSignSession): Promise<Record<string, unknown>> {
+  const s = await expireIfNeeded(session);
   const id = s.identity;
   const brand = brandFromSession(s);
   const brandMeta = pdnBrandMeta(brand);
@@ -700,13 +700,13 @@ export function publicPdnView(session: PdnSignSession): Record<string, unknown> 
 }
 
 export async function markPdnOpened(c: Context, token: string): Promise<PdnSignSession> {
-  const session0 = getPdnSignByToken(token);
+  const session0 = await getPdnSignByToken(token);
   if (!session0) throw new Error('Ссылка недействительна');
-  const session = expireIfNeeded(session0);
+  const session = await expireIfNeeded(session0);
   if (session.status === 'expired') throw new Error('Срок ссылки истёк');
   if (session.status === 'revoked') throw new Error('Ссылка отозвана');
   if (session.status === 'pending') {
-    run(`UPDATE pdn_sign_sessions SET status = 'opened' WHERE id = ? AND status = 'pending'`, [
+    await run(`UPDATE pdn_sign_sessions SET status = 'opened' WHERE id = ? AND status = 'pending'`, [
       session.id,
     ]);
     session.status = 'opened';
@@ -720,15 +720,15 @@ export async function savePdnIdentity(
   token: string,
   identityRaw?: unknown
 ): Promise<{ session: PdnSignSession; identity: PdnIdentity; consent_sha256: string }> {
-  const session0 = getPdnSignByToken(token);
+  const session0 = await getPdnSignByToken(token);
   if (!session0) throw new Error('Ссылка недействительна');
-  let session = expireIfNeeded(session0);
+  let session = await expireIfNeeded(session0);
   if (session.status === 'signed') throw new Error('Уже подписано');
   if (session.status === 'expired' || session.status === 'revoked') {
     throw new Error('Ссылка больше не действует');
   }
   const identity = normalizePdnIdentity(identityRaw ?? session.identity);
-  const rowMeta = get<{ consent_text: string; meta_json: string }>(
+  const rowMeta = await get<{ consent_text: string; meta_json: string }>(
     `SELECT consent_text, meta_json FROM pdn_sign_sessions WHERE id = ?`,
     [session.id]
   );
@@ -756,7 +756,7 @@ export async function savePdnIdentity(
   const consentText = applyIdentityToConsentText(sourceText, identity);
   const consentSha = sha256Hex(consentText);
 
-  run(
+  await run(
     `UPDATE pdn_sign_sessions SET
       identity_json = ?,
       buyer_name = ?,
@@ -775,7 +775,7 @@ export async function savePdnIdentity(
     other_title: identity.other_title,
     consent_sha256: consentSha,
   });
-  session = getPdnSignByToken(token)!;
+  session = (await getPdnSignByToken(token))!;
   return { session, identity, consent_sha256: consentSha };
 }
 
@@ -785,9 +785,9 @@ export async function requestPdnSignCode(
   identityRaw?: unknown
 ): Promise<{ ok: true; phone_masked: string; consent_sha256: string }> {
   if (!targetsmsConfigured()) throw new Error('SMS временно недоступна');
-  const session0 = getPdnSignByToken(token);
+  const session0 = await getPdnSignByToken(token);
   if (!session0) throw new Error('Ссылка недействительна');
-  let session = expireIfNeeded(session0);
+  let session = await expireIfNeeded(session0);
   if (session.status === 'signed') throw new Error('Уже подписано');
   if (session.status === 'expired' || session.status === 'revoked') {
     throw new Error('Ссылка больше не действует');
@@ -822,7 +822,7 @@ export async function requestPdnSignCode(
   });
   if (!sent.ok) throw new Error(sent.error);
 
-  run(
+  await run(
     `UPDATE pdn_sign_sessions SET
       status = 'code_sent',
       code_hash = ?,
@@ -833,7 +833,7 @@ export async function requestPdnSignCode(
      WHERE id = ?`,
     [codeHash, salt, sent.sms_id, session.id]
   );
-  session = getPdnSignByToken(token)!;
+  session = (await getPdnSignByToken(token))!;
   await appendPdnSignEvent(c, session, 'code_sms_sent', {
     sms_id: sent.sms_id,
     sender: session.sender,
@@ -848,9 +848,9 @@ export async function confirmPdnSignCode(
   codeRaw: string,
   identityRaw?: unknown
 ): Promise<{ ok: true; signed_at: string }> {
-  const session0 = getPdnSignByToken(token);
+  const session0 = await getPdnSignByToken(token);
   if (!session0) throw new Error('Ссылка недействительна');
-  let session = expireIfNeeded(session0);
+  let session = await expireIfNeeded(session0);
   if (session.status === 'signed') {
     return { ok: true, signed_at: session.signed_at };
   }
@@ -882,9 +882,9 @@ export async function confirmPdnSignCode(
   }
 
   const code = String(codeRaw || '').replace(/\D/g, '');
-  run(`UPDATE pdn_sign_sessions SET code_attempts = code_attempts + 1 WHERE id = ?`, [session.id]);
+  await run(`UPDATE pdn_sign_sessions SET code_attempts = code_attempts + 1 WHERE id = ?`, [session.id]);
 
-  const row = get<{ code_hash: string; code_salt: string }>(
+  const row = await get<{ code_hash: string; code_salt: string }>(
     `SELECT code_hash, code_salt FROM pdn_sign_sessions WHERE id = ?`,
     [session.id]
   );
@@ -895,7 +895,7 @@ export async function confirmPdnSignCode(
   }
 
   const signedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-  run(
+  await run(
     `UPDATE pdn_sign_sessions SET
       status = 'signed',
       signed_at = ?,
@@ -904,13 +904,13 @@ export async function confirmPdnSignCode(
      WHERE id = ?`,
     [signedAt, session.id]
   );
-  markDealPdnOk(session.deal_id);
-  session = getPdnSignByToken(token)!;
+  await markDealPdnOk(session.deal_id);
+  session = (await getPdnSignByToken(token))!;
   // Сохранить ФИО и документ в заказ (без фото паспорта)
   if (session.identity) {
     try {
       const pass = formatPdnIdentityPassport(session.identity);
-      run(
+      await run(
         `UPDATE crm_deals SET
            buyer_name = ?,
            buyer_passport = ?,
@@ -918,7 +918,7 @@ export async function confirmPdnSignCode(
          WHERE id = ?`,
         [session.identity.fio, pass.slice(0, 300), session.deal_id]
       );
-      run(
+      await run(
         `UPDATE sales_docs SET
            counterparty_name = CASE WHEN IFNULL(counterparty_name,'') = '' OR doc_type IN ('contract','workorder') THEN ? ELSE counterparty_name END,
            buyer_passport = ?
@@ -934,7 +934,7 @@ export async function confirmPdnSignCode(
     signed_at: signedAt,
     identity: session.identity,
   });
-  writeAudit({
+  await writeAudit({
     action: 'deal.pdn_sms_signed',
     entity: 'crm_deal',
     entityId: session.deal_id,
@@ -953,9 +953,9 @@ export async function confirmPdnSignCode(
   return { ok: true, signed_at: signedAt };
 }
 
-export function listPdnSignEvents(sessionId: string, limit = 100): Array<Record<string, unknown>> {
-  ensurePdnSmsSchema();
-  return all<Record<string, unknown>>(
+export async function listPdnSignEvents(sessionId: string, limit = 100): Promise<Array<Record<string, unknown>>> {
+  await ensurePdnSmsSchema();
+  return await all<Record<string, unknown>>(
     `SELECT id, event, created_at, ip, user_agent, os, browser, device, region, country,
             accept_language, meta_json
      FROM pdn_sign_events WHERE session_id = ?

@@ -282,7 +282,7 @@ export async function readDealCarPhoto(
 
   const m = String(raw.mime || '').toLowerCase();
   if (isHeifBuffer(raw.buf) || m.includes('heic') || m.includes('heif')) {
-    return ensureStsJpeg(raw.buf, raw.mime);
+    return await ensureStsJpeg(raw.buf, raw.mime);
   }
   return raw;
 }

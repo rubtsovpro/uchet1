@@ -280,7 +280,7 @@ export async function recognizeClientParts(opts: {
   if (!note && !images.length) {
     throw new Error('Добавьте фото деталей и/или текст, что наговорили');
   }
-  if (!deepseekConfigured()) {
+  if (!await deepseekConfigured()) {
     throw new Error('Не задан ключ DeepSeek (Настройки → OCR документов / DeepSeek)');
   }
 
@@ -292,14 +292,14 @@ export async function recognizeClientParts(opts: {
     }
   }
 
-  const s = getDeepseekSettings();
+  const s = await getDeepseekSettings();
   let base = (s.base_url || '').replace(/\/+$/, '');
   if (!/\/v\d+$/i.test(base) && /openrouter\.ai/i.test(base)) {
     base = base.replace(/\/api$/i, '') + '/api/v1';
   }
 
   const useVision = images.length > 0;
-  if (useVision && !deepseekVisionEndpointOk(s)) {
+  if (useVision && !await deepseekVisionEndpointOk(s)) {
     throw new Error(
       'Для фото деталей нужен vision-шлюз (OpenRouter + deepseek/deepseek-vl2). Текст можно распознать без фото.'
     );

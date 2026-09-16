@@ -38,9 +38,9 @@ export function isAdminFor2fa(actor: Actor): boolean {
   return actor.isSystemAdmin || actor.role === 'admin';
 }
 
-export function resolve2faChatId(actor: Actor): string | null {
+export async function resolve2faChatId(actor: Actor): Promise<string | null> {
   if (actor.id !== '__admin__') {
-    const row = get<{ telegram_chat_id?: string }>(
+    const row = await get<{ telegram_chat_id?: string }>(
       'SELECT telegram_chat_id FROM staff WHERE id = ?',
       [actor.id]
     );
@@ -52,14 +52,14 @@ export function resolve2faChatId(actor: Actor): string | null {
 }
 
 /** Нужен ли 2FA шаг для этого актора при текущем конфиге. */
-export function admin2faRequired(actor: Actor): boolean {
+export async function admin2faRequired(actor: Actor): Promise<boolean> {
   if (!isAdminFor2fa(actor)) return false;
   const mode = admin2faMode();
   if (mode === 'off') return false;
   const st = telegram2faConfigStatus();
   if (mode === 'on') return true;
   // auto
-  return st.ready && Boolean(resolve2faChatId(actor));
+  return st.ready && Boolean(await resolve2faChatId(actor));
 }
 
 export type ChallengeStartResult =
@@ -84,7 +84,7 @@ export async function startAdmin2faChallenge(
       ask: st.ask,
     };
   }
-  const chatId = resolve2faChatId(actor);
+  const chatId = await resolve2faChatId(actor);
   if (!st.token_set || !chatId) {
     return {
       ok: false,
@@ -96,7 +96,7 @@ export async function startAdmin2faChallenge(
   const challengeId = newGuid();
   const code = String(randomInt(100_000, 1_000_000));
   const expires = new Date(Date.now() + CODE_TTL_MS).toISOString();
-  run(
+  await run(
     `INSERT INTO auth_2fa_challenges (id, actor_id, code_hash, expires_at, ip, user_agent)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [
@@ -115,7 +115,7 @@ export async function startAdmin2faChallenge(
     { parse_mode: 'HTML' }
   );
   if (!send.ok) {
-    run('DELETE FROM auth_2fa_challenges WHERE id = ?', [challengeId]);
+    await run('DELETE FROM auth_2fa_challenges WHERE id = ?', [challengeId]);
     return {
       ok: false,
       error: `Не удалось отправить код в Telegram: ${send.error}`,
@@ -138,18 +138,18 @@ export type ChallengeVerifyResult =
   | { ok: true; actor_id: string; sid: string }
   | { ok: false; error: string };
 
-export function verifyAdmin2faChallenge(
+export async function verifyAdmin2faChallenge(
   challengeId: string,
   code: string,
   meta?: { ip?: string; ua?: string }
-): ChallengeVerifyResult {
+): Promise<ChallengeVerifyResult> {
   const id = String(challengeId || '').trim();
   const raw = String(code || '').replace(/\s+/g, '');
   if (!id || !/^\d{6}$/.test(raw)) {
     return { ok: false, error: 'Укажите 6-значный код из Telegram' };
   }
 
-  const row = get<{
+  const row = await get<{
     actor_id: string;
     code_hash: string;
     expires_at: string;
@@ -159,26 +159,26 @@ export function verifyAdmin2faChallenge(
   ]);
   if (!row) return { ok: false, error: 'Код устарел — войдите снова' };
   if (Number(row.attempts) >= MAX_ATTEMPTS) {
-    run('DELETE FROM auth_2fa_challenges WHERE id = ?', [id]);
+    await run('DELETE FROM auth_2fa_challenges WHERE id = ?', [id]);
     return { ok: false, error: 'Слишком много попыток — войдите снова' };
   }
   if (new Date(row.expires_at).getTime() < Date.now()) {
-    run('DELETE FROM auth_2fa_challenges WHERE id = ?', [id]);
+    await run('DELETE FROM auth_2fa_challenges WHERE id = ?', [id]);
     return { ok: false, error: 'Код истёк — войдите снова' };
   }
 
   const expected = String(row.code_hash);
   const actual = hashCode(id, raw);
   if (!safeEqualHex(expected, actual)) {
-    run('UPDATE auth_2fa_challenges SET attempts = attempts + 1 WHERE id = ?', [id]);
+    await run('UPDATE auth_2fa_challenges SET attempts = attempts + 1 WHERE id = ?', [id]);
     return { ok: false, error: 'Неверный код' };
   }
 
-  run('DELETE FROM auth_2fa_challenges WHERE id = ?', [id]);
+  await run('DELETE FROM auth_2fa_challenges WHERE id = ?', [id]);
   // подчистить просроченные
-  run(`DELETE FROM auth_2fa_challenges WHERE datetime(expires_at) < datetime('now')`);
+  await run(`DELETE FROM auth_2fa_challenges WHERE datetime(expires_at) < datetime('now')`);
 
-  const sid = createSession(row.actor_id, meta);
+  const sid = await createSession(row.actor_id, meta);
   return { ok: true, actor_id: row.actor_id, sid };
 }
 

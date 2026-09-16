@@ -1229,6 +1229,8 @@ function apiShowsLoadingBar(path, opts) {
   if (p === '/bookmarks' || p.startsWith('/bookmarks/')) return false;
   if (p === '/me/bookmarks' || p.startsWith('/me/bookmarks/')) return false;
   if (p === '/settings/phones' || p === '/ui/phone-settings' || p === '/me/phone-settings' || p === '/ui-settings') return false;
+  // Подсказки поиска — без верхней полоски загрузки (иначе UI «тупит» на каждом символе).
+  if (p === '/products' && /(?:^|[?&])(?:suggest|lite)=1(?:&|$)/.test(String(path || ''))) return false;
   return true;
 }
 
@@ -1261,6 +1263,11 @@ async function api(path, opts = {}) {
         headers,
       });
     } catch (netErr) {
+      if (netErr && (netErr.name === 'AbortError' || netErr.code === 20)) {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
       const m = netErr && netErr.message ? String(netErr.message) : String(netErr || '');
       if (/failed to fetch|networkerror|load failed|aborted/i.test(m)) {
         throw new Error('Нет связи с сервером. Обновите страницу или повторите.');
@@ -1594,16 +1601,17 @@ function applyNavRights() {
   applyWarehouseStaffChrome();
 }
 
-/** Кладовщик: без курсов, уведомлений, presence и FAB чатов в шапке. */
+/** Кладовщик: без курсов, уведомлений, presence и FAB чатов в шапке.
+ * Уведомления в шапке пока скрыты для всех — пользуются виджетами Amo. */
 function applyWarehouseStaffChrome() {
   const whPick = isWarehousePickerOnly();
   const presenceWrap = document.getElementById('presence-wrap');
   const notifWrap = document.getElementById('notif-wrap');
   const headerRates = document.getElementById('header-rates');
   const chatRoot = document.getElementById('chat-fab-root');
+  if (notifWrap) notifWrap.hidden = true;
   if (whPick) {
     if (presenceWrap) presenceWrap.hidden = true;
-    if (notifWrap) notifWrap.hidden = true;
     if (headerRates) {
       headerRates.hidden = true;
       headerRates.innerHTML = '';
@@ -1612,7 +1620,6 @@ function applyWarehouseStaffChrome() {
     return;
   }
   if (presenceWrap) presenceWrap.hidden = !isAdminMe();
-  if (notifWrap) notifWrap.hidden = false;
   if (chatRoot && !CHATS_UI_ENABLED) chatRoot.hidden = true;
 }
 
@@ -3220,6 +3227,43 @@ function stripDeptSkuSuffix(sku) {
   return s.trim();
 }
 
+/** Поиск для склада/коррекции: один артикул → одна карточка-мастер (без клонов отдела). */
+function preferMainProductsForPick(items) {
+  const list = Array.isArray(items) ? items.slice() : [];
+  const score = (p) => {
+    const id = String(p?.id || '');
+    const sku = String(p?.sku || '');
+    let s = 0;
+    if (Number(p?.is_main) === 1) s += 100;
+    if (!id.includes('::')) s += 40;
+    if (!/@podveska\b/i.test(sku) && !/@fogel\b/i.test(sku)) s += 20;
+    if (Number(p?.is_active) !== 0) s += 5;
+    return s;
+  };
+  const bySku = new Map();
+  for (const p of list) {
+    const id = String(p?.id || '');
+    const sku = String(p?.sku || '');
+    // Клоны отделов в подсказках склада/заказа не показываем.
+    if (id.includes('::') || /@podveska\b/i.test(sku) || /@fogel\b/i.test(sku)) continue;
+    if (Number(p?.is_main) === 0 && Number(p?.is_main) !== 1 && id.includes('::')) continue;
+    const key = stripDeptSkuSuffix(p?.sku) || id;
+    if (!key) continue;
+    const prev = bySku.get(key);
+    if (!prev || score(p) > score(prev)) bySku.set(key, p);
+  }
+  // Если после отсева клонов пусто — fallback: схлопнуть по артикулу как раньше.
+  if (!bySku.size) {
+    for (const p of list) {
+      const key = stripDeptSkuSuffix(p?.sku) || String(p?.id || '');
+      if (!key) continue;
+      const prev = bySku.get(key);
+      if (!prev || score(p) > score(prev)) bySku.set(key, p);
+    }
+  }
+  return [...bySku.values()];
+}
+
 /** Мастер + старые номера (для склада и списков). */
 function skuWithOldsHtml(p) {
   const sku = stripDeptSkuSuffix(String(p?.sku || '').trim()) || '—';
@@ -3699,11 +3743,39 @@ function debounce(fn, ms) {
   };
 }
 
+/** Кэш итогов складов (карточки) — без повторного тяжёлого запроса при фильтре товара. */
+let _whStockTotalsCache = { at: 0, data: null };
+async function fetchWarehouseStockTotals(opts = {}) {
+  const ttl = Number(opts.ttlMs) > 0 ? Number(opts.ttlMs) : 45000;
+  const now = Date.now();
+  if (_whStockTotalsCache.data && now - _whStockTotalsCache.at < ttl) {
+    return _whStockTotalsCache.data;
+  }
+  const data = await api('/warehouses/stock-totals?qty_only=1', { quiet: true });
+  _whStockTotalsCache = { at: Date.now(), data };
+  return data;
+}
+
 function formatMoney(n) {
   const v = Math.round(Number(n));
   if (!Number.isFinite(v)) return '—';
   return (
     v.toLocaleString('ru-RU', { maximumFractionDigits: 0 }).replace(/\s/g, '\u00a0') + '\u00a0₽'
+  );
+}
+
+/** Суммы счёта/УПД — с копейками, без округления до рубля (как в PDF). */
+function formatMoneyKop(n) {
+  const raw = Number(n);
+  if (!Number.isFinite(raw)) return '—';
+  const v = Math.round(raw * 100) / 100;
+  return (
+    v
+      .toLocaleString('ru-RU', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })
+      .replace(/\s/g, '\u00a0') + '\u00a0₽'
   );
 }
 
@@ -7574,7 +7646,9 @@ async function renderProductDetail(id) {
             <span class="muted" style="font-size:12px">${
               canReorderPhotos
                 ? 'Перетащите фото · первое = титульное · галочка — удаление в историю'
-                : 'Отметьте фото галочкой · удаление пишется в историю'
+                : images.some((m) => Number(m.inherited_from_fact) === 1)
+                  ? 'Фото с карточки факта (номер на складе) · удаление снимет их и там'
+                  : 'Отметьте фото галочкой · удаление пишется в историю'
             }</span>
           </div>`
               : ''
@@ -7586,6 +7660,12 @@ async function renderProductDetail(id) {
                 m.width && m.height ? `${m.width}×${m.height}` : '';
               const tip = [ol, dims].filter(Boolean).join(' · ') || 'ориентация не определена';
               const mid = esc(m.id);
+              const inheritedSku = String(m.inherited_from_sku || '').trim();
+              const inheritedHint = inheritedSku
+                ? ` · фото с факта ${inheritedSku}`
+                : Number(m.inherited_from_fact) === 1
+                  ? ' · фото с карточки факта'
+                  : '';
               const titleBadge =
                 canReorderPhotos && idx === 0
                   ? '<span class="media-title-badge" title="Титульное фото">Титул</span>'
@@ -7593,7 +7673,7 @@ async function renderProductDetail(id) {
               if (canUploadPhoto) {
                 return `<div class="media-item orient-${esc(m.orientation || 'unknown')}" data-media-id="${mid}"${
                   canReorderPhotos ? ' draggable="true"' : ''
-                } title="${esc(tip)}${canReorderPhotos ? ' · перетащите для смены порядка' : ''}">
+                } title="${esc(tip + inheritedHint)}${canReorderPhotos ? ' · перетащите для смены порядка' : ''}">
                   ${canReorderPhotos ? '<span class="media-drag" title="Перетащить" aria-hidden="true">⋮⋮</span>' : ''}
                   ${titleBadge}
                   <label class="media-check"><input type="checkbox" class="pe-media-check" value="${mid}" /></label>
@@ -10126,8 +10206,8 @@ async function renderWarehouses() {
       openWarehouseStock(el.getAttribute('data-wh-open'));
     };
   });
-  // Позиций / кол-во / сделок — из stock-totals (как футер остатков)
-  api('/warehouses/stock-totals')
+  // Позиций / кол-во / сделок — из stock-totals (qty_only без FIFO; СТО/Резерв СТО — со сделками)
+  fetchWarehouseStockTotals()
     .then((data) => {
       const items = data.items || [];
       const byId = new Map(items.map((t) => [t.warehouse_id, t]));
@@ -10135,7 +10215,17 @@ async function renderWarehouses() {
         const t = byId.get(w.id);
         const lines = t && t.lines != null ? t.lines : '—';
         const qty = t && t.qty != null ? t.qty : '—';
-        const deals = t && t.deals_count != null ? t.deals_count : '—';
+        const isDealWh =
+          whIsVirtualSto(w) || whIsStoDealReserve(w) || whIsCourier(w);
+        // Отложено под СТО — не склад сделок; СТО / Резерв / Курьер — всегда число (0, не «—»).
+        let deals = '—';
+        if (whIsStoReserve(w)) {
+          deals = '—';
+        } else if (isDealWh) {
+          deals = t && t.deals_count != null ? t.deals_count : 0;
+        } else if (t && t.deals_count != null) {
+          deals = t.deals_count;
+        }
         view.querySelectorAll(`.wh-lines[data-wh="${CSS.escape(w.id)}"]`).forEach((lEl) => {
           lEl.textContent = String(lines);
         });
@@ -10143,14 +10233,13 @@ async function renderWarehouses() {
           qEl.textContent = String(qty);
         });
         view.querySelectorAll(`.wh-deals[data-wh="${CSS.escape(w.id)}"]`).forEach((dEl) => {
-          if (whIsStoReserve(w)) {
-            dEl.textContent = '—';
-            return;
-          }
           dEl.textContent = String(deals);
+          if (isDealWh) {
+            dEl.title = 'Сделок с товаром на этом складе (без сделки здесь не бывает)';
+          }
         });
         if (
-          whIsVirtualSto(w) &&
+          isDealWh &&
           t &&
           t.deal_linked_only &&
           t.qty_all != null &&
@@ -10160,7 +10249,7 @@ async function renderWarehouses() {
             qEl.title =
               'Только по сделкам: ' +
               String(t.qty) +
-              ' · всего на складе (в т.ч. без сделки): ' +
+              ' · всего на складе (в т.ч. без сделки — ошибка учёта): ' +
               String(t.qty_all);
           });
         }
@@ -10287,6 +10376,7 @@ async function renderWarehouses() {
   document.getElementById('wh-pq-clear')?.addEventListener('click', () => {
     applyProductFilter('', '');
   });
+  let pqAbort = null;
   const runPqSuggest = debounce(async () => {
     const q = String(pq?.value || '').trim();
     if (q.length < 2) {
@@ -10294,27 +10384,44 @@ async function renderWarehouses() {
       pqSuggest.innerHTML = '';
       return;
     }
-    const data = await api(withCompanyId('/products?limit=20&q=' + encodeURIComponent(q)));
-    const items = data.items || [];
-    pqSuggest.innerHTML = items.length
-      ? items
-          .map(
-            (p) =>
-              `<button type="button" class="suggest-item" data-id="${esc(p.id)}" data-label="${esc(
-                p.sku + ' — ' + productTitle(p)
-              )}">
-                <span class="mono">${esc(p.sku)}</span>${p.category ? ` <span class="muted">${esc(p.category)}</span>` : ''} ${esc(productTitle(p))}${
+    if (pqAbort) {
+      try {
+        pqAbort.abort();
+      } catch (_) {}
+    }
+    pqAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const seq = (runPqSuggest._seq = (runPqSuggest._seq || 0) + 1);
+    try {
+      const data = await api(
+        withCompanyId(
+          '/products?limit=20&suggest=1&q=' + encodeURIComponent(q) + '&is_main=1'
+        ),
+        { quiet: true, signal: pqAbort ? pqAbort.signal : undefined }
+      );
+      if (seq !== runPqSuggest._seq) return;
+      const items = preferMainProductsForPick(data.items || []);
+      pqSuggest.innerHTML = items.length
+        ? items
+            .map(
+              (p) =>
+                `<button type="button" class="suggest-item" data-id="${esc(p.id)}" data-label="${esc(
+                  (stripDeptSkuSuffix(p.sku) || p.sku) + ' — ' + productTitle(p)
+                )}">
+                <span class="mono">${esc(stripDeptSkuSuffix(p.sku) || p.sku || '—')}</span>${p.category ? ` <span class="muted">${esc(p.category)}</span>` : ''} ${esc(productTitle(p))}${
                   oldSkuLine(p) ? `<div class="muted mono" style="font-size:11px">старые: ${esc(oldSkuLine(p))}</div>` : ''
                 }
               </button>`
-          )
-          .join('')
-      : '<div class="suggest-empty muted">Нет совпадений</div>';
-    pqSuggest.classList.remove('hidden');
-    pqSuggest.querySelectorAll('.suggest-item').forEach((btn) => {
-      btn.onclick = () => applyProductFilter(btn.dataset.id, btn.dataset.label);
-    });
-  }, 250);
+            )
+            .join('')
+        : '<div class="suggest-empty muted">Нет совпадений</div>';
+      pqSuggest.classList.remove('hidden');
+      pqSuggest.querySelectorAll('.suggest-item').forEach((btn) => {
+        btn.onclick = () => applyProductFilter(btn.dataset.id, btn.dataset.label);
+      });
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || e.message === 'aborted')) return;
+    }
+  }, 320);
   if (pq) {
     pq.oninput = () => {
       if (!String(pq.value || '').trim() && productFilter?.id) {
@@ -12211,17 +12318,28 @@ function openStockAdjustModal(opts) {
         <h3 id="bal-adj-title">Коррекция остатка</h3>
         <button type="button" class="cash-accept-x" id="bal-adj-close" aria-label="Закрыть">×</button>
       </div>
-      <p class="muted bal-adj-hint">Склад: <b>${esc(whLabel || warehouseId)}</b> · документ коррекции видят только администраторы</p>
+      <p class="muted bal-adj-hint">Склад: <b>${esc(whLabel || warehouseId)}</b> · можно править количество по ячейкам · документ видят только администраторы</p>
       <div class="form-grid bal-adj-grid">
         ${productFields}
         <label>Сейчас на складе
           <input class="mono" id="bal-adj-before" readonly value="${productId ? esc(qtyBefore) : '—'}" />
         </label>
-        <label>Станет (новое кол-во)
-          <input type="number" class="mono" id="bal-adj-after" min="0" step="any" value="${esc(
-            productId ? qtyBefore : ''
-          )}" />
+        <label>Станет (сумма по ячейкам)
+          <input type="number" class="mono" id="bal-adj-after" min="0" step="any" ${
+            productId ? 'readonly' : ''
+          } value="${esc(productId ? qtyBefore : '')}" title="При ячейках — сумма строк ниже; без ячеек — введите число" />
         </label>
+        <div class="span-2 bal-adj-cells-wrap" id="bal-adj-cells-wrap" hidden>
+          <div class="bal-adj-cells-head">
+            <span>Ячейки</span>
+            <button type="button" class="linkish" id="bal-adj-cell-add">+ ячейка</button>
+          </div>
+          <table class="bal-adj-cells-tbl">
+            <thead><tr><th>Ячейка</th><th class="num">Сейчас</th><th class="num">Станет</th><th></th></tr></thead>
+            <tbody id="bal-adj-cells-body"></tbody>
+          </table>
+          <p class="muted bal-adj-cells-note" id="bal-adj-cells-note"></p>
+        </div>
         <label class="span-2">Комментарий <span class="muted">(обязательно)</span>
           <textarea id="bal-adj-comment" rows="3" placeholder="Причина: инвентаризация, брак, пересчёт…"></textarea>
         </label>
@@ -12250,6 +12368,132 @@ function openStockAdjustModal(opts) {
   let pickedId = productId;
   let pickedName = productName;
   let beforeQty = qtyBefore;
+  let cellsEnabled = false;
+  /** @type {Array<{cell_code:string, qty_before:number, qty_after:number}>} */
+  let cellRows = [];
+
+  const cellsWrap = overlay.querySelector('#bal-adj-cells-wrap');
+  const cellsBody = overlay.querySelector('#bal-adj-cells-body');
+  const cellsNote = overlay.querySelector('#bal-adj-cells-note');
+  const afterEl = overlay.querySelector('#bal-adj-after');
+
+  const syncAfterFromCells = () => {
+    if (!afterEl) return;
+    if (!cellsEnabled) return;
+    const sum = cellRows.reduce((s, r) => s + Math.max(0, Number(r.qty_after) || 0), 0);
+    afterEl.value = String(sum);
+    afterEl.readOnly = true;
+  };
+
+  const renderCellRows = () => {
+    if (!cellsBody || !cellsWrap) return;
+    if (!cellsEnabled || !pickedId) {
+      cellsWrap.hidden = true;
+      if (afterEl) afterEl.readOnly = false;
+      return;
+    }
+    cellsWrap.hidden = false;
+    if (afterEl) afterEl.readOnly = true;
+    cellsBody.innerHTML = cellRows
+      .map((r, i) => {
+        return (
+          `<tr data-cell-i="${i}">` +
+          `<td><input class="mono bal-adj-cell-code" data-i="${i}" value="${esc(r.cell_code)}" placeholder="A12.2" /></td>` +
+          `<td class="num mono">${esc(String(r.qty_before))}</td>` +
+          `<td class="num"><input type="number" class="mono bal-adj-cell-qty" data-i="${i}" min="0" step="any" value="${esc(
+            String(r.qty_after)
+          )}" /></td>` +
+          `<td><button type="button" class="linkish bal-adj-cell-del" data-i="${i}" title="Убрать строку">×</button></td>` +
+          `</tr>`
+        );
+      })
+      .join('');
+    if (!cellRows.length) {
+      cellsBody.innerHTML =
+        '<tr><td colspan="4" class="muted">Нет размещения — добавьте ячейку</td></tr>';
+    }
+    const cellSum = cellRows.reduce((s, r) => s + Math.max(0, Number(r.qty_before) || 0), 0);
+    if (cellsNote) {
+      const free = Math.max(0, beforeQty - cellSum);
+      cellsNote.textContent = free > 0.0001
+        ? `На складе ${beforeQty} шт, в ячейках ${cellSum} · вне ячеек ${free} (при проведении остаток склада = сумма «Станет»)`
+        : `Остаток склада после проведения = сумма по ячейкам`;
+    }
+    syncAfterFromCells();
+  };
+
+  const loadCells = async () => {
+    cellRows = [];
+    cellsEnabled = false;
+    if (!pickedId) {
+      renderCellRows();
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        warehouse_id: warehouseId,
+        product_id: pickedId,
+      });
+      const data = await api('/stock/adjustments/cells?' + qs.toString());
+      cellsEnabled = !!data?.cells_enabled;
+      const rows = Array.isArray(data?.cells) ? data.cells : [];
+      cellRows = rows.map((r) => ({
+        cell_code: String(r.cell_code || '').trim(),
+        qty_before: Math.max(0, Number(r.qty) || 0),
+        qty_after: Math.max(0, Number(r.qty) || 0),
+      }));
+      // Всегда даём хотя бы одну строку ячейки — иначе некуда вписать qty/код.
+      if (cellsEnabled && !cellRows.length) {
+        cellRows.push({
+          cell_code: '',
+          qty_before: 0,
+          qty_after: beforeQty > 0 ? beforeQty : 0,
+        });
+      }
+    } catch {
+      cellsEnabled = false;
+      cellRows = [];
+    }
+    renderCellRows();
+  };
+
+  const applyPickedProduct = (id, name, sku) => {
+    pickedId = String(id || '').trim();
+    pickedName = String(name || '').trim();
+    const label = String(sku || '').trim()
+      ? `${stripDeptSkuSuffix(sku)} · ${pickedName || pickedId}`
+      : pickedName || pickedId;
+    if (searchEl) searchEl.value = label;
+    if (pickEl) pickEl.innerHTML = '';
+    refreshBefore();
+  };
+
+  cellsBody?.addEventListener('input', (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement)) return;
+    const i = Number(t.getAttribute('data-i'));
+    if (!Number.isFinite(i) || !cellRows[i]) return;
+    if (t.classList.contains('bal-adj-cell-code')) {
+      cellRows[i].cell_code = String(t.value || '').trim();
+    } else if (t.classList.contains('bal-adj-cell-qty')) {
+      cellRows[i].qty_after = Math.max(0, Number(t.value) || 0);
+      syncAfterFromCells();
+    }
+  });
+  cellsBody?.addEventListener('click', (e) => {
+    const btn = e.target?.closest?.('.bal-adj-cell-del');
+    if (!btn) return;
+    const i = Number(btn.getAttribute('data-i'));
+    if (!Number.isFinite(i)) return;
+    cellRows.splice(i, 1);
+    renderCellRows();
+  });
+  overlay.querySelector('#bal-adj-cell-add')?.addEventListener('click', () => {
+    cellRows.push({ cell_code: '', qty_before: 0, qty_after: 0 });
+    renderCellRows();
+    const last = cellsBody?.querySelector('tr:last-child .bal-adj-cell-code');
+    last?.focus();
+  });
 
   const refreshBefore = async () => {
     const beforeEl = overlay.querySelector('#bal-adj-before');
@@ -12265,10 +12509,13 @@ function openStockAdjustModal(opts) {
       const row = (data.items || [])[0];
       beforeQty = row ? Math.max(0, Number(row.qty) || 0) : 0;
       beforeEl.value = String(beforeQty);
-      const afterEl = overlay.querySelector('#bal-adj-after');
-      if (afterEl && !String(afterEl.value || '').trim()) afterEl.value = String(beforeQty);
     } catch {
       beforeEl.value = '—';
+    }
+    await loadCells();
+    if (afterEl && !cellsEnabled) {
+      afterEl.readOnly = false;
+      if (!String(afterEl.value || '').trim()) afterEl.value = String(beforeQty);
     }
   };
 
@@ -12276,45 +12523,104 @@ function openStockAdjustModal(opts) {
   const searchEl = overlay.querySelector('#bal-adj-search');
   if (searchEl && pickEl) {
     let searchTimer = null;
-    searchEl.addEventListener('input', () => {
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(async () => {
-        const s = String(searchEl.value || '').trim();
-        if (s.length < 2) {
-          pickEl.innerHTML = '';
+    /** @type {Array<{id:string,sku:string,name:string}>} */
+    let lastPickItems = [];
+
+    const renderPickList = (items) => {
+      lastPickItems = items;
+      if (!items.length) {
+        pickEl.innerHTML = '<div class="muted" style="padding:6px">Не найдено</div>';
+        return;
+      }
+      pickEl.innerHTML = items
+        .map(
+          (p) =>
+            `<button type="button" class="bal-adj-pick-item" data-id="${esc(p.id)}" data-name="${esc(
+              p.name || ''
+            )}" data-sku="${esc(p.sku || '')}">
+              <span class="mono">${esc(stripDeptSkuSuffix(p.sku) || '—')}</span> · ${esc(p.name || '')}
+            </button>`
+        )
+        .join('');
+      pickEl.querySelectorAll('.bal-adj-pick-item').forEach((btn) => {
+        btn.onclick = () => {
+          applyPickedProduct(
+            btn.getAttribute('data-id') || '',
+            btn.getAttribute('data-name') || '',
+            btn.getAttribute('data-sku') || ''
+          );
+        };
+      });
+    };
+
+    const runSearch = async (opts = {}) => {
+      const s = String(searchEl.value || '').trim();
+      if (s.length < 2) {
+        pickEl.innerHTML = '';
+        lastPickItems = [];
+        return;
+      }
+      pickEl.innerHTML = '<div class="muted" style="padding:6px">Поиск…</div>';
+      try {
+        const data = await api(
+          withCompanyId('/products?q=' + encodeURIComponent(s) + '&limit=15&suggest=1&is_main=1'),
+          { quiet: true }
+        );
+        const raw = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+        const items = preferMainProductsForPick(raw).map((p) => ({
+          id: String(p.id || ''),
+          sku: String(p.sku || ''),
+          name: String(p.name || ''),
+        }));
+        const qNorm = s.toLowerCase();
+        const exact = items.filter((p) => {
+          const sku = stripDeptSkuSuffix(p.sku).toLowerCase();
+          return sku === qNorm || String(p.sku || '').toLowerCase() === qNorm;
+        });
+        // Точный артикул или один результат + Enter / авто — сразу выбираем.
+        if (opts.autoPick && exact.length === 1) {
+          applyPickedProduct(exact[0].id, exact[0].name, exact[0].sku);
           return;
         }
-        pickEl.innerHTML = '<div class="muted" style="padding:6px">Поиск…</div>';
-        try {
-          const data = await api(withCompanyId('/products?q=' + encodeURIComponent(s) + '&limit=15'));
-          const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
-          if (!items.length) {
-            pickEl.innerHTML = '<div class="muted" style="padding:6px">Не найдено</div>';
-            return;
-          }
-          pickEl.innerHTML = items
-            .map(
-              (p) =>
-                `<button type="button" class="bal-adj-pick-item" data-id="${esc(p.id)}" data-name="${esc(
-                  p.name || ''
-                )}">
-                  <span class="mono">${esc(stripDeptSkuSuffix(p.sku) || '—')}</span> · ${esc(p.name || '')}
-                </button>`
-            )
-            .join('');
-          pickEl.querySelectorAll('.bal-adj-pick-item').forEach((btn) => {
-            btn.onclick = () => {
-              pickedId = btn.getAttribute('data-id') || '';
-              pickedName = btn.getAttribute('data-name') || '';
-              searchEl.value = pickedName;
-              pickEl.innerHTML = '';
-              refreshBefore();
-            };
-          });
-        } catch (e) {
-          pickEl.innerHTML = `<div class="muted" style="padding:6px">${esc(e.message || String(e))}</div>`;
+        if (opts.autoPick && !exact.length && items.length === 1) {
+          applyPickedProduct(items[0].id, items[0].name, items[0].sku);
+          return;
         }
-      }, 280);
+        if (opts.preferExact && exact.length === 1) {
+          applyPickedProduct(exact[0].id, exact[0].name, exact[0].sku);
+          return;
+        }
+        renderPickList(items);
+      } catch (e) {
+        lastPickItems = [];
+        pickEl.innerHTML = `<div class="muted" style="padding:6px">${esc(e.message || String(e))}</div>`;
+      }
+    };
+
+    searchEl.addEventListener('input', () => {
+      // Сброс выбора при новом вводе
+      if (pickedId) {
+        pickedId = '';
+        pickedName = '';
+        cellsEnabled = false;
+        cellRows = [];
+        const beforeEl = overlay.querySelector('#bal-adj-before');
+        if (beforeEl) beforeEl.value = '—';
+        if (afterEl) {
+          afterEl.value = '';
+          afterEl.readOnly = true;
+        }
+        renderCellRows();
+      }
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => runSearch({ preferExact: true }), 280);
+    });
+    searchEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        clearTimeout(searchTimer);
+        runSearch({ autoPick: true });
+      }
     });
   }
 
@@ -12322,7 +12628,7 @@ function openStockAdjustModal(opts) {
     const msg = overlay.querySelector('#bal-adj-msg');
     const btn = overlay.querySelector('#bal-adj-save');
     const comment = String(overlay.querySelector('#bal-adj-comment')?.value || '').trim();
-    const qtyAfter = Number(overlay.querySelector('#bal-adj-after')?.value);
+    let qtyAfter = Number(overlay.querySelector('#bal-adj-after')?.value);
     if (!pickedId) {
       if (msg) msg.textContent = 'Выберите товар';
       return;
@@ -12331,6 +12637,22 @@ function openStockAdjustModal(opts) {
       if (msg) msg.textContent = 'Укажите комментарий (минимум 3 символа)';
       return;
     }
+    /** @type {Array<{cell_code:string, qty_after:number}>|undefined} */
+    let cellsPayload;
+    if (cellsEnabled) {
+      cellsPayload = [];
+      for (const r of cellRows) {
+        const code = String(r.cell_code || '').trim();
+        const q = Math.max(0, Number(r.qty_after) || 0);
+        if (!code && q <= 0) continue;
+        if (!code) {
+          if (msg) msg.textContent = 'Укажите код ячейки во всех строках с количеством';
+          return;
+        }
+        cellsPayload.push({ cell_code: code, qty_after: q });
+      }
+      qtyAfter = cellsPayload.reduce((s, r) => s + r.qty_after, 0);
+    }
     if (!Number.isFinite(qtyAfter) || qtyAfter < 0) {
       if (msg) msg.textContent = 'Укажите новое количество ≥ 0';
       return;
@@ -12338,14 +12660,16 @@ function openStockAdjustModal(opts) {
     if (btn) btn.disabled = true;
     if (msg) msg.textContent = 'Проведение…';
     try {
+      const body = {
+        warehouse_id: warehouseId,
+        product_id: pickedId,
+        qty_after: qtyAfter,
+        comment,
+      };
+      if (cellsEnabled) body.cells = cellsPayload || [];
       await api('/stock/adjustments', {
         method: 'POST',
-        body: JSON.stringify({
-          warehouse_id: warehouseId,
-          product_id: pickedId,
-          qty_after: qtyAfter,
-          comment,
-        }),
+        body: JSON.stringify(body),
       });
       close();
       renderBalances();
@@ -12357,7 +12681,7 @@ function openStockAdjustModal(opts) {
 
   if (productId) {
     refreshBefore();
-    overlay.querySelector('#bal-adj-after')?.focus();
+    overlay.querySelector('#bal-adj-comment')?.focus();
   } else {
     searchEl?.focus();
   }
@@ -18423,7 +18747,8 @@ async function softNavStoDocs(dealId, target = {}) {
 
 /**
  * Вкладки цепочки заказа — один и тот же порядок везде:
- * Заказ · Документы · Доп. документы (СТО) · … · Списание · История
+ * Заказ · Документы · … · Списание · История
+ * («Доп. документы» убраны — бланки СТО ведутся вне Учёта.)
  */
 function buildOrderLinkTabs(opts = {}) {
   const dealId = String(opts.dealId || '').trim();
@@ -18552,14 +18877,6 @@ function buildOrderLinkTabs(opts = {}) {
         (missingCore ? ' · создайте недостающие внутри вкладки' : ''),
       alert: opts.pdnMissing || opts.invoiceAlert || missingCore || undefined,
     });
-    // Сразу справа: доп. бланки СТО (акты / неявка / чек-лист)
-    if (opts.isSto) {
-      tabs.push({
-        id: 'sto-extra:' + effectiveDealId,
-        label: 'Доп. документы',
-        tip: 'Акт о неявке · чек-лист · Google Drive',
-      });
-    }
   }
 
   // 2) Отдельные типы в шапке только если нет хаба «Документы» (или СФ уже создана)
@@ -25158,13 +25475,14 @@ async function renderDealDetail(id) {
     /автосервис|самовывоз/i.test(String(d.amo_channel || '')) ||
     String(d.ship_channel || '') === 'pickup' ||
     /налич/i.test(String(d.amo_pay_method || ''));
-  const showAcceptCash = cashOnSite && dueTotal > 0.009;
+  // Оплата (нал / QR / Сплит / карта) — только в виджетах Amo, в Учёте не показываем.
+  const showAcceptCash = false;
   const isAutoserviceDeal =
     Number(d.is_sto) === 1 ||
     !!(rules && rules.is_sto) ||
     /автосервис/i.test(String(d.amo_channel || ''));
-  const showStoPayBar = isAutoserviceDeal && dueTotal > 0.009;
-  const showDealPayLink = showStoPayBar && payByLink;
+  const showStoPayBar = false;
+  const showDealPayLink = false;
   const findWhTaskInTree = (node, acc = []) => {
     if (!node) return acc;
     if (String(node.kind || '') === 'warehouse_task' && node.id) acc.push(node);
@@ -25299,9 +25617,6 @@ async function renderDealDetail(id) {
     if (stockFlow && stockFlow.urgent_to_sto_pending) {
       stoStockHint +=
         '<div style="margin-top:6px"><span class="muted" style="font-size:12px;font-weight:600">СРОЧНО на СТО · ждём /pick</span></div>';
-    } else if (stockFlow && stockFlow.can_urgent_to_sto) {
-      stoStockHint +=
-        `<div style="margin-top:6px"><button type="button" class="primary" id="deal-urgent-to-sto" style="background:#dc2626;border-color:#b91c1c" title="Сразу на СТО с Основного/Отложено (+ с Резерва, если уже собрано)">СРОЧНО на СТО</button></div>`;
     }
     if (saleWoHtml && !stoStockHint.includes('Списано со склада СТО')) {
       stoStockHint += saleWoHtml;
@@ -25311,10 +25626,12 @@ async function renderDealDetail(id) {
       '<span class="muted" style="font-size:12px">СТО: перемещение склада → СТО</span>';
   }
   if (!stillOnDeal()) return;
-  const itemsLocked = !!d.composition_locked;
-  const itemsLockedReason =
-    String(d.composition_locked_reason || '').trim() ||
-    'Заказ оплачен — добавлять и удалять позиции нельзя';
+  // Состав заказа правится в AmoCRM — в Учёте только просмотр (склад: марки / задания).
+  const itemsLocked = true;
+  const itemsLockedReason = !!d.composition_locked
+    ? String(d.composition_locked_reason || '').trim() ||
+      'Заказ оплачен — добавлять и удалять позиции нельзя'
+    : 'Позиции меняются в AmoCRM — в Учёте только просмотр';
   const buyerRoleLabel =
     (rules && rules.labels && rules.labels.buyer) ||
     ({ person: 'Физлицо', ip: 'ИП', legal: 'Юрлицо' }[buyerKindValue] ||
@@ -25489,64 +25806,12 @@ async function renderDealDetail(id) {
       </label>
     </div>
     <p class="muted" id="deal-msg" style="margin:0 0 8px;font-size:12px;min-height:1.2em"></p>
-    ${
-      showStoPayBar || (cashOnSite && dueTotal > 0.009 && !isLegal)
-        ? `<div style="margin:0 0 10px;padding:8px 10px;border-radius:8px;background:#fff7ed;border:1px solid #fed7aa;font-size:12px;line-height:1.4">
-      <b>Деньги от клиента ещё не приняты</b> · к доплате
-      <b class="mono">${esc(formatMoney(dueTotal))}</b>.
-      Перемещение на СТО не нужно: в цепочке — вкладка «Списание» (можно до оплаты). Закрыть заказ («Успешно реализовано») — только после оплаты и ЗН.
-    </div>`
-        : ''
-    }
-    ${
-      showStoPayBar
-        ? `<div class="deal-sto-pay" id="deal-sto-pay">
-      <div class="deal-sto-pay-head">
-        Оплата · Автосервис · к доплате
-        <b class="mono">${esc(formatMoney(dueTotal))}</b>
-      </div>
-      <p class="muted deal-sto-pay-hint">
-        Ссылка (карта / Сплит / QR) или «Наличные» — без обязательного заказ-наряда.
-        ЗН можно оформить отдельно. Заказ нельзя закрыть, пока деньги не приняты.
-      </p>
-      <div class="toolbar deal-sto-pay-actions">
-        ${
-          showDealPayLink
-            ? `<button type="button" class="primary" id="deal-pay-link" ${
-                rules && rules.workorder_gate && rules.workorder_gate.required && !rules.workorder_gate.ok
-                  ? 'disabled'
-                  : ''
-              } data-tip="${
-                rules && rules.workorder_gate && rules.workorder_gate.required && !rules.workorder_gate.ok
-                  ? esc(rules.workorder_gate.error || 'Сначала распечатайте заказ-наряд')
-                  : 'Ссылка клиенту: QR СБП, Яндекс Сплит, карта'
-              }">Ссылка · QR · Сплит · карта</button>`
-            : `<span class="muted" style="font-size:12px">Ссылка недоступна для этого канала (наложка / COD)</span>`
-        }
-        ${
-          showAcceptCash
-            ? `<button type="button" id="deal-accept-cash" ${
-                rules && rules.workorder_gate && rules.workorder_gate.required && !rules.workorder_gate.ok
-                  ? 'disabled'
-                  : ''
-              } data-tip="${
-                rules && rules.workorder_gate && rules.workorder_gate.required && !rules.workorder_gate.ok
-                  ? esc(rules.workorder_gate.error || 'Сначала распечатайте заказ-наряд')
-                  : 'Наличные: работы / товар · полностью или частично'
-              }">Наличные</button>`
-            : ''
-        }
-        <span class="muted" id="deal-pay-msg" style="font-size:12px"></span>
-      </div>
-    </div>`
-        : ''
-    }
     ${buildDealReturnPanelHtml(d, dealReturnDocs)}
     ${dealFold(
       'items',
       `Позиции (${items.length})`,
       `<p class="muted" style="margin:0 0 8px;font-size:12px">
-        В заказе — артикул. Склад сканирует <b>марку (Data Matrix)</b> или <b>штрихкод</b> товара без марок → сверка с позицией → в списание уйдёт эта партия / склад.
+        Состав заказа из Amo. Склад при необходимости сканирует <b>марку (Data Matrix)</b> или <b>штрихкод</b> → сверка с позицией.
       </p>
       ${
         itemsLocked
@@ -25556,7 +25821,6 @@ async function renderDealDetail(id) {
       <div class="toolbar deal-find-toolbar" style="margin:0 0 12px;flex-wrap:wrap;align-items:center;gap:8px">
         <div class="form-pagetabs radio-pills deal-find-axes" role="tablist" aria-label="Поиск в заказе">
           <button type="button" class="form-pagetab active" data-deal-find-axis="mark" role="tab" aria-selected="true">Марка · штрих</button>
-          <button type="button" class="form-pagetab" data-deal-find-axis="catalog" role="tab" aria-selected="false">Товар · услуга</button>
         </div>
         <div class="deal-scan-field find deal-find-field" data-axis="mark" style="margin:0;max-width:560px;position:relative;flex:1 1 280px">
           <input id="deal-scan-unit" class="mono" placeholder="Скан марки или штрихкода…" autocomplete="off" />
@@ -26342,9 +26606,10 @@ async function renderDealDetail(id) {
         try {
           // без item_kind — и товары, и услуги
           const data = await api(
-            withCompanyId('/products?limit=20&q=' + encodeURIComponent(q))
+            withCompanyId('/products?limit=20&suggest=1&q=' + encodeURIComponent(q) + '&is_main=1'),
+            { quiet: true }
           );
-          const list = data.items || [];
+          const list = preferMainProductsForPick(data.items || []);
           if (!list.length) {
             suggest.innerHTML = '<div class="suggest-empty muted">Нет совпадений</div>';
             suggest.classList.remove('hidden');
@@ -26355,14 +26620,15 @@ async function renderDealDetail(id) {
               const kind = String(p.item_kind) === 'service' ? 'Услуга' : 'Товар';
               const art = catalogArticleOf(p);
               const title = productTitle(p);
-              const label = [art.article || p.sku, title].filter(Boolean).join(' · ');
+              const skuShow = stripDeptSkuSuffix(art.article || p.sku) || art.article || p.sku;
+              const label = [skuShow, title].filter(Boolean).join(' · ');
               return `<button type="button" class="suggest-item" data-id="${esc(p.id)}" data-label="${esc(
                 label
               )}" data-kind="${esc(kind)}">
                 <span class="deal-find-kind">${esc(kind)}</span>
-                <span class="mono">${esc(art.article || p.sku || '—')}</span>
+                <span class="mono">${esc(skuShow || '—')}</span>
                 ${p.category ? `<span class="muted">${esc(p.category)}</span>` : ''}
-                ${art.code && art.code !== art.article ? `<span class="muted mono"> · ${esc(art.code)}</span>` : ''}
+                ${art.code && art.code !== skuShow ? `<span class="muted mono"> · ${esc(art.code)}</span>` : ''}
                 ${esc(title)}
                 ${oldSkuLine(p) ? `<div class="muted mono" style="font-size:11px">старые: ${esc(oldSkuLine(p))}</div>` : ''}
               </button>`;
@@ -26495,6 +26761,8 @@ async function renderDealDetail(id) {
     const productFilterQs = () => {
       const qs = new URLSearchParams();
       qs.set('limit', '20');
+      qs.set('is_main', '1');
+      qs.set('suggest', '1');
       const markName = selectedMarkName();
       const modelName = selectedModelName();
       const genName = selectedGenName();
@@ -26710,8 +26978,8 @@ async function renderDealDetail(id) {
           return;
         }
         try {
-          const data = await api(withCompanyId('/products?' + qs.toString()));
-          const list = data.items || [];
+          const data = await api(withCompanyId('/products?' + qs.toString()), { quiet: true });
+          const list = preferMainProductsForPick(data.items || []);
           if (!list.length) {
             suggest.innerHTML = '<div class="suggest-empty muted">Нет совпадений</div>';
             suggest.classList.remove('hidden');
@@ -26722,14 +26990,15 @@ async function renderDealDetail(id) {
               const kind = String(p.item_kind) === 'service' ? 'Услуга' : 'Товар';
               const art = catalogArticleOf(p);
               const title = productTitle(p);
-              const label = [art.article || p.sku, title].filter(Boolean).join(' · ');
+              const skuShow = stripDeptSkuSuffix(art.article || p.sku) || art.article || p.sku;
+              const label = [skuShow, title].filter(Boolean).join(' · ');
               return `<button type="button" class="suggest-item" data-id="${esc(p.id)}" data-label="${esc(
                 label
-              )}" data-sku="${esc(p.sku || '')}" data-kind="${esc(kind)}">
+              )}" data-sku="${esc(skuShow || '')}" data-kind="${esc(kind)}">
                 <span class="deal-find-kind">${esc(kind)}</span>
-                <span class="mono">${esc(art.article || p.sku || '—')}</span>
+                <span class="mono">${esc(skuShow || '—')}</span>
                 ${p.category ? `<span class="muted">${esc(p.category)}</span>` : ''}
-                ${art.code && art.code !== art.article ? `<span class="muted mono"> · ${esc(art.code)}</span>` : ''}
+                ${art.code && art.code !== skuShow ? `<span class="muted mono"> · ${esc(art.code)}</span>` : ''}
                 ${esc(title)}
                 ${oldSkuLine(p) ? `<div class="muted mono" style="font-size:11px">старые: ${esc(oldSkuLine(p))}</div>` : ''}
               </button>`;
@@ -28838,278 +29107,7 @@ async function renderSalesDocDetail(id, opts = {}) {
       salesDealRow = null;
     }
   }
-  if (dealId && d.doc_type === 'invoice') {
-    const dealRow = salesDealRow || {
-      price: d.total || d.amount,
-      payment_split: {},
-      payments: [],
-      fiscal_receipts: [],
-      pay_questions: [],
-      crm_tasks: [],
-      sale_rules: null,
-    };
-    const byInvoice = salesDealRow ? dealPaysByInvoice(dealRow) : false;
-    try {
-      const split = dealRow.payment_split || {};
-      const payments = Array.isArray(dealRow.payments) ? dealRow.payments : [];
-      const paidOk = (p) =>
-        ['paid', 'confirmed', 'success', 'accepted'].includes(
-          String(p.status || '').toLowerCase()
-        );
-      const paidList = payments.filter(paidOk);
-      const paidTotal =
-        Number(split.paid_total) ||
-        paidList.reduce((s, p) => s + (Number(p.amount) || 0), 0) ||
-        0;
-      const orderTotal =
-        Number(split.total) || Number(dealRow.price) || Number(d.total) || Number(d.amount) || 0;
-      const dueTotal =
-        split.due_total != null && split.due_total !== ''
-          ? Number(split.due_total)
-          : Math.max(0, orderTotal - paidTotal);
-      const fmtWhen = (raw) => {
-        const s = String(raw || '').replace('T', ' ');
-        return s.length >= 16 ? s.slice(0, 16) : s.slice(0, 10);
-      };
-      const kindRu = (k) => {
-        const x = String(k || '').toLowerCase();
-        if (x === 'cash') return 'нал';
-        if (x === 'sbp_qr') return 'СБП';
-        if (x === 'yandex' || x === 'yandex_pay') return 'карта';
-        if (x === 'bank' || x === 'rs') return 'р/с';
-        return k || 'оплата';
-      };
-      let payStatusHtml = '';
-      if (paidTotal > 0.009 || paidList.length) {
-        const last = paidList[0];
-        const lastLine = last
-          ? `${fmtWhen(last.created_at)} · ${kindRu(last.kind)} · ${formatMoney(last.amount)}`
-          : '';
-        payStatusHtml = `<div class="sd-pay-balance${dueTotal > 0.009 ? ' is-due' : ' is-paid'}">
-          <div><b>Оплачено ${esc(formatMoney(paidTotal))}</b>${
-            orderTotal > 0.009 ? ` из ${esc(formatMoney(orderTotal))}` : ''
-          }${
-            dueTotal > 0.009
-              ? ` · остаток <b class="mono">${esc(formatMoney(dueTotal))}</b>`
-              : ' · полностью'
-          }</div>
-          ${
-            lastLine
-              ? `<div class="muted" style="font-size:11px;margin-top:2px">Последняя: ${esc(lastLine)}</div>`
-              : ''
-          }
-          ${
-            paidList.length > 1
-              ? `<ul class="sd-pay-history">${paidList
-                  .slice(0, 5)
-                  .map(
-                    (p) =>
-                      `<li>${esc(fmtWhen(p.created_at))} · ${esc(kindRu(p.kind))} · <span class="mono">${esc(
-                        formatMoney(p.amount)
-                      )}</span></li>`
-                  )
-                  .join('')}</ul>`
-              : ''
-          }
-        </div>`;
-        dealPayHint = '';
-      } else if (orderTotal > 0.009) {
-        payStatusHtml = `<div class="sd-pay-balance is-due">К оплате: <b class="mono">${esc(
-          formatMoney(dueTotal > 0.009 ? dueTotal : orderTotal)
-        )}</b></div>`;
-      }
-      const pdfOpen = '/api/sales-docs/' + encodeURIComponent(id) + '/pdf';
-      const pdfDl = pdfOpen + '?download=1';
-      // Ссылка доступна всем (юр / партнёр / физ). Счёт PDF — доп. опция, не вместо ссылки.
-      const invoiceBarHtml = byInvoice
-        ? `<div class="toolbar" style="margin:0 0 10px;padding:0;flex-wrap:wrap;gap:8px;align-items:center">
-            <a href="${esc(pdfOpen)}" target="_blank" rel="noopener" id="sd-pay-invoice-open">Счёт PDF</a>
-            <a href="${esc(pdfDl)}" id="sd-pay-invoice-dl">Скачать счёт</a>
-            <span class="muted" style="font-size:12px">Безнал по счёту — опция; ссылка QR/карта ниже тоже ок</span>
-          </div>`
-        : '';
-      let payLinks = [];
-      try {
-        const pl = await api('/crm/deals/' + encodeURIComponent(dealId) + '/payment-links');
-        payLinks = Array.isArray(pl.items) ? pl.items : [];
-      } catch (_) {
-        payLinks = [];
-      }
-      const activeLink =
-        payLinks.find((x) => String(x.status || '') === 'pending') || payLinks[0] || null;
-      const linkUrl = activeLink
-        ? String(activeLink.url || '').trim() ||
-          (activeLink.token ? '/pay/' + encodeURIComponent(String(activeLink.token)) : '')
-        : '';
-      const token = activeLink ? String(activeLink.token || '').trim() : '';
-      const acqUrl = activeLink ? String(activeLink.acquiring_url || '').trim() : '';
-      const st = activeLink ? String(activeLink.status || '') : '';
-      const stLabel =
-        st === 'pending'
-          ? 'ожидает оплаты'
-          : st === 'paid'
-            ? 'оплачено'
-            : st === 'expired'
-              ? 'истекла'
-              : st || '';
-      const qrSrc = token
-        ? '/api/public/pay/' +
-          encodeURIComponent(token) +
-          '/qr.png?v=' +
-          encodeURIComponent(String(activeLink.payment_id || token))
-        : '';
-      const saleRules = dealRow.sale_rules || {};
-      const woGate = saleRules.workorder_gate || {};
-      const channelRaw = String(dealRow.amo_channel || '');
-      const payMethodRaw = String(dealRow.amo_pay_method || '');
-      const cashOnSitePanel =
-        !!saleRules.cash_on_site ||
-        Number(dealRow.is_sto) === 1 ||
-        /автосервис|самовывоз/i.test(channelRaw) ||
-        String(dealRow.ship_channel || '') === 'pickup';
-      // Для физлица: способ оплаты → ЗН (вкладки) → оплата.
-      const channelTitle = /автосервис/i.test(channelRaw)
-        ? 'Автосервис'
-        : /самовывоз/i.test(channelRaw) || String(dealRow.ship_channel || '') === 'pickup'
-          ? 'Самовывоз'
-          : cashOnSitePanel
-            ? 'На месте'
-            : byInvoice
-              ? 'счёт или ссылка'
-              : 'оплата';
-      const payIsCash = /налич/i.test(payMethodRaw);
-      const payIsLink = !payIsCash;
-      const payMethodChosen = true;
-      const woNum = woGate.workorder ? String(woGate.workorder.number || '') : '';
-      // Матрица ЖЦ: ЗН обязателен только если workorder_gate.required (колонка zn)
-      const woRequired = woGate.required === true;
-      const woReady = !woRequired || !!woGate.ok;
-      const woHint = !woRequired
-        ? 'По матрице ЖЦ заказ-наряд не нужен — можно оплачивать'
-        : !woGate.workorder
-          ? 'Нужен заказ-наряд — вкладка «Документы»'
-          : woGate.need === 'plate'
-            ? `ЗН ${woNum || ''} · укажите гос. номер / СТС, затем печать`
-            : woGate.printed
-              ? woGate.ok
-                ? `ЗН ${woNum || ''} готов`
-                : woGate.error || `ЗН ${woNum || ''}`
-              : `ЗН ${woNum || ''} · распечатайте на вкладке «Документы»`;
-      const moneyPending = dueTotal > 0.009;
-      const flowReady = payMethodChosen && woReady;
-      const payDisabled =
-        !(Number(dealRow.price) > 0 || Number(d.amount) > 0 || Number(d.total) > 0 || dueTotal > 0.009) ||
-        !flowReady;
-      const panelState = !payMethodChosen || !woReady ? 'is-warn' : moneyPending ? 'is-due' : 'is-ok';
-      const msgText = !payMethodChosen
-        ? 'Выберите способ оплаты'
-        : !woReady
-          ? woGate.error || woHint
-          : moneyPending
-            ? 'Примите оплату · заказ не закрывать без денег'
-            : 'Оплачено';
-      dealPayPanelHtml = `<div class="sd-pay-panel ${panelState}" id="sd-pay-panel">
-          <div class="sd-pay-panel-head">
-            <div class="sd-pay-panel-title">Оплата · ${esc(channelTitle)}</div>
-            ${
-              moneyPending
-                ? `<div class="sd-pay-panel-due">к доплате <b class="mono">${esc(
-                    formatMoney(dueTotal > 0.009 ? dueTotal : orderTotal)
-                  )}</b></div>`
-                : ''
-            }
-          </div>
-          ${payStatusHtml}
-          ${invoiceBarHtml}
-          ${
-            moneyPending
-              ? `<p class="sd-pay-panel-note">Деньги ещё не приняты. ЗН и списание со склада — во вкладках сверху.</p>`
-              : ''
-          }
-          <div class="sd-pay-panel-body">
-            ${
-              qrSrc && st === 'pending' && flowReady && !payIsCash
-                ? `<div class="sd-pay-qr">
-              <img src="${esc(qrSrc)}" alt="QR СБП" width="120" height="120" />
-              <span class="muted">QR СБП</span>
-            </div>`
-                : ''
-            }
-            <div class="sd-pay-panel-main">
-              <div class="sd-pay-method" role="group" aria-label="Чем платим">
-                <span class="sd-pay-method-label">Чем платим</span>
-                <div class="form-pagetabs radio-pills" id="sd-pay-method-tabs" role="tablist">
-                  <button type="button" class="form-pagetab ${payIsCash ? 'active' : ''}" data-sd-pay-method="Наличка" role="tab" aria-selected="${payIsCash ? 'true' : 'false'}">Нал</button>
-                  <button type="button" class="form-pagetab ${payIsLink ? 'active' : ''}" data-sd-pay-method="QR" role="tab" aria-selected="${payIsLink ? 'true' : 'false'}">QR · Сплит · карта</button>
-                </div>
-              </div>
-              <div class="sd-pay-wo-hint ${woReady ? 'is-ok' : 'is-need'}">${esc(woHint)}</div>
-              ${
-                linkUrl && flowReady && !payIsCash
-                  ? `<div class="sd-pay-link-row">
-                <input class="mono" id="sd-pay-url" readonly value="${esc(linkUrl)}" />
-                <button type="button" id="sd-pay-copy">Копировать</button>
-                <a href="${esc(linkUrl)}" target="_blank" rel="noopener" id="sd-pay-open">Открыть</a>
-                ${
-                  acqUrl
-                    ? `<a href="${esc(acqUrl)}" target="_blank" rel="noopener" title="Эквайринг Точки">Карта</a>`
-                    : ''
-                }
-              </div>
-              <div class="muted sd-pay-link-meta">
-                ${esc(stLabel)}${activeLink.amount != null ? ' · ' + formatMoney(activeLink.amount) : ''}${
-                    activeLink.expires_at
-                      ? ' · до ' + esc(String(activeLink.expires_at).replace('T', ' ').slice(0, 16))
-                      : ''
-                  }
-              </div>`
-                  : ''
-              }
-              <div class="sd-pay-actions">
-                ${
-                  payIsCash && dueTotal > 0.009
-                    ? `<button class="primary" type="button" id="sd-accept-cash" ${
-                        payDisabled ? 'disabled' : ''
-                      }>Наличные</button>`
-                    : ''
-                }
-                ${
-                  !payIsCash
-                    ? `<button class="primary" type="button" id="sd-pay-link" ${
-                        payDisabled ? 'disabled' : ''
-                      }>${linkUrl && st === 'pending' ? 'Новая ссылка' : 'Ссылка · QR · Сплит · карта'}</button>`
-                    : ''
-                }
-                <span class="muted" id="sd-pay-msg">${esc(msgText)}</span>
-              </div>
-            </div>
-          </div>
-        </div>`;
-    } catch (e) {
-      dealPayPanelHtml = `<div class="sd-pay-panel" id="sd-pay-panel" style="margin:0 0 12px;padding:12px 14px;border:1px solid #fecaca;border-radius:10px;background:#fef2f2">
-        <div style="font-weight:700;margin:0 0 6px">Оплата · физлицо</div>
-        <p class="muted" style="margin:0 0 8px;font-size:12px">Не удалось загрузить статус оплаты. Можно создать ссылку вручную.</p>
-        <button class="primary" type="button" id="sd-pay-link">Ссылка на оплату · QR · Сплит · карта</button>
-        <span class="muted" id="sd-pay-msg" style="font-size:12px;margin-left:8px">${esc(
-          e && e.message ? e.message : ''
-        )}</span>
-      </div>`;
-    }
-    try {
-      const fiscalList = Array.isArray(dealRow.fiscal_receipts) ? dealRow.fiscal_receipts : [];
-      const payQs = Array.isArray(dealRow.pay_questions) ? dealRow.pay_questions : [];
-      const crmTs = Array.isArray(dealRow.crm_tasks) ? dealRow.crm_tasks : [];
-      dealPayPanelHtml += buildInvoiceFiscalPanelHtml(fiscalList, dealRow);
-      dealPayPanelHtml += buildInvoicePayQuestionsHtml(payQs, crmTs);
-    } catch (_) {
-      /* ignore */
-    }
-  } else if (d.doc_type === 'invoice' && !dealId) {
-    dealPayPanelHtml = `<div class="sd-pay-panel" id="sd-pay-panel" style="margin:0 0 12px;padding:12px 14px;border:1px solid #fde68a;border-radius:10px;background:#fffbeb">
-      <div style="font-weight:700;margin:0 0 4px">Оплата · ссылка</div>
-      <p class="muted" style="margin:0;font-size:12px">Счёт не привязан к заказу покупателя — QR / Сплит / карта создаются из карточки заказа (сделка Amo).</p>
-    </div>`;
-  }
+  // Оплата (нал / QR / сплит / карта) — только в виджетах Amo, в Учёте №1 панель не показываем.
   const salesRules = (salesDealRow && salesDealRow.sale_rules) || null;
   const salesIsSto = dealIsAutoservice(salesDealRow || {});
   const salesDocsHub = dealUsesDocsHub(salesDealRow || {});
@@ -29475,15 +29473,15 @@ async function renderSalesDocDetail(id, opts = {}) {
       <div class="span-2 sd-money-strip" aria-label="Суммы">
         <div class="sd-money-cell">
           <span class="sd-money-k">Без НДС</span>
-          <span class="sd-money-v mono">${esc(formatMoney(d.amount))}</span>
+          <span class="sd-money-v mono">${esc(formatMoneyKop(d.amount))}</span>
         </div>
         <div class="sd-money-cell">
           <span class="sd-money-k">НДС ${esc(d.vat_rate || 0)}%</span>
-          <span class="sd-money-v mono">${esc(formatMoney(d.vat_amount))}</span>
+          <span class="sd-money-v mono">${esc(formatMoneyKop(d.vat_amount))}</span>
         </div>
         <div class="sd-money-cell sd-money-total">
           <span class="sd-money-k">Всего</span>
-          <span class="sd-money-v mono">${esc(formatMoney(d.total))}</span>
+          <span class="sd-money-v mono">${esc(formatMoneyKop(d.total))}</span>
         </div>
       </div>
     </div>`
@@ -29491,15 +29489,15 @@ async function renderSalesDocDetail(id, opts = {}) {
       <div class="span-2 sd-money-strip" aria-label="Суммы">
         <div class="sd-money-cell">
           <span class="sd-money-k">Без НДС</span>
-          <span class="sd-money-v mono">${esc(formatMoney(d.amount))}</span>
+          <span class="sd-money-v mono">${esc(formatMoneyKop(d.amount))}</span>
         </div>
         <div class="sd-money-cell">
           <span class="sd-money-k">НДС ${esc(d.vat_rate || 0)}%</span>
-          <span class="sd-money-v mono">${esc(formatMoney(d.vat_amount))}</span>
+          <span class="sd-money-v mono">${esc(formatMoneyKop(d.vat_amount))}</span>
         </div>
         <div class="sd-money-cell sd-money-total">
           <span class="sd-money-k">Всего</span>
-          <span class="sd-money-v mono">${esc(formatMoney(d.total))}</span>
+          <span class="sd-money-v mono">${esc(formatMoneyKop(d.total))}</span>
         </div>
       </div>
     </div>`
@@ -29526,9 +29524,9 @@ async function renderSalesDocDetail(id, opts = {}) {
               <td class="mono">${esc(ac.code || '')}</td>
               <td>${esc(l.name || '')}</td>
               <td class="mono">${esc(l.qty)}</td>
-              <td class="mono">${formatMoney(l.price)}</td>
-              <td class="mono">${formatMoney(l.amount)}</td>
-              <td class="mono">${formatMoney(l.vat_amount)}</td>
+              <td class="mono">${formatMoneyKop(l.price)}</td>
+              <td class="mono">${formatMoneyKop(l.amount)}</td>
+              <td class="mono">${formatMoneyKop(l.vat_amount)}</td>
             </tr>`;
             })
             .join('')}
@@ -29536,8 +29534,8 @@ async function renderSalesDocDetail(id, opts = {}) {
         <tfoot>
           <tr>
             <td colspan="6" style="text-align:right"><strong>Итого без НДС</strong></td>
-            <td class="mono"><strong>${formatMoney(d.amount != null ? d.amount : linesSum)}</strong></td>
-            <td class="mono"><strong>${formatMoney(d.vat_amount)}</strong></td>
+            <td class="mono"><strong>${formatMoneyKop(d.amount != null ? d.amount : linesSum)}</strong></td>
+            <td class="mono"><strong>${formatMoneyKop(d.vat_amount)}</strong></td>
           </tr>
         </tfoot>
       </table>`
@@ -36936,7 +36934,7 @@ function renderHelpHub() {
     </div>`
       : `
     <p class="muted" style="margin:0 0 14px;font-size:13px;max-width:640px">
-      Рабочие экраны для склада и фото, внешний API для интеграций, схема жизненного цикла и витрина стиля UI/UX.
+      Рабочие экраны для склада и фото, внешний API для интеграций.
     </p>
     <div class="help-role-cards" aria-label="Разделы помощи">
       ${pickCard}
@@ -36964,30 +36962,12 @@ function renderHelpHub() {
         <span class="help-role-desc">Ключ API, вебхуки, публичные методы · доступ извне</span>
         <span class="help-role-go">Открыть раздел →</span>
       </button>
-      <button type="button" class="help-role-card" id="help-open-lifecycle" style="text-align:left;width:100%;font:inherit;cursor:pointer">
-        <span class="help-role-ico" aria-hidden="true">Жц</span>
-        <span class="help-role-title">Визуализация жизненного цикла</span>
-        <span class="help-role-desc">Amo → заказ → обеспечение → /pick · /courier → доки → чеки</span>
-        <span class="help-role-go">Открыть схему →</span>
-      </button>
-      <button type="button" class="help-role-card" id="help-open-ui" style="text-align:left;width:100%;font:inherit;cursor:pointer">
-        <span class="help-role-ico" aria-hidden="true">UI</span>
-        <span class="help-role-title">Дизайн UI/UX</span>
-        <span class="help-role-desc">Цвета, типографика, кнопки, поля, радио, чекбоксы</span>
-        <span class="help-role-go">Открыть витрину →</span>
-      </button>
     </div>`;
     view.innerHTML = formChrome('Рабочие экраны', body, { closable: true });
   bindFormChrome(() => showSection('help'));
   if (!whPick) {
     document.getElementById('help-open-api')?.addEventListener('click', () => {
       openTab('help-integrations');
-    });
-    document.getElementById('help-open-lifecycle')?.addEventListener('click', () => {
-      openTab('help-lifecycle');
-    });
-    document.getElementById('help-open-ui')?.addEventListener('click', () => {
-      openTab('help-ui');
     });
   }
   } catch (e) {
@@ -40621,9 +40601,9 @@ const routes = {
   'settings-amo': renderAmoSettings,
   'settings-warranty': renderWarrantySettings,
   ideas: renderIdeas,
-  'help-lifecycle': renderHelpLifecycle,
+  'help-lifecycle': () => openTab('help-hub'),
   'help-hub': renderHelpHub,
-  'help-ui': renderHelpUiKit,
+  'help-ui': () => openTab('help-hub'),
   'help-integrations': renderHelpIntegrations,
   staff: renderStaff,
   audit: renderAudit,

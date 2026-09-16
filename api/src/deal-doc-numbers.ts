@@ -13,14 +13,14 @@ function cleanDealId(dealId: string): string {
 }
 
 /** Порядковый номер перемещения по сделке (1 = первое). */
-export function nextTransferSeq(dealId: string): number {
+export async function nextTransferSeq(dealId: string): Promise<number> {
   const deal = cleanDealId(dealId);
   if (!deal) return 1;
   const n =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM sto_transfer_requests WHERE deal_id = ?`,
       [deal]
-    )?.c ?? 0;
+    ))?.c ?? 0;
   return n + 1;
 }
 
@@ -32,10 +32,10 @@ export function formatTransferNumber(dealId: string, seq: number): string {
   return s <= 1 ? `С${deal}` : `С${deal}-${s}`;
 }
 
-export function nextTransferNumber(dealId: string): string {
+export async function nextTransferNumber(dealId: string): Promise<string> {
   const deal = cleanDealId(dealId);
   if (!deal) return '';
-  return formatTransferNumber(deal, nextTransferSeq(deal));
+  return formatTransferNumber(deal, await nextTransferSeq(deal));
 }
 
 /** @deprecated совместимость — перемещение всегда С */
@@ -46,18 +46,18 @@ export function formatDealDocNumber(kind: DealDocKind, dealId: string, seq: numb
   return formatTransferNumber(dealId, seq);
 }
 
-export function nextDealDocNumber(kind: DealDocKind, dealId: string): string {
+export async function nextDealDocNumber(kind: DealDocKind, dealId: string): Promise<string> {
   void kind;
-  return nextTransferNumber(dealId);
+  return await nextTransferNumber(dealId);
 }
 
-export function nextDealDocSeq(kind: DealDocKind, dealId: string): number {
+export async function nextDealDocSeq(kind: DealDocKind, dealId: string): Promise<number> {
   void kind;
-  return nextTransferSeq(dealId);
+  return await nextTransferSeq(dealId);
 }
 
-export function ensureStoTransferEventsSchema() {
-  run(`
+export async function ensureStoTransferEventsSchema() {
+  await run(`
     CREATE TABLE IF NOT EXISTS sto_transfer_request_events (
       id TEXT PRIMARY KEY,
       request_id TEXT NOT NULL,
@@ -73,7 +73,7 @@ export function ensureStoTransferEventsSchema() {
   `);
 }
 
-export function logStoTransferEvent(input: {
+export async function logStoTransferEvent(input: {
   request_id: string;
   event: string;
   summary?: string;
@@ -83,8 +83,8 @@ export function logStoTransferEvent(input: {
 }) {
   const requestId = String(input.request_id || '').trim();
   if (!requestId) return;
-  ensureStoTransferEventsSchema();
-  run(
+  await ensureStoTransferEventsSchema();
+  await run(
     `INSERT INTO sto_transfer_request_events
       (id, request_id, event, actor_id, actor_name, summary, payload_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
@@ -100,11 +100,11 @@ export function logStoTransferEvent(input: {
   );
 }
 
-export function listStoTransferEvents(requestId: string, limit = 40) {
-  ensureStoTransferEventsSchema();
+export async function listStoTransferEvents(requestId: string, limit = 40) {
+  await ensureStoTransferEventsSchema();
   const id = String(requestId || '').trim();
   if (!id) return [];
-  return all(
+  return await all(
     `SELECT * FROM sto_transfer_request_events
      WHERE request_id = ?
      ORDER BY datetime(created_at) DESC
@@ -114,9 +114,9 @@ export function listStoTransferEvents(requestId: string, limit = 40) {
 }
 
 /** Переименовать П… → С… и выровнять складские задания под номер перемещения. */
-export function backfillDealDocNumbers(opts?: { deal_id?: string }) {
+export async function backfillDealDocNumbers(opts?: { deal_id?: string }) {
   const dealFilter = String(opts?.deal_id || '').trim();
-  const reqs = all<{ id: string; deal_id: string; number: string; warehouse_task_id: string }>(
+  const reqs = await all<{ id: string; deal_id: string; number: string; warehouse_task_id: string }>(
     dealFilter
       ? `SELECT id, deal_id, number, IFNULL(warehouse_task_id,'') AS warehouse_task_id
          FROM sto_transfer_requests WHERE deal_id = ?
@@ -137,7 +137,7 @@ export function backfillDealDocNumbers(opts?: { deal_id?: string }) {
     seqP.set(deal, seq);
     const want = formatTransferNumber(deal, seq);
     if (String(r.number) !== want) {
-      run(`UPDATE sto_transfer_requests SET number = ?, updated_at = datetime('now') WHERE id = ?`, [
+      await run(`UPDATE sto_transfer_requests SET number = ?, updated_at = datetime('now') WHERE id = ?`, [
         want,
         r.id,
       ]);
@@ -146,12 +146,12 @@ export function backfillDealDocNumbers(opts?: { deal_id?: string }) {
     // складское задание по перемещению = тот же СXXXX
     const taskId = String(r.warehouse_task_id || '').trim();
     if (taskId) {
-      const t = get<{ number: string; comment: string }>(
+      const t = await get<{ number: string; comment: string }>(
         `SELECT IFNULL(number,'') AS number, IFNULL(comment,'') AS comment FROM warehouse_tasks WHERE id = ?`,
         [taskId]
       );
       if (t && String(t.number) !== want) {
-        run(
+        await run(
           `UPDATE warehouse_tasks SET number = ?, barcode = ?, updated_at = datetime('now') WHERE id = ?`,
           [want, want.replace(/-/g, ''), taskId]
         );
@@ -163,7 +163,7 @@ export function backfillDealDocNumbers(opts?: { deal_id?: string }) {
         // без \b: в JS граница слова не работает с кириллицей
         const next = cmt.replace(/СТО-\d+/gi, want).replace(/(^|[^\p{L}\p{N}])П(\d[\w-]*)/gu, '$1С$2');
         if (next !== cmt) {
-          run(`UPDATE warehouse_tasks SET comment = ?, updated_at = datetime('now') WHERE id = ?`, [
+          await run(`UPDATE warehouse_tasks SET comment = ?, updated_at = datetime('now') WHERE id = ?`, [
             next,
             taskId,
           ]);
@@ -171,7 +171,7 @@ export function backfillDealDocNumbers(opts?: { deal_id?: string }) {
       }
     }
     // на всякий — задания, связанные через stock_doc_id / track
-    const linked = all<{ id: string; number: string }>(
+    const linked = await all<{ id: string; number: string }>(
       `SELECT id, IFNULL(number,'') AS number FROM warehouse_tasks
        WHERE channel = 'sto_parts'
          AND (stock_doc_id = ? OR track_number = ?)
@@ -180,7 +180,7 @@ export function backfillDealDocNumbers(opts?: { deal_id?: string }) {
     );
     for (const t of linked) {
       if (String(t.number) !== want) {
-        run(
+        await run(
           `UPDATE warehouse_tasks SET number = ?, barcode = ?, updated_at = datetime('now') WHERE id = ?`,
           [want, want.replace(/-/g, ''), t.id]
         );

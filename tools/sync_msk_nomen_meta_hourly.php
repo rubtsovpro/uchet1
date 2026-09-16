@@ -5,6 +5,7 @@
  * Sheet: https://docs.google.com/spreadsheets/d/1KRNwQIi-jYBDtKYl5rQ9is6zngbPds0ZZvBXWCApn7I
  *
  * Ключ: MRAER мастер → карточка подвески (pnevmopodveska_2025).
+ * Если A (мастер) пусто — строку не берём. B «факт» ≠ номенклатура (только лот у мастера).
  * Нет карточки подвески → создаём. Фогель не трогаем: при занятом sku
  * (как в HS) пишем sku@podveska — у каждого контура своя номенклатура.
  *
@@ -46,7 +47,6 @@ if (in_array('--dry-run', $argv, true)) {
 
 /** Коды 1С: применимость с листа не трогаем (оставить как в карточке). */
 $skipAppByCode = [
-    'НФ-00026159' => true,
     '00-00007524' => true,
     '00-00001830' => true,
 ];
@@ -126,7 +126,7 @@ function normalizeCrosses(string $raw): string
 {
     $parts = [];
     $seen = [];
-    foreach (preg_split('/[;,\n]+/u', $raw) ?: [] as $p) {
+    foreach (preg_split('/[;,\n|\/]+/u', $raw) ?: [] as $p) {
         $p = strtoupper(trim((string) $p));
         if ($p === '' || isset($seen[$p])) {
             continue;
@@ -136,6 +136,12 @@ function normalizeCrosses(string $raw): string
     }
 
     return implode('; ', $parts);
+}
+
+/** Слить несколько списков номеров в один нормализованный кросс-список. */
+function mergeCrossLists(string ...$raws): string
+{
+    return normalizeCrosses(implode('; ', $raws));
 }
 
 function normCellCode(string $raw): string
@@ -579,6 +585,8 @@ if ($iSide !== null) {
 $iDrive = colIndex($header, ['привод'], false);
 $iType = colIndex($header, ['тип / исполнение', 'тип/исполнение']);
 $iCross = colIndex($header, ['кроссы — все номера для поиска', 'кроссы']);
+$iOe = colIndex($header, ['ое — один проверенный', 'ое']);
+$iOld = colIndex($header, ['старые mraer', 'старые']);
 
 if ($iMaster === null) {
     sync_log('ERR: нет колонки MRAER мастер');
@@ -704,7 +712,13 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
     if ($type !== '') {
         $cur['type'] = $type;
     }
-    $cross = normalizeCrosses(cell($row, $iCross));
+    // Кроссы = поиск: текущие кроссы + ОЕ + старые MRAER (мерж по мастеру).
+    $cross = mergeCrossLists(
+        (string) ($cur['crosses'] ?? ''),
+        cell($row, $iCross),
+        cell($row, $iOe),
+        cell($row, $iOld)
+    );
     if ($cross !== '') {
         $cur['crosses'] = $cross;
     }
@@ -1088,7 +1102,7 @@ try {
             }
         }
 
-        $crosses = trim((string) $m['crosses']);
+        $crosses = mergeCrossLists((string) ($prod['array_sku'] ?? ''), (string) ($m['crosses'] ?? ''));
         if ($crosses !== '' && $crosses !== (string) ($prod['array_sku'] ?? '')) {
             if (!$dryRun) {
                 $st = $db->prepare('UPDATE products SET array_sku = :a WHERE id = :id');

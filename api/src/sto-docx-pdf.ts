@@ -56,14 +56,14 @@ function lineTitle(l: StoFillLine): string {
   return sku ? `${name}, арт. ${sku}` : name;
 }
 
-function warrantyRowsForDocx(opts: {
+async function warrantyRowsForDocx(opts: {
   sellerInn?: string | null;
   workLines?: StoFillLine[];
   partLines?: StoFillLine[];
   clientPartLines?: StoFillLine[];
-}): Array<{ object: string; term: string; start: string }> {
+}): Promise<Array<{ object: string; term: string; start: string }>> {
   const start = 'с даты выдачи АМТС';
-  const lines = warrantyLinesForSeller(opts.sellerInn);
+  const lines = await warrantyLinesForSeller(opts.sellerInn);
   const byId = new Map(lines.map((l) => [l.id, l]));
   const rows: Array<{ object: string; term: string; start: string }> = [];
   const seen = new Set<string>();
@@ -159,11 +159,11 @@ function findSoffice(): string {
 }
 
 /** Значения макросов, уже с прочерками для пустых (как в fillStoTemplateText). */
-export function stoMacroFillsForDocx(ctx: StoFillContext, xml: string): Record<string, string> {
+export async function stoMacroFillsForDocx(ctx: StoFillContext, xml: string): Promise<Record<string, string>> {
   const keys = [...new Set(xml.match(MACRO_RE) || [])];
   const out: Record<string, string> = {};
   for (const key of keys) {
-    out[key] = fillStoTemplateText(key, ctx);
+    out[key] = await fillStoTemplateText(key, ctx);
   }
   return out;
 }
@@ -173,7 +173,7 @@ export function stoMacroFillsForDocx(ctx: StoFillContext, xml: string): Record<s
  * (на VPS часто нет unzip в PATH).
  * Для ЗН физлица: §6 при пустых ЗЧ заказчика — без таблицы, фраза «не предоставлялись».
  */
-export function fillDocxBufferMacros(buf: Buffer, ctx: StoFillContext): Buffer {
+export async function fillDocxBufferMacros(buf: Buffer, ctx: StoFillContext): Promise<Buffer> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wms-sto-docx-'));
   const inFile = path.join(dir, 'in.docx');
   const outFile = path.join(dir, 'out.docx');
@@ -198,7 +198,7 @@ export function fillDocxBufferMacros(buf: Buffer, ctx: StoFillContext): Buffer {
       ],
       { maxBuffer: 32 * 1024 * 1024 }
     ).toString('utf8');
-    const fills = stoMacroFillsForDocx(ctx, xml);
+    const fills = await stoMacroFillsForDocx(ctx, xml);
     const workLines = (ctx.workLines || []).filter((l) => String(l.name || '').trim());
     const partLines = (ctx.partLines || []).filter((l) => String(l.name || '').trim());
     const escaped: Record<string, string> = {};
@@ -266,7 +266,7 @@ export function fillDocxBufferMacros(buf: Buffer, ctx: StoFillContext): Buffer {
     fs.writeFileSync(
       warrantyFile,
       JSON.stringify(
-        warrantyRowsForDocx({
+        await warrantyRowsForDocx({
           sellerInn: ctx.org?.inn,
           workLines,
           partLines,
@@ -390,7 +390,7 @@ export async function buildStoDocxPdf(
 ): Promise<{ buffer: Buffer; source: string } | null> {
   const loaded = await loadStoTemplateDocxBuffer(templateId, sellerInn, opts);
   if (!loaded) return null;
-  const filled = fillDocxBufferMacros(loaded.buffer, ctx);
+  const filled = await fillDocxBufferMacros(loaded.buffer, ctx);
   const pdf = convertDocxBufferToPdf(filled);
   return { buffer: pdf, source: `docx:${loaded.source}` };
 }

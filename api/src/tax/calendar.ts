@@ -23,9 +23,9 @@ function iso(y: number, m: number, d: number): string {
 }
 
 /** Ближайшие события от «сегодня» на 12 месяцев вперёд + незакрытый прошлый квартал. */
-export function buildTaxCalendar(organizationId?: string | null, now = new Date()): CalendarItem[] {
-  const oid = resolveOrganizationId(organizationId);
-  const settings = getTaxSettings(oid);
+export async function buildTaxCalendar(organizationId?: string | null, now = new Date()): Promise<CalendarItem[]> {
+  const oid = await resolveOrganizationId(organizationId);
+  const settings = await getTaxSettings(oid);
   const y = now.getFullYear();
   const items: CalendarItem[] = [];
 

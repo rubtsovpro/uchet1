@@ -399,7 +399,7 @@ export function suggestStoWorkorderTemplateId(deal: Record<string, unknown> | nu
  * — автосервис + физлицо без компании → оферта СТО (01);
  * — автосервис + юр/ИП → договор СТО (02).
  */
-export function suggestContractTemplateId(
+export async function suggestContractTemplateId(
   deal: Record<string, unknown> | null | undefined,
   opts?: {
     organizationId?: string;
@@ -408,20 +408,20 @@ export function suggestContractTemplateId(
     partyKind?: string;
     companyId?: string | number;
   }
-): string {
+): Promise<string> {
   const ctx = mergeDealBuyerInn(deal, opts);
   const legal = contractBuyerLooksLegal(deal, opts);
   const isSto = resolveIsSto(ctx);
   if (!isSto) return legal ? CONTRACT_TEMPLATE_ID : STO_CONTRACT_PERSON;
-  if (legal) return suggestStoContractTemplateId(ctx, opts);
+  if (legal) return await suggestStoContractTemplateId(ctx, opts);
   if (!dealHasBuyerCompany(ctx)) return STO_CONTRACT_PERSON;
   return STO_CONTRACT_PERSON;
 }
 
-export function suggestStoContractTemplateId(
+export async function suggestStoContractTemplateId(
   deal: Record<string, unknown> | null | undefined,
   opts?: { organizationId?: string; sellerInn?: string }
-): string {
+): Promise<string> {
   if (!deal) return STO_CONTRACT_PERSON;
   if (!dealLooksLegal(deal)) return STO_CONTRACT_PERSON;
   let inn = String(opts?.sellerInn || '')
@@ -429,12 +429,12 @@ export function suggestStoContractTemplateId(
     .trim();
   if (!inn) {
     try {
-      const orgId = resolveOrganizationId(
+      const orgId = await resolveOrganizationId(
         opts?.organizationId ||
           String(deal.organization_id || deal.org_id || '').trim() ||
           undefined
       );
-      inn = String(getOrgProfile(orgId)?.inn || '')
+      inn = String((await getOrgProfile(orgId))?.inn || '')
         .replace(/\D/g, '')
         .trim();
     } catch {
@@ -1058,11 +1058,11 @@ export function paymentFieldsFromDeal(
   };
 }
 
-function workorderRowForDeal(dealId: string): { id: string; checklist_json: string } | null {
+async function workorderRowForDeal(dealId: string): Promise<{ id: string; checklist_json: string } | null> {
   const id = String(dealId || '').trim();
   if (!id) return null;
   return (
-    get<{ id: string; checklist_json: string }>(
+    await get<{ id: string; checklist_json: string }>(
       `SELECT id, IFNULL(checklist_json,'') AS checklist_json
        FROM sales_docs
        WHERE deal_id = ? AND doc_type = 'workorder'
@@ -1099,22 +1099,22 @@ export function formatStoHandover104(
 }
 
 /** П. 10.4 (+ опционально счётчик фото для 3.5) из сделки / ЗН. */
-export function handoverFieldsFromDeal(
+export async function handoverFieldsFromDeal(
   deal?: Record<string, unknown> | null,
   opts?: { workorderId?: string }
-): Pick<StoFillContext, 'handover104' | 'handover104Legal' | 'intakePhotoCount'> {
+): Promise<Pick<StoFillContext, 'handover104' | 'handover104Legal' | 'intakePhotoCount'>> {
   if (!deal) return {};
   const dealId = String(deal.id || '').trim();
   let woId = String(opts?.workorderId || '').trim();
   let checklistRaw = '';
   if (woId) {
-    const row = get<{ checklist_json: string }>(
+    const row = await get<{ checklist_json: string }>(
       `SELECT IFNULL(checklist_json,'') AS checklist_json FROM sales_docs WHERE id = ? AND doc_type = 'workorder'`,
       [woId]
     );
     checklistRaw = String(row?.checklist_json || '');
   } else if (dealId) {
-    const row = workorderRowForDeal(dealId);
+    const row = await workorderRowForDeal(dealId);
     if (row) {
       woId = row.id;
       checklistRaw = row.checklist_json;
@@ -1263,33 +1263,33 @@ function isTechActorToken(s: string): boolean {
   return false;
 }
 
-export function resolveStaffDisplayName(raw?: string | null): string {
+export async function resolveStaffDisplayName(raw?: string | null): Promise<string> {
   const s = String(raw || '').trim();
   if (!s || isTechActorToken(s)) return '';
-  const byId = get<{ name: string }>(
+  const byId = await get<{ name: string }>(
     `SELECT name FROM staff WHERE id = ? AND IFNULL(name,'') != '' LIMIT 1`,
     [s]
   );
   if (byId?.name) return String(byId.name).trim();
-  const byLogin = get<{ name: string }>(
+  const byLogin = await get<{ name: string }>(
     `SELECT name FROM staff WHERE lower(login) = lower(?) AND IFNULL(name,'') != '' LIMIT 1`,
     [s]
   );
   if (byLogin?.name) return String(byLogin.name).trim();
-  const byAuth = get<{ name: string }>(
+  const byAuth = await get<{ name: string }>(
     `SELECT name FROM staff WHERE lower(auth_login) = lower(?) AND IFNULL(name,'') != '' LIMIT 1`,
     [s]
   );
   if (byAuth?.name) return String(byAuth.name).trim();
-  const fromAmo = amoUserDisplayName(s);
+  const fromAmo = await amoUserDisplayName(s);
   if (fromAmo) return fromAmo;
   return s;
 }
 
 /** ФИО из сессии: имя → login → id в staff (не тех. `__admin__`). */
-export function actorDisplayName(
+export async function actorDisplayName(
   actor?: { id?: string; name?: string; login?: string; isSystemAdmin?: boolean } | null
-): string {
+): Promise<string> {
   if (!actor) return '';
   const id = String(actor.id || '').trim();
   // Системный админ: всегда человеческое имя из сессии, не id.
@@ -1298,11 +1298,11 @@ export function actorDisplayName(
     if (n && !isTechActorToken(n)) return n;
     return 'Админ';
   }
-  const fromId = id ? resolveStaffDisplayName(id) : '';
+  const fromId = id ? await resolveStaffDisplayName(id) : '';
   if (fromId) return fromId;
-  const fromName = resolveStaffDisplayName(actor.name);
+  const fromName = await resolveStaffDisplayName(actor.name);
   if (fromName) return fromName;
-  const fromLogin = resolveStaffDisplayName(actor.login);
+  const fromLogin = await resolveStaffDisplayName(actor.login);
   if (fromLogin) return fromLogin;
   const name = String(actor.name || '').trim();
   if (name && !isTechActorToken(name)) return name;
@@ -1311,21 +1311,21 @@ export function actorDisplayName(
   return '';
 }
 
-export function staffNameFromDeal(deal?: Record<string, unknown> | null): string {
+export async function staffNameFromDeal(deal?: Record<string, unknown> | null): Promise<string> {
   if (!deal) return '';
   const named = String(deal.responsible_name || '').trim();
   if (named) return named;
-  return amoUserDisplayName(String(deal.responsible_user_id || ''));
+  return await amoUserDisplayName(String(deal.responsible_user_id || ''));
 }
 
-export function staffFieldsFromDeal(
+export async function staffFieldsFromDeal(
   deal?: Record<string, unknown> | null,
   opts?: { staffName?: string; /** только кто в сессии — без ответственного Amo */ actorOnly?: boolean }
-): Pick<StoFillContext, 'staffName'> {
-  const fromActor = resolveStaffDisplayName(opts?.staffName);
+): Promise<Pick<StoFillContext, 'staffName'>> {
+  const fromActor = await resolveStaffDisplayName(opts?.staffName);
   if (fromActor) return { staffName: fromActor };
   if (opts?.actorOnly) return {};
-  const fromDeal = staffNameFromDeal(deal);
+  const fromDeal = await staffNameFromDeal(deal);
   return fromDeal ? { staffName: fromDeal } : {};
 }
 
@@ -1368,7 +1368,7 @@ function orgNameBare(org: { name?: string; short_name?: string; director?: strin
 }
 
 /** Подстановка реквизитов в текст бланка ({{макросы}} + эвристика по пропускам). */
-export function fillStoTemplateText(raw: string, ctx: StoFillContext): string {
+export async function fillStoTemplateText(raw: string, ctx: StoFillContext): Promise<string> {
   let text = raw
     .replace(/\u2028/g, '\n')
     .replace(/\r\n/g, '\n')
@@ -1384,7 +1384,7 @@ export function fillStoTemplateText(raw: string, ctx: StoFillContext): string {
   let companyCode = '';
   const companyId = org ? String((org as { company_id?: string }).company_id || '').trim() : '';
   if (companyId) {
-    const crow = get<{ code?: string }>(`SELECT code FROM companies WHERE id = ? LIMIT 1`, [companyId]);
+    const crow = await get<{ code?: string }>(`SELECT code FROM companies WHERE id = ? LIMIT 1`, [companyId]);
     companyCode = String(crow?.code || '');
   }
   const siteId = resolveStoSiteId({
@@ -1624,12 +1624,12 @@ export function fillStoTemplateText(raw: string, ctx: StoFillContext): string {
     '{{Сумма}}': totalSum > 0 ? moneyRu(totalSum) : '',
     '{{СуммаПрописью}}': '',
     '{{СрокНачала}}': dateLine,
-    '{{ГарантияРаботы}}': formatWarrantyWorksTerm(),
-    '{{ГарантияЗЧ}}': formatWarrantyGoodsSummary(org?.inn),
-    '{{ТаблицаГарантии}}': formatWarrantyTableText({ sellerInn: org?.inn }),
+    '{{ГарантияРаботы}}': await formatWarrantyWorksTerm(),
+    '{{ГарантияЗЧ}}': await formatWarrantyGoodsSummary(org?.inn),
+    '{{ТаблицаГарантии}}': await formatWarrantyTableText({ sellerInn: org?.inn }),
     '{{ГарантияРейки}}': formatSteeringRackLegalClause(org?.inn),
-    '{{ТаблицаГарантииРейки}}': formatSteeringRackTableBlock(org?.inn, 'с даты выдачи АМТС'),
-    '{{ТаблицаГарантииРейкиЮр}}': formatSteeringRackTableBlock(org?.inn, 'с даты подписания раздела 10'),
+    '{{ТаблицаГарантииРейки}}': await formatSteeringRackTableBlock(org?.inn, 'с даты выдачи АМТС'),
+    '{{ТаблицаГарантииРейкиЮр}}': await formatSteeringRackTableBlock(org?.inn, 'с даты подписания раздела 10'),
     '{{ТаблицаРабот}}': formatStoWorksTableText(workLines),
     '{{ТаблицаЗЧИсполнителя}}': formatStoPartsTableText(partLines),
     '{{ТаблицаЗЧ}}': formatStoPartsTableText(partLines),
@@ -2125,21 +2125,21 @@ function stoFilledTextToHtmlBody(bodyText: string): string {
     .join('\n');
 }
 
-export function renderStoTemplateHtml(
+export async function renderStoTemplateHtml(
   id: string,
   ctx: StoFillContext = {},
   opts?: { title?: string }
-): string | null {
+): Promise<string | null> {
   const meta = getStoDocTemplate(id);
   const raw = readStoTemplateText(id);
   if (!meta || raw == null) return null;
   if (id === STO_WORKORDER_PERSON) {
-    return renderStoWorkorderPersonHtml(meta, ctx, opts);
+    return await renderStoWorkorderPersonHtml(meta, ctx, opts);
   }
   if (id === STO_WORKORDER_LEGAL) {
-    return renderStoWorkorderLegalHtml(meta, ctx, opts);
+    return await renderStoWorkorderLegalHtml(meta, ctx, opts);
   }
-  const filled = fillStoTemplateText(raw, ctx);
+  const filled = await fillStoTemplateText(raw, ctx);
   // ПДн: вёрстка только в DOCX → PDF; HTML-превью — простой текст, без старой таблицы.
   if (id === STO_PDN_CONSENT) {
     const title = opts?.title || meta.title;

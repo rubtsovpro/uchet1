@@ -378,7 +378,7 @@ export function matchImportRows(
   let willCreate = 0;
   let errors = 0;
 
-  rows.forEach((src, idx) => {
+  rows.forEach(async (src, idx) => {
     const rawArt = String(src.article || src.sku || '').trim();
     const { sku, normalized_from } = normalizeImportSku(rawArt);
     const qty = num(src.qty);
@@ -417,8 +417,8 @@ export function matchImportRows(
       return;
     }
 
-    let hit = findProductByAnySku(sku);
-    if (!hit && normalized_from) hit = findProductByAnySku(normalized_from);
+    let hit = await findProductByAnySku(sku);
+    if (!hit && normalized_from) hit = await findProductByAnySku(normalized_from);
     if (hit) {
       matched++;
       matchedRows.push({
@@ -445,7 +445,7 @@ export function matchImportRows(
       create_from_sku: fromSku,
       name:
         base.name ||
-        (fromSku ? findProductByAnySku(fromSku)?.name || sku : sku),
+        (fromSku ? (await findProductByAnySku(fromSku))?.name || sku : sku),
     });
   });
 
@@ -459,22 +459,22 @@ export function matchImportRows(
   };
 }
 
-export function applyImportToSupplierOrder(input: {
+export async function applyImportToSupplierOrder(input: {
   order_id: string;
   rows: ImportSourceRow[];
   create_missing?: boolean;
   minimal_cards?: boolean;
   append?: boolean;
   allocate_marks?: boolean;
-}): {
-  order: NonNullable<ReturnType<typeof getThinJournalDoc>>;
-  preview: ReturnType<typeof matchImportRows>;
+}): Promise<{
+  order: NonNullable<Awaited<ReturnType<typeof getThinJournalDoc>>>;
+  preview: Awaited<ReturnType<typeof matchImportRows>>;
   created_products: Array<{ sku: string; id: string; created: boolean }>;
   skipped_unmatched: Array<{ article: string; error?: string }>;
-} {
+}> {
   const orderId = String(input.order_id || '').trim();
   if (!orderId) throw new Error('order_id обязателен');
-  const existing = getThinJournalDoc('supplier_orders', orderId);
+  const existing = await getThinJournalDoc('supplier_orders', orderId);
   if (!existing) throw new Error('Заказ поставщику не найден');
 
   const preview = matchImportRows(input.rows, {
@@ -492,7 +492,7 @@ export function applyImportToSupplierOrder(input: {
     let productId = row.product_id;
     let name = row.product_name || row.name || row.article;
     if (!productId && row.status === 'will_create') {
-      const r = cloneProductFrom({
+      const r = await cloneProductFrom({
         new_sku: row.article,
         from_sku: row.create_from_sku,
         old_sku: row.old_sku || row.create_from_sku,
@@ -502,7 +502,7 @@ export function applyImportToSupplierOrder(input: {
       name = r.product.name;
       created_products.push({ sku: r.product.sku, id: r.product.id, created: r.created });
     } else if (productId && row.old_sku) {
-      ensureOldSkuOnCard(productId, row.old_sku);
+      await ensureOldSkuOnCard(productId, row.old_sku);
     }
     if (!productId) throw new Error(`Нет product_id для ${row.article}`);
     lines.push({
@@ -536,7 +536,7 @@ export function applyImportToSupplierOrder(input: {
     );
   }
 
-  const order = replaceThinSupplierOrderLines(orderId, lines, {
+  const order = await replaceThinSupplierOrderLines(orderId, lines, {
     append: !!input.append,
     allocate_marks: !!input.allocate_marks,
   });
@@ -674,7 +674,7 @@ export function mountSupplierOrderImportRoutes(api: Hono): void {
         });
       }
       if (!rows.length) return c.json({ error: 'Нет строк для загрузки' }, 400);
-      const r = applyImportToSupplierOrder({
+      const r = await applyImportToSupplierOrder({
         order_id: id,
         rows,
         // Из заказа поставщику номенклатуру не создаём — только существующие артикулы.

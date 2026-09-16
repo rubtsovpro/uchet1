@@ -31,9 +31,9 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function loadQueue(): AmoLeadNoteQueueItem[] {
+async function loadQueue(): Promise<AmoLeadNoteQueueItem[]> {
   const raw = String(
-    get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [QUEUE_KEY])?.value || ''
+    (await get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [QUEUE_KEY]))?.value || ''
   ).trim();
   if (!raw) return [];
   try {
@@ -61,8 +61,8 @@ function loadQueue(): AmoLeadNoteQueueItem[] {
   }
 }
 
-function saveQueue(items: AmoLeadNoteQueueItem[]): void {
-  run(
+async function saveQueue(items: AmoLeadNoteQueueItem[]): Promise<void> {
+  await run(
     `INSERT INTO meta (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     [QUEUE_KEY, JSON.stringify(items)]
@@ -85,23 +85,23 @@ function nextDelaySec(attempts: number, error: string): number {
 }
 
 /** Поставить в очередь (дедуп: та же сделка + тот же текст). */
-export function enqueueAmoLeadNote(opts: {
+export async function enqueueAmoLeadNote(opts: {
   dealId: string;
   text: string;
   kind?: 'note' | 'task';
   delaySec?: number;
   error?: string;
-}): AmoLeadNoteQueueItem | null {
+}): Promise<AmoLeadNoteQueueItem | null> {
   const dealId = String(opts.dealId || '').replace(/\D/g, '');
   const text = String(opts.text || '').trim();
   if (!dealId || !text) return null;
   const kind = opts.kind === 'task' ? 'task' : 'note';
-  const q = loadQueue();
+  const q = await loadQueue();
   const existing = q.find((x) => x.deal_id === dealId && x.text === text && x.kind === kind);
   if (existing) {
     if (opts.error) existing.last_error = String(opts.error).slice(0, 400);
     existing.updated_at = nowIso();
-    saveQueue(q);
+    await saveQueue(q);
     return existing;
   }
   const delay = Math.max(5, Number(opts.delaySec) || 30);
@@ -117,19 +117,19 @@ export function enqueueAmoLeadNote(opts: {
     updated_at: nowIso(),
   };
   q.push(item);
-  saveQueue(q);
+  await saveQueue(q);
   console.warn(
     `[amo-note-queue] enqueued deal=${dealId} kind=${kind} delay=${delay}s · ${text.slice(0, 80)}`
   );
   return item;
 }
 
-export function amoLeadNoteQueueSize(): number {
-  return loadQueue().length;
+export async function amoLeadNoteQueueSize(): Promise<number> {
+  return (await loadQueue()).length;
 }
 
-export function listAmoLeadNoteQueue(): AmoLeadNoteQueueItem[] {
-  return loadQueue();
+export async function listAmoLeadNoteQueue(): Promise<AmoLeadNoteQueueItem[]> {
+  return await loadQueue();
 }
 
 /**
@@ -141,7 +141,7 @@ export async function drainAmoLeadNoteQueue(opts?: {
   sendTask?: QueueSendFn;
 }): Promise<{ sent: number; deferred: number; dropped: number; left: number }> {
   if (drainBusy) {
-    return { sent: 0, deferred: 0, dropped: 0, left: loadQueue().length };
+    return { sent: 0, deferred: 0, dropped: 0, left: (await loadQueue()).length };
   }
   drainBusy = true;
   let sent = 0;
@@ -154,7 +154,7 @@ export async function drainAmoLeadNoteQueue(opts?: {
       await new Promise((r) => setTimeout(r, gapLeft));
     }
 
-    let q = loadQueue();
+    let q = await loadQueue();
     const now = Date.now();
     const due = q
       .filter((x) => Date.parse(x.next_at) <= now)
@@ -168,14 +168,14 @@ export async function drainAmoLeadNoteQueue(opts?: {
         continue;
       }
       const result = await send(item);
-      q = loadQueue();
+      q = await loadQueue();
       const idx = q.findIndex((x) => x.id === item.id);
       if (idx < 0) continue;
 
       if (result.ok) {
         q.splice(idx, 1);
         sent += 1;
-        saveQueue(q);
+        await saveQueue(q);
         console.log(`[amo-note-queue] sent deal=${item.deal_id} · ${item.text.slice(0, 80)}`);
         continue;
       }
@@ -185,7 +185,7 @@ export async function drainAmoLeadNoteQueue(opts?: {
       if (attempts >= MAX_ATTEMPTS) {
         q.splice(idx, 1);
         dropped += 1;
-        saveQueue(q);
+        await saveQueue(q);
         console.error(
           `[amo-note-queue] dropped deal=${item.deal_id} after ${attempts} · ${err.slice(0, 160)}`
         );
@@ -200,7 +200,7 @@ export async function drainAmoLeadNoteQueue(opts?: {
         updated_at: nowIso(),
       };
       deferred += 1;
-      saveQueue(q);
+      await saveQueue(q);
       console.warn(
         `[amo-note-queue] retry deal=${item.deal_id} in ${delay}s (try ${attempts}) · ${err.slice(0, 120)}`
       );
@@ -208,7 +208,7 @@ export async function drainAmoLeadNoteQueue(opts?: {
       if (/лимит|429|блокировк|rate.?limit|повтор через/i.test(err)) break;
     }
 
-    return { sent, deferred, dropped, left: loadQueue().length };
+    return { sent, deferred, dropped, left: (await loadQueue()).length };
   } finally {
     drainBusy = false;
   }

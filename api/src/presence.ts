@@ -7,13 +7,13 @@ import type { ClientMeta } from './client-meta.js';
 
 const ONLINE_SEC = 120;
 
-export function touchPresence(input: {
+export async function touchPresence(input: {
   actor: Actor;
   path?: string;
   title?: string;
   section?: string;
   client?: Partial<ClientMeta>;
-}): void {
+}): Promise<void> {
   const actor = input.actor;
   if (!actor?.id) return;
   const path = String(input.path || '').slice(0, 300);
@@ -27,7 +27,7 @@ export function touchPresence(input: {
   const device = String(c.device || '').slice(0, 40);
   const region = String(c.region || '').slice(0, 200);
   const country = String(c.country || '').slice(0, 80);
-  run(
+  await run(
     `INSERT INTO user_presence (
        actor_id, actor_name, role, path, title, section, last_seen,
        client_ip, user_agent, os, browser, device, region, country
@@ -82,13 +82,13 @@ export type PresenceRow = {
   country: string;
 };
 
-export function listOnlinePresence(): PresenceRow[] {
-  run(
+export async function listOnlinePresence(): Promise<PresenceRow[]> {
+  await run(
     `DELETE FROM user_presence
      WHERE datetime(last_seen) < datetime('now', ?)`,
     [`-${ONLINE_SEC * 3} seconds`]
   );
-  const rows = all<PresenceRow>(
+  const rows = await all<PresenceRow>(
     `SELECT actor_id, actor_name, role, path, title, section, last_seen,
             CAST((julianday('now') - julianday(last_seen)) * 86400 AS INTEGER) AS seconds_ago,
             COALESCE(client_ip, '') AS client_ip,
@@ -116,8 +116,8 @@ export function listOnlinePresence(): PresenceRow[] {
   }));
 }
 
-export function clearPresence(actorId: string): void {
+export async function clearPresence(actorId: string): Promise<void> {
   const id = String(actorId || '').trim();
   if (!id) return;
-  run('DELETE FROM user_presence WHERE actor_id = ?', [id]);
+  await run('DELETE FROM user_presence WHERE actor_id = ?', [id]);
 }

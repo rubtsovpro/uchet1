@@ -35,8 +35,8 @@ function sanitizeMarks(raw: unknown): Record<string, HelpLcMarkColor> {
   return out;
 }
 
-function readStored(): Stored {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
+async function readStored(): Promise<Stored> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
   if (!row?.value) {
     return { marks: {}, updated_at: null, updated_by: null, updated_by_name: null };
   }
@@ -62,24 +62,24 @@ function readStored(): Stored {
   }
 }
 
-function writeStored(next: Stored): void {
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(next)]);
+async function writeStored(next: Stored): Promise<void> {
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(next)]);
 }
 
-export function getHelpLcMarks(): Stored {
-  return readStored();
+export async function getHelpLcMarks(): Promise<Stored> {
+  return await readStored();
 }
 
-export function putHelpLcMarks(
+export async function putHelpLcMarks(
   marksRaw: unknown,
   actor: { id: string; name: string } | null
-): Stored {
+): Promise<Stored> {
   const next: Stored = {
     marks: sanitizeMarks(marksRaw),
     updated_at: new Date().toISOString(),
     updated_by: actor?.id || null,
     updated_by_name: actor?.name || null,
   };
-  writeStored(next);
+  await writeStored(next);
   return next;
 }

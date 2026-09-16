@@ -31,23 +31,23 @@ export type DocLineInput = {
   apps?: Array<{ mark?: string; model?: string; generation?: string; years?: string }> | string;
 };
 
-export function isServiceProduct(productId: string): boolean {
-  return productIsService(productId);
+export async function isServiceProduct(productId: string): Promise<boolean> {
+  return await productIsService(productId);
 }
 
-export function nextDocNumber(docType: DocType): string {
+export async function nextDocNumber(docType: DocType): Promise<string> {
   const prefix =
     docType === 'in' ? 'IN' : docType === 'out' ? 'OUT' : docType === 'return' ? 'RET' : 'TR';
-  return nextCode(prefix, 5);
+  return await nextCode(prefix, 5);
 }
 
-export function applyStockDelta(
+export async function applyStockDelta(
   warehouseId: string,
   productId: string,
   delta: number,
   opts?: { ignoreInsufficient?: boolean }
-): void {
-  const existing = get<{ qty: number }>(
+): Promise<void> {
+  const existing = await get<{ qty: number }>(
     'SELECT qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?',
     [warehouseId, productId]
   );
@@ -56,7 +56,7 @@ export function applyStockDelta(
       if (opts?.ignoreInsufficient) return;
       throw new Error('Недостаточно остатка');
     }
-    run(
+    await run(
       'INSERT INTO stock_balances (warehouse_id, product_id, qty) VALUES (?, ?, ?)',
       [warehouseId, productId, delta]
     );
@@ -65,7 +65,7 @@ export function applyStockDelta(
   const next = Number(existing.qty) + delta;
   if (next < -0.0001) {
     if (opts?.ignoreInsufficient) {
-      run(
+      await run(
         'UPDATE stock_balances SET qty = 0 WHERE warehouse_id = ? AND product_id = ?',
         [warehouseId, productId]
       );
@@ -73,29 +73,29 @@ export function applyStockDelta(
     }
     throw new Error('Недостаточно остатка');
   }
-  run(
+  await run(
     'UPDATE stock_balances SET qty = ? WHERE warehouse_id = ? AND product_id = ?',
     [next, warehouseId, productId]
   );
 }
 
-function applyDelta(
+async function applyDelta(
   warehouseId: string,
   productId: string,
   delta: number,
   opts?: { ignoreInsufficient?: boolean }
-): void {
-  applyStockDelta(warehouseId, productId, delta, opts);
+): Promise<void> {
+  await applyStockDelta(warehouseId, productId, delta, opts);
 }
 
-function validateLineSerials(
+async function validateLineSerials(
   productId: string,
   qty: number,
   serials: string[],
   mode: 'in' | 'out' | 'transfer',
   opts?: { serialsOptional?: boolean }
-): void {
-  const tracked = productRequiresSerials(productId);
+): Promise<void> {
+  const tracked = await productRequiresSerials(productId);
   if (tracked && !serials.length && !opts?.serialsOptional) {
     throw new Error('Для товара с серийным учётом укажите серийные номера (по одному на штуку)');
   }
@@ -119,11 +119,11 @@ function lineWarehouse(
   return w || docWh;
 }
 
-export function postDocument(
+export async function postDocument(
   docId: string,
   opts?: { serialsOptional?: boolean; ignoreStock?: boolean }
-): void {
-  const doc = get<{
+): Promise<void> {
+  const doc = await get<{
     id: string;
     doc_type: DocType;
     posted: number;
@@ -133,7 +133,7 @@ export function postDocument(
   if (!doc) throw new Error('Документ не найден');
   if (doc.posted) throw new Error('Уже проведён');
 
-  const lines = all<{
+  const lines = await all<{
     id: string;
     product_id: string;
     qty: number;
@@ -153,13 +153,13 @@ export function postDocument(
   const ignoreStock = !!opts?.ignoreStock;
   const deltaOpts = ignoreStock ? { ignoreInsufficient: true } : undefined;
   const supplierId = String(
-    get<{ counterparty_id: string | null }>(
+    (await get<{ counterparty_id: string | null }>(
       `SELECT counterparty_id FROM stock_docs WHERE id = ?`,
       [docId]
-    )?.counterparty_id || ''
+    ))?.counterparty_id || ''
   ).trim();
 
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const line of lines) {
       const qty = Number(line.qty);
@@ -168,9 +168,9 @@ export function postDocument(
       const wh = lineWarehouse(line.warehouse_id, doc.warehouse_id);
       if (!wh) throw new Error('Не указан склад строки');
       if (doc.doc_type === 'in' || doc.doc_type === 'return') {
-        validateLineSerials(line.product_id, qty, serials, 'in', { serialsOptional });
+        await validateLineSerials(line.product_id, qty, serials, 'in', { serialsOptional });
         if (doc.doc_type === 'in') {
-          const pls = all<{ cell_code: string; qty: number; warehouse_id: string }>(
+          const pls = await all<{ cell_code: string; qty: number; warehouse_id: string }>(
             `SELECT cell_code, qty, IFNULL(warehouse_id,'') AS warehouse_id
              FROM stock_doc_line_placements WHERE doc_id = ? AND line_id = ?`,
             [docId, line.id]
@@ -191,15 +191,15 @@ export function postDocument(
               );
             }
             for (const [pWh, pQty] of byWh) {
-              applyDelta(pWh, line.product_id, pQty, deltaOpts);
+              await applyDelta(pWh, line.product_id, pQty, deltaOpts);
             }
           } else {
-            applyDelta(wh, line.product_id, qty, deltaOpts);
+            await applyDelta(wh, line.product_id, qty, deltaOpts);
           }
         } else {
-          applyDelta(wh, line.product_id, qty, deltaOpts);
+          await applyDelta(wh, line.product_id, qty, deltaOpts);
         }
-        receiveUnits({
+        await receiveUnits({
           productId: line.product_id,
           warehouseId: wh,
           serials,
@@ -210,10 +210,10 @@ export function postDocument(
         });
       } else if (doc.doc_type === 'out') {
         // Услуги в УПД есть, на складе не списываем
-        if (isServiceProduct(line.product_id)) continue;
-        validateLineSerials(line.product_id, qty, serials, 'out', { serialsOptional });
-        applyDelta(wh, line.product_id, -qty, deltaOpts);
-        shipUnits({
+        if (await isServiceProduct(line.product_id)) continue;
+        await validateLineSerials(line.product_id, qty, serials, 'out', { serialsOptional });
+        await applyDelta(wh, line.product_id, -qty, deltaOpts);
+        await shipUnits({
           productId: line.product_id,
           warehouseId: wh,
           serials,
@@ -222,10 +222,10 @@ export function postDocument(
         });
       } else {
         if (!doc.warehouse_to_id) throw new Error('Не указан склад-получатель');
-        validateLineSerials(line.product_id, qty, serials, 'transfer', { serialsOptional });
-        applyDelta(wh, line.product_id, -qty, deltaOpts);
-        applyDelta(doc.warehouse_to_id, line.product_id, qty, deltaOpts);
-        transferUnits({
+        await validateLineSerials(line.product_id, qty, serials, 'transfer', { serialsOptional });
+        await applyDelta(wh, line.product_id, -qty, deltaOpts);
+        await applyDelta(doc.warehouse_to_id, line.product_id, qty, deltaOpts);
+        await transferUnits({
           productId: line.product_id,
           warehouseFrom: wh,
           warehouseTo: doc.warehouse_to_id,
@@ -236,19 +236,19 @@ export function postDocument(
       }
     }
     // posted=1 до ячеек: applyInboundPlacementsForDoc требует проведённый документ
-    run('UPDATE stock_docs SET posted = 1 WHERE id = ?', [docId]);
+    await run('UPDATE stock_docs SET posted = 1 WHERE id = ?', [docId]);
     if (doc.doc_type === 'in') {
-      applyInboundPlacementsForDoc(docId);
+      await applyInboundPlacementsForDoc(docId);
     }
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
-    run('ROLLBACK');
+    await run('ROLLBACK');
     throw e;
   }
   invalidateStockValuationCache();
 }
 
-export function createDocument(input: {
+export async function createDocument(input: {
   doc_type: DocType;
   warehouse_id?: string | null;
   warehouse_to_id?: string | null;
@@ -267,14 +267,14 @@ export function createDocument(input: {
   ignore_stock?: boolean;
   lines: DocLineInput[];
   post?: boolean;
-}): string {
+}): Promise<string> {
   const id = newGuid();
   const docDate = new Date().toISOString().slice(0, 10);
-  const organizationId = resolveOrganizationId(input.organization_id);
+  const organizationId = await resolveOrganizationId(input.organization_id);
   // Расходная = списание со склада: услуги в документ не кладём (они в УПД)
   const lines =
     input.doc_type === 'out'
-      ? input.lines.filter((l) => !isServiceProduct(String(l.product_id || '')))
+      ? input.lines.filter(async (l) => !await isServiceProduct(String(l.product_id || '')))
       : input.lines;
   if (input.doc_type === 'out' && !lines.length) {
     throw new Error('Нет товаров для списания (услуги в расходную не входят — только в УПД)');
@@ -309,18 +309,18 @@ export function createDocument(input: {
     !dealId &&
     (/Спуск на СТО|СРОЧНО на СТО|Передача на склад/i.test(commentStr) ||
       (input.doc_type === 'transfer' &&
-        isDealFlowWarehouseId(String(input.warehouse_id || '')) &&
-        isDealFlowWarehouseId(String(input.warehouse_to_id || ''))))
+        await isDealFlowWarehouseId(String(input.warehouse_id || '')) &&
+        await isDealFlowWarehouseId(String(input.warehouse_to_id || ''))))
   ) {
     throw new Error('Спуск / передача на склад только по сделке (заказу покупателя)');
   }
   // Расходная по заказу: Р{номер сделки Amo}; иначе старая серия OUT…
   const number =
     input.doc_type === 'out' && dealId
-      ? outNumberFromDeal(dealId)
-      : nextDocNumber(input.doc_type);
+      ? await outNumberFromDeal(dealId)
+      : await nextDocNumber(input.doc_type);
 
-  run(
+  await run(
     `INSERT INTO stock_docs
       (id, doc_type, number, doc_date, warehouse_id, warehouse_to_id, counterparty_id, comment, posted, organization_id, deal_id, basis_order_id, source_supplier_order_id, supply_number)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
@@ -349,7 +349,7 @@ export function createDocument(input: {
     let price = Math.max(0, Number(line.price) || 0);
     // Возврат: если цена не передана — берём цену последней продажи
     if (input.doc_type === 'return' && !(price > 0)) {
-      const sale = getLastSalePrice({
+      const sale = await getLastSalePrice({
         productId: String(line.product_id || ''),
         serial: serials[0] || '',
         dealId,
@@ -361,26 +361,26 @@ export function createDocument(input: {
     if (input.doc_type === 'return') returnSerials.push(...serials);
     const lineWh = String(line.warehouse_id || '').trim() || resolvedHeader;
     const appsJson = appsToJson(parseAppsJson(line.apps));
-    run(
+    await run(
       `INSERT INTO stock_doc_lines (id, doc_id, product_id, qty, price, amount, serials_json, warehouse_id, apps_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [newGuid(), id, line.product_id, qty, price, amount, JSON.stringify(serials), lineWh, appsJson]
     );
   }
   if (docAmount > 0) {
-    run(`UPDATE stock_docs SET amount = ? WHERE id = ?`, [docAmount, id]);
+    await run(`UPDATE stock_docs SET amount = ? WHERE id = ?`, [docAmount, id]);
   }
   if (input.post !== false) {
     try {
-      postDocument(id, {
+      await postDocument(id, {
         serialsOptional: !!input.serials_optional,
         ignoreStock: !!input.ignore_stock,
       });
     } catch (e) {
       // Иначе остаются «висячие» TR после ошибки остатка (как у 25705967).
       try {
-        run('DELETE FROM stock_doc_lines WHERE doc_id = ?', [id]);
-        run('DELETE FROM stock_docs WHERE id = ?', [id]);
+        await run('DELETE FROM stock_doc_lines WHERE doc_id = ?', [id]);
+        await run('DELETE FROM stock_docs WHERE id = ?', [id]);
       } catch {
         /* ignore cleanup */
       }
@@ -390,7 +390,7 @@ export function createDocument(input: {
   if (input.doc_type === 'return' && docAmount > 0) {
     let buyerName = '';
     if (dealId) {
-      const d = get<{ buyer_name: string; company_name: string; name: string }>(
+      const d = await get<{ buyer_name: string; company_name: string; name: string }>(
         `SELECT IFNULL(buyer_name,'') AS buyer_name, IFNULL(company_name,'') AS company_name,
                 IFNULL(name,'') AS name
          FROM crm_deals WHERE id = ?`,
@@ -400,11 +400,11 @@ export function createDocument(input: {
     }
     if (!buyerName && input.counterparty_id) {
       buyerName =
-        get<{ name: string }>(`SELECT name FROM counterparties WHERE id = ?`, [
+        (await get<{ name: string }>(`SELECT name FROM counterparties WHERE id = ?`, [
           input.counterparty_id,
-        ])?.name || '';
+        ]))?.name || '';
     }
-    createMoneyRefundFromReturn({
+    await createMoneyRefundFromReturn({
       stockDocId: id,
       stockDocNumber: number,
       amount: docAmount,
@@ -420,15 +420,15 @@ export function createDocument(input: {
 
 /** --- Марки (Data Matrix) для складских приходов без заказа поставщику --- */
 
-function stockSerialTaken(serial: string, excludeDocId?: string): boolean {
+async function stockSerialTaken(serial: string, excludeDocId?: string): Promise<boolean> {
   const s = String(serial || '').trim();
   if (!s) return true;
-  if (get<{ id: string }>(`SELECT id FROM product_units WHERE lower(serial) = lower(?) LIMIT 1`, [s])) {
+  if (await get<{ id: string }>(`SELECT id FROM product_units WHERE lower(serial) = lower(?) LIMIT 1`, [s])) {
     return true;
   }
   try {
     if (
-      get<{ id: string }>(
+      await get<{ id: string }>(
         `SELECT id FROM supplier_order_units WHERE lower(serial) = lower(?) LIMIT 1`,
         [s]
       )
@@ -446,12 +446,12 @@ function stockSerialTaken(serial: string, excludeDocId?: string): boolean {
       .replace(/"/g, '');
     const like = `%"${safe}"%`;
     const hit = excludeDocId
-      ? get<{ id: string }>(
+      ? await get<{ id: string }>(
           `SELECT l.doc_id AS id FROM stock_doc_lines l
            WHERE l.doc_id != ? AND IFNULL(l.serials_json,'') LIKE ? ESCAPE '\\' LIMIT 1`,
           [excludeDocId, like]
         )
-      : get<{ id: string }>(
+      : await get<{ id: string }>(
           `SELECT l.doc_id AS id FROM stock_doc_lines l
            WHERE IFNULL(l.serials_json,'') LIKE ? ESCAPE '\\' LIMIT 1`,
           [like]
@@ -468,7 +468,7 @@ function stockSerialTaken(serial: string, excludeDocId?: string): boolean {
       .replace(/"/g, '');
     const like = `%"${safe}"%`;
     if (
-      get<{ id: string }>(
+      await get<{ id: string }>(
         `SELECT id FROM thin_journal_docs WHERE IFNULL(payload_json,'') LIKE ? ESCAPE '\\' LIMIT 1`,
         [like]
       )
@@ -481,16 +481,16 @@ function stockSerialTaken(serial: string, excludeDocId?: string): boolean {
   return false;
 }
 
-function stockNextUniqueBarcode(
+async function stockNextUniqueBarcode(
   prefixRaw: string,
   usedInDoc: Set<string>,
   excludeDocId?: string
-): string {
+): Promise<string> {
   for (let attempt = 0; attempt < 80; attempt++) {
-    const code = nextBarcode(prefixRaw);
+    const code = await nextBarcode(prefixRaw);
     const key = code.toLowerCase();
     if (usedInDoc.has(key)) continue;
-    if (stockSerialTaken(code, excludeDocId)) continue;
+    if (await stockSerialTaken(code, excludeDocId)) continue;
     usedInDoc.add(key);
     return code;
   }
@@ -498,16 +498,16 @@ function stockNextUniqueBarcode(
 }
 
 /** Выдать N новых марок без привязки к документу (для формы «Новый приход»). */
-export function previewStockMarks(opts?: { count?: number; prefix?: string }): {
+export async function previewStockMarks(opts?: { count?: number; prefix?: string }): Promise<{
   serials: string[];
   prefix: string;
-} {
+}> {
   const count = Math.min(500, Math.max(1, Math.round(Number(opts?.count) || 1)));
   const prefix = String(opts?.prefix || 'DM').trim() || 'DM';
   const used = new Set<string>();
   const serials: string[] = [];
   for (let i = 0; i < count; i++) {
-    serials.push(stockNextUniqueBarcode(prefix, used));
+    serials.push(await stockNextUniqueBarcode(prefix, used));
   }
   return { serials, prefix };
 }
@@ -519,13 +519,13 @@ export type StockDocDmLabel = {
   line_no: number;
 };
 
-export function stockDocDmLabels(docId: string): {
+export async function stockDocDmLabels(docId: string): Promise<{
   number: string;
   counterparty_name: string;
   doc_type: string;
   labels: StockDocDmLabel[];
-} | null {
-  const doc = get<{
+} | null> {
+  const doc = await get<{
     id: string;
     number: string;
     doc_type: string;
@@ -533,9 +533,9 @@ export function stockDocDmLabels(docId: string): {
   }>('SELECT id, number, doc_type, counterparty_id FROM stock_docs WHERE id = ?', [docId]);
   if (!doc) return null;
   const cp = doc.counterparty_id
-    ? get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [doc.counterparty_id])
+    ? await get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [doc.counterparty_id])
     : null;
-  const lines = all<{
+  const lines = await all<{
     id: string;
     product_id: string;
     qty: number;
@@ -557,7 +557,7 @@ export function stockDocDmLabels(docId: string): {
   for (const line of lines) {
     let serials = parseSerialsJson(line.serials_json);
     if (!serials.length) {
-      const fromUnits = all<{ serial: string }>(
+      const fromUnits = await all<{ serial: string }>(
         `SELECT serial FROM product_units
          WHERE in_doc_id = ? AND (in_line_id = ? OR in_line_id = '' OR in_line_id IS NULL)
            AND product_id = ?
@@ -593,8 +593,8 @@ function escapeHtmlMark(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-export function stockDocDmLabelsHtml(docId: string): string {
-  const data = stockDocDmLabels(docId);
+export async function stockDocDmLabelsHtml(docId: string): Promise<string> {
+  const data = await stockDocDmLabels(docId);
   if (!data) throw new Error('not found');
   const rows = data.labels
     .map((l) => {
@@ -620,8 +620,8 @@ export function stockDocDmLabelsHtml(docId: string): string {
 </style></head><body onload="window.print()">${rows || '<p>Нет марок — сначала сгенерируйте или укажите в приходе</p>'}</body></html>`;
 }
 
-export function stockDocDmExcelCsv(docId: string): string {
-  const data = stockDocDmLabels(docId);
+export async function stockDocDmExcelCsv(docId: string): Promise<string> {
+  const data = await stockDocDmLabels(docId);
   if (!data) throw new Error('not found');
   const esc = (s: string) => `"${String(s || '').replace(/"/g, '""')}"`;
   const lines = [
@@ -641,7 +641,7 @@ export function stockDocDmExcelCsv(docId: string): string {
 }
 
 export async function stockDocDmLabelsPdf(docId: string): Promise<Buffer> {
-  const data = stockDocDmLabels(docId);
+  const data = await stockDocDmLabels(docId);
   if (!data) throw new Error('not found');
   const PDFDocument = (await import('pdfkit')).default;
   const { renderDataMatrixPng } = await import('./datamatrix.js');
@@ -653,7 +653,7 @@ export async function stockDocDmLabelsPdf(docId: string): Promise<Buffer> {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
   });
-  drawOrgLogoPdf(doc, { width: 150, height: 22, gapBelow: 8 });
+  await drawOrgLogoPdf(doc, { width: 150, height: 22, gapBelow: 8 });
   doc.fontSize(14).text(`Марки · ${data.number}`, { continued: false });
   doc.fontSize(10).fillColor('#555').text(data.counterparty_name || '—');
   doc.moveDown(0.6);
@@ -703,18 +703,18 @@ export async function stockDocDmLabelsPdf(docId: string): Promise<Buffer> {
  * Догенерировать марки по строкам прихода.
  * Если документ уже проведён — новые марки сразу ставятся на остаток (product_units).
  */
-export function allocateStockDocDatamatrix(
+export async function allocateStockDocDatamatrix(
   docId: string,
   opts?: { prefix?: string; force?: boolean }
-): {
+): Promise<{
   id: string;
   number: string;
   dm_created: number;
   dm_replaced: number;
   dm_prefix: string;
   labels_count: number;
-} {
-  const doc = get<{
+}> {
+  const doc = await get<{
     id: string;
     number: string;
     doc_type: string;
@@ -727,7 +727,7 @@ export function allocateStockDocDatamatrix(
   }
   const prefix = String(opts?.prefix || 'DM').trim() || 'DM';
   const force = !!opts?.force;
-  const lines = all<{
+  const lines = await all<{
     id: string;
     product_id: string;
     qty: number;
@@ -745,7 +745,7 @@ export function allocateStockDocDatamatrix(
   let created = 0;
   let replaced = 0;
 
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const line of lines) {
       const qtyNum = Number(line.qty);
@@ -759,9 +759,9 @@ export function allocateStockDocDatamatrix(
           replaced += 1;
           continue;
         }
-        if (stockSerialTaken(s, docId)) {
+        if (await stockSerialTaken(s, docId)) {
           // уже наша единица этого документа — ок
-          const ours = get<{ id: string }>(
+          const ours = await get<{ id: string }>(
             `SELECT id FROM product_units WHERE lower(serial) = lower(?) AND in_doc_id = ? LIMIT 1`,
             [s, docId]
           );
@@ -774,25 +774,25 @@ export function allocateStockDocDatamatrix(
         serials.push(s);
       }
       while (serials.length < need) {
-        serials.push(stockNextUniqueBarcode(prefix, usedInDoc, docId));
+        serials.push(await stockNextUniqueBarcode(prefix, usedInDoc, docId));
         created += 1;
       }
-      run(`UPDATE stock_doc_lines SET serials_json = ? WHERE id = ?`, [
+      await run(`UPDATE stock_doc_lines SET serials_json = ? WHERE id = ?`, [
         JSON.stringify(serials),
         line.id,
       ]);
 
       if (doc.posted) {
         const already = new Set(
-          all<{ serial: string }>(
+          (await all<{ serial: string }>(
             `SELECT serial FROM product_units WHERE in_doc_id = ? AND in_line_id = ?`,
             [docId, line.id]
-          ).map((u) => u.serial.toLowerCase())
+          )).map((u) => u.serial.toLowerCase())
         );
         const toReceive = serials.filter((s) => !already.has(s.toLowerCase()));
         if (toReceive.length) {
           const wh = String(line.warehouse_id || '').trim() || doc.warehouse_id;
-          receiveUnits({
+          await receiveUnits({
             productId: line.product_id,
             warehouseId: wh,
             serials: toReceive,
@@ -802,13 +802,13 @@ export function allocateStockDocDatamatrix(
         }
       }
     }
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
-    run('ROLLBACK');
+    await run('ROLLBACK');
     throw e;
   }
 
-  const labels = stockDocDmLabels(docId);
+  const labels = await stockDocDmLabels(docId);
   return {
     id: doc.id,
     number: doc.number,
@@ -847,17 +847,17 @@ function isDealFlowWarehouse(w: { code?: string } | null | undefined): boolean {
   return code === 'STO' || /^STO-RSV/.test(code) || /^STO-RES/.test(code) || code === 'COURIER';
 }
 
-function isDealFlowWarehouseId(warehouseId: string): boolean {
+async function isDealFlowWarehouseId(warehouseId: string): Promise<boolean> {
   const id = String(warehouseId || '').trim();
   if (!id) return false;
-  const row = get<{ code: string }>(
+  const row = await get<{ code: string }>(
     `SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`,
     [id]
   );
   return isDealFlowWarehouse(row);
 }
 
-export function createTransferRequestFromBalances(input: {
+export async function createTransferRequestFromBalances(input: {
   warehouseFromId: string;
   warehouseToId: string;
   comment?: string;
@@ -867,7 +867,7 @@ export function createTransferRequestFromBalances(input: {
   deal_id?: string;
   /** Явные строки: product_id + qty. Без списка — ошибка (нельзя «всё молча»). */
   lines?: Array<{ product_id?: string; qty?: number }>;
-}): {
+}): Promise<{
   id: string;
   number: string;
   lines: number;
@@ -879,18 +879,18 @@ export function createTransferRequestFromBalances(input: {
   from_label: string;
   to_label: string;
   deal_id: string;
-} {
+}> {
   const fromId = String(input.warehouseFromId || '').trim();
   const toId = String(input.warehouseToId || '').trim();
   if (!fromId) throw new Error('Укажите склад-источник');
   if (!toId) throw new Error('Укажите склад-получатель');
   if (fromId === toId) throw new Error('Склад-получатель должен отличаться от источника');
 
-  const fromWh = get<{ id: string; code: string; name: string }>(
+  const fromWh = await get<{ id: string; code: string; name: string }>(
     `SELECT id, IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
     [fromId]
   );
-  const toWh = get<{ id: string; code: string; name: string }>(
+  const toWh = await get<{ id: string; code: string; name: string }>(
     `SELECT id, IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
     [toId]
   );
@@ -909,7 +909,7 @@ export function createTransferRequestFromBalances(input: {
     );
   }
 
-  const balances = all<{ product_id: string; qty: number; sku: string; name: string }>(
+  const balances = await all<{ product_id: string; qty: number; sku: string; name: string }>(
     `SELECT x.product_id, SUM(x.qty) AS qty,
             IFNULL(MAX(p.sku),'') AS sku, IFNULL(MAX(p.name),'') AS name
      FROM (
@@ -958,7 +958,7 @@ export function createTransferRequestFromBalances(input: {
         `${row.sku || row.name}: нельзя ${wantQty}, на складе ${avail}`
       );
     }
-    const units = all<{ serial: string }>(
+    const units = await all<{ serial: string }>(
       `SELECT serial FROM product_units
        WHERE product_id = ? AND warehouse_id = ? AND status = 'in_stock'
          AND IFNULL(serial,'') != ''
@@ -967,7 +967,7 @@ export function createTransferRequestFromBalances(input: {
       [productId, fromId, Math.min(500, Math.ceil(wantQty) + 5)]
     );
     const serials = units.map((u) => u.serial).slice(0, Math.round(wantQty));
-    const tracked = productRequiresSerials(productId);
+    const tracked = await productRequiresSerials(productId);
     if (tracked && serials.length < Math.round(wantQty)) {
       missingSerials.push(
         `${row.sku || row.name || productId}: марок ${serials.length}/${Math.round(wantQty)}`
@@ -1000,7 +1000,7 @@ export function createTransferRequestFromBalances(input: {
     dealId ? ` · сделка ${dealId}` : ''
   }`;
 
-  const id = createDocument({
+  const id = await createDocument({
     doc_type: 'transfer',
     warehouse_id: fromId,
     warehouse_to_id: toId,
@@ -1011,7 +1011,7 @@ export function createTransferRequestFromBalances(input: {
     post: wantPost,
     serials_optional: !wantPost,
   });
-  const doc = get<{ number: string; posted: number }>(
+  const doc = await get<{ number: string; posted: number }>(
     `SELECT number, posted FROM stock_docs WHERE id = ?`,
     [id]
   );

@@ -5752,12 +5752,71 @@ button.bal-reserve-order-link:hover {
   padding: 16px 18px 14px;
 }
 .bal-adj-dialog {
-  width: min(520px, 100%);
+  width: min(640px, 100%);
 }
 .bal-adj-hint {
   margin: 0 0 12px;
   font-size: 12px;
   line-height: 1.45;
+}
+.bal-adj-cells-wrap {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+}
+.bal-adj-cells-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.bal-adj-cells-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.bal-adj-cells-tbl th,
+.bal-adj-cells-tbl td {
+  padding: 4px 6px;
+  border-bottom: 1px solid #eef2f7;
+  vertical-align: middle;
+}
+.bal-adj-cells-tbl th {
+  text-align: left;
+  font-weight: 600;
+  color: #64748b;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.bal-adj-cells-tbl th.num,
+.bal-adj-cells-tbl td.num {
+  text-align: right;
+  width: 88px;
+}
+.bal-adj-cells-tbl input {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.bal-adj-cells-tbl input.bal-adj-cell-qty {
+  text-align: right;
+  max-width: 88px;
+  margin-left: auto;
+  display: block;
+}
+.bal-adj-cells-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
 }
 .bal-adj-dialog .form-grid.bal-adj-grid {
   margin-bottom: 0;

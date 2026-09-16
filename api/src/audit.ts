@@ -55,7 +55,7 @@ function truncJson(v: unknown, max = 8000): string {
   }
 }
 
-export function writeAudit(input: AuditInput): void {
+export async function writeAudit(input: AuditInput): Promise<void> {
   const actor = input.actor;
   const actorId = String(actor?.id || '').trim();
   let actorName = String(actor?.name || '').trim();
@@ -68,7 +68,7 @@ export function writeAudit(input: AuditInput): void {
     else if (!actor) actorName = 'система';
     else actorName = 'сотрудник';
   }
-  run(
+  await run(
     `INSERT INTO audit_log
       (id, created_at, actor_id, actor_login, actor_name, action, entity, entity_id,
        summary, before_json, after_json, ip, user_agent, path, meta_json)
@@ -92,15 +92,15 @@ export function writeAudit(input: AuditInput): void {
   );
 }
 
-export function auditFromContext(
+export async function auditFromContext(
   c: Context,
   input: Omit<AuditInput, 'actor' | 'ip' | 'userAgent' | 'path'> & {
     actor?: Actor | null;
     path?: string;
     meta?: unknown;
   }
-): void {
-  const actor = input.actor !== undefined ? input.actor : actorFromContext(c);
+): Promise<void> {
+  const actor = input.actor !== undefined ? input.actor : await actorFromContext(c);
   const { ip, ua } = clientMetaFromContext(c);
   const path =
     input.path
@@ -112,7 +112,7 @@ export function auditFromContext(
         return '';
       }
     })();
-  writeAudit({
+  await writeAudit({
     ...input,
     actor,
     ip,
@@ -125,7 +125,7 @@ export function auditFromContext(
  * История по заказу покупателя: сделка + УПД/счета/ЗН + складские +
  * перемещения (sto_transfer_request_events) + задания складу по сделке.
  */
-export function listAuditForDeal(
+export async function listAuditForDeal(
   dealIdRaw: string,
   opts?: { page?: number; limit?: number }
 ) {
@@ -136,20 +136,20 @@ export function listAuditForDeal(
     return { items: [] as Row[], total: 0, page, limit, pages: 1 };
   }
 
-  const salesIds = all<{ id: string }>(
+  const salesIds = (await all<{ id: string }>(
     `SELECT id FROM sales_docs WHERE deal_id = ?`,
     [dealId]
-  ).map((r) => r.id);
-  const stockIds = all<{ id: string }>(
+  )).map((r) => r.id);
+  const stockIds = (await all<{ id: string }>(
     `SELECT id FROM stock_docs
      WHERE IFNULL(deal_id,'') = ? OR IFNULL(basis_order_id,'') = ?`,
     [dealId, dealId]
-  ).map((r) => r.id);
-  const taskIds = all<{ id: string }>(
+  )).map((r) => r.id);
+  const taskIds = (await all<{ id: string }>(
     `SELECT id FROM warehouse_tasks WHERE IFNULL(deal_id,'') = ?`,
     [dealId]
-  ).map((r) => r.id);
-  const transferReqs = all<{ id: string; number: string }>(
+  )).map((r) => r.id);
+  const transferReqs = await all<{ id: string; number: string }>(
     `SELECT id, IFNULL(number,'') AS number FROM sto_transfer_requests WHERE IFNULL(deal_id,'') = ?`,
     [dealId]
   );
@@ -176,17 +176,17 @@ export function listAuditForDeal(
   params.push(`%С${dealId}%`, `%П${dealId}%`);
 
   const whereSql = `WHERE ${orParts.join(' OR ')}`;
-  const auditRows = all(
+  const auditRows = await all(
     `SELECT * FROM audit_log ${whereSql}
      ORDER BY datetime(created_at) DESC
      LIMIT 500`,
     params
   ) as Row[];
 
-  ensureStoTransferEventsSchema();
+  await ensureStoTransferEventsSchema();
   const transferEventRows: Row[] = [];
   for (const req of transferReqs) {
-    const evs = all(
+    const evs = await all(
       `SELECT id, request_id, event, actor_id, actor_name, summary, created_at
        FROM sto_transfer_request_events
        WHERE request_id = ?
@@ -256,7 +256,7 @@ export function listAuditForDeal(
   const pageItems = merged.slice(offset, offset + limit);
 
   return {
-    items: enrichAuditItems(pageItems),
+    items: await enrichAuditItems(pageItems),
     total,
     page,
     limit,
@@ -267,14 +267,14 @@ export function listAuditForDeal(
 type Row = Record<string, unknown>;
 
 /** UA + geo к записям журнала (для колонки IP). */
-export function enrichAuditItems(items: Row[]): Row[] {
+export async function enrichAuditItems(items: Row[]): Promise<Row[]> {
   const ips = items.map((r) => String(r.ip || '').trim()).filter(Boolean);
-  warmGeoIps(ips);
-  return items.map((r) => {
+  await warmGeoIps(ips);
+  return await Promise.all(items.map(async (r) => {
     const ua = String(r.user_agent || '');
     const ip = String(r.ip || '');
     const parsed = parseUserAgent(ua);
-    const geo = peekGeo(ip);
+    const geo = await peekGeo(ip);
     return {
       ...r,
       os: parsed.os,
@@ -283,10 +283,10 @@ export function enrichAuditItems(items: Row[]): Row[] {
       region: geo.region,
       country: geo.country,
     };
-  });
+  }));
 }
 
-export function listAudit(opts: {
+export async function listAudit(opts: {
   q?: string;
   action?: string;
   entity?: string;
@@ -344,15 +344,15 @@ export function listAudit(opts: {
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total =
-    get<{ c: number }>(`SELECT COUNT(*) AS c FROM audit_log ${whereSql}`, params)?.c ?? 0;
-  const items = all(
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM audit_log ${whereSql}`, params))?.c ?? 0;
+  const items = await all(
     `SELECT * FROM audit_log ${whereSql}
      ORDER BY datetime(created_at) DESC
      LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   );
   return {
-    items: enrichAuditItems(items as Row[]),
+    items: await enrichAuditItems(items as Row[]),
     total,
     page,
     limit,
@@ -361,7 +361,7 @@ export function listAudit(opts: {
 }
 
 /** KPI: число действий по сотруднику и дню (и опционально по типу action). */
-export function auditKpi(opts?: {
+export async function auditKpi(opts?: {
   from?: string;
   to?: string;
   actorId?: string;
@@ -390,7 +390,7 @@ export function auditKpi(opts?: {
     params.push(opts.actorId);
   }
   const whereSql = `WHERE ${where.join(' AND ')}`;
-  const byStaffDay = all<{
+  const byStaffDay = await all<{
     day: string;
     actor_id: string;
     actor_login: string;
@@ -409,7 +409,7 @@ export function auditKpi(opts?: {
      LIMIT 500`,
     params
   );
-  const byAction = all<{ action: string; actions: number }>(
+  const byAction = await all<{ action: string; actions: number }>(
     `SELECT action, COUNT(*) AS actions
      FROM audit_log
      ${whereSql}
@@ -418,7 +418,7 @@ export function auditKpi(opts?: {
      LIMIT 40`,
     params
   );
-  const totals = get<{ actions: number; people: number; days: number }>(
+  const totals = await get<{ actions: number; people: number; days: number }>(
     `SELECT COUNT(*) AS actions,
             COUNT(DISTINCT CASE WHEN actor_id != '' THEN actor_id END) AS people,
             COUNT(DISTINCT date(created_at)) AS days

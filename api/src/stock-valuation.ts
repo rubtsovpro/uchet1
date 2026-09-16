@@ -155,7 +155,7 @@ export function fifoCover(needQty: number, inboundNewestFirst: InboundLayerRow[]
   };
 }
 
-export function loadInboundLayers(productIds: string[]): Map<string, InboundLayerRow[]> {
+export async function loadInboundLayers(productIds: string[]): Promise<Map<string, InboundLayerRow[]>> {
   const map = new Map<string, InboundLayerRow[]>();
   if (!productIds.length) return map;
 
@@ -163,7 +163,7 @@ export function loadInboundLayers(productIds: string[]): Map<string, InboundLaye
   for (let i = 0; i < productIds.length; i += chunkSize) {
     const chunk = productIds.slice(i, i + chunkSize);
     const placeholders = chunk.map(() => '?').join(',');
-    const rows = all<{
+    const rows = await all<{
       product_id: string;
       doc_id: string;
       doc_number: string;
@@ -225,7 +225,7 @@ export function loadInboundLayers(productIds: string[]): Map<string, InboundLaye
 /**
  * Розничная цена: «Розничная цена», иначе тип с «рознич», иначе первая цена > 0.
  */
-export function loadRetailPrices(productIds: string[]): Map<string, number> {
+export async function loadRetailPrices(productIds: string[]): Promise<Map<string, number>> {
   const map = new Map<string, number>();
   if (!productIds.length) return map;
 
@@ -233,7 +233,7 @@ export function loadRetailPrices(productIds: string[]): Map<string, number> {
   for (let i = 0; i < productIds.length; i += chunkSize) {
     const chunk = productIds.slice(i, i + chunkSize);
     const placeholders = chunk.map(() => '?').join(',');
-    const rows = all<{ product_id: string; price_type: string; price: number }>(
+    const rows = await all<{ product_id: string; price_type: string; price: number }>(
       `SELECT product_id, price_type, price
        FROM product_prices
        WHERE product_id IN (${placeholders}) AND IFNULL(price, 0) > 0
@@ -255,12 +255,12 @@ export function loadRetailPrices(productIds: string[]): Map<string, number> {
 }
 
 /** Остаток товара: stock_balances, иначе product_store_rests. */
-export function productStockQty(productId: string): {
+export async function productStockQty(productId: string): Promise<{
   qty: number;
   source: 'stock_balances' | 'product_store_rests' | 'none';
   by_warehouse: Array<{ warehouse_id: string; warehouse: string; qty: number }>;
-} {
-  const fromBalances = all<{ warehouse_id: string; warehouse: string; qty: number }>(
+}> {
+  const fromBalances = await all<{ warehouse_id: string; warehouse: string; qty: number }>(
     `SELECT b.warehouse_id, w.name AS warehouse, b.qty
      FROM stock_balances b
      JOIN warehouses w ON w.id = b.warehouse_id
@@ -281,7 +281,7 @@ export function productStockQty(productId: string): {
     };
   }
 
-  const fromRests = all<{ warehouse_id: string; warehouse: string; qty: number }>(
+  const fromRests = await all<{ warehouse_id: string; warehouse: string; qty: number }>(
     `SELECT r.warehouse_id, IFNULL(w.name, r.warehouse_id) AS warehouse, r.qty
      FROM product_store_rests r
      LEFT JOIN warehouses w ON w.id = r.warehouse_id
@@ -306,9 +306,9 @@ export function productStockQty(productId: string): {
 }
 
 /** Слои приходов, покрывающие текущий остаток номенклатуры. */
-export function productInboundLayers(productId: string) {
-  const stock = productStockQty(productId);
-  const layersMap = loadInboundLayers([productId]);
+export async function productInboundLayers(productId: string) {
+  const stock = await productStockQty(productId);
+  const layersMap = await loadInboundLayers([productId]);
   const cover = fifoCover(stock.qty, layersMap.get(productId) || []);
   return {
     method: VALUATION_METHOD,
@@ -353,9 +353,9 @@ export type PurchaseHistoryItem = {
  * Полная история закупок номенклатуры по строкам приходных (не только FIFO-остаток).
  * Новые сверху. limit — сколько строк вернуть (1…200).
  */
-export function productPurchaseHistory(productId: string, limit = 50) {
+export async function productPurchaseHistory(productId: string, limit = 50) {
   const lim = Math.min(200, Math.max(1, Math.floor(Number(limit) || 50)));
-  const totalRow = get<{ c: number }>(
+  const totalRow = await get<{ c: number }>(
     `SELECT COUNT(*) AS c
      FROM stock_doc_lines l
      INNER JOIN stock_docs d ON d.id = l.doc_id
@@ -366,7 +366,7 @@ export function productPurchaseHistory(productId: string, limit = 50) {
     [productId]
   );
   const total = Number(totalRow?.c) || 0;
-  const items = all<{
+  const items = (await all<{
     doc_id: string;
     doc_number: string;
     doc_date: string;
@@ -411,7 +411,7 @@ export function productPurchaseHistory(productId: string, limit = 50) {
      ORDER BY d.doc_date DESC, d.number DESC, l.line_no DESC
      LIMIT ?`,
     [productId, lim]
-  ).map((r) => ({
+  )).map((r) => ({
     doc_id: r.doc_id,
     doc_number: r.doc_number,
     doc_date: r.doc_date,
@@ -449,21 +449,21 @@ export type StockValuationOpts = {
  * Оценка склада FIFO по приходам.
  * Цена на уровне номенклатуры (пул приходов), разнесение по складам пропорционально qty.
  */
-export function stockValuation(opts: StockValuationOpts = {}) {
+export async function stockValuation(opts: StockValuationOpts = {}) {
   const cacheKey = summaryCacheKey(opts);
   if (cacheKey && summaryCache && summaryCache.key === cacheKey) {
     if (Date.now() - summaryCache.at < SUMMARY_CACHE_MS) {
-      return summaryCache.value as ReturnType<typeof stockValuationCompute>;
+      return summaryCache.value as Awaited<ReturnType<typeof stockValuationCompute>>;
     }
   }
-  const result = stockValuationCompute(opts);
+  const result = await stockValuationCompute(opts);
   if (cacheKey) {
     summaryCache = { at: Date.now(), key: cacheKey, value: result };
   }
   return result;
 }
 
-function stockValuationCompute(opts: StockValuationOpts = {}) {
+async function stockValuationCompute(opts: StockValuationOpts = {}) {
   const where: string[] = ['b.qty != 0'];
   const params: Array<string | number> = [];
   if (opts.warehouseId) {
@@ -481,7 +481,7 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
   where.push(sqlExcludeCrossContourProducts('p', 'co'));
   const whereSql = `WHERE ${where.join(' AND ')}`;
 
-  const balanceRows = all<{
+  const balanceRows = await all<{
     warehouse_id: string;
     warehouse: string;
     product_id: string;
@@ -517,8 +517,8 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
   }
 
   const productIds = [...productQty.keys()];
-  const layersMap = loadInboundLayers(productIds);
-  const retailPrices = loadRetailPrices(productIds);
+  const layersMap = await loadInboundLayers(productIds);
+  const retailPrices = await loadRetailPrices(productIds);
   const coverByProduct = new Map<string, FifoCoverResult>();
   for (const [pid, qty] of productQty) {
     coverByProduct.set(pid, fifoCover(qty, layersMap.get(pid) || []));
@@ -755,8 +755,8 @@ function stockValuationCompute(opts: StockValuationOpts = {}) {
 }
 
 /** Краткая оценка для дашборда (без строк). */
-export function stockValuationSummary(warehouseId?: string) {
-  const full = stockValuation({
+export async function stockValuationSummary(warehouseId?: string) {
+  const full = await stockValuation({
     warehouseId,
     includeItems: false,
     page: 1,
@@ -780,7 +780,7 @@ export function stockValuationSummary(warehouseId?: string) {
  * Суммы по каждому складу: закуп (FIFO) + розница.
  * Для списка складов и карточки склада.
  */
-export function warehouseStockMoneyTotals(): Array<{
+export async function warehouseStockMoneyTotals(): Promise<Array<{
   warehouse_id: string;
   warehouse: string;
   value_purchase: number;
@@ -789,8 +789,8 @@ export function warehouseStockMoneyTotals(): Array<{
   qty: number;
   lines: number;
   lines_without_price: number;
-}> {
-  const full = stockValuation({ includeItems: false, page: 1, limit: 1 });
+}>> {
+  const full = await stockValuation({ includeItems: false, page: 1, limit: 1 });
   return (full.by_warehouse || []).map((w) => ({
     warehouse_id: w.warehouse_id,
     warehouse: w.warehouse,
@@ -804,8 +804,8 @@ export function warehouseStockMoneyTotals(): Array<{
 }
 
 /** Проверка что get доступен (для тестов / smoke). */
-export function valuationHealthProbe(): { ok: boolean; in_lines: number } {
-  const row = get<{ c: number }>(
+export async function valuationHealthProbe(): Promise<{ ok: boolean; in_lines: number }> {
+  const row = await get<{ c: number }>(
     `SELECT COUNT(*) AS c
      FROM stock_doc_lines l
      JOIN stock_docs d ON d.id = l.doc_id

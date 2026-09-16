@@ -42,10 +42,10 @@ function amoStoToPickSite(sto: string): PickSiteId | null {
   return null;
 }
 
-function resolvePickSiteForWarehouse(warehouseId: string): PickSiteId {
+async function resolvePickSiteForWarehouse(warehouseId: string): Promise<PickSiteId> {
   const id = String(warehouseId || '').trim();
   if (!id) return 'strela';
-  const wh = get<{ code: string; name: string }>(
+  const wh = await get<{ code: string; name: string }>(
     `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
     [id]
   );
@@ -56,10 +56,10 @@ function resolvePickSiteForWarehouse(warehouseId: string): PickSiteId {
   return 'strela';
 }
 
-export function resolvePickSiteForDeal(dealId: string, warehouseId?: string): PickSiteId {
+export async function resolvePickSiteForDeal(dealId: string, warehouseId?: string): Promise<PickSiteId> {
   const id = String(dealId || '').trim();
   if (id) {
-    const d = get<{
+    const d = await get<{
       department: string;
       amo_branch: string;
       amo_sto: string;
@@ -79,7 +79,7 @@ export function resolvePickSiteForDeal(dealId: string, warehouseId?: string): Pi
     if (/moscow|mosk|москва|msk|pnevmopodveska/.test(dep)) return 'msk';
   }
   const whId = String(warehouseId || '').trim();
-  if (whId) return resolvePickSiteForWarehouse(whId);
+  if (whId) return await resolvePickSiteForWarehouse(whId);
   return 'strela';
 }
 
@@ -102,14 +102,14 @@ export function isReserveChannelDeal(input: {
  * — STO-RSV-* «Резерв СТО» — куда кладёт Amo «Основной → Резерв» (сделки самовывоз / автосервис);
  * — STO-RES-* «Отложено под СТО» — отдельная зона на тех же стеллажах (не путать с резервом и с полом СТО).
  */
-export function ensureStoReserveWarehouses(): {
+export async function ensureStoReserveWarehouses(): Promise<{
   msk: string;
   mskHold: string;
   strela: string;
-} {
-  const mskRsv = ensureWarehouseByCode('STO-RSV-MSK', 'Резерв СТО');
-  const mskHold = ensureWarehouseByCode('STO-RES-MSK', 'Отложено под СТО');
-  const strelaId = ensureWarehouseByCode('STO-RES-STRELA', 'Отложено под СТО · Стрела');
+}> {
+  const mskRsv = await ensureWarehouseByCode('STO-RSV-MSK', 'Резерв СТО');
+  const mskHold = await ensureWarehouseByCode('STO-RES-MSK', 'Отложено под СТО');
+  const strelaId = await ensureWarehouseByCode('STO-RES-STRELA', 'Отложено под СТО · Стрела');
   return { msk: mskRsv, mskHold, strela: strelaId };
 }
 
@@ -121,9 +121,9 @@ const RESERVE_WH_CODES: Record<PickSiteId, string[]> = {
   fogel: ['НФ-000047'],
 };
 
-function warehouseByCode(codes: string[]): { id: string; code: string; name: string } | null {
+async function warehouseByCode(codes: string[]): Promise<{ id: string; code: string; name: string } | null> {
   for (const code of codes) {
-    const row = get<{ id: string; code: string; name: string }>(
+    const row = await get<{ id: string; code: string; name: string }>(
       `SELECT id, IFNULL(code,'') AS code, IFNULL(name,'') AS name
        FROM warehouses WHERE code = ? AND IFNULL(is_active,1) = 1 LIMIT 1`,
       [code]
@@ -144,10 +144,10 @@ const SITE_1C_WH_CODES: Record<PickSiteId, string[]> = {
  * Подпись склада как в 1С.
  * Синтетику Учёта (Основной / MSK / KRD) подменяем на реальный склад 1С контура.
  */
-export function warehouseNameAs1c(warehouseId: string, dealId?: string): string {
+export async function warehouseNameAs1c(warehouseId: string, dealId?: string): Promise<string> {
   const id = String(warehouseId || '').trim();
   if (!id) return '';
-  const row = get<{ code: string; name: string }>(
+  const row = await get<{ code: string; name: string }>(
     `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
     [id]
   );
@@ -159,16 +159,16 @@ export function warehouseNameAs1c(warehouseId: string, dealId?: string): string 
   // Синтетика остатков Учёта → основной склад 1С контура
   if (code === 'MAIN' || code === 'KRD') {
     const site = dealId
-      ? resolvePickSiteForDeal(dealId, id)
-      : resolvePickSiteForWarehouse(id);
-    const oneC = warehouseByCode(SITE_1C_WH_CODES[site] || SITE_1C_WH_CODES.msk);
+      ? await resolvePickSiteForDeal(dealId, id)
+      : await resolvePickSiteForWarehouse(id);
+    const oneC = await warehouseByCode(SITE_1C_WH_CODES[site] || SITE_1C_WH_CODES.msk);
     if (oneC?.name) return oneC.name;
   }
   return name || code;
 }
 
-function warehouseByNameLike(pattern: string): { id: string; code: string; name: string } | null {
-  const row = get<{ id: string; code: string; name: string }>(
+async function warehouseByNameLike(pattern: string): Promise<{ id: string; code: string; name: string } | null> {
+  const row = await get<{ id: string; code: string; name: string }>(
     `SELECT id, IFNULL(code,'') AS code, IFNULL(name,'') AS name
      FROM warehouses
      WHERE IFNULL(is_active,1) = 1 AND name LIKE ?
@@ -179,30 +179,30 @@ function warehouseByNameLike(pattern: string): { id: string; code: string; name:
 }
 
 /** Склад резерва по контуру /pick (МСК · Стрела · Фогель). */
-export function reserveWarehouseForPickSite(site: PickSiteId): { id: string; code: string; name: string } {
-  ensureStoReserveWarehouses();
+export async function reserveWarehouseForPickSite(site: PickSiteId): Promise<{ id: string; code: string; name: string }> {
+  await ensureStoReserveWarehouses();
   const codes = RESERVE_WH_CODES[site] || RESERVE_WH_CODES.strela;
-  const row = warehouseByCode(codes);
+  const row = await warehouseByCode(codes);
   if (row) return row;
   const nameRow =
     site === 'msk'
-      ? warehouseByNameLike('Резерв СТО') ||
-        warehouseByNameLike('Резерв СТО · Москва')
+      ? await warehouseByNameLike('Резерв СТО') ||
+        await warehouseByNameLike('Резерв СТО · Москва')
       : site === 'fogel'
-        ? warehouseByNameLike('Резерв!!! Стрела') ||
-          warehouseByNameLike('Резерв!!! Фогель')
-        : warehouseByNameLike('Резерв!!! Стрела') ||
-          warehouseByNameLike('Резерв!!! Фадеева');
+        ? await warehouseByNameLike('Резерв!!! Стрела') ||
+          await warehouseByNameLike('Резерв!!! Фогель')
+        : await warehouseByNameLike('Резерв!!! Стрела') ||
+          await warehouseByNameLike('Резерв!!! Фадеева');
   if (nameRow) return nameRow;
   throw new Error(`Склад «Резерв СТО» не найден для контура «${pickSiteLabel(site)}»`);
 }
 
-export function resolveReserveWarehouseForDeal(
+export async function resolveReserveWarehouseForDeal(
   dealId: string,
   sourceWarehouseId?: string
-): { id: string; code: string; name: string; pick_site: PickSiteId } {
-  const site = resolvePickSiteForDeal(dealId, sourceWarehouseId);
-  const wh = reserveWarehouseForPickSite(site);
+): Promise<{ id: string; code: string; name: string; pick_site: PickSiteId }> {
+  const site = await resolvePickSiteForDeal(dealId, sourceWarehouseId);
+  const wh = await reserveWarehouseForPickSite(site);
   return { ...wh, pick_site: site };
 }
 
@@ -220,14 +220,14 @@ export type HandoffReserveMeta = {
   pick_site_label: string;
 };
 
-export function buildHandoffReserveMeta(
+export async function buildHandoffReserveMeta(
   dealId: string,
   sourceWarehouseId?: string,
   destWarehouseId?: string
-): HandoffReserveMeta | null {
+): Promise<HandoffReserveMeta | null> {
   const id = String(dealId || '').trim();
   if (!id) return null;
-  const d = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+  const d = await get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
     `SELECT IFNULL(amo_channel,'') AS amo_channel,
             IFNULL(amo_shipment,'') AS amo_shipment,
             IFNULL(ship_channel,'') AS ship_channel
@@ -236,8 +236,8 @@ export function buildHandoffReserveMeta(
   );
   if (!isReserveChannelDeal(d)) return null;
 
-  const fromId = String(sourceWarehouseId || mainWarehouseId()).trim();
-  const from = get<{ code: string; name: string }>(
+  const fromId = String(sourceWarehouseId || await mainWarehouseId()).trim();
+  const from = await get<{ code: string; name: string }>(
     `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
     [fromId]
   );
@@ -247,17 +247,17 @@ export function buildHandoffReserveMeta(
   let destId = String(destWarehouseId || '').trim();
   let destCode = '';
   let destName = '';
-  let pickSite: PickSiteId = resolvePickSiteForDeal(id, fromId);
-  const expected = resolveReserveWarehouseForDeal(id, fromId);
+  let pickSite: PickSiteId = await resolvePickSiteForDeal(id, fromId);
+  const expected = await resolveReserveWarehouseForDeal(id, fromId);
 
   if (destId) {
-    const dest = get<{ code: string; name: string }>(
+    const dest = await get<{ code: string; name: string }>(
       `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [destId]
     );
     destCode = String(dest?.code || '').trim();
     destName = String(dest?.name || '').trim();
-    const stoId = stoWarehouseId();
+    const stoId = await stoWarehouseId();
     const isStoDest =
       destId === stoId || destCode === 'STO' || /^сто$/i.test(destName);
     const isHoldDest =
@@ -343,13 +343,13 @@ export type HandoffShipMeta = {
   pick_site_label: string;
 };
 
-export function buildHandoffShipMeta(
+export async function buildHandoffShipMeta(
   dealId: string,
   sourceWarehouseId?: string
-): HandoffShipMeta | null {
+): Promise<HandoffShipMeta | null> {
   const id = String(dealId || '').trim();
   if (!id) return null;
-  const d = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+  const d = await get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
     `SELECT IFNULL(amo_channel,'') AS amo_channel,
             IFNULL(amo_shipment,'') AS amo_shipment,
             IFNULL(ship_channel,'') AS ship_channel
@@ -357,14 +357,14 @@ export function buildHandoffShipMeta(
     [id]
   );
   if (!isShipChannelDeal(d)) return null;
-  const fromId = String(sourceWarehouseId || mainWarehouseId()).trim();
-  const destId = courierWarehouseId();
-  const dest = get<{ name: string }>(
+  const fromId = String(sourceWarehouseId || await mainWarehouseId()).trim();
+  const destId = await courierWarehouseId();
+  const dest = await get<{ name: string }>(
     `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
     [destId]
   );
-  const pickSite = resolvePickSiteForDeal(id, fromId);
-  const fromName = warehouseNameAs1c(fromId, id) || 'ФИЛИАЛ МОСКВА';
+  const pickSite = await resolvePickSiteForDeal(id, fromId);
+  const fromName = await warehouseNameAs1c(fromId, id) || 'ФИЛИАЛ МОСКВА';
   const destName = String(dest?.name || 'Склад курьера').trim() || 'Склад курьера';
   return {
     is_ship: true,

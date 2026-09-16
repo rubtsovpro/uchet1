@@ -16,29 +16,29 @@ function quarterOf(dateStr: string): { year: number; quarter: number } {
   return { year: y, quarter: Math.ceil(m / 3) };
 }
 
-export function rebuildVatBooks(
+export async function rebuildVatBooks(
   organizationId: string | null | undefined,
   year: number,
   quarter: number
-): { sales: number; purchases: number } {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
+): Promise<{ sales: number; purchases: number }> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
   const startM = (quarter - 1) * 3 + 1;
   const endM = quarter * 3;
   const from = `${year}-${String(startM).padStart(2, '0')}-01`;
   const toDay = new Date(year, endM, 0).getDate();
   const to = `${year}-${String(endM).padStart(2, '0')}-${String(toDay).padStart(2, '0')}`;
 
-  run(
+  await run(
     `DELETE FROM tax_vat_ledger_sales WHERE organization_id=? AND period_year=? AND period_quarter=? AND manual=0`,
     [oid, year, quarter]
   );
-  run(
+  await run(
     `DELETE FROM tax_vat_ledger_purchases WHERE organization_id=? AND period_year=? AND period_quarter=? AND manual=0`,
     [oid, year, quarter]
   );
 
-  const salesDocs = all<{
+  const salesDocs = await all<{
     id: string;
     doc_type: string;
     number: string;
@@ -65,7 +65,7 @@ export function rebuildVatBooks(
   let line = 0;
   for (const d of salesDocs) {
     line += 1;
-    run(
+    await run(
       `INSERT INTO tax_vat_ledger_sales (
          id, organization_id, period_year, period_quarter, line_no, op_date, invoice_no, invoice_date,
          buyer_name, buyer_inn, amount_wo_vat, vat_amount, total, vat_rate, source_doc_id, source_doc_type
@@ -92,7 +92,7 @@ export function rebuildVatBooks(
   }
 
   // Закупки: приходные stock_docs in с суммой (если есть) — упрощённо
-  const purch = all<{
+  const purch = await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -110,7 +110,7 @@ export function rebuildVatBooks(
      ORDER BY d.doc_date, d.number`,
     [oid, from, to]
   );
-  const settings = getTaxSettings(oid);
+  const settings = await getTaxSettings(oid);
   let pl = 0;
   for (const d of purch) {
     const total = Number(d.amount) || 0;
@@ -119,7 +119,7 @@ export function rebuildVatBooks(
     const amount = Math.round((total / (1 + rate / 100)) * 100) / 100;
     const vat = Math.round((total - amount) * 100) / 100;
     pl += 1;
-    run(
+    await run(
       `INSERT INTO tax_vat_ledger_purchases (
          id, organization_id, period_year, period_quarter, line_no, op_date, invoice_no, invoice_date,
          seller_name, seller_inn, amount_wo_vat, vat_amount, total, vat_rate, source_doc_id, source_doc_type
@@ -148,15 +148,15 @@ export function rebuildVatBooks(
   return { sales: line, purchases: pl };
 }
 
-export function vatBooksSummary(organizationId: string | null | undefined, year: number, quarter: number) {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
-  const sales = get<{ c: number; vat: number; total: number }>(
+export async function vatBooksSummary(organizationId: string | null | undefined, year: number, quarter: number) {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
+  const sales = await get<{ c: number; vat: number; total: number }>(
     `SELECT COUNT(*) AS c, IFNULL(SUM(vat_amount),0) AS vat, IFNULL(SUM(total),0) AS total
      FROM tax_vat_ledger_sales WHERE organization_id=? AND period_year=? AND period_quarter=?`,
     [oid, year, quarter]
   );
-  const purch = get<{ c: number; vat: number; total: number }>(
+  const purch = await get<{ c: number; vat: number; total: number }>(
     `SELECT COUNT(*) AS c, IFNULL(SUM(vat_amount),0) AS vat, IFNULL(SUM(total),0) AS total
      FROM tax_vat_ledger_purchases WHERE organization_id=? AND period_year=? AND period_quarter=?`,
     [oid, year, quarter]
@@ -174,39 +174,39 @@ export function vatBooksSummary(organizationId: string | null | undefined, year:
   };
 }
 
-export function listVatSales(organizationId: string | null | undefined, year: number, quarter: number) {
-  const oid = resolveOrganizationId(organizationId);
-  return all(`SELECT * FROM tax_vat_ledger_sales WHERE organization_id=? AND period_year=? AND period_quarter=? ORDER BY line_no`, [
+export async function listVatSales(organizationId: string | null | undefined, year: number, quarter: number) {
+  const oid = await resolveOrganizationId(organizationId);
+  return await all(`SELECT * FROM tax_vat_ledger_sales WHERE organization_id=? AND period_year=? AND period_quarter=? ORDER BY line_no`, [
     oid,
     year,
     quarter,
   ]);
 }
 
-export function listVatPurchases(
+export async function listVatPurchases(
   organizationId: string | null | undefined,
   year: number,
   quarter: number
 ) {
-  const oid = resolveOrganizationId(organizationId);
-  return all(
+  const oid = await resolveOrganizationId(organizationId);
+  return await all(
     `SELECT * FROM tax_vat_ledger_purchases WHERE organization_id=? AND period_year=? AND period_quarter=? ORDER BY line_no`,
     [oid, year, quarter]
   );
 }
 
 /** Упрощённый XML-черновик декларации НДС (не финальный формат ФНС — каркас под Kontur). */
-export function buildVatDeclarationXml(
+export async function buildVatDeclarationXml(
   organizationId: string | null | undefined,
   year: number,
   quarter: number
-): { report_id: string; xml_path: string; amount: number } {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
-  rebuildVatBooks(oid, year, quarter);
-  const sum = vatBooksSummary(oid, year, quarter);
-  const org = getOrganization(oid);
-  const settings = getTaxSettings(oid);
+): Promise<{ report_id: string; xml_path: string; amount: number }> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
+  await rebuildVatBooks(oid, year, quarter);
+  const sum = await vatBooksSummary(oid, year, quarter);
+  const org = await getOrganization(oid);
+  const settings = await getTaxSettings(oid);
   const dir = orgTaxDir(oid, `${year}-Q${quarter}`);
   mkdirSync(dir, { recursive: true });
   const fname = `NDS_${year}_Q${quarter}.xml`;
@@ -230,7 +230,7 @@ export function buildVatDeclarationXml(
 `;
   writeFileSync(xmlPath, xml, 'utf8');
   const reportId = newGuid();
-  run(
+  await run(
     `INSERT INTO tax_reports (
        id, organization_id, report_type, period_year, period_quarter, status, amount, xml_path, meta_json, built_at
      ) VALUES (?,?,?,?,?,'ready',?,?,?, datetime('now'))`,
@@ -246,7 +246,7 @@ export function buildVatDeclarationXml(
     ]
   );
   // store absolute-ish path under org dir
-  run(`UPDATE tax_reports SET xml_path=? WHERE id=?`, [xmlPath, reportId]);
+  await run(`UPDATE tax_reports SET xml_path=? WHERE id=?`, [xmlPath, reportId]);
   return { report_id: reportId, xml_path: xmlPath, amount: sum.vat_payable };
 }
 

@@ -270,7 +270,7 @@ export async function saveStsImage(
   buf: Buffer,
   mime?: string
 ): Promise<{ side: StsSide; path: string; mime: string; size: number }> {
-  return writeSideToDir(stsDealDir(dealId), side, buf, mime);
+  return await writeSideToDir(stsDealDir(dealId), side, buf, mime);
 }
 
 export async function saveStsImageVehicle(
@@ -279,7 +279,7 @@ export async function saveStsImageVehicle(
   buf: Buffer,
   mime?: string
 ): Promise<{ side: StsSide; path: string; mime: string; size: number }> {
-  return writeSideToDir(stsVehicleDir(vehicleId), side, buf, mime);
+  return await writeSideToDir(stsVehicleDir(vehicleId), side, buf, mime);
 }
 
 export function readStsImage(

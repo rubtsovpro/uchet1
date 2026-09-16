@@ -35,7 +35,7 @@ function humanBytes(n: number): string {
   return `${x.toFixed(digits).replace(/\.0$/, '')} ${u[i]}`;
 }
 
-export function diskStats(path = process.env.WMS_DATA_DIR || '/'): DiskStats {
+export async function diskStats(path = process.env.WMS_DATA_DIR || '/'): Promise<DiskStats> {
   let total = 0;
   let free = 0;
   try {
@@ -58,7 +58,7 @@ export function diskStats(path = process.env.WMS_DATA_DIR || '/'): DiskStats {
   let mediaBytes = 0;
   let mediaImages = 0;
   try {
-    const mediaRow = get<{ s: number; c: number }>(
+    const mediaRow = await get<{ s: number; c: number }>(
       `SELECT COALESCE(SUM(size),0) AS s, COUNT(*) AS c FROM product_media WHERE kind = 'image'`
     );
     mediaBytes = Number(mediaRow?.s) || 0;

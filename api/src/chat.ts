@@ -130,8 +130,8 @@ const STOCK_DOC_LABEL: Record<string, string> = {
   writeoff: 'Списание',
 };
 
-function requireChatActor(c: Parameters<typeof actorFromContext>[0]): Actor | Response {
-  const actor = actorFromContext(c);
+async function requireChatActor(c: Parameters<typeof actorFromContext>[0]): Promise<Actor | Response> {
+  const actor = await actorFromContext(c);
   if (!actor) {
     return c.json({ error: 'Нужна авторизация' }, 401);
   }
@@ -149,30 +149,30 @@ function dmKey(a: string, b: string): string {
   return a < b ? `dm:${a}:${b}` : `dm:${b}:${a}`;
 }
 
-function staffName(actorId: string): string {
+async function staffName(actorId: string): Promise<string> {
   if (actorId === '__admin__') return 'Админ (системный)';
-  const row = get<{ name: string }>('SELECT name FROM staff WHERE id = ?', [actorId]);
+  const row = await get<{ name: string }>('SELECT name FROM staff WHERE id = ?', [actorId]);
   return row?.name || actorId.slice(0, 8);
 }
 
-function isMember(chatId: string, actorId: string): boolean {
-  return !!get(
+async function isMember(chatId: string, actorId: string): Promise<boolean> {
+  return !!await get(
     'SELECT 1 AS x FROM chat_members WHERE chat_id = ? AND actor_id = ?',
     [chatId, actorId]
   );
 }
 
-function isChatAdmin(chatId: string, actor: Actor): boolean {
+async function isChatAdmin(chatId: string, actor: Actor): Promise<boolean> {
   if (actor.isSystemAdmin || actor.role === 'admin') return true;
-  const row = get<{ role: string }>(
+  const row = await get<{ role: string }>(
     'SELECT role FROM chat_members WHERE chat_id = ? AND actor_id = ?',
     [chatId, actor.id]
   );
   return row?.role === 'admin';
 }
 
-function assertMember(chatId: string, actorId: string): void {
-  if (!isMember(chatId, actorId)) throw new Error('Нет доступа к чату');
+async function assertMember(chatId: string, actorId: string): Promise<void> {
+  if (!await isMember(chatId, actorId)) throw new Error('Нет доступа к чату');
 }
 
 const AUDIO_EXT: Record<string, string> = {
@@ -234,8 +234,8 @@ function detectFile(
   return magic;
 }
 
-function attachmentDtos(messageId: string): AttachmentDto[] {
-  const rows = all<{
+async function attachmentDtos(messageId: string): Promise<AttachmentDto[]> {
+  const rows = await all<{
     id: string;
     name: string;
     mime: string;
@@ -252,19 +252,19 @@ function attachmentDtos(messageId: string): AttachmentDto[] {
   }));
 }
 
-function resolveEntityRef(input: {
+async function resolveEntityRef(input: {
   type?: string;
   id?: string;
   label?: string;
   href?: string;
-} | null | undefined): EntityRef | null {
+} | null | undefined): Promise<EntityRef | null> {
   if (!input) return null;
   const type = String(input.type || '').trim().toLowerCase();
   const id = String(input.id || '').trim();
   if (!REF_TYPES.has(type) || !id) return null;
 
   if (type === 'deal') {
-    const row = get<{ id: string; name: string; price: number }>(
+    const row = await get<{ id: string; name: string; price: number }>(
       `SELECT id, IFNULL(name,'') AS name, IFNULL(price,0) AS price FROM crm_deals WHERE id = ?`,
       [id]
     );
@@ -277,7 +277,7 @@ function resolveEntityRef(input: {
   }
 
   if (type === 'sales_doc') {
-    const row = get<{ id: string; doc_type: string; number: string; deal_id: string }>(
+    const row = await get<{ id: string; doc_type: string; number: string; deal_id: string }>(
       `SELECT id, IFNULL(doc_type,'') AS doc_type, IFNULL(number,'') AS number, IFNULL(deal_id,'') AS deal_id
        FROM sales_docs WHERE id = ?`,
       [id]
@@ -296,7 +296,7 @@ function resolveEntityRef(input: {
   }
 
   if (type === 'stock_doc') {
-    const row = get<{ id: string; doc_type: string; number: string }>(
+    const row = await get<{ id: string; doc_type: string; number: string }>(
       `SELECT id, IFNULL(doc_type,'') AS doc_type, IFNULL(number,'') AS number FROM stock_docs WHERE id = ?`,
       [id]
     );
@@ -314,7 +314,7 @@ function resolveEntityRef(input: {
   }
 
   if (type === 'product') {
-    const row = get<{ id: string; name: string; sku: string; code: string }>(
+    const row = await get<{ id: string; name: string; sku: string; code: string }>(
       `SELECT id, IFNULL(name,'') AS name, IFNULL(sku,'') AS sku, IFNULL(code,'') AS code
        FROM products WHERE id = ?`,
       [id]
@@ -332,7 +332,7 @@ function resolveEntityRef(input: {
   }
 
   if (type === 'thin_doc') {
-    const row = get<{
+    const row = await get<{
       id: string;
       journal_key: string;
       number: string;
@@ -367,7 +367,7 @@ function resolveEntityRef(input: {
   }
 
   if (type === 'supply_order') {
-    const row = get<{ id: string; number: string; status: string; counterparty_id: string }>(
+    const row = await get<{ id: string; number: string; status: string; counterparty_id: string }>(
       `SELECT id, IFNULL(number,'') AS number, IFNULL(status,'') AS status,
               IFNULL(counterparty_id,'') AS counterparty_id
        FROM supplier_orders WHERE id = ?`,
@@ -375,7 +375,7 @@ function resolveEntityRef(input: {
     );
     if (!row) throw new Error('Заказ поставки не найден');
     const cp = row.counterparty_id
-      ? get<{ name: string }>(`SELECT IFNULL(name,'') AS name FROM counterparties WHERE id = ?`, [
+      ? await get<{ name: string }>(`SELECT IFNULL(name,'') AS name FROM counterparties WHERE id = ?`, [
           row.counterparty_id,
         ])
       : null;
@@ -390,7 +390,7 @@ function resolveEntityRef(input: {
     };
   }
 
-  const task = get<{ id: string; number: string; buyer_name: string; status: string }>(
+  const task = await get<{ id: string; number: string; buyer_name: string; status: string }>(
     `SELECT id, IFNULL(number,'') AS number, IFNULL(buyer_name,'') AS buyer_name, IFNULL(status,'') AS status
      FROM warehouse_tasks WHERE id = ?`,
     [id]
@@ -407,14 +407,14 @@ function resolveEntityRef(input: {
   };
 }
 
-function searchEntities(q: string, limit = 24): { items: EntityRef[] } {
+async function searchEntities(q: string, limit = 24): Promise<{ items: EntityRef[] }> {
   const needle = String(q || '').trim();
   const lim = Math.min(40, Math.max(1, limit));
   if (needle.length < 1) return { items: [] };
   const like = `%${needle.replace(/%/g, '')}%`;
   const items: EntityRef[] = [];
 
-  const deals = all<{ id: string; name: string; price: number }>(
+  const deals = await all<{ id: string; name: string; price: number }>(
     `SELECT id, IFNULL(name,'') AS name, IFNULL(price,0) AS price
      FROM crm_deals
      WHERE id LIKE ? OR IFNULL(name,'') LIKE ? OR IFNULL(buyer_name,'') LIKE ? OR IFNULL(company_name,'') LIKE ?
@@ -433,7 +433,7 @@ function searchEntities(q: string, limit = 24): { items: EntityRef[] } {
     });
   }
 
-  const sales = all<{ id: string; doc_type: string; number: string; counterparty_name: string }>(
+  const sales = await all<{ id: string; doc_type: string; number: string; counterparty_name: string }>(
     `SELECT id, IFNULL(doc_type,'') AS doc_type, IFNULL(number,'') AS number,
             IFNULL(counterparty_name,'') AS counterparty_name
      FROM sales_docs
@@ -453,7 +453,7 @@ function searchEntities(q: string, limit = 24): { items: EntityRef[] } {
     });
   }
 
-  const stock = all<{ id: string; doc_type: string; number: string; comment: string }>(
+  const stock = await all<{ id: string; doc_type: string; number: string; comment: string }>(
     `SELECT id, IFNULL(doc_type,'') AS doc_type, IFNULL(number,'') AS number, IFNULL(comment,'') AS comment
      FROM stock_docs
      WHERE id LIKE ? OR IFNULL(number,'') LIKE ? OR IFNULL(deal_id,'') LIKE ? OR IFNULL(comment,'') LIKE ?
@@ -471,7 +471,7 @@ function searchEntities(q: string, limit = 24): { items: EntityRef[] } {
     });
   }
 
-  const tasks = all<{ id: string; number: string; buyer_name: string; barcode: string }>(
+  const tasks = await all<{ id: string; number: string; buyer_name: string; barcode: string }>(
     `SELECT id, IFNULL(number,'') AS number, IFNULL(buyer_name,'') AS buyer_name, IFNULL(barcode,'') AS barcode
      FROM warehouse_tasks
      WHERE id LIKE ? OR IFNULL(number,'') LIKE ? OR IFNULL(barcode,'') LIKE ?
@@ -489,7 +489,7 @@ function searchEntities(q: string, limit = 24): { items: EntityRef[] } {
     });
   }
 
-  const products = all<{ id: string; name: string; sku: string; code: string }>(
+  const products = await all<{ id: string; name: string; sku: string; code: string }>(
     `SELECT id, IFNULL(name,'') AS name, IFNULL(sku,'') AS sku, IFNULL(code,'') AS code
      FROM products
      WHERE id LIKE ? OR IFNULL(sku,'') LIKE ? OR IFNULL(code,'') LIKE ? OR IFNULL(name,'') LIKE ?
@@ -509,7 +509,7 @@ function searchEntities(q: string, limit = 24): { items: EntityRef[] } {
     });
   }
 
-  const thinDocs = all<{
+  const thinDocs = await all<{
     id: string;
     journal_key: string;
     number: string;
@@ -538,7 +538,7 @@ function searchEntities(q: string, limit = 24): { items: EntityRef[] } {
     });
   }
 
-  const supplyOrders = all<{ id: string; number: string; counterparty_id: string }>(
+  const supplyOrders = await all<{ id: string; number: string; counterparty_id: string }>(
     `SELECT id, IFNULL(number,'') AS number, IFNULL(counterparty_id,'') AS counterparty_id
      FROM supplier_orders
      WHERE id LIKE ? OR IFNULL(number,'') LIKE ?
@@ -548,7 +548,7 @@ function searchEntities(q: string, limit = 24): { items: EntityRef[] } {
   );
   for (const o of supplyOrders) {
     const cp = o.counterparty_id
-      ? get<{ name: string }>(`SELECT IFNULL(name,'') AS name FROM counterparties WHERE id = ?`, [
+      ? await get<{ name: string }>(`SELECT IFNULL(name,'') AS name FROM counterparties WHERE id = ?`, [
           o.counterparty_id,
         ])
       : null;
@@ -563,7 +563,7 @@ function searchEntities(q: string, limit = 24): { items: EntityRef[] } {
   return { items: items.slice(0, lim) };
 }
 
-function messageDto(row: {
+async function messageDto(row: {
   id: string;
   chat_id: string;
   sender_id: string;
@@ -576,7 +576,7 @@ function messageDto(row: {
   ref_id?: string;
   ref_label?: string;
   ref_href?: string;
-}, opts?: { viewerId?: string; readersTotal?: number; memberReads?: Array<{ actor_id: string; name: string; read_at: string }> }): MessageDto {
+}, opts?: { viewerId?: string; readersTotal?: number; memberReads?: Array<{ actor_id: string; name: string; read_at: string }> }): Promise<MessageDto> {
   const deleted = Boolean(row.deleted_at);
   const refType = String(row.ref_type || '').trim();
   const refId = String(row.ref_id || '').trim();
@@ -593,13 +593,13 @@ function messageDto(row: {
     id: row.id,
     chat_id: row.chat_id,
     sender_id: row.sender_id,
-    sender_name: staffName(row.sender_id),
+    sender_name: await staffName(row.sender_id),
     body: deleted ? '' : row.body,
     reply_to_id: row.reply_to_id || '',
     forwarded_from_id: row.forwarded_from_id || '',
     created_at: row.created_at,
     deleted,
-    attachments: deleted ? [] : attachmentDtos(row.id),
+    attachments: deleted ? [] : await attachmentDtos(row.id),
     ref,
   };
   const viewerId = String(opts?.viewerId || '').trim();
@@ -618,11 +618,11 @@ function messageDto(row: {
         String(m.read_at).replace('T', ' ') >= createdAt.replace('T', ' ')
     );
     const total = Math.max(0, Number(opts?.readersTotal) || 0);
-    dto.reads = reads.map((r) => ({
+    dto.reads = await Promise.all(reads.map(async (r) => ({
       actor_id: r.actor_id,
-      name: r.name || staffName(r.actor_id),
+      name: r.name || await staffName(r.actor_id),
       read_at: r.read_at,
-    }));
+    })));
     dto.readers_total = total;
     if (!total) dto.read_status = 'unread';
     else if (reads.length <= 0) dto.read_status = 'unread';
@@ -633,8 +633,8 @@ function messageDto(row: {
 }
 
 /** Участники чата (кроме себя) с last_read_at — для квитанций прочтения. */
-function chatMemberReads(chatId: string, excludeActorId: string) {
-  return all<{ actor_id: string; name: string; read_at: string }>(
+async function chatMemberReads(chatId: string, excludeActorId: string) {
+  return await all<{ actor_id: string; name: string; read_at: string }>(
     `SELECT m.actor_id AS actor_id,
             IFNULL(NULLIF(s.name,''), m.actor_id) AS name,
             IFNULL(m.last_read_at,'') AS read_at
@@ -646,39 +646,39 @@ function chatMemberReads(chatId: string, excludeActorId: string) {
   );
 }
 
-function touchChat(chatId: string): void {
-  run(`UPDATE chats SET updated_at = datetime('now') WHERE id = ?`, [chatId]);
+async function touchChat(chatId: string): Promise<void> {
+  await run(`UPDATE chats SET updated_at = datetime('now') WHERE id = ?`, [chatId]);
 }
 
-function unreadCount(chatId: string, actorId: string, lastReadAt: string): number {
+async function unreadCount(chatId: string, actorId: string, lastReadAt: string): Promise<number> {
   if (!lastReadAt) {
     return (
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM chat_messages
          WHERE chat_id = ? AND deleted_at = '' AND sender_id != ?`,
         [chatId, actorId]
-      )?.c ?? 0
+      ))?.c ?? 0
     );
   }
   return (
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM chat_messages
        WHERE chat_id = ? AND deleted_at = '' AND sender_id != ?
          AND datetime(created_at) > datetime(?)`,
       [chatId, actorId, lastReadAt]
-    )?.c ?? 0
+    ))?.c ?? 0
   );
 }
 
-function lastMessagePreview(chatId: string): {
+async function lastMessagePreview(chatId: string): Promise<{
   id: string;
   body: string;
   sender_id: string;
   sender_name: string;
   created_at: string;
   has_attachment: boolean;
-} | null {
-  const row = get<{
+} | null> {
+  const row = await get<{
     id: string;
     body: string;
     sender_id: string;
@@ -690,10 +690,10 @@ function lastMessagePreview(chatId: string): {
     [chatId]
   );
   if (!row) return null;
-  const attKind = get<{ kind: string }>(
+  const attKind = (await get<{ kind: string }>(
     'SELECT kind FROM chat_attachments WHERE message_id = ? ORDER BY id LIMIT 1',
     [row.id]
-  )?.kind;
+  ))?.kind;
   const hasAtt = !!attKind;
   let body = row.deleted_at ? 'Сообщение удалено' : String(row.body || '').slice(0, 120);
   if (!body && hasAtt) {
@@ -707,39 +707,39 @@ function lastMessagePreview(chatId: string): {
             : 'Вложение';
   }
   if (!body && !row.deleted_at) {
-    const refLabel = get<{ ref_label: string }>(
+    const refLabel = (await get<{ ref_label: string }>(
       `SELECT IFNULL(ref_label,'') AS ref_label FROM chat_messages WHERE id = ?`,
       [row.id]
-    )?.ref_label;
+    ))?.ref_label;
     if (refLabel) body = refLabel.slice(0, 120);
   }
   return {
     id: row.id,
     body,
     sender_id: row.sender_id,
-    sender_name: staffName(row.sender_id),
+    sender_name: await staffName(row.sender_id),
     created_at: row.created_at,
     has_attachment: hasAtt,
   };
 }
 
-function peerIds(chatId: string, selfId: string): string[] {
-  return all<{ actor_id: string }>(
+async function peerIds(chatId: string, selfId: string): Promise<string[]> {
+  return (await all<{ actor_id: string }>(
     'SELECT actor_id FROM chat_members WHERE chat_id = ? AND actor_id != ?',
     [chatId, selfId]
-  ).map((r) => r.actor_id);
+  )).map((r) => r.actor_id);
 }
 
-function chatTitleFor(chat: ChatRow, selfId: string): string {
+async function chatTitleFor(chat: ChatRow, selfId: string): Promise<string> {
   if (chat.type === 'group') return chat.title || 'Группа';
-  const peers = peerIds(chat.id, selfId);
-  if (peers.length === 1) return staffName(peers[0]!);
+  const peers = await peerIds(chat.id, selfId);
+  if (peers.length === 1) return await staffName(peers[0]!);
   return chat.title || 'Личный чат';
 }
 
-function listChatsFor(actor: Actor) {
-  const online = new Set(listOnlinePresence().map((p) => p.actor_id));
-  const memberships = all<{
+async function listChatsFor(actor: Actor) {
+  const online = new Set((await listOnlinePresence()).map((p) => p.actor_id));
+  const memberships = await all<{
     chat_id: string;
     last_read_at: string;
     role: string;
@@ -749,28 +749,28 @@ function listChatsFor(actor: Actor) {
   );
   const items = [];
   for (const m of memberships) {
-    const chat = get<ChatRow>('SELECT * FROM chats WHERE id = ?', [m.chat_id]);
+    const chat = await get<ChatRow>('SELECT * FROM chats WHERE id = ?', [m.chat_id]);
     if (!chat) continue;
-    const peers = peerIds(chat.id, actor.id);
+    const peers = await peerIds(chat.id, actor.id);
     const peerOnline = peers.some((id) => online.has(id));
     items.push({
       id: chat.id,
       type: chat.type,
-      title: chatTitleFor(chat, actor.id),
+      title: await chatTitleFor(chat, actor.id),
       created_by: chat.created_by,
-      created_by_name: staffName(chat.created_by),
+      created_by_name: await staffName(chat.created_by),
       created_at: chat.created_at,
       updated_at: chat.updated_at,
       my_role: m.role,
-      unread: unreadCount(chat.id, actor.id, m.last_read_at || ''),
+      unread: await unreadCount(chat.id, actor.id, m.last_read_at || ''),
       peer_ids: peers,
       peer_online: chat.type === 'dm' ? peerOnline : peers.some((id) => online.has(id)),
       members_count:
-        get<{ c: number }>(
+        (await get<{ c: number }>(
           'SELECT COUNT(*) AS c FROM chat_members WHERE chat_id = ?',
           [chat.id]
-        )?.c || 0,
-      last_message: lastMessagePreview(chat.id),
+        ))?.c || 0,
+      last_message: await lastMessagePreview(chat.id),
     });
   }
   items.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
@@ -778,18 +778,18 @@ function listChatsFor(actor: Actor) {
   return { items, unread_total };
 }
 
-function getOrCreateDm(actor: Actor, peerId: string): ChatRow {
+async function getOrCreateDm(actor: Actor, peerId: string): Promise<ChatRow> {
   const peer = peerId.trim();
   if (!peer || peer === actor.id) throw new Error('Укажите другого сотрудника');
   if (peer !== '__admin__') {
-    const exists = get('SELECT id FROM staff WHERE id = ?', [peer]);
+    const exists = await get('SELECT id FROM staff WHERE id = ?', [peer]);
     if (!exists) throw new Error('Сотрудник не найден');
   }
   const key = dmKey(actor.id, peer);
-  const existing = get<ChatRow>('SELECT * FROM chats WHERE dm_key = ?', [key]);
+  const existing = await get<ChatRow>('SELECT * FROM chats WHERE dm_key = ?', [key]);
   if (existing) {
-    if (!isMember(existing.id, actor.id)) {
-      run(
+    if (!await isMember(existing.id, actor.id)) {
+      await run(
         `INSERT OR IGNORE INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'member')`,
         [existing.id, actor.id]
       );
@@ -797,69 +797,69 @@ function getOrCreateDm(actor: Actor, peerId: string): ChatRow {
     return existing;
   }
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO chats (id, type, title, dm_key, created_by) VALUES (?, 'dm', '', ?, ?)`,
     [id, key, actor.id]
   );
-  run(`INSERT INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'admin')`, [
+  await run(`INSERT INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'admin')`, [
     id,
     actor.id,
   ]);
-  run(`INSERT INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'member')`, [
+  await run(`INSERT INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'member')`, [
     id,
     peer,
   ]);
-  return get<ChatRow>('SELECT * FROM chats WHERE id = ?', [id])!;
+  return (await get<ChatRow>('SELECT * FROM chats WHERE id = ?', [id]))!;
 }
 
-function createGroup(actor: Actor, title: string, memberIds: string[]): ChatRow {
+async function createGroup(actor: Actor, title: string, memberIds: string[]): Promise<ChatRow> {
   const t = title.trim().slice(0, 120);
   if (!t) throw new Error('Нужно название группы');
   const ids = [...new Set(memberIds.map((x) => String(x || '').trim()).filter(Boolean))];
   const filtered = ids.filter((id) => id !== actor.id);
   for (const id of filtered) {
-    if (!get('SELECT id FROM staff WHERE id = ?', [id])) {
+    if (!await get('SELECT id FROM staff WHERE id = ?', [id])) {
       throw new Error(`Сотрудник не найден: ${id}`);
     }
   }
   const chatId = newGuid();
-  run(
+  await run(
     `INSERT INTO chats (id, type, title, dm_key, created_by) VALUES (?, 'group', ?, '', ?)`,
     [chatId, t, actor.id]
   );
-  run(`INSERT INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'admin')`, [
+  await run(`INSERT INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'admin')`, [
     chatId,
     actor.id,
   ]);
   for (const mid of filtered) {
-    run(`INSERT OR IGNORE INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'member')`, [
+    await run(`INSERT OR IGNORE INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'member')`, [
       chatId,
       mid,
     ]);
   }
-  return get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId])!;
+  return (await get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]))!;
 }
 
-function insertMessage(input: {
+async function insertMessage(input: {
   chatId: string;
   senderId: string;
   body: string;
   replyToId?: string;
   forwardedFromId?: string;
   ref?: EntityRef | null;
-}): { id: string } {
+}): Promise<{ id: string }> {
   const body = String(input.body || '').trim().slice(0, MAX_BODY);
   const replyTo = String(input.replyToId || '').trim();
   const fwd = String(input.forwardedFromId || '').trim();
   if (replyTo) {
-    const ok = get(
+    const ok = await get(
       'SELECT id FROM chat_messages WHERE id = ? AND chat_id = ?',
       [replyTo, input.chatId]
     );
     if (!ok) throw new Error('Ответ на неизвестное сообщение');
   }
   if (fwd) {
-    const ok = get('SELECT id FROM chat_messages WHERE id = ?', [fwd]);
+    const ok = await get('SELECT id FROM chat_messages WHERE id = ?', [fwd]);
     if (!ok) throw new Error('Пересылаемое сообщение не найдено');
   }
   if (!body && !fwd) {
@@ -867,7 +867,7 @@ function insertMessage(input: {
   }
   const ref = input.ref || null;
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO chat_messages (
        id, chat_id, sender_id, body, reply_to_id, forwarded_from_id,
        ref_type, ref_id, ref_label, ref_href
@@ -885,12 +885,12 @@ function insertMessage(input: {
       ref?.href || '',
     ]
   );
-  touchChat(input.chatId);
+  await touchChat(input.chatId);
   return { id };
 }
 
-function copyAttachments(fromMessageId: string, toMessageId: string, chatId: string): void {
-  const rows = all<{
+async function copyAttachments(fromMessageId: string, toMessageId: string, chatId: string): Promise<void> {
+  const rows = await all<{
     s3_key: string;
     mime: string;
     size: number;
@@ -900,7 +900,7 @@ function copyAttachments(fromMessageId: string, toMessageId: string, chatId: str
     fromMessageId,
   ]);
   for (const r of rows) {
-    run(
+    await run(
       `INSERT INTO chat_attachments (id, message_id, s3_key, mime, size, name, kind)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [newGuid(), toMessageId, r.s3_key, r.mime, r.size, r.name, r.kind]
@@ -924,7 +924,7 @@ async function storeAttachment(opts: {
   const safeName = (opts.fileName || `file.${meta.ext}`).replace(/[^\w.\-а-яА-ЯёЁ ()]/gi, '_').slice(0, 180);
   const key = `chat/${opts.chatId}/${opts.messageId}/${attId}.${meta.ext}`;
   await s3PutObject(cfg, key, opts.buf, meta.mime, false);
-  run(
+  await run(
     `INSERT INTO chat_attachments (id, message_id, s3_key, mime, size, name, kind)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [attId, opts.messageId, key, meta.mime, opts.buf.length, safeName, meta.kind]
@@ -939,9 +939,9 @@ async function storeAttachment(opts: {
   };
 }
 
-function directory(q: string, selfId: string) {
+async function directory(q: string, selfId: string) {
   const needle = q.trim().toLowerCase();
-  let rows = all<{
+  let rows = await all<{
     id: string;
     name: string;
     role: string;
@@ -964,7 +964,7 @@ function directory(q: string, selfId: string) {
       return hay.includes(needle);
     });
   }
-  const online = new Set(listOnlinePresence().map((p) => p.actor_id));
+  const online = new Set((await listOnlinePresence()).map((p) => p.actor_id));
   return {
     items: rows
       .filter((r) => r.id !== selfId)
@@ -981,54 +981,54 @@ function directory(q: string, selfId: string) {
   };
 }
 
-function serializeChat(chat: ChatRow, actor: Actor) {
-  const peers = peerIds(chat.id, actor.id);
-  const online = new Set(listOnlinePresence().map((p) => p.actor_id));
-  const mem = get<{ role: string; last_read_at: string }>(
+async function serializeChat(chat: ChatRow, actor: Actor) {
+  const peers = await peerIds(chat.id, actor.id);
+  const online = new Set((await listOnlinePresence()).map((p) => p.actor_id));
+  const mem = await get<{ role: string; last_read_at: string }>(
     'SELECT role, last_read_at FROM chat_members WHERE chat_id = ? AND actor_id = ?',
     [chat.id, actor.id]
   );
-  const members = all<{ actor_id: string; role: string; joined_at: string }>(
+  const members = await Promise.all((await all<{ actor_id: string; role: string; joined_at: string }>(
     'SELECT actor_id, role, IFNULL(joined_at,\'\') AS joined_at FROM chat_members WHERE chat_id = ? ORDER BY joined_at',
     [chat.id]
-  ).map((m) => ({
+  )).map(async (m) => ({
     actor_id: m.actor_id,
-    name: staffName(m.actor_id),
+    name: await staffName(m.actor_id),
     role: m.role === 'admin' ? 'admin' : 'member',
     is_creator: m.actor_id === chat.created_by,
     joined_at: m.joined_at || '',
     online: online.has(m.actor_id),
-  }));
+  })));
   return {
     id: chat.id,
     type: chat.type,
-    title: chatTitleFor(chat, actor.id),
+    title: await chatTitleFor(chat, actor.id),
     created_by: chat.created_by,
-    created_by_name: staffName(chat.created_by),
+    created_by_name: await staffName(chat.created_by),
     created_at: chat.created_at,
     updated_at: chat.updated_at,
     my_role: mem?.role || 'member',
-    unread: unreadCount(chat.id, actor.id, mem?.last_read_at || ''),
+    unread: await unreadCount(chat.id, actor.id, mem?.last_read_at || ''),
     peer_ids: peers,
     peer_online: peers.some((id) => online.has(id)),
     members_count: members.length,
     members,
-    last_message: lastMessagePreview(chat.id),
+    last_message: await lastMessagePreview(chat.id),
   };
 }
 
 export function mountChatRoutes(api: Hono): void {
-  api.get('/chats', (c) => {
-    const actor = requireChatActor(c);
+  api.get('/chats', async (c) => {
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
-    return c.json(listChatsFor(actor));
+    return c.json(await listChatsFor(actor));
   });
 
   /** Лёгкий опрос бейджа (FAB / меню). */
-  api.get('/chats/unread', (c) => {
-    const actor = requireChatActor(c);
+  api.get('/chats/unread', async (c) => {
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
-    const full = listChatsFor(actor);
+    const full = await listChatsFor(actor);
     const withUnread = full.items
       .filter((it: { unread?: number }) => Number(it.unread) > 0)
       .map((it: Record<string, unknown>) => ({
@@ -1046,18 +1046,18 @@ export function mountChatRoutes(api: Hono): void {
     });
   });
 
-  api.get('/chats/directory', (c) => {
-    const actor = requireChatActor(c);
+  api.get('/chats/directory', async (c) => {
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
-    return c.json(directory(c.req.query('q') || '', actor.id));
+    return c.json(await directory(c.req.query('q') || '', actor.id));
   });
 
-  api.get('/chats/entity-search', (c) => {
-    const actor = requireChatActor(c);
+  api.get('/chats/entity-search', async (c) => {
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     try {
       return c.json(
-        searchEntities(c.req.query('q') || '', Number(c.req.query('limit') || 24))
+        await searchEntities(c.req.query('q') || '', Number(c.req.query('limit') || 24))
       );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'search failed' }, 400);
@@ -1065,13 +1065,13 @@ export function mountChatRoutes(api: Hono): void {
   });
 
   api.post('/chats/entity-resolve', async (c) => {
-    const actor = requireChatActor(c);
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const body = await c.req
       .json<{ type?: string; id?: string; label?: string; href?: string }>()
       .catch(() => ({} as Record<string, string>));
     try {
-      const ref = resolveEntityRef(body);
+      const ref = await resolveEntityRef(body);
       if (!ref) return c.json({ error: 'Укажите type и id сущности' }, 400);
       return c.json({ ref });
     } catch (e) {
@@ -1079,57 +1079,57 @@ export function mountChatRoutes(api: Hono): void {
     }
   });
 
-  api.get('/staff/directory', (c) => {
-    const actor = requireChatActor(c);
+  api.get('/staff/directory', async (c) => {
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
-    return c.json(directory(c.req.query('q') || '', actor.id));
+    return c.json(await directory(c.req.query('q') || '', actor.id));
   });
 
   api.post('/chats/dm', async (c) => {
-    const actor = requireChatActor(c);
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const body = await c.req
       .json<{ peer_id?: string }>()
       .catch(() => ({}) as { peer_id?: string });
     try {
-      const chat = getOrCreateDm(actor, String(body.peer_id || ''));
-      auditFromContext(c, {
+      const chat = await getOrCreateDm(actor, String(body.peer_id || ''));
+      await auditFromContext(c, {
         action: 'chat.dm',
         entity: 'chat',
         entityId: chat.id,
-        summary: `DM с ${staffName(String(body.peer_id || ''))}`,
+        summary: `DM с ${await staffName(String(body.peer_id || ''))}`,
       });
-      return c.json(serializeChat(chat, actor));
+      return c.json(await serializeChat(chat, actor));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
   api.post('/chats/group', async (c) => {
-    const actor = requireChatActor(c);
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const body = await c.req
       .json<{ title?: string; member_ids?: string[] }>()
       .catch(() => ({} as { title?: string; member_ids?: string[] }));
     try {
-      const chat = createGroup(actor, String(body.title || ''), body.member_ids || []);
-      auditFromContext(c, {
+      const chat = await createGroup(actor, String(body.title || ''), body.member_ids || []);
+      await auditFromContext(c, {
         action: 'chat.group',
         entity: 'chat',
         entityId: chat.id,
         summary: `Группа «${chat.title}»`,
       });
-      return c.json(serializeChat(chat, actor), 201);
+      return c.json(await serializeChat(chat, actor), 201);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
   api.get('/chats/attachments/:id', async (c) => {
-    const actor = requireChatActor(c);
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const attId = c.req.param('id');
-    const att = get<{
+    const att = await get<{
       id: string;
       message_id: string;
       s3_key: string;
@@ -1138,12 +1138,12 @@ export function mountChatRoutes(api: Hono): void {
       size: number;
     }>('SELECT * FROM chat_attachments WHERE id = ?', [attId]);
     if (!att) return c.json({ error: 'not found' }, 404);
-    const msg = get<{ chat_id: string; deleted_at: string }>(
+    const msg = await get<{ chat_id: string; deleted_at: string }>(
       'SELECT chat_id, deleted_at FROM chat_messages WHERE id = ?',
       [att.message_id]
     );
     if (!msg || msg.deleted_at) return c.json({ error: 'not found' }, 404);
-    if (!isMember(msg.chat_id, actor.id)) return c.json({ error: 'Нет доступа' }, 403);
+    if (!await isMember(msg.chat_id, actor.id)) return c.json({ error: 'Нет доступа' }, 403);
     const cfg = s3ConfigFromEnv();
     if (!cfg) return c.json({ error: 'S3 не настроен' }, 500);
     try {
@@ -1163,12 +1163,12 @@ export function mountChatRoutes(api: Hono): void {
     }
   });
 
-  api.get('/chats/:id/messages', (c) => {
-    const actor = requireChatActor(c);
+  api.get('/chats/:id/messages', async (c) => {
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const chatId = c.req.param('id');
     try {
-      assertMember(chatId, actor.id);
+      await assertMember(chatId, actor.id);
     } catch {
       return c.json({ error: 'Нет доступа к чату' }, 403);
     }
@@ -1186,11 +1186,11 @@ export function mountChatRoutes(api: Hono): void {
       deleted_at: string;
     }>;
     if (after) {
-      const pivot = get<{ created_at: string }>(
+      const pivot = await get<{ created_at: string }>(
         'SELECT created_at FROM chat_messages WHERE id = ? AND chat_id = ?',
         [after, chatId]
       );
-      rows = all(
+      rows = await all(
         `SELECT * FROM chat_messages
          WHERE chat_id = ?
            AND (datetime(created_at) > datetime(?) OR (created_at = ? AND id > ?))
@@ -1199,11 +1199,11 @@ export function mountChatRoutes(api: Hono): void {
         [chatId, pivot?.created_at || after, pivot?.created_at || after, after, limit]
       );
     } else if (before) {
-      const pivot = get<{ created_at: string }>(
+      const pivot = await get<{ created_at: string }>(
         'SELECT created_at FROM chat_messages WHERE id = ? AND chat_id = ?',
         [before, chatId]
       );
-      rows = all(
+      rows = await all(
         `SELECT * FROM chat_messages
          WHERE chat_id = ?
            AND (datetime(created_at) < datetime(?) OR (created_at = ? AND id < ?))
@@ -1213,34 +1213,34 @@ export function mountChatRoutes(api: Hono): void {
       );
       rows.reverse();
     } else {
-      rows = all(
+      rows = await all(
         `SELECT * FROM chat_messages WHERE chat_id = ?
          ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`,
         [chatId, limit]
       );
       rows.reverse();
     }
-    const memberReads = chatMemberReads(chatId, actor.id);
+    const memberReads = await chatMemberReads(chatId, actor.id);
     const readersTotal = memberReads.length;
     return c.json({
-      items: rows.map((row) =>
-        messageDto(row, {
+      items: await Promise.all(rows.map(async (row) =>
+        await messageDto(row, {
           viewerId: actor.id,
           readersTotal,
           memberReads,
         })
-      ),
+      )),
       /** Есть более старые сообщения (для подгрузки истории новым участникам). */
       has_more: !after && rows.length >= limit,
     });
   });
 
   api.post('/chats/:id/messages', async (c) => {
-    const actor = requireChatActor(c);
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const chatId = c.req.param('id');
     try {
-      assertMember(chatId, actor.id);
+      await assertMember(chatId, actor.id);
     } catch {
       return c.json({ error: 'Нет доступа к чату' }, 403);
     }
@@ -1260,20 +1260,20 @@ export function mountChatRoutes(api: Hono): void {
     try {
       let forwardBody = text;
       if (fwd && !text) {
-        const src = get<{ body: string; deleted_at: string }>(
+        const src = await get<{ body: string; deleted_at: string }>(
           'SELECT body, deleted_at FROM chat_messages WHERE id = ?',
           [fwd]
         );
         if (!src || src.deleted_at) return c.json({ error: 'Исходное сообщение недоступно' }, 400);
         forwardBody = src.body || '';
       }
-      const ref = resolveEntityRef(
+      const ref = await resolveEntityRef(
         body.ref && typeof body.ref === 'object'
           ? (body.ref as { type?: string; id?: string; label?: string; href?: string })
           : null
       );
       if (!text && !fwd && !ref) return c.json({ error: 'Пустое сообщение' }, 400);
-      const { id } = insertMessage({
+      const { id } = await insertMessage({
         chatId,
         senderId: actor.id,
         body: forwardBody,
@@ -1281,23 +1281,23 @@ export function mountChatRoutes(api: Hono): void {
         forwardedFromId: fwd,
         ref,
       });
-      if (fwd) copyAttachments(fwd, id, chatId);
-      const row = get<Parameters<typeof messageDto>[0]>(
+      if (fwd) await copyAttachments(fwd, id, chatId);
+      const row = (await get<Parameters<typeof messageDto>[0]>(
         'SELECT * FROM chat_messages WHERE id = ?',
         [id]
-      )!;
-      return c.json(messageDto(row), 201);
+      ))!;
+      return c.json(await messageDto(row), 201);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
   api.post('/chats/:id/attachments', async (c) => {
-    const actor = requireChatActor(c);
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const chatId = c.req.param('id');
     try {
-      assertMember(chatId, actor.id);
+      await assertMember(chatId, actor.id);
     } catch {
       return c.json({ error: 'Нет доступа к чату' }, 403);
     }
@@ -1330,7 +1330,7 @@ export function mountChatRoutes(api: Hono): void {
       let ref: EntityRef | null = null;
       if (refRaw) {
         try {
-          ref = resolveEntityRef(JSON.parse(refRaw) as {
+          ref = await resolveEntityRef(JSON.parse(refRaw) as {
             type?: string;
             id?: string;
             label?: string;
@@ -1340,7 +1340,7 @@ export function mountChatRoutes(api: Hono): void {
           throw new Error('Некорректный ref (JSON)');
         }
       }
-      const { id } = insertMessage({
+      const { id } = await insertMessage({
         chatId,
         senderId: actor.id,
         body: caption,
@@ -1348,17 +1348,17 @@ export function mountChatRoutes(api: Hono): void {
         ref,
       });
       const att = await storeAttachment({ chatId, messageId: id, buf, fileName });
-      const row = get<Parameters<typeof messageDto>[0]>(
+      const row = (await get<Parameters<typeof messageDto>[0]>(
         'SELECT * FROM chat_messages WHERE id = ?',
         [id]
-      )!;
-      auditFromContext(c, {
+      ))!;
+      await auditFromContext(c, {
         action: 'chat.attachment',
         entity: 'chat',
         entityId: chatId,
         summary: `Файл в чат: ${att.name} (${Math.round(att.size / 1024)} КБ)`,
       });
-      return c.json({ ...messageDto(row), attachment: att }, 201);
+      return c.json({ ...await messageDto(row), attachment: att }, 201);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'upload failed';
       const status = /S3 не|больше|Пустой|не найден|Ответ|ref|сущност/i.test(msg) ? 400 : 500;
@@ -1366,26 +1366,26 @@ export function mountChatRoutes(api: Hono): void {
     }
   });
 
-  api.post('/chats/:id/read', (c) => {
-    const actor = requireChatActor(c);
+  api.post('/chats/:id/read', async (c) => {
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const chatId = c.req.param('id');
-    if (!isMember(chatId, actor.id)) return c.json({ error: 'Нет доступа к чату' }, 403);
-    run(
+    if (!await isMember(chatId, actor.id)) return c.json({ error: 'Нет доступа к чату' }, 403);
+    await run(
       `UPDATE chat_members SET last_read_at = datetime('now') WHERE chat_id = ? AND actor_id = ?`,
       [chatId, actor.id]
     );
     return c.json({ ok: true });
   });
 
-  api.get('/chats/:id/members', (c) => {
-    const actor = requireChatActor(c);
+  api.get('/chats/:id/members', async (c) => {
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const chatId = c.req.param('id');
-    if (!isMember(chatId, actor.id)) return c.json({ error: 'Нет доступа к чату' }, 403);
-    const chat = get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
+    if (!await isMember(chatId, actor.id)) return c.json({ error: 'Нет доступа к чату' }, 403);
+    const chat = await get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
     if (!chat) return c.json({ error: 'not found' }, 404);
-    const full = serializeChat(chat, actor);
+    const full = await serializeChat(chat, actor);
     return c.json({
       items: full.members,
       created_by: full.created_by,
@@ -1398,21 +1398,21 @@ export function mountChatRoutes(api: Hono): void {
 
   /** Назначить / снять админа группы. */
   api.patch('/chats/:id/members/:actorId', async (c) => {
-    const actor = requireChatActor(c);
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const chatId = c.req.param('id');
     const targetId = String(c.req.param('actorId') || '').trim();
-    const chat = get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
+    const chat = await get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
     if (!chat) return c.json({ error: 'not found' }, 404);
     if (chat.type !== 'group') return c.json({ error: 'Роли только в группе' }, 400);
-    if (!isChatAdmin(chatId, actor)) return c.json({ error: 'Только админ чата' }, 403);
-    if (!isMember(chatId, targetId)) return c.json({ error: 'Участник не в группе' }, 404);
+    if (!await isChatAdmin(chatId, actor)) return c.json({ error: 'Только админ чата' }, 403);
+    if (!await isMember(chatId, targetId)) return c.json({ error: 'Участник не в группе' }, 404);
     const body = await c.req
       .json<{ role?: string }>()
       .catch(() => ({}) as { role?: string });
     const role = String(body.role || '').trim() === 'admin' ? 'admin' : 'member';
     if (role === 'member') {
-      const admins = all<{ actor_id: string }>(
+      const admins = await all<{ actor_id: string }>(
         `SELECT actor_id FROM chat_members WHERE chat_id = ? AND role = 'admin'`,
         [chatId]
       );
@@ -1429,30 +1429,30 @@ export function mountChatRoutes(api: Hono): void {
         return c.json({ error: 'Нельзя снять создателя группы с админов' }, 403);
       }
     }
-    run(`UPDATE chat_members SET role = ? WHERE chat_id = ? AND actor_id = ?`, [
+    await run(`UPDATE chat_members SET role = ? WHERE chat_id = ? AND actor_id = ?`, [
       role,
       chatId,
       targetId,
     ]);
-    touchChat(chatId);
-    auditFromContext(c, {
+    await touchChat(chatId);
+    await auditFromContext(c, {
       action: 'chat.member_role',
       entity: 'chat',
       entityId: chatId,
-      summary: `${staffName(targetId)} → ${role === 'admin' ? 'админ' : 'участник'}`,
+      summary: `${await staffName(targetId)} → ${role === 'admin' ? 'админ' : 'участник'}`,
       after: { actor_id: targetId, role },
     });
-    return c.json(serializeChat(get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId])!, actor));
+    return c.json(await serializeChat((await get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]))!, actor));
   });
 
   api.post('/chats/:id/members', async (c) => {
-    const actor = requireChatActor(c);
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const chatId = c.req.param('id');
-    const chat = get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
+    const chat = await get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
     if (!chat) return c.json({ error: 'not found' }, 404);
     if (chat.type !== 'group') return c.json({ error: 'Участников DM менять нельзя' }, 400);
-    if (!isChatAdmin(chatId, actor)) return c.json({ error: 'Только админ чата' }, 403);
+    if (!await isChatAdmin(chatId, actor)) return c.json({ error: 'Только админ чата' }, 403);
     const body = await c.req
       .json<{ actor_id?: string; member_ids?: string[] }>()
       .catch(() => ({}) as { actor_id?: string; member_ids?: string[] });
@@ -1466,31 +1466,31 @@ export function mountChatRoutes(api: Hono): void {
     ];
     if (!ids.length) return c.json({ error: 'Нужен actor_id или member_ids' }, 400);
     for (const id of ids) {
-      if (!get('SELECT id FROM staff WHERE id = ?', [id])) {
+      if (!await get('SELECT id FROM staff WHERE id = ?', [id])) {
         return c.json({ error: `Сотрудник не найден: ${id}` }, 400);
       }
-      run(
+      await run(
         `INSERT OR IGNORE INTO chat_members (chat_id, actor_id, role) VALUES (?, ?, 'member')`,
         [chatId, id]
       );
     }
-    touchChat(chatId);
-    return c.json(serializeChat(get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId])!, actor));
+    await touchChat(chatId);
+    return c.json(await serializeChat((await get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]))!, actor));
   });
 
-  api.delete('/chats/:id/members/:actorId', (c) => {
-    const actor = requireChatActor(c);
+  api.delete('/chats/:id/members/:actorId', async (c) => {
+    const actor = await requireChatActor(c);
     if (!isActor(actor)) return actor;
     const chatId = c.req.param('id');
     const targetId = c.req.param('actorId');
-    const chat = get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
+    const chat = await get<ChatRow>('SELECT * FROM chats WHERE id = ?', [chatId]);
     if (!chat) return c.json({ error: 'not found' }, 404);
     if (chat.type !== 'group') return c.json({ error: 'Участников DM менять нельзя' }, 400);
     const selfLeave = targetId === actor.id;
-    if (!selfLeave && !isChatAdmin(chatId, actor)) {
+    if (!selfLeave && !await isChatAdmin(chatId, actor)) {
       return c.json({ error: 'Только админ чата' }, 403);
     }
-    const admins = all<{ actor_id: string }>(
+    const admins = await all<{ actor_id: string }>(
       `SELECT actor_id FROM chat_members WHERE chat_id = ? AND role = 'admin'`,
       [chatId]
     );
@@ -1500,9 +1500,9 @@ export function mountChatRoutes(api: Hono): void {
     ) {
       return c.json({ error: 'Нельзя удалить последнего админа группы' }, 400);
     }
-    run('DELETE FROM chat_members WHERE chat_id = ? AND actor_id = ?', [chatId, targetId]);
-    touchChat(chatId);
+    await run('DELETE FROM chat_members WHERE chat_id = ? AND actor_id = ?', [chatId, targetId]);
+    await touchChat(chatId);
     if (selfLeave) return c.json({ ok: true, left: true });
-    return c.json(serializeChat(chat, actor));
+    return c.json(await serializeChat(chat, actor));
   });
 }

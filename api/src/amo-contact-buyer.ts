@@ -118,7 +118,7 @@ export async function pushContractBuyerToAmoContact(opts: {
   } else if (dealId) {
     args.unshift(`--deal=${dealId}`);
   }
-  return runPush(args);
+  return await runPush(args);
 }
 
 function amoDigits(v: unknown): string {
@@ -141,7 +141,7 @@ export async function pushCounterpartyToAmo(opts: {
   const id = String(opts.counterpartyId || '').trim();
   if (!id) return { ok: false, results: [], error: 'counterparty id required' };
 
-  const row = get<Record<string, unknown>>('SELECT * FROM counterparties WHERE id = ?', [id]);
+  const row = await get<Record<string, unknown>>('SELECT * FROM counterparties WHERE id = ?', [id]);
   if (!row) return { ok: false, results: [], error: 'not found' };
 
   const buyer: ContractBuyerPush = {
@@ -168,7 +168,7 @@ export async function pushCounterpartyToAmo(opts: {
   if (selfCompany) companyIds.add(selfCompany);
 
   // связи company↔contact
-  for (const r of all<{ amo_contact_id?: string }>(
+  for (const r of await all<{ amo_contact_id?: string }>(
     `SELECT c.amo_contact_id
      FROM counterparty_amo_links l
      JOIN counterparties c ON c.id = l.contact_id
@@ -178,7 +178,7 @@ export async function pushCounterpartyToAmo(opts: {
     const d = amoDigits(r.amo_contact_id);
     if (d) contactIds.add(d);
   }
-  for (const r of all<{ amo_company_id?: string }>(
+  for (const r of await all<{ amo_company_id?: string }>(
     `SELECT c.amo_company_id
      FROM counterparty_amo_links l
      JOIN counterparties c ON c.id = l.company_id

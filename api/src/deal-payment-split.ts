@@ -30,12 +30,12 @@ export function paymentCoversOf(row: { meta_json?: string; kind?: string }): Pay
 }
 
 /** Суммы заказа: товары / услуги / всего (по item_kind позиций). */
-export function getDealBasketTotals(dealId: string): {
+export async function getDealBasketTotals(dealId: string): Promise<{
   goods: number;
   services: number;
   total: number;
-} {
-  const rows = all<{ item_kind: string; amount: number }>(
+}> {
+  const rows = await all<{ item_kind: string; amount: number }>(
     `SELECT
        CASE
          WHEN IFNULL(p.item_kind,'product') = 'service' THEN 'service'
@@ -66,7 +66,7 @@ export function getDealBasketTotals(dealId: string): {
  * covers=goods|services — в свою корзину;
  * covers=all — сначала закрывает остаток товаров, потом услуг.
  */
-export function getDealPaymentSplit(dealId: string): {
+export async function getDealPaymentSplit(dealId: string): Promise<{
   goods: number;
   services: number;
   total: number;
@@ -78,9 +78,9 @@ export function getDealPaymentSplit(dealId: string): {
   due_total: number;
   fully_paid: boolean;
   partial: boolean;
-} {
-  const basket = getDealBasketTotals(dealId);
-  const pays = all<{ amount: number; status: string; meta_json: string; kind: string }>(
+}> {
+  const basket = await getDealBasketTotals(dealId);
+  const pays = await all<{ amount: number; status: string; meta_json: string; kind: string }>(
     `SELECT amount, status, IFNULL(meta_json,'{}') AS meta_json, kind
      FROM deal_payments WHERE deal_id = ?`,
     [dealId]
@@ -135,21 +135,21 @@ export function getDealPaymentSplit(dealId: string): {
 }
 
 /** Выставить paid / partial по фактическим оплатам и корзинам. */
-export function syncDealPaidStatus(dealId: string): {
-  split: ReturnType<typeof getDealPaymentSplit>;
+export async function syncDealPaidStatus(dealId: string): Promise<{
+  split: Awaited<ReturnType<typeof getDealPaymentSplit>>;
   paid: boolean;
   payment_status: string;
-} {
-  const split = getDealPaymentSplit(dealId);
+}> {
+  const split = await getDealPaymentSplit(dealId);
   const payment_status = split.fully_paid ? 'paid' : split.partial ? 'partial' : '';
   const paidFlag = split.fully_paid ? 1 : 0;
   try {
-    run(
+    await run(
       `UPDATE crm_deals SET paid = ?, payment_status = ?, updated_at = datetime('now') WHERE id = ?`,
       [paidFlag, payment_status, dealId]
     );
   } catch {
-    run(`UPDATE crm_deals SET paid = ?, payment_status = ? WHERE id = ?`, [
+    await run(`UPDATE crm_deals SET paid = ?, payment_status = ? WHERE id = ?`, [
       paidFlag,
       payment_status,
       dealId,
@@ -157,7 +157,7 @@ export function syncDealPaidStatus(dealId: string): {
   }
   const invoiceStatus = split.fully_paid ? 'paid' : split.partial ? 'partial' : 'issued';
   try {
-    run(
+    await run(
       `UPDATE sales_docs SET status = ? WHERE deal_id = ? AND doc_type = 'invoice'`,
       [invoiceStatus, dealId]
     );
@@ -166,7 +166,7 @@ export function syncDealPaidStatus(dealId: string): {
   }
   if (split.fully_paid) {
     try {
-      run(
+      await run(
         `UPDATE payment_links SET status = 'cancelled', expired_at = datetime('now')
          WHERE deal_id = ? AND status = 'pending'`,
         [dealId]

@@ -48,8 +48,8 @@ export function looksLikeServiceUnit(unitShort: string): boolean {
 }
 
 /** Единица «услуга» в справочнике (создаём при отсутствии). */
-export function ensureServiceUnitId(): string {
-  const hit = get<{ id: string }>(
+export async function ensureServiceUnitId(): Promise<string> {
+  const hit = await get<{ id: string }>(
     `SELECT id FROM units
      WHERE lower(trim(short_name)) IN ('услуга', 'усл')
         OR lower(trim(name)) IN ('услуга', 'услуги')
@@ -57,21 +57,21 @@ export function ensureServiceUnitId(): string {
   );
   if (hit?.id) return hit.id;
   const id = newGuid();
-  run(`INSERT INTO units (id, name, short_name) VALUES (?, 'Услуга', 'услуга')`, [id]);
+  await run(`INSERT INTO units (id, name, short_name) VALUES (?, 'Услуга', 'услуга')`, [id]);
   return id;
 }
 
 /** Всем услугам — единица «услуга» (не «шт»). */
-export function assignServiceUnits(): number {
-  const unitId = ensureServiceUnitId();
+export async function assignServiceUnits(): Promise<number> {
+  const unitId = await ensureServiceUnitId();
   const before =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM products
        WHERE IFNULL(item_kind,'product') = 'service' AND IFNULL(unit_id,'') != ?`,
       [unitId]
-    )?.c ?? 0;
+    ))?.c ?? 0;
   if (before > 0) {
-    run(
+    await run(
       `UPDATE products SET unit_id = ?
        WHERE IFNULL(item_kind,'product') = 'service' AND IFNULL(unit_id,'') != ?`,
       [unitId, unitId]
@@ -95,17 +95,17 @@ export function looksLikeServiceCategoryName(name: string): boolean {
 }
 
 /** Убрать строки-услуги из расходных (после переклассификации номенклатуры). */
-export function purgeServiceLinesFromOutDocs(): { deleted: number } {
+export async function purgeServiceLinesFromOutDocs(): Promise<{ deleted: number }> {
   const before =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM stock_doc_lines
        WHERE doc_id IN (SELECT id FROM stock_docs WHERE doc_type = 'out')
          AND product_id IN (
            SELECT id FROM products WHERE IFNULL(item_kind, 'product') = 'service'
          )`
-    )?.c ?? 0;
+    ))?.c ?? 0;
   if (before > 0) {
-    run(
+    await run(
       `DELETE FROM stock_doc_lines
        WHERE doc_id IN (SELECT id FROM stock_docs WHERE doc_type = 'out')
          AND product_id IN (
@@ -117,8 +117,8 @@ export function purgeServiceLinesFromOutDocs(): { deleted: number } {
 }
 
 /** Категории-услуги и все их потомки. */
-export function serviceCategoryIds(): Set<string> {
-  const cats = all<{ id: string; name: string; parent_id: string | null }>(
+export async function serviceCategoryIds(): Promise<Set<string>> {
+  const cats = await all<{ id: string; name: string; parent_id: string | null }>(
     `SELECT id, IFNULL(name,'') AS name, parent_id FROM categories`
   );
   const children = new Map<string, string[]>();
@@ -142,14 +142,14 @@ export function serviceCategoryIds(): Set<string> {
   return out;
 }
 
-export function classifyProductKind(input: {
+export async function classifyProductKind(input: {
   name?: string;
   unit_short?: string;
   category_id?: string;
   serviceCategoryIds?: Set<string>;
-}): 'service' | 'product' {
+}): Promise<'service' | 'product'> {
   if (looksLikeServiceUnit(String(input.unit_short || ''))) return 'service';
-  const svcCats = input.serviceCategoryIds || serviceCategoryIds();
+  const svcCats = input.serviceCategoryIds || await serviceCategoryIds();
   const cid = String(input.category_id || '').trim();
   if (cid && svcCats.has(cid)) return 'service';
   if (looksLikeServiceName(String(input.name || ''))) return 'service';
@@ -160,14 +160,14 @@ export function classifyProductKind(input: {
  * Проставить item_kind по всей номенклатуре.
  * @returns счётчики
  */
-export function reclassifyAllProductKinds(): {
+export async function reclassifyAllProductKinds(): Promise<{
   total: number;
   service: number;
   product: number;
   changed: number;
-} {
-  const svcCats = serviceCategoryIds();
-  const rows = all<{
+}> {
+  const svcCats = await serviceCategoryIds();
+  const rows = await all<{
     id: string;
     name: string;
     category_id: string;
@@ -184,7 +184,7 @@ export function reclassifyAllProductKinds(): {
   let product = 0;
   let changed = 0;
   for (const r of rows) {
-    const next = classifyProductKind({
+    const next = await classifyProductKind({
       name: r.name,
       unit_short: r.unit_short,
       category_id: r.category_id,
@@ -194,11 +194,11 @@ export function reclassifyAllProductKinds(): {
     else product += 1;
     const prev = String(r.item_kind || 'product').toLowerCase() === 'service' ? 'service' : 'product';
     if (prev !== next) {
-      run(`UPDATE products SET item_kind = ? WHERE id = ?`, [next, r.id]);
+      await run(`UPDATE products SET item_kind = ? WHERE id = ?`, [next, r.id]);
       changed += 1;
     }
   }
-  assignServiceUnits();
+  await assignServiceUnits();
   return { total: rows.length, service, product, changed };
 }
 
@@ -291,7 +291,7 @@ export function sqlExcludeCrossContourProducts(productAlias = 'p', companyAlias 
 /** Оставить активными только общие услуги se-* (23 шт.). Остальное — legacy из 1С. */
 export function deactivateLegacyServices(): number {
   // Только реально активные — иначе каждый boot «меняет» сотни строк (WAL/CPU).
-  const r = db.prepare(
+  const r = /* PG: replace prepare */ db.prepare(
     `UPDATE products SET is_active = 0
      WHERE IFNULL(item_kind,'product') = 'service'
        AND IFNULL(is_active,1) != 0
@@ -302,8 +302,8 @@ export function deactivateLegacyServices(): number {
 }
 
 /** Быстрая проверка по id (с учётом актуального item_kind и эвристик). */
-export function productIsService(productId: string): boolean {
-  const row = get<{
+export async function productIsService(productId: string): Promise<boolean> {
+  const row = await get<{
     item_kind: string;
     name: string;
     category_id: string;
@@ -321,7 +321,7 @@ export function productIsService(productId: string): boolean {
   if (!row) return false;
   if (String(row.item_kind).toLowerCase() === 'service') return true;
   return (
-    classifyProductKind({
+    await classifyProductKind({
       name: row.name,
       unit_short: row.unit_short,
       category_id: row.category_id,

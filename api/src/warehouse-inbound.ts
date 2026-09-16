@@ -77,14 +77,14 @@ export type DraftLineInput = {
  * Сохранить строки черновика приходной (только posted=0).
  * Эталон (baseline) пишется при первом сохранении.
  */
-export function saveInboundDraft(input: {
+export async function saveInboundDraft(input: {
   docId: string;
   lines: DraftLineInput[];
   comment?: string;
-}): { id: string; number: string; lines: Array<Record<string, unknown>> } {
+}): Promise<{ id: string; number: string; lines: Array<Record<string, unknown>> }> {
   const id = String(input.docId || '').trim();
   if (!id) throw new Error('Не указан документ');
-  const doc = get<{
+  const doc = await get<{
     id: string;
     doc_type: string;
     posted: number;
@@ -104,12 +104,12 @@ export function saveInboundDraft(input: {
   const lines = Array.isArray(input.lines) ? input.lines : [];
   if (!lines.length) throw new Error('Добавьте хотя бы одну строку');
 
-  const normalized: DraftLineInput[] = lines.map((l, idx) => {
+  const normalized: DraftLineInput[] = await Promise.all(lines.map(async (l, idx) => {
     const productId = String(l.product_id || '').trim();
     const qty = Math.round(Number(l.qty) || 0);
     if (!productId) throw new Error(`Строка ${idx + 1}: не выбран товар`);
     if (!(qty > 0)) throw new Error(`Строка ${idx + 1}: количество должно быть > 0`);
-    const prod = get<{ id: string }>(`SELECT id FROM products WHERE id = ?`, [productId]);
+    const prod = await get<{ id: string }>(`SELECT id FROM products WHERE id = ?`, [productId]);
     if (!prod) throw new Error(`Строка ${idx + 1}: товар не найден`);
     return {
       id: String(l.id || '').trim() || undefined,
@@ -118,32 +118,32 @@ export function saveInboundDraft(input: {
       price: Math.max(0, Number(l.price) || 0),
       warehouse_id: String(l.warehouse_id || '').trim() || String(doc.warehouse_id || ''),
     };
-  });
+  }));
 
-  const existingBefore = all<{ product_id: string; qty: number; price: number }>(
+  const existingBefore = (await all<{ product_id: string; qty: number; price: number }>(
     `SELECT IFNULL(product_id,'') AS product_id, qty, IFNULL(price,0) AS price
      FROM stock_doc_lines WHERE doc_id = ?`,
     [id]
-  ).map(
+  )).map(
     (r): BaselineLine => ({
       product_id: String(r.product_id),
       qty: Number(r.qty) || 0,
       price: Number(r.price) || 0,
     })
   );
-  ensureInboundBaseline(id, existingBefore.length ? existingBefore : normalized);
+  await ensureInboundBaseline(id, existingBefore.length ? existingBefore : normalized);
 
   const keepIds = new Set(
     normalized.map((l) => l.id).filter((x): x is string => !!x && x.length > 0)
   );
-  const oldLines = all<{ id: string }>(`SELECT id FROM stock_doc_lines WHERE doc_id = ?`, [id]);
+  const oldLines = await all<{ id: string }>(`SELECT id FROM stock_doc_lines WHERE doc_id = ?`, [id]);
   for (const old of oldLines) {
     if (!keepIds.has(String(old.id))) {
-      run(`DELETE FROM stock_doc_line_placements WHERE doc_id = ? AND line_id = ?`, [
+      await run(`DELETE FROM stock_doc_line_placements WHERE doc_id = ? AND line_id = ?`, [
         id,
         old.id,
       ]);
-      run(`DELETE FROM stock_doc_lines WHERE id = ? AND doc_id = ?`, [old.id, id]);
+      await run(`DELETE FROM stock_doc_lines WHERE id = ? AND doc_id = ?`, [old.id, id]);
     }
   }
 
@@ -153,23 +153,23 @@ export function saveInboundDraft(input: {
     docAmount += amount;
     const lineWh = String(line.warehouse_id || doc.warehouse_id || '').trim();
     if (line.id) {
-      const exists = get<{ id: string }>(
+      const exists = await get<{ id: string }>(
         `SELECT id FROM stock_doc_lines WHERE id = ? AND doc_id = ?`,
         [line.id, id]
       );
       if (exists) {
-        run(
+        await run(
           `UPDATE stock_doc_lines
            SET product_id = ?, qty = ?, price = ?, amount = ?, warehouse_id = ?
            WHERE id = ? AND doc_id = ?`,
           [line.product_id, line.qty, line.price || 0, amount, lineWh, line.id, id]
         );
-        const pls = all<{ id: string; qty: number }>(
+        const pls = await all<{ id: string; qty: number }>(
           `SELECT id, qty FROM stock_doc_line_placements WHERE doc_id = ? AND line_id = ?`,
           [id, line.id]
         );
         if (pls.length === 1 && !qtyEqual(Number(pls[0].qty), line.qty)) {
-          run(`UPDATE stock_doc_line_placements SET qty = ? WHERE id = ?`, [
+          await run(`UPDATE stock_doc_line_placements SET qty = ? WHERE id = ?`, [
             line.qty,
             pls[0].id,
           ]);
@@ -178,7 +178,7 @@ export function saveInboundDraft(input: {
       }
     }
     const newId = newGuid();
-    run(
+    await run(
       `INSERT INTO stock_doc_lines (id, doc_id, product_id, qty, price, amount, serials_json, warehouse_id, apps_json)
        VALUES (?, ?, ?, ?, ?, ?, '[]', ?, '')`,
       [newId, id, line.product_id, line.qty, line.price || 0, amount, lineWh]
@@ -186,16 +186,16 @@ export function saveInboundDraft(input: {
   }
 
   if (input.comment != null) {
-    run(`UPDATE stock_docs SET comment = ?, amount = ? WHERE id = ?`, [
+    await run(`UPDATE stock_docs SET comment = ?, amount = ? WHERE id = ?`, [
       String(input.comment),
       docAmount,
       id,
     ]);
   } else {
-    run(`UPDATE stock_docs SET amount = ? WHERE id = ?`, [docAmount, id]);
+    await run(`UPDATE stock_docs SET amount = ? WHERE id = ?`, [docAmount, id]);
   }
 
-  const saved = all<Record<string, unknown>>(
+  const saved = await all<Record<string, unknown>>(
     `SELECT l.*, IFNULL(p.name,'') AS product_name, IFNULL(p.sku,'') AS sku, IFNULL(p.code,'') AS code
      FROM stock_doc_lines l
      LEFT JOIN products p ON p.id = l.product_id
@@ -207,35 +207,43 @@ export function saveInboundDraft(input: {
 }
 
 /** Черновик приходной на основании заказа поставщику (thin journal). */
-export function createInboundFromSupplierOrder(input: {
+export async function createInboundFromSupplierOrder(input: {
   supplier_order_id: string;
   warehouse_id?: string;
   copy_prices?: boolean;
   comment?: string;
   organization_id?: string;
-}): {
+}): Promise<{
   id: string;
   number: string;
   posted: false;
   lines_count: number;
   source_supplier_order_id: string;
-} {
+}> {
   const orderId = String(input.supplier_order_id || '').trim();
   if (!orderId) throw new Error('Укажите заказ поставщику');
-  const order = getThinJournalDoc('supplier_orders', orderId);
+  const order = await getThinJournalDoc('supplier_orders', orderId);
   if (!order) throw new Error('Заказ поставщику не найден');
-  const lines = Array.isArray(order.lines) ? order.lines : [];
+  const lines = (Array.isArray(order.lines) ? order.lines : []) as Array<{
+    product_id?: string;
+    qty?: number;
+    price?: number;
+    article?: string;
+    sku?: string;
+  }>;
   if (!lines.length) throw new Error('В заказе нет строк номенклатуры');
 
   const warehouseId =
     String(input.warehouse_id || order.warehouse_id || '').trim() ||
-    resolveMainInboundWarehouseId();
+    await resolveMainInboundWarehouseId();
   const copyPrices = !!input.copy_prices;
   const supplyNumber = String(
     order.supply_number || order.invoice_number || order.number || ''
   ).trim();
-  const orgId = resolveOrganizationId(
-    input.organization_id || order.organization_id || null
+  const orgId = await resolveOrganizationId(
+    String(input.organization_id || '').trim() ||
+      String(order.organization_id ?? '').trim() ||
+      null
   );
   const cpId = String(order.counterparty_id || '').trim() || null;
   const comment =
@@ -255,7 +263,7 @@ export function createInboundFromSupplierOrder(input: {
     };
   });
 
-  const docId = createDocument({
+  const docId = await createDocument({
     doc_type: 'in',
     warehouse_id: warehouseId,
     counterparty_id: cpId,
@@ -268,7 +276,7 @@ export function createInboundFromSupplierOrder(input: {
     lines: docLines,
   });
 
-  ensureInboundBaseline(
+  await ensureInboundBaseline(
     docId,
     docLines.map((l) => ({
       product_id: l.product_id,
@@ -280,7 +288,7 @@ export function createInboundFromSupplierOrder(input: {
   );
 
   // зафиксировать baseline именно по строкам заказа (с ценами заказа для анализа)
-  run(`UPDATE stock_docs SET inbound_baseline_json = ? WHERE id = ?`, [
+  await run(`UPDATE stock_docs SET inbound_baseline_json = ? WHERE id = ?`, [
     JSON.stringify({
       lines: lines.map((l) => ({
         product_id: String(l.product_id),
@@ -294,7 +302,7 @@ export function createInboundFromSupplierOrder(input: {
     docId,
   ]);
 
-  const doc = get<{ number: string }>(`SELECT number FROM stock_docs WHERE id = ?`, [docId]);
+  const doc = await get<{ number: string }>(`SELECT number FROM stock_docs WHERE id = ?`, [docId]);
   return {
     id: docId,
     number: String(doc?.number || docId),
@@ -304,21 +312,21 @@ export function createInboundFromSupplierOrder(input: {
   };
 }
 
-export function createInboundWithPlacements(input: {
+export async function createInboundWithPlacements(input: {
   warehouse_id?: string;
   counterparty_id?: string | null;
   comment?: string;
   lines: InboundLineInput[];
-}): { id: string; number: string } {
-  const warehouseId = String(input.warehouse_id || '').trim() || resolveMainInboundWarehouseId();
-  if (!warehouseHasActiveCells(warehouseId)) {
+}): Promise<{ id: string; number: string }> {
+  const warehouseId = String(input.warehouse_id || '').trim() || await resolveMainInboundWarehouseId();
+  if (!await warehouseHasActiveCells(warehouseId)) {
     throw new Error(
       'На выбранном складе нет активных ячеек — выберите другой склад или импортируйте сетку'
     );
   }
   validateInboundLines(input.lines || []);
   const comment = String(input.comment || '').trim();
-  const docId = createDocument({
+  const docId = await createDocument({
     doc_type: 'in',
     warehouse_id: warehouseId,
     counterparty_id: input.counterparty_id ?? null,
@@ -332,16 +340,16 @@ export function createInboundWithPlacements(input: {
       warehouse_id: warehouseId,
     })),
   });
-  const dbLines = all<{ id: string; product_id: string; qty: number }>(
+  const dbLines = await all<{ id: string; product_id: string; qty: number }>(
     `SELECT id, product_id, qty FROM stock_doc_lines WHERE doc_id = ? ORDER BY rowid`,
     [docId]
   );
   if (dbLines.length !== input.lines.length) {
     throw new Error('Не удалось сохранить строки прихода');
   }
-  dbLines.forEach((dbLine, idx) => {
+  dbLines.forEach(async (dbLine, idx) => {
     const src = input.lines[idx];
-    insertLinePlacements({
+    await insertLinePlacements({
       doc_id: docId,
       line_id: String(dbLine.id),
       warehouse_id: warehouseId,
@@ -349,7 +357,7 @@ export function createInboundWithPlacements(input: {
       placements: src.placements,
     });
   });
-  ensureInboundBaseline(
+  await ensureInboundBaseline(
     docId,
     input.lines.map((l) => ({
       product_id: String(l.product_id),
@@ -357,23 +365,23 @@ export function createInboundWithPlacements(input: {
       price: Number(l.price) || 0,
     }))
   );
-  postDocument(docId, { serialsOptional: true });
-  const doc = get<{ number: string }>(`SELECT number FROM stock_docs WHERE id = ?`, [docId]);
+  await postDocument(docId, { serialsOptional: true });
+  const doc = await get<{ number: string }>(`SELECT number FROM stock_docs WHERE id = ?`, [docId]);
   return { id: docId, number: String(doc?.number || docId) };
 }
 
 /**
  * Оприходовать черновик приходной: остатки по складам строк + ячейки из placements.
  */
-export function postInboundDocument(docId: string): {
+export async function postInboundDocument(docId: string): Promise<{
   id: string;
   number: string;
   posted: true;
-  discrepancy?: ReturnType<typeof ensureDiscrepancyAct>;
-} {
+  discrepancy?: Awaited<ReturnType<typeof ensureDiscrepancyAct>>;
+}> {
   const id = String(docId || '').trim();
   if (!id) throw new Error('Не указан документ');
-  const doc = get<{ id: string; doc_type: string; posted: number; number: string }>(
+  const doc = await get<{ id: string; doc_type: string; posted: number; number: string }>(
     `SELECT id, IFNULL(doc_type,'') AS doc_type, posted, IFNULL(number,'') AS number
      FROM stock_docs WHERE id = ?`,
     [id]
@@ -382,14 +390,14 @@ export function postInboundDocument(docId: string): {
   if (String(doc.doc_type) !== 'in') throw new Error('Оприходование только для приходных');
   if (Number(doc.posted) === 1) throw new Error('Документ уже проведён');
 
-  const lines = all<{ id: string; product_id: string; qty: number; warehouse_id: string }>(
+  const lines = await all<{ id: string; product_id: string; qty: number; warehouse_id: string }>(
     `SELECT id, IFNULL(product_id,'') AS product_id, qty, IFNULL(warehouse_id,'') AS warehouse_id
      FROM stock_doc_lines WHERE doc_id = ? ORDER BY rowid`,
     [id]
   );
   if (!lines.length) throw new Error('Нет строк для оприходования');
 
-  ensureInboundBaseline(
+  await ensureInboundBaseline(
     id,
     lines.map((l) => ({
       product_id: String(l.product_id),
@@ -397,7 +405,7 @@ export function postInboundDocument(docId: string): {
     }))
   );
 
-  const placements = getPlacementsForDoc(id).lines as Array<{
+  const placements = (await getPlacementsForDoc(id)).lines as Array<{
     line_id: string;
     cell_code: string;
     qty: number;
@@ -441,24 +449,24 @@ export function postInboundDocument(docId: string): {
     }
   });
 
-  postDocument(id, { serialsOptional: true });
-  let discrepancy: ReturnType<typeof ensureDiscrepancyAct> | undefined;
+  await postDocument(id, { serialsOptional: true });
+  let discrepancy: Awaited<ReturnType<typeof ensureDiscrepancyAct>> | undefined;
   try {
-    discrepancy = ensureDiscrepancyAct(id);
+    discrepancy = await ensureDiscrepancyAct(id);
   } catch (e) {
     console.warn('[inbound] discrepancy act failed', e instanceof Error ? e.message : e);
   }
   try {
-    const orderId = get<{ source_supplier_order_id: string }>(
+    const orderId = (await get<{ source_supplier_order_id: string }>(
       `SELECT IFNULL(source_supplier_order_id,'') AS source_supplier_order_id
        FROM stock_docs WHERE id = ?`,
       [id]
-    )?.source_supplier_order_id;
-    if (orderId) refreshThinSupplierOrderStatus(String(orderId));
+    ))?.source_supplier_order_id;
+    if (orderId) await refreshThinSupplierOrderStatus(String(orderId));
   } catch (e) {
     console.warn('[inbound] order status refresh failed', e instanceof Error ? e.message : e);
   }
-  const after = get<{ number: string }>(
+  const after = await get<{ number: string }>(
     `SELECT IFNULL(number,'') AS number FROM stock_docs WHERE id = ?`,
     [id]
   );
@@ -484,13 +492,13 @@ function fmtQty(n: number): string {
 }
 
 /** Печатная форма приходной: факт qty + размещения по складам/ячейкам. */
-export function inboundReceiptPrintHtml(
+export async function inboundReceiptPrintHtml(
   docId: string,
   opts?: { autoprint?: boolean }
-): string {
+): Promise<string> {
   const id = String(docId || '').trim();
   if (!id) throw new Error('Не указан документ');
-  const doc = get<{
+  const doc = await get<{
     id: string;
     number: string;
     doc_type: string;
@@ -519,7 +527,7 @@ export function inboundReceiptPrintHtml(
   if (!doc) throw new Error('Документ не найден');
   if (String(doc.doc_type) !== 'in') throw new Error('Печать только для приходных');
 
-  const lines = all<{
+  const lines = await all<{
     id: string;
     product_id: string;
     qty: number;
@@ -553,7 +561,7 @@ export function inboundReceiptPrintHtml(
     [String(doc.warehouse_id || ''), id]
   );
 
-  const placements = getPlacementsForDoc(id).lines as Array<{
+  const placements = (await getPlacementsForDoc(id)).lines as Array<{
     line_id: string;
     cell_code: string;
     qty: number;
@@ -568,11 +576,11 @@ export function inboundReceiptPrintHtml(
   }
 
   const whNameCache = new Map<string, string>();
-  const whName = (wid: string): string => {
+  const whName = async (wid: string): Promise<string> => {
     const w = String(wid || '').trim();
     if (!w) return '';
     if (whNameCache.has(w)) return whNameCache.get(w)!;
-    const row = get<{ name: string; code: string }>(
+    const row = await get<{ name: string; code: string }>(
       `SELECT IFNULL(name,'') AS name, IFNULL(code,'') AS code FROM warehouses WHERE id = ?`,
       [w]
     );
@@ -608,8 +616,9 @@ export function inboundReceiptPrintHtml(
   }
 
   let qtySum = 0;
-  const rowsHtml = collapsed
-    .map((l, idx) => {
+  const rowsHtml = (
+    await Promise.all(
+      collapsed.map(async (l, idx) => {
       const qty = Number(l.qty_sum) || 0;
       qtySum += qty;
       const art = catalogArticleOf({
@@ -630,16 +639,18 @@ export function inboundReceiptPrintHtml(
           if (prev) prev.qty += Number(p.qty) || 0;
           else placeMerge.set(mk, { warehouse_id: wid, cell_code: cell, qty: Number(p.qty) || 0 });
         }
-        placeHtml = [...placeMerge.values()]
-          .map((p) => {
-            const wh = whName(p.warehouse_id);
-            const cell = p.cell_code;
-            const pq = fmtQty(p.qty);
-            return `${escPrint(wh)}${wh && cell ? ' · ' : ''}<b>${escPrint(cell)}</b> × ${escPrint(pq)}`;
-          })
-          .join('<br/>');
+        placeHtml = (
+          await Promise.all(
+            [...placeMerge.values()].map(async (p) => {
+              const wh = await whName(p.warehouse_id);
+              const cell = p.cell_code;
+              const pq = fmtQty(p.qty);
+              return `${escPrint(wh)}${wh && cell ? ' · ' : ''}<b>${escPrint(cell)}</b> × ${escPrint(pq)}`;
+            })
+          )
+        ).join('<br/>');
       } else {
-        const wh = String(l.wh_name || '').trim() || whName(String(l.warehouse_id || doc.warehouse_id));
+        const wh = String(l.wh_name || '').trim() || await whName(String(l.warehouse_id || doc.warehouse_id));
         placeHtml = wh
           ? `<span class="muted">${escPrint(wh)}</span> <span class="warn">ячейка не указана</span>`
           : '<span class="warn">нет размещения</span>';
@@ -653,11 +664,12 @@ export function inboundReceiptPrintHtml(
         <td class="l place">${placeHtml}</td>
       </tr>`;
     })
-    .join('');
+    )
+  ).join('');
 
   let discHtml = '';
   try {
-    const preview = previewDiscrepancyForInbound(id);
+    const preview = await previewDiscrepancyForInbound(id);
     if (preview.lines.length) {
       const actNum = preview.act ? String((preview.act as { number?: string }).number || '') : '';
       discHtml = `<div class="disc">
@@ -790,43 +802,43 @@ export function inboundReceiptPrintHtml(
 }
 
 export function mountWarehouseInboundRoutes(api: Hono): void {
-  api.get('/warehouse/inbound/meta', (c) => {
+  api.get('/warehouse/inbound/meta', async (c) => {
     try {
-      const warehouses = listWarehousesWithCells();
+      const warehouses = await listWarehousesWithCells();
       const requested = String(c.req.query('warehouse_id') || '').trim();
-      let wid = resolveMainInboundWarehouseId();
+      let wid = await resolveMainInboundWarehouseId();
       if (requested) {
         const hit = warehouses.find((w) => w.id === requested);
         if (hit) wid = hit.id;
         else {
-          const whRow = get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [requested]);
-          if (whRow?.id && warehouseHasActiveCells(String(whRow.id))) wid = String(whRow.id);
+          const whRow = await get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [requested]);
+          if (whRow?.id && await warehouseHasActiveCells(String(whRow.id))) wid = String(whRow.id);
         }
       } else if (warehouses.length) {
         const mainHit = warehouses.find((w) => w.id === wid);
         if (!mainHit) wid = warehouses[0].id;
       }
-      const wh = get<{ id: string; name: string; code: string }>(
+      const wh = await get<{ id: string; name: string; code: string }>(
         `SELECT id, name, code FROM warehouses WHERE id = ?`,
         [wid]
       );
       return c.json({
         warehouses,
         warehouse: wh,
-        cell_codes: listCellCodes(wid),
+        cell_codes: await listCellCodes(wid),
       });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.get('/warehouse/inbound/product-hints', (c) => {
+  api.get('/warehouse/inbound/product-hints', async (c) => {
     try {
       const productId = String(c.req.query('product_id') || '').trim();
       if (!productId) return c.json({ error: 'product_id обязателен' }, 400);
       const wid =
-        String(c.req.query('warehouse_id') || '').trim() || resolveMainInboundWarehouseId();
-      return c.json(listProductInboundHints(productId, wid));
+        String(c.req.query('warehouse_id') || '').trim() || await resolveMainInboundWarehouseId();
+      return c.json(await listProductInboundHints(productId, wid));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
@@ -847,13 +859,13 @@ export function mountWarehouseInboundRoutes(api: Hono): void {
     try {
       const lines = Array.isArray(body.lines) ? body.lines : [];
       if (!lines.length) return c.json({ error: 'Добавьте хотя бы одну строку прихода' }, 400);
-      const r = createInboundWithPlacements({
+      const r = await createInboundWithPlacements({
         warehouse_id: body.warehouse_id,
         counterparty_id: body.counterparty_id ?? null,
         comment: body.comment,
         lines,
       });
-      const doc = get(`SELECT * FROM stock_docs WHERE id = ?`, [r.id]);
+      const doc = await get(`SELECT * FROM stock_docs WHERE id = ?`, [r.id]);
       return c.json(doc, 201);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -874,14 +886,14 @@ export function mountWarehouseInboundRoutes(api: Hono): void {
       return c.json({ error: 'Некорректный JSON' }, 400);
     }
     try {
-      const r = createInboundFromSupplierOrder({
+      const r = await createInboundFromSupplierOrder({
         supplier_order_id: String(body.supplier_order_id || ''),
         warehouse_id: body.warehouse_id,
         copy_prices: !!body.copy_prices,
         comment: body.comment,
         organization_id: body.organization_id,
       });
-      const doc = get(`SELECT * FROM stock_docs WHERE id = ?`, [r.id]);
+      const doc = await get(`SELECT * FROM stock_docs WHERE id = ?`, [r.id]);
       return c.json({ ok: true, ...r, doc }, 201);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -896,7 +908,7 @@ export function mountWarehouseInboundRoutes(api: Hono): void {
       return c.json({ error: 'Некорректный JSON' }, 400);
     }
     try {
-      const r = saveInboundDraft({
+      const r = await saveInboundDraft({
         docId: c.req.param('id'),
         lines: Array.isArray(body.lines) ? body.lines : [],
         comment: body.comment,
@@ -907,19 +919,19 @@ export function mountWarehouseInboundRoutes(api: Hono): void {
     }
   });
 
-  api.get('/warehouse/inbound/:id/discrepancy', (c) => {
+  api.get('/warehouse/inbound/:id/discrepancy', async (c) => {
     try {
-      return c.json(previewDiscrepancyForInbound(c.req.param('id')));
+      return c.json(await previewDiscrepancyForInbound(c.req.param('id')));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.get('/warehouse/inbound/:id/print', (c) => {
+  api.get('/warehouse/inbound/:id/print', async (c) => {
     try {
       const autoprint =
         c.req.query('autoprint') === '1' || c.req.query('autoprint') === 'true';
-      const html = inboundReceiptPrintHtml(c.req.param('id'), { autoprint });
+      const html = await inboundReceiptPrintHtml(c.req.param('id'), { autoprint });
       return c.html(html);
     } catch (e) {
       return c.html(
@@ -929,18 +941,18 @@ export function mountWarehouseInboundRoutes(api: Hono): void {
     }
   });
 
-  api.get('/purchases/discrepancy', (c) => {
+  api.get('/purchases/discrepancy', async (c) => {
     try {
       const limit = Number(c.req.query('limit') || 50) || 50;
-      return c.json({ items: listDiscrepancyActs(limit) });
+      return c.json({ items: await listDiscrepancyActs(limit) });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.get('/purchases/discrepancy/:id', (c) => {
+  api.get('/purchases/discrepancy/:id', async (c) => {
     try {
-      const r = getDiscrepancyAct(c.req.param('id'));
+      const r = await getDiscrepancyAct(c.req.param('id'));
       if (!r) return c.json({ error: 'not found' }, 404);
       return c.json(r);
     } catch (e) {
@@ -948,11 +960,11 @@ export function mountWarehouseInboundRoutes(api: Hono): void {
     }
   });
 
-  api.get('/warehouse/inbound/placements', (c) => {
+  api.get('/warehouse/inbound/placements', async (c) => {
     try {
       const docId = String(c.req.query('doc_id') || '').trim();
       if (!docId) return c.json({ error: 'doc_id обязателен' }, 400);
-      return c.json(getPlacementsForDoc(docId));
+      return c.json(await getPlacementsForDoc(docId));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
@@ -973,7 +985,7 @@ export function mountWarehouseInboundRoutes(api: Hono): void {
     }
     try {
       if (Array.isArray(body.placements) && body.placements.length) {
-        const r = replaceLinePlacements({
+        const r = await replaceLinePlacements({
           doc_id: String(body.doc_id || ''),
           line_id: String(body.line_id || ''),
           placements: body.placements.map((p) => ({
@@ -984,7 +996,7 @@ export function mountWarehouseInboundRoutes(api: Hono): void {
         });
         return c.json(r);
       }
-      const r = replaceLinePlacement({
+      const r = await replaceLinePlacement({
         doc_id: String(body.doc_id || ''),
         line_id: String(body.line_id || ''),
         warehouse_id: String(body.warehouse_id || ''),
@@ -1004,8 +1016,8 @@ export function mountWarehouseInboundRoutes(api: Hono): void {
       return c.json({ error: 'Некорректный JSON' }, 400);
     }
     try {
-      const r = postInboundDocument(String(body.doc_id || ''));
-      const doc = get(`SELECT * FROM stock_docs WHERE id = ?`, [r.id]);
+      const r = await postInboundDocument(String(body.doc_id || ''));
+      const doc = await get(`SELECT * FROM stock_docs WHERE id = ?`, [r.id]);
       return c.json({ ok: true, ...r, doc });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);

@@ -88,7 +88,7 @@ export function canDo(
   return Boolean(actor.rights?.[right]);
 }
 
-function staffToActor(row: Record<string, unknown>): Actor {
+async function staffToActor(row: Record<string, unknown>): Promise<Actor> {
   return {
     id: String(row.id),
     name: String(row.name || ''),
@@ -96,18 +96,18 @@ function staffToActor(row: Record<string, unknown>): Actor {
     login: String(row.login || row.email || ''),
     role: String(row.role || 'none'),
     department: String(row.department || ''),
-    rights: effectiveRightsForStaff(row),
+    rights: await effectiveRightsForStaff(row),
     isSystemAdmin: false,
   };
 }
 
-export function createSession(
+export async function createSession(
   actorId: string,
   meta?: { ip?: string; ua?: string }
-): string {
+): Promise<string> {
   const id = newGuid();
   const expires = new Date(Date.now() + SESSION_DAYS * 86400_000).toISOString();
-  run(
+  await run(
     `INSERT INTO sessions (id, actor_id, expires_at, ip, user_agent)
      VALUES (?, ?, ?, ?, ?)`,
     [id, actorId, expires, meta?.ip || '', (meta?.ua || '').slice(0, 300)]
@@ -115,46 +115,46 @@ export function createSession(
   return id;
 }
 
-export function destroySession(sid: string | undefined): void {
+export async function destroySession(sid: string | undefined): Promise<void> {
   if (!sid) return;
-  run('DELETE FROM sessions WHERE id = ?', [sid]);
+  await run('DELETE FROM sessions WHERE id = ?', [sid]);
 }
 
 /** Сбросить все сессии сотрудника (кик из системы). */
-export function destroySessionsForActor(actorId: string): number {
+export async function destroySessionsForActor(actorId: string): Promise<number> {
   const id = String(actorId || '').trim();
   if (!id) return 0;
   const n =
-    get<{ c: number }>('SELECT COUNT(*) AS c FROM sessions WHERE actor_id = ?', [id])?.c ?? 0;
-  run('DELETE FROM sessions WHERE actor_id = ?', [id]);
+    (await get<{ c: number }>('SELECT COUNT(*) AS c FROM sessions WHERE actor_id = ?', [id]))?.c ?? 0;
+  await run('DELETE FROM sessions WHERE actor_id = ?', [id]);
   return Number(n) || 0;
 }
 
-export function actorFromSession(sid: string | undefined): Actor | null {
+export async function actorFromSession(sid: string | undefined): Promise<Actor | null> {
   if (!sid) return null;
-  const sess = get<{ actor_id: string; expires_at: string }>(
+  const sess = await get<{ actor_id: string; expires_at: string }>(
     'SELECT actor_id, expires_at FROM sessions WHERE id = ?',
     [sid]
   );
   if (!sess) return null;
   if (new Date(sess.expires_at).getTime() < Date.now()) {
-    run('DELETE FROM sessions WHERE id = ?', [sid]);
+    await run('DELETE FROM sessions WHERE id = ?', [sid]);
     return null;
   }
   if (sess.actor_id === '__admin__') return systemActor();
-  const row = get<Record<string, unknown>>(
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM staff WHERE id = ? AND can_login = 1 AND is_active = 1`,
     [sess.actor_id]
   );
   if (!row) return null;
   if (!String(row.password_hash || '')) return null;
-  return staffToActor(row);
+  return await staffToActor(row);
 }
 
-function actorFromMachineKey(c: Context): Actor | null {
+async function actorFromMachineKey(c: Context): Promise<Actor | null> {
   const raw = extractMachineApiKey(c);
   if (!raw) return null;
-  const v = verifyAnyMachineApiKey(raw);
+  const v = await verifyAnyMachineApiKey(raw);
   if (!v) return null;
   const scopes = v.scopes as ApiKeyScope[];
   const has = (s: ApiKeyScope) => scopesAllow(scopes, s);
@@ -174,12 +174,12 @@ function actorFromMachineKey(c: Context): Actor | null {
 
   const staffId = String((v as { staff_id?: string }).staff_id || '').trim();
   if (staffId && v.source === 'db') {
-    const row = get<Record<string, unknown>>(
+    const row = await get<Record<string, unknown>>(
       `SELECT * FROM staff WHERE id = ? AND can_login = 1 AND is_active = 1`,
       [staffId]
     );
     if (row) {
-      const base = staffToActor(row);
+      const base = await staffToActor(row);
       return {
         ...base,
         rights: {
@@ -221,12 +221,12 @@ function actorFromMachineKey(c: Context): Actor | null {
   };
 }
 
-export function actorFromContext(c: Context): Actor | null {
-  return actorFromSession(getCookie(c, COOKIE_SID)) || actorFromMachineKey(c);
+export async function actorFromContext(c: Context): Promise<Actor | null> {
+  return await actorFromSession(getCookie(c, COOKIE_SID)) || await actorFromMachineKey(c);
 }
 
-export function requireActor(c: Context): Actor {
-  const a = actorFromContext(c);
+export async function requireActor(c: Context): Promise<Actor> {
+  const a = await actorFromContext(c);
   if (!a) throw new Error('unauthorized');
   return a;
 }
@@ -240,13 +240,13 @@ export type LoginResult =
   | { ok: false; error: string };
 
 /** Проверка логина/пароля без создания сессии (для 2FA). */
-export function authenticatePassword(username: string, password: string): AuthPasswordResult {
+export async function authenticatePassword(username: string, password: string): Promise<AuthPasswordResult> {
   const u = username.trim();
   const p = password;
   if (!u || !p) return { ok: false, error: 'Укажите логин и пароль' };
 
   // Сначала сотрудник из Персонала (чтобы PIN/пароль Рубцова работали), потом системный ENV.
-  const row = get<Record<string, unknown>>(
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM staff
      WHERE (lower(login) = lower(?) OR lower(email) = lower(?) OR lower(auth_login) = lower(?))
        AND can_login = 1 AND is_active = 1
@@ -261,7 +261,7 @@ export function authenticatePassword(username: string, password: string): AuthPa
     if (!verifyPassword(p, hash)) {
       return { ok: false, error: 'Неверный логин или пароль' };
     }
-    return { ok: true, actor: staffToActor(row) };
+    return { ok: true, actor: await staffToActor(row) };
   }
 
   if (u === ENV_USER() && p === ENV_PASS()) {
@@ -271,25 +271,25 @@ export function authenticatePassword(username: string, password: string): AuthPa
   return { ok: false, error: 'Неверный логин или пароль' };
 }
 
-export function loginWithPassword(
+export async function loginWithPassword(
   username: string,
   password: string,
   meta?: { ip?: string; ua?: string }
-): LoginResult {
-  const auth = authenticatePassword(username, password);
+): Promise<LoginResult> {
+  const auth = await authenticatePassword(username, password);
   if (!auth.ok) return auth;
-  const sid = createSession(auth.actor.id, meta);
+  const sid = await createSession(auth.actor.id, meta);
   return { ok: true, actor: auth.actor, sid };
 }
 
 /** Быстрый вход по логину + PIN смены (для планшетов на ролевых экранах). */
-export function authenticatePin(username: string, pin: string): AuthPasswordResult {
+export async function authenticatePin(username: string, pin: string): Promise<AuthPasswordResult> {
   const u = username.trim();
   const p = String(pin || '').replace(/\D/g, '');
   if (!u || !p) return { ok: false, error: 'Укажите логин и PIN' };
   if (p.length < 1 || p.length > 6) return { ok: false, error: 'PIN — от 1 до 6 цифр' };
 
-  const row = get<Record<string, unknown>>(
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM staff
      WHERE (lower(login) = lower(?) OR lower(email) = lower(?) OR lower(auth_login) = lower(?))
        AND can_login = 1 AND is_active = 1
@@ -304,44 +304,44 @@ export function authenticatePin(username: string, pin: string): AuthPasswordResu
   if (!verifyPassword(p, pinHash)) {
     return { ok: false, error: 'Неверный логин или PIN' };
   }
-  return { ok: true, actor: staffToActor(row) };
+  return { ok: true, actor: await staffToActor(row) };
 }
 
-export function loginWithPin(
+export async function loginWithPin(
   username: string,
   pin: string,
   meta?: { ip?: string; ua?: string }
-): LoginResult {
-  const auth = authenticatePin(username, pin);
+): Promise<LoginResult> {
+  const auth = await authenticatePin(username, pin);
   if (!auth.ok) return auth;
-  const sid = createSession(auth.actor.id, meta);
+  const sid = await createSession(auth.actor.id, meta);
   return { ok: true, actor: auth.actor, sid };
 }
 
-export function staffHasPinPublic(actorId: string): boolean {
+export async function staffHasPinPublic(actorId: string): Promise<boolean> {
   if (!actorId || actorId === '__admin__') return false;
-  const row = get<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = ?', [actorId]);
+  const row = await get<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = ?', [actorId]);
   return Boolean(row?.pin_hash);
 }
 
-export function setStaffPassword(staffId: string, password: string): void {
+export async function setStaffPassword(staffId: string, password: string): Promise<void> {
   if (!String(password || '').length) throw new Error('Укажите пароль');
-  run(
+  await run(
     `UPDATE staff SET password_hash = ?, password_set_at = datetime('now') WHERE id = ?`,
     [hashPassword(password), staffId]
   );
 }
 
-export function changeOwnPassword(actorId: string, oldPass: string, newPass: string): void {
+export async function changeOwnPassword(actorId: string, oldPass: string, newPass: string): Promise<void> {
   if (actorId === '__admin__') {
     throw new Error('Системный admin меняет пароль через WMS_PASS на сервере');
   }
-  const row = get<{ password_hash: string }>('SELECT password_hash FROM staff WHERE id = ?', [actorId]);
+  const row = await get<{ password_hash: string }>('SELECT password_hash FROM staff WHERE id = ?', [actorId]);
   if (!row) throw new Error('Не найден');
   if (!verifyPassword(oldPass, String(row.password_hash || ''))) {
     throw new Error('Неверный текущий пароль');
   }
-  setStaffPassword(actorId, newPass);
+  await setStaffPassword(actorId, newPass);
 }
 
 export function publicStaffRow(row: Record<string, unknown>): Record<string, unknown> {
@@ -358,10 +358,10 @@ export function publicStaffRow(row: Record<string, unknown>): Record<string, unk
   };
 }
 
-export function listStaffPublic(sql: string, params: Array<string | number> = []) {
-  return all<Record<string, unknown>>(sql, params).map(publicStaffRow);
+export async function listStaffPublic(sql: string, params: Array<string | number> = []) {
+  return (await all<Record<string, unknown>>(sql, params)).map(publicStaffRow);
 }
 
-export function cleanupExpiredSessions(): void {
-  run(`DELETE FROM sessions WHERE datetime(expires_at) < datetime('now')`);
+export async function cleanupExpiredSessions(): Promise<void> {
+  await run(`DELETE FROM sessions WHERE datetime(expires_at) < datetime('now')`);
 }

@@ -28,12 +28,12 @@ export function docClientNameLookupKey(input: DocClientNameKey): string | null {
   return null;
 }
 
-export function getDocClientName(input: DocClientNameKey): string {
+export async function getDocClientName(input: DocClientNameKey): Promise<string> {
   const cp = String(input.counterpartyId || '').trim();
   if (!cp) return '';
   const guid = String(input.productGuid || '').trim();
   if (guid) {
-    const byGuid = get<{ client_name: string }>(
+    const byGuid = await get<{ client_name: string }>(
       `SELECT IFNULL(client_name,'') AS client_name
        FROM counterparty_product_doc_names
        WHERE counterparty_id = ? AND product_guid = ?
@@ -47,7 +47,7 @@ export function getDocClientName(input: DocClientNameKey): string {
   const sku = String(input.productSku || '').trim();
   const skuKey = normSku(sku);
   if (!skuKey) return '';
-  const bySku = get<{ client_name: string }>(
+  const bySku = await get<{ client_name: string }>(
     `SELECT IFNULL(client_name,'') AS client_name
      FROM counterparty_product_doc_names
      WHERE counterparty_id = ? AND IFNULL(product_guid,'') = ''
@@ -59,14 +59,14 @@ export function getDocClientName(input: DocClientNameKey): string {
 }
 
 /** Карта product_guid|sku → КН для контрагента. */
-export function mapDocClientNames(
+export async function mapDocClientNames(
   counterpartyId: string,
   products: Array<{ product_guid?: string; sku?: string }>
-): Record<string, string> {
+): Promise<Record<string, string>> {
   const cp = String(counterpartyId || '').trim();
   const out: Record<string, string> = {};
   if (!cp || !products.length) return out;
-  const rows = all<{
+  const rows = await all<{
     product_guid: string;
     product_sku: string;
     client_name: string;
@@ -99,13 +99,13 @@ export function mapDocClientNames(
   return out;
 }
 
-export function upsertDocClientName(input: {
+export async function upsertDocClientName(input: {
   counterpartyId: string;
   productGuid?: string;
   productSku?: string;
   clientName: string;
   updatedBy?: string;
-}): { ok: true; client_name: string } | { ok: false; error: string } {
+}): Promise<{ ok: true; client_name: string } | { ok: false; error: string }> {
   const cp = String(input.counterpartyId || '').trim();
   if (!cp) return { ok: false, error: 'counterparty_id обязателен' };
   const guid = String(input.productGuid || '').trim();
@@ -116,12 +116,12 @@ export function upsertDocClientName(input: {
   const now = new Date().toISOString();
 
   const existing = guid
-    ? get<{ id: string }>(
+    ? await get<{ id: string }>(
         `SELECT id FROM counterparty_product_doc_names
          WHERE counterparty_id = ? AND product_guid = ? LIMIT 1`,
         [cp, guid]
       )
-    : get<{ id: string }>(
+    : await get<{ id: string }>(
         `SELECT id FROM counterparty_product_doc_names
          WHERE counterparty_id = ? AND IFNULL(product_guid,'') = ''
            AND upper(replace(IFNULL(product_sku,''), ' ', '')) = ?
@@ -131,13 +131,13 @@ export function upsertDocClientName(input: {
 
   if (!clientName) {
     if (existing?.id) {
-      run(`DELETE FROM counterparty_product_doc_names WHERE id = ?`, [existing.id]);
+      await run(`DELETE FROM counterparty_product_doc_names WHERE id = ?`, [existing.id]);
     }
     return { ok: true, client_name: '' };
   }
 
   if (existing?.id) {
-    run(
+    await run(
       `UPDATE counterparty_product_doc_names
        SET client_name = ?, product_sku = CASE WHEN ? != '' THEN ? ELSE product_sku END,
            updated_at = ?, updated_by = ?
@@ -145,7 +145,7 @@ export function upsertDocClientName(input: {
       [clientName, sku, sku, now, updatedBy, existing.id]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO counterparty_product_doc_names (
          id, counterparty_id, product_guid, product_sku, client_name, updated_at, updated_by
        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,

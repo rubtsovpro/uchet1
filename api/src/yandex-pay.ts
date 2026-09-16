@@ -34,21 +34,21 @@ function authKey(s: YandexPaySettings): string {
   return s.api_key || s.merchant_id;
 }
 
-export function yandexPayConfigured(s?: YandexPaySettings | null): boolean {
-  const cfg = s || getYandexPaySettings();
+export async function yandexPayConfigured(s?: YandexPaySettings | null): Promise<boolean> {
+  const cfg = s || await getYandexPaySettings();
   if (!cfg) return false;
   if (!(cfg.enabled === '1' || cfg.enabled === 'true')) return false;
   return Boolean(cfg.merchant_id && authKey(cfg));
 }
 
 /** Доступен ли Сплит для юрлица ссылки на оплату. */
-export function yandexPayAvailableForOrganization(organizationId?: string | null): boolean {
+export async function yandexPayAvailableForOrganization(organizationId?: string | null): Promise<boolean> {
   const orgId = String(organizationId || '').trim();
   if (!orgId) {
     // без юрлица на ссылке — любой включённый профиль
-    return yandexPayConfigured(getYandexPaySettings());
+    return await yandexPayConfigured(await getYandexPaySettings());
   }
-  return yandexPayConfigured(getYandexPaySettingsForOrg(orgId));
+  return await yandexPayConfigured(await getYandexPaySettingsForOrg(orgId));
 }
 
 function parseMethods(raw: string): string[] {
@@ -70,8 +70,8 @@ export type YandexPayCartItem = {
   total: number;
 };
 
-function dealItemsForYandex(dealId: string): YandexPayCartItem[] {
-  const rows = all<{
+async function dealItemsForYandex(dealId: string): Promise<YandexPayCartItem[]> {
+  const rows = await all<{
     id: string;
     product_guid: string;
     name: string;
@@ -109,8 +109,8 @@ export async function createYandexPayOrder(input: {
   error?: string;
   raw?: unknown;
 }> {
-  const s = input.settings || getYandexPaySettings();
-  if (!yandexPayConfigured(s)) {
+  const s = input.settings || await getYandexPaySettings();
+  if (!await yandexPayConfigured(s)) {
     return {
       ok: false,
       error:
@@ -200,7 +200,7 @@ export async function getYandexPayOrderStatus(
   orderId: string,
   settings?: YandexPaySettings | null
 ): Promise<{ ok: boolean; status?: string; raw?: unknown; error?: string }> {
-  const s = settings || getYandexPaySettings();
+  const s = settings || await getYandexPaySettings();
   if (!s.merchant_id || !authKey(s)) {
     return { ok: false, error: 'не настроено' };
   }
@@ -229,7 +229,7 @@ export async function ensureYandexPayForPublicToken(token: string): Promise<{
   error?: string;
   order_id?: string;
 }> {
-  const link = get<{
+  const link = await get<{
     id: string;
     token: string;
     deal_id: string;
@@ -261,13 +261,13 @@ export async function ensureYandexPayForPublicToken(token: string): Promise<{
 
   const linkOrg = String(link.organization_id || '').trim();
   const settings =
-    (linkOrg ? getYandexPaySettingsForOrg(linkOrg) : null) ||
-    (yandexPayConfigured(getYandexPaySettings()) ? getYandexPaySettings() : null);
-  if (!yandexPayConfigured(settings)) {
+    (linkOrg ? await getYandexPaySettingsForOrg(linkOrg) : null) ||
+    (await yandexPayConfigured(await getYandexPaySettings()) ? await getYandexPaySettings() : null);
+  if (!await yandexPayConfigured(settings)) {
     const err = linkOrg
       ? 'Яндекс Сплит не подключён для этого юрлица'
       : 'Яндекс Сплит не подключён (укажите юрлицо на ссылке и профиль в Интеграциях)';
-    run(`UPDATE payment_links SET yandex_pay_error = ? WHERE id = ?`, [err, link.id]);
+    await run(`UPDATE payment_links SET yandex_pay_error = ? WHERE id = ?`, [err, link.id]);
     return { ok: false, error: err, url: null };
   }
 
@@ -277,14 +277,14 @@ export async function ensureYandexPayForPublicToken(token: string): Promise<{
   const created = await createYandexPayOrder({
     orderId,
     amount: Number(link.amount) || 0,
-    items: dealItemsForYandex(String(link.deal_id)),
+    items: await dealItemsForYandex(String(link.deal_id)),
     successUrl: `${returnBase}?yp=ok`,
     errorUrl: `${returnBase}?yp=err`,
     ttlSec: Math.max(300, (Number(link.timer_minutes) || 120) * 60),
     settings,
   });
   if (created.ok && created.paymentUrl) {
-    run(
+    await run(
       `UPDATE payment_links
        SET yandex_pay_url = ?, yandex_order_id = ?, yandex_pay_error = ''
        WHERE id = ?`,
@@ -293,7 +293,7 @@ export async function ensureYandexPayForPublicToken(token: string): Promise<{
     return { ok: true, url: created.paymentUrl, order_id: created.orderId || orderId };
   }
   const err = created.error || 'не удалось создать заказ Яндекс Пэй';
-  run(`UPDATE payment_links SET yandex_pay_error = ? WHERE id = ?`, [err, link.id]);
+  await run(`UPDATE payment_links SET yandex_pay_error = ? WHERE id = ?`, [err, link.id]);
   return { ok: false, error: err, url: null };
 }
 
@@ -378,7 +378,7 @@ export async function applyYandexPayPaymentEvent(input: {
   }
 
   const eventKey = `yandex:${orderId}:${status}`;
-  const already = get<{ id: string }>(
+  const already = await get<{ id: string }>(
     `SELECT id FROM deal_payments
      WHERE IFNULL(meta_json,'') LIKE ?
      LIMIT 1`,
@@ -389,17 +389,17 @@ export async function applyYandexPayPaymentEvent(input: {
     let amo: Awaited<ReturnType<typeof import('./amo-deal-paid.js').pushDealPaidToAmo>> | undefined;
     if (dealId) {
       const { getDealBasketTotals, syncDealPaidStatus } = await import('./deal-payment-split.js');
-      const existingPay = get<{ amount: number }>(
+      const existingPay = await get<{ amount: number }>(
         'SELECT amount FROM deal_payments WHERE id = ?',
         [already.id]
       );
       let fixAmount = Number(existingPay?.amount) || 0;
       if (!(fixAmount > 0)) {
-        const basket = getDealBasketTotals(dealId);
+        const basket = await getDealBasketTotals(dealId);
         if (basket.total > 0) {
           fixAmount = basket.total;
-          run('UPDATE deal_payments SET amount = ? WHERE id = ?', [fixAmount, already.id]);
-          syncDealPaidStatus(dealId);
+          await run('UPDATE deal_payments SET amount = ? WHERE id = ?', [fixAmount, already.id]);
+          await syncDealPaidStatus(dealId);
         }
       }
       const { pushDealPaidToAmo } = await import('./amo-deal-paid.js');
@@ -423,7 +423,7 @@ export async function applyYandexPayPaymentEvent(input: {
     };
   }
 
-  const link = get<{ id: string; deal_id: string; payment_id: string; status: string; amount: number }>(
+  const link = await get<{ id: string; deal_id: string; payment_id: string; status: string; amount: number }>(
     `SELECT id, deal_id, IFNULL(payment_id,'') AS payment_id, status, IFNULL(amount,0) AS amount
      FROM payment_links WHERE yandex_order_id = ?
      ORDER BY datetime(created_at) DESC LIMIT 1`,
@@ -433,7 +433,7 @@ export async function applyYandexPayPaymentEvent(input: {
   let dealId = link?.deal_id ? String(link.deal_id) : dealIdFromYandexOrderId(orderId);
   if (!dealId) return { ok: false, error: 'payment link not found' };
 
-  const deal = get<{ id: string; name?: string; price?: number; paid?: number }>(
+  const deal = await get<{ id: string; name?: string; price?: number; paid?: number }>(
     `SELECT id, name, price, paid FROM crm_deals WHERE id = ?`,
     [dealId]
   );
@@ -445,7 +445,7 @@ export async function applyYandexPayPaymentEvent(input: {
   }
   if (!(payAmount > 0)) {
     const { getDealBasketTotals } = await import('./deal-payment-split.js');
-    const basket = getDealBasketTotals(dealId);
+    const basket = await getDealBasketTotals(dealId);
     if (basket.total > 0) {
       payAmount = basket.total;
     }
@@ -458,7 +458,7 @@ export async function applyYandexPayPaymentEvent(input: {
   const { ensureWarehouseTaskAfterPaid } = await import('./sales-pipeline.js');
   const { ensureOrderDocChain } = await import('./order-doc-tree.js');
 
-  const payId = newGuid();
+  const payId = await newGuid();
   const purpose =
     `Яндекс Сплит · заказ ${dealId}` + (deal.name ? ` · ${String(deal.name).slice(0, 60)}` : '');
   const meta = {
@@ -467,7 +467,7 @@ export async function applyYandexPayPaymentEvent(input: {
     yandex_order_id: orderId,
     yandex_status: status,
   };
-  run(
+  await run(
     `INSERT INTO deal_payments (
        id, deal_id, kind, amount, status, qrc_id, payload, image_png_base64, account, purpose, meta_json
      ) VALUES (?, ?, 'yandex_split', ?, 'paid', '', '', '', '', ?, ?)`,
@@ -475,32 +475,32 @@ export async function applyYandexPayPaymentEvent(input: {
   );
 
   try {
-    markPaymentLinkPaidForDeal(dealId, 'yandex_pay');
+    await markPaymentLinkPaidForDeal(dealId, 'yandex_pay');
   } catch {
     /* */
   }
   if (link && String(link.status) !== 'paid') {
-    run(
+    await run(
       `UPDATE payment_links SET status = 'paid', paid_at = datetime('now') WHERE id = ? AND status = 'pending'`,
       [link.id]
     );
   }
 
-  const synced = syncDealPaidStatus(dealId);
+  const synced = await syncDealPaidStatus(dealId);
   if (synced.paid) {
     try {
-      ensureWarehouseTaskAfterPaid({ dealId });
+      await ensureWarehouseTaskAfterPaid({ dealId });
     } catch {
       /* */
     }
     try {
-      ensureOrderDocChain(dealId);
+      await ensureOrderDocChain(dealId);
     } catch {
       /* */
     }
   }
 
-  notifyDealResponsible({
+  await notifyDealResponsible({
     deal_id: dealId,
     kind: 'deal_paid_yandex',
     title: 'Сделка оплачена · Яндекс Сплит',
@@ -535,7 +535,7 @@ export async function applyYandexPayPaymentEvent(input: {
 
 /** Poll: если есть yandex_order_id — проверить статус у Яндекса. */
 export async function pollYandexPayForLink(token: string): Promise<boolean> {
-  const link = get<{
+  const link = await get<{
     yandex_order_id: string;
     status: string;
     organization_id: string;
@@ -548,7 +548,7 @@ export async function pollYandexPayForLink(token: string): Promise<boolean> {
   if (!link || String(link.status) !== 'pending') return false;
   const oid = String(link.yandex_order_id || '').trim();
   if (!oid) return false;
-  const settings = getYandexPaySettingsForOrg(String(link.organization_id || '')) || undefined;
+  const settings = await getYandexPaySettingsForOrg(String(link.organization_id || '')) || undefined;
   const r = await applyYandexPayPaymentEvent({ orderId: oid, settings });
   return Boolean(r.marked);
 }

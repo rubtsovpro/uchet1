@@ -76,13 +76,13 @@ function makeEan13(serial4: number): string {
 }
 
 /** Следующие свободные DiSAI EAN-13 из диапазона свидетельства. */
-export function allocateDisaiBarcodes(count: number): string[] {
+export async function allocateDisaiBarcodes(count: number): Promise<string[]> {
   const used = new Set(
-    all<{ barcode: string }>(
+    (await all<{ barcode: string }>(
       `SELECT barcode FROM products WHERE barcode LIKE '69837277%'
        UNION
        SELECT barcode FROM purchase_basket_lines WHERE barcode LIKE '69837277%'`
-    ).map((r) => String(r.barcode || '').trim())
+    )).map((r) => String(r.barcode || '').trim())
   );
   let serial = 0;
   for (const b of used) {
@@ -305,8 +305,8 @@ function detectSheetLayout(rows: string[][]): {
   return { headerIdx, headers: trimmed, column_map: guessColumnMap(trimmed) };
 }
 
-function purchasePriceFor(productId: string): number | null {
-  const row = get<{ price: number }>(
+async function purchasePriceFor(productId: string): Promise<number | null> {
+  const row = await get<{ price: number }>(
     `SELECT price FROM product_prices
      WHERE product_id = ?
        AND (lower(price_type) LIKE '%закуп%' OR lower(price_type) LIKE '%purchase%'
@@ -315,29 +315,29 @@ function purchasePriceFor(productId: string): number | null {
     [productId]
   );
   if (row && Number.isFinite(Number(row.price))) return Number(row.price);
-  const any = get<{ price: number }>(
+  const any = await get<{ price: number }>(
     `SELECT price FROM product_prices WHERE product_id = ? ORDER BY price ASC LIMIT 1`,
     [productId]
   );
   return any && Number.isFinite(Number(any.price)) ? Number(any.price) : null;
 }
 
-function matchProduct(opts: {
+async function matchProduct(opts: {
   barcode: string;
   article: string;
   oem: string;
   name: string;
-}): { id: string; sku: string } | null {
+}): Promise<{ id: string; sku: string } | null> {
   const barcode = opts.barcode.trim();
   if (barcode) {
-    const byBc = get<{ id: string; sku: string }>(
+    const byBc = await get<{ id: string; sku: string }>(
       `SELECT id, sku FROM products WHERE barcode = ? AND IFNULL(is_active,1)=1 LIMIT 1`,
       [barcode]
     );
     if (byBc) return byBc;
   }
   for (const token of [opts.article, opts.oem].map((x) => x.trim()).filter(Boolean)) {
-    const hit = get<{ id: string; sku: string }>(
+    const hit = await get<{ id: string; sku: string }>(
       `SELECT id, sku FROM products
        WHERE IFNULL(is_active,1)=1 AND (
          sku = ? OR code = ? OR barcode = ?
@@ -350,7 +350,7 @@ function matchProduct(opts: {
   }
   const nk = normKey(opts.name);
   if (nk.length >= 6) {
-    const candidates = all<{ id: string; sku: string; name: string }>(
+    const candidates = await all<{ id: string; sku: string; name: string }>(
       `SELECT id, sku, name FROM products WHERE IFNULL(is_active,1)=1 AND length(name) >= 4 LIMIT 8000`
     );
     for (const c of candidates) {
@@ -366,7 +366,7 @@ function ensurePurchaseIntakeSchema(): void {
       .prepare(`PRAGMA table_info(purchase_price_rows)`)
       .all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === 'picture_path')) {
-      db.exec(
+      /* PG: replace prepare */ db.exec(
         `ALTER TABLE purchase_price_rows ADD COLUMN picture_path TEXT NOT NULL DEFAULT ''`
       );
     }
@@ -375,21 +375,21 @@ function ensurePurchaseIntakeSchema(): void {
   }
 }
 
-function applyMapAndMatch(
+async function applyMapAndMatch(
   importId: string,
   map: ColumnMap,
   headerRow: number,
   sheetRows: string[][],
   opts?: { xlsxBuf?: Buffer }
-): {
+): Promise<{
   row_count: number;
   new_count: number;
   changed_count: number;
   matched_count: number;
   pictures: number;
-} {
+}> {
   ensurePurchaseIntakeSchema();
-  run('DELETE FROM purchase_price_rows WHERE import_id = ?', [importId]);
+  await run('DELETE FROM purchase_price_rows WHERE import_id = ?', [importId]);
   const picsDir = join(importDir(importId), 'pics');
   try {
     rmSync(picsDir, { recursive: true, force: true });
@@ -442,7 +442,7 @@ function applyMapAndMatch(
 
     const price = parsePrice(fields.price);
     const qty = parsePrice(fields.qty) || 0;
-    const hit = matchProduct({
+    const hit = await matchProduct({
       barcode: fields.barcode,
       article: fields.article,
       oem: fields.oem,
@@ -458,7 +458,7 @@ function applyMapAndMatch(
     if (hit) {
       match_product_id = hit.id;
       match_sku = hit.sku;
-      old_price = purchasePriceFor(hit.id);
+      old_price = await purchasePriceFor(hit.id);
       if (old_price != null && price > 0 && Math.abs(old_price - price) >= 0.01) {
         match_status = 'price_changed';
         price_delta = price - old_price;
@@ -481,7 +481,7 @@ function applyMapAndMatch(
     }
 
     const id = newGuid();
-    run(
+    await run(
       `INSERT INTO purchase_price_rows (
          id, import_id, row_no, raw_json, article, name, brand, price, currency,
          barcode, oem, crosses, applicability, qty, match_status, match_product_id,
@@ -513,7 +513,7 @@ function applyMapAndMatch(
     row_count += 1;
   }
 
-  run(
+  await run(
     `UPDATE purchase_price_imports SET
        status = 'parsed', parsed_at = datetime('now'),
        row_count = ?, new_count = ?, changed_count = ?, matched_count = ?,
@@ -525,8 +525,8 @@ function applyMapAndMatch(
   return { row_count, new_count, changed_count, matched_count, pictures };
 }
 
-function importDto(id: string) {
-  const row = get<Record<string, unknown>>(
+async function importDto(id: string) {
+  const row = await get<Record<string, unknown>>(
     'SELECT * FROM purchase_price_imports WHERE id = ?',
     [id]
   );
@@ -544,10 +544,10 @@ function importDto(id: string) {
   };
 }
 
-function basketDto(id: string): Record<string, unknown> | null {
-  const b = get<Record<string, unknown>>('SELECT * FROM purchase_baskets WHERE id = ?', [id]);
+async function basketDto(id: string): Promise<Record<string, unknown> | null> {
+  const b = await get<Record<string, unknown>>('SELECT * FROM purchase_baskets WHERE id = ?', [id]);
   if (!b) return null;
-  const lines = all<Record<string, unknown>>(
+  const lines = await all<Record<string, unknown>>(
     `SELECT * FROM purchase_basket_lines WHERE basket_id = ? ORDER BY created_at, rowid`,
     [id]
   );
@@ -619,20 +619,20 @@ export async function createPurchaseImportFromBuffer(input: {
   drive_folder_id?: string;
 }): Promise<{ id: string; filename: string; sheet_name: string; sheets: string[] }> {
   const { ensurePurchaseDriveSchema } = await import('./purchase-drive.js');
-  ensurePurchaseDriveSchema();
+  await ensurePurchaseDriveSchema();
   const fileName = String(input.fileName || 'price.xlsx').replace(/[/\\]/g, '_').slice(0, 180);
   let supplier_id = String(input.supplier_id || '').trim();
   let supplier_name = String(input.supplier_name || '').trim();
   if (supplier_id && !supplier_name) {
     supplier_name =
-      get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [supplier_id])?.name ||
+      (await get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [supplier_id]))?.name ||
       '';
   }
   const parsed = await parseSpreadsheet(input.buf, fileName);
   const layout = detectSheetLayout(parsed.rows);
   const id = newGuid();
   writeFileSync(filePath(id, fileName), input.buf);
-  run(
+  await run(
     `INSERT INTO purchase_price_imports (
        id, supplier_id, supplier_name, filename, sheet_name, status, created_by,
        drive_file_id, drive_folder_id, column_map_json, header_row
@@ -654,7 +654,7 @@ export async function createPurchaseImportFromBuffer(input: {
   const vals = Object.values(layout.column_map);
   if (vals.includes('article') || vals.includes('name')) {
     try {
-      applyMapAndMatch(id, layout.column_map, layout.headerIdx + 1, parsed.rows, {
+      await applyMapAndMatch(id, layout.column_map, layout.headerIdx + 1, parsed.rows, {
         xlsxBuf: input.buf,
       });
     } catch {
@@ -665,8 +665,8 @@ export async function createPurchaseImportFromBuffer(input: {
 }
 
 export function mountPurchaseIntakeRoutes(api: Hono): void {
-  api.get('/purchase-intake/meta', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-intake/meta', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     return c.json({
@@ -693,11 +693,11 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     });
   });
 
-  api.get('/purchase-intake/imports', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-intake/imports', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
-    const rows = all<Record<string, unknown>>(
+    const rows = await all<Record<string, unknown>>(
       `SELECT id, supplier_id, supplier_name, filename, sheet_name, status,
               row_count, new_count, changed_count, matched_count, created_at, created_by
        FROM purchase_price_imports ORDER BY created_at DESC LIMIT 100`
@@ -706,7 +706,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
   });
 
   api.post('/purchase-intake/imports', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     try {
@@ -716,7 +716,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
       let supplier_name = String(c.req.query('supplier_name') || '').trim();
       if (supplier_id && !supplier_name) {
         supplier_name =
-          get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [supplier_id])
+          (await get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [supplier_id]))
             ?.name || '';
       }
       const id = newGuid();
@@ -724,7 +724,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
       writeFileSync(path, buf);
       const parsed = await parseSpreadsheet(buf, fileName);
       const layout = detectSheetLayout(parsed.rows);
-      run(
+      await run(
         `INSERT INTO purchase_price_imports (
            id, supplier_id, supplier_name, filename, sheet_name, status, created_by,
            column_map_json, header_row
@@ -740,7 +740,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
           layout.headerIdx + 1,
         ]
       );
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'purchase_intake.upload',
         entity: 'purchase_price_import',
         entityId: id,
@@ -748,7 +748,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
       });
       return c.json(
         {
-          import: importDto(id),
+          import: await importDto(id),
           sheets: parsed.sheets,
           header_row_1based: layout.headerIdx + 1,
           headers: layout.headers,
@@ -762,21 +762,21 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     }
   });
 
-  api.get('/purchase-intake/imports/:id', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-intake/imports/:id', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
-    const dto = importDto(c.req.param('id'));
+    const dto = await importDto(c.req.param('id'));
     if (!dto) return c.json({ error: 'not found' }, 404);
     return c.json(dto);
   });
 
   api.get('/purchase-intake/imports/:id/preview', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const id = c.req.param('id');
-    const imp = get<{ filename: string; sheet_name: string; header_row: number }>(
+    const imp = await get<{ filename: string; sheet_name: string; header_row: number }>(
       'SELECT filename, sheet_name, header_row FROM purchase_price_imports WHERE id = ?',
       [id]
     );
@@ -787,14 +787,14 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     try {
       const parsed = await parseSpreadsheet(readFileSync(path), imp.filename, sheetQ || undefined);
       const forcedHeader = c.req.query('header_row');
-      const savedMap = (() => {
+      const savedMap = (async () => {
         try {
           return JSON.parse(
             String(
-              get<{ column_map_json: string }>(
+              (await get<{ column_map_json: string }>(
                 'SELECT column_map_json FROM purchase_price_imports WHERE id = ?',
                 [id]
-              )?.column_map_json || '{}'
+              ))?.column_map_json || '{}'
             )
           ) as ColumnMap;
         } catch {
@@ -820,7 +820,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
           : guessColumnMap(trimmed);
       // если в БД пустой маппинг — сохранить угаданный
       if (!Object.keys(savedMap).length && Object.values(suggested_map).some((v) => v !== 'skip')) {
-        run(
+        await run(
           `UPDATE purchase_price_imports SET column_map_json = ?, header_row = ? WHERE id = ?`,
           [JSON.stringify(suggested_map), headerIdx + 1, id]
         );
@@ -839,11 +839,11 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
   });
 
   api.put('/purchase-intake/imports/:id/map', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const id = c.req.param('id');
-    const imp = get<{ filename: string; sheet_name: string }>(
+    const imp = await get<{ filename: string; sheet_name: string }>(
       'SELECT filename, sheet_name FROM purchase_price_imports WHERE id = ?',
       [id]
     );
@@ -867,7 +867,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
       const parsed = await parseSpreadsheet(xlsxBuf, imp.filename, sheet || undefined);
       const headerRow = Math.max(1, Number(body.header_row) || 1);
       if (body.supplier_id != null || body.supplier_name != null) {
-        run(
+        await run(
           `UPDATE purchase_price_imports SET supplier_id = ?, supplier_name = ?, sheet_name = ? WHERE id = ?`,
           [
             String(body.supplier_id || ''),
@@ -877,23 +877,23 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
           ]
         );
       } else {
-        run(`UPDATE purchase_price_imports SET sheet_name = ? WHERE id = ?`, [parsed.sheet, id]);
+        await run(`UPDATE purchase_price_imports SET sheet_name = ? WHERE id = ?`, [parsed.sheet, id]);
       }
-      const stats = applyMapAndMatch(id, map, headerRow, parsed.rows, { xlsxBuf });
-      auditFromContext(c, {
+      const stats = await applyMapAndMatch(id, map, headerRow, parsed.rows, { xlsxBuf });
+      await auditFromContext(c, {
         action: 'purchase_intake.parse',
         entity: 'purchase_price_import',
         entityId: id,
         summary: `Прайс разобран: ${stats.row_count} строк (новых ${stats.new_count}, цен↑↓ ${stats.changed_count}, фото ${stats.pictures})`,
       });
-      return c.json({ import: importDto(id), ...stats });
+      return c.json({ import: await importDto(id), ...stats });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'parse failed' }, 400);
     }
   });
 
-  api.get('/purchase-intake/imports/:id/rows', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-intake/imports/:id/rows', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     ensurePurchaseIntakeSchema();
@@ -915,11 +915,11 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
       const like = `%${q}%`;
       params.push(like, like, like, like, like, like);
     }
-    const items = all<Record<string, unknown>>(
+    const items = (await all<Record<string, unknown>>(
       `SELECT * FROM purchase_price_rows WHERE ${where.join(' AND ')}
        ORDER BY row_no LIMIT ? OFFSET ?`,
       [...params, limit, offset]
-    ).map((r) => {
+    )).map((r) => {
       const pic = String(r.picture_path || '').trim();
       return {
         ...r,
@@ -930,21 +930,21 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
       };
     });
     const total =
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM purchase_price_rows WHERE ${where.join(' AND ')}`,
         params
-      )?.c ?? 0;
+      ))?.c ?? 0;
     return c.json({ items, total, limit, offset });
   });
 
-  api.get('/purchase-intake/imports/:id/rows/:rowId/picture', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-intake/imports/:id/rows/:rowId/picture', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     ensurePurchaseIntakeSchema();
     const id = c.req.param('id');
     const rowId = c.req.param('rowId');
-    const row = get<{ picture_path: string; import_id: string }>(
+    const row = await get<{ picture_path: string; import_id: string }>(
       `SELECT picture_path, import_id FROM purchase_price_rows WHERE id = ? AND import_id = ?`,
       [rowId, id]
     );
@@ -975,22 +975,22 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     });
   });
 
-  api.delete('/purchase-intake/imports/:id', (c) => {
-    const actor = actorFromContext(c);
+  api.delete('/purchase-intake/imports/:id', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const id = c.req.param('id');
-    run('DELETE FROM purchase_price_rows WHERE import_id = ?', [id]);
-    run('DELETE FROM purchase_price_imports WHERE id = ?', [id]);
+    await run('DELETE FROM purchase_price_rows WHERE import_id = ?', [id]);
+    await run('DELETE FROM purchase_price_imports WHERE id = ?', [id]);
     return c.json({ ok: true });
   });
 
   // —— baskets ——
-  api.get('/purchase-intake/baskets', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-intake/baskets', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
-    const items = all<Record<string, unknown>>(
+    const items = await all<Record<string, unknown>>(
       `SELECT b.*,
          (SELECT COUNT(*) FROM purchase_basket_lines l WHERE l.basket_id = b.id) AS lines_count,
          (SELECT IFNULL(SUM(l.price * l.qty),0) FROM purchase_basket_lines l WHERE l.basket_id = b.id) AS sum
@@ -1000,7 +1000,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
   });
 
   api.post('/purchase-intake/baskets', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const body = (await c.req.json().catch(() => ({}))) as {
@@ -1011,7 +1011,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     };
     const id = newGuid();
     const name = String(body.name || '').trim() || `Корзина ${new Date().toLocaleDateString('ru-RU')}`;
-    run(
+    await run(
       `INSERT INTO purchase_baskets (id, name, supplier_id, supplier_name, notes, created_by)
        VALUES (?,?,?,?,?,?)`,
       [
@@ -1023,24 +1023,24 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
         actor!.id,
       ]
     );
-    return c.json(basketDto(id), 201);
+    return c.json(await basketDto(id), 201);
   });
 
-  api.get('/purchase-intake/baskets/:id', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-intake/baskets/:id', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
-    const dto = basketDto(c.req.param('id'));
+    const dto = await basketDto(c.req.param('id'));
     if (!dto) return c.json({ error: 'not found' }, 404);
     return c.json(dto);
   });
 
   api.patch('/purchase-intake/baskets/:id', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const id = c.req.param('id');
-    if (!get('SELECT id FROM purchase_baskets WHERE id = ?', [id])) {
+    if (!await get('SELECT id FROM purchase_baskets WHERE id = ?', [id])) {
       return c.json({ error: 'not found' }, 404);
     }
     const body = (await c.req.json().catch(() => ({}))) as {
@@ -1051,48 +1051,48 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
       supplier_name?: string;
     };
     if (body.name != null) {
-      run(`UPDATE purchase_baskets SET name = ?, updated_at = datetime('now') WHERE id = ?`, [
+      await run(`UPDATE purchase_baskets SET name = ?, updated_at = datetime('now') WHERE id = ?`, [
         String(body.name).trim(),
         id,
       ]);
     }
     if (body.status != null) {
-      run(`UPDATE purchase_baskets SET status = ?, updated_at = datetime('now') WHERE id = ?`, [
+      await run(`UPDATE purchase_baskets SET status = ?, updated_at = datetime('now') WHERE id = ?`, [
         String(body.status).trim() || 'open',
         id,
       ]);
     }
     if (body.notes != null) {
-      run(`UPDATE purchase_baskets SET notes = ?, updated_at = datetime('now') WHERE id = ?`, [
+      await run(`UPDATE purchase_baskets SET notes = ?, updated_at = datetime('now') WHERE id = ?`, [
         String(body.notes),
         id,
       ]);
     }
     if (body.supplier_id != null || body.supplier_name != null) {
-      run(
+      await run(
         `UPDATE purchase_baskets SET supplier_id = ?, supplier_name = ?, updated_at = datetime('now') WHERE id = ?`,
         [String(body.supplier_id || ''), String(body.supplier_name || ''), id]
       );
     }
-    return c.json(basketDto(id));
+    return c.json(await basketDto(id));
   });
 
-  api.delete('/purchase-intake/baskets/:id', (c) => {
-    const actor = actorFromContext(c);
+  api.delete('/purchase-intake/baskets/:id', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const id = c.req.param('id');
-    run('DELETE FROM purchase_basket_lines WHERE basket_id = ?', [id]);
-    run('DELETE FROM purchase_baskets WHERE id = ?', [id]);
+    await run('DELETE FROM purchase_basket_lines WHERE basket_id = ?', [id]);
+    await run('DELETE FROM purchase_baskets WHERE id = ?', [id]);
     return c.json({ ok: true });
   });
 
   api.post('/purchase-intake/baskets/:id/lines', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const basketId = c.req.param('id');
-    if (!get('SELECT id FROM purchase_baskets WHERE id = ?', [basketId])) {
+    if (!await get('SELECT id FROM purchase_baskets WHERE id = ?', [basketId])) {
       return c.json({ error: 'basket not found' }, 404);
     }
     const body = (await c.req.json().catch(() => ({}))) as {
@@ -1105,7 +1105,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     if (Array.isArray(body.row_ids) && body.row_ids.length) {
       const qtys = body.qtys && typeof body.qtys === 'object' ? body.qtys : {};
       for (const rid of body.row_ids) {
-        const r = get<Record<string, unknown>>(
+        const r = await get<Record<string, unknown>>(
           'SELECT * FROM purchase_price_rows WHERE id = ?',
           [rid]
         );
@@ -1113,7 +1113,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
         const fromUi = Number(qtys[String(rid)]);
         const fromFile = Number(r.qty);
         const qty = fromUi > 0 ? fromUi : fromFile > 0 ? fromFile : 1;
-        run(
+        await run(
           `INSERT INTO purchase_basket_lines (
              id, basket_id, import_row_id, product_id, article, name, brand, price, currency,
              qty, barcode, oem, crosses, applicability
@@ -1140,7 +1140,7 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     }
     if (Array.isArray(body.lines)) {
       for (const L of body.lines) {
-        run(
+        await run(
           `INSERT INTO purchase_basket_lines (
              id, basket_id, import_row_id, product_id, article, name, brand, price, currency,
              qty, barcode, oem, crosses, applicability, notes
@@ -1166,12 +1166,12 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
         added += 1;
       }
     }
-    run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [basketId]);
-    return c.json({ ...basketDto(basketId), added });
+    await run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [basketId]);
+    return c.json({ ...await basketDto(basketId), added });
   });
 
   api.patch('/purchase-intake/baskets/:bid/lines/:lid', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const body = (await c.req.json().catch(() => ({}))) as {
@@ -1182,48 +1182,48 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     };
     const lid = c.req.param('lid');
     if (body.qty != null) {
-      run('UPDATE purchase_basket_lines SET qty = ? WHERE id = ?', [Number(body.qty) || 0, lid]);
+      await run('UPDATE purchase_basket_lines SET qty = ? WHERE id = ?', [Number(body.qty) || 0, lid]);
     }
     if (body.price != null) {
-      run('UPDATE purchase_basket_lines SET price = ? WHERE id = ?', [
+      await run('UPDATE purchase_basket_lines SET price = ? WHERE id = ?', [
         Math.max(0, Math.round(Number(body.price) || 0)),
         lid,
       ]);
     }
     if (body.notes != null) {
-      run('UPDATE purchase_basket_lines SET notes = ? WHERE id = ?', [String(body.notes), lid]);
+      await run('UPDATE purchase_basket_lines SET notes = ? WHERE id = ?', [String(body.notes), lid]);
     }
     if (body.barcode != null) {
-      run('UPDATE purchase_basket_lines SET barcode = ? WHERE id = ?', [
+      await run('UPDATE purchase_basket_lines SET barcode = ? WHERE id = ?', [
         String(body.barcode).trim(),
         lid,
       ]);
     }
-    run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [
       c.req.param('bid'),
     ]);
-    return c.json(basketDto(c.req.param('bid')));
+    return c.json(await basketDto(c.req.param('bid')));
   });
 
-  api.delete('/purchase-intake/baskets/:bid/lines/:lid', (c) => {
-    const actor = actorFromContext(c);
+  api.delete('/purchase-intake/baskets/:bid/lines/:lid', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
-    run('DELETE FROM purchase_basket_lines WHERE id = ? AND basket_id = ?', [
+    await run('DELETE FROM purchase_basket_lines WHERE id = ? AND basket_id = ?', [
       c.req.param('lid'),
       c.req.param('bid'),
     ]);
-    run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [
       c.req.param('bid'),
     ]);
-    return c.json(basketDto(c.req.param('bid')));
+    return c.json(await basketDto(c.req.param('bid')));
   });
 
-  api.post('/purchase-intake/baskets/:id/email-draft', (c) => {
-    const actor = actorFromContext(c);
+  api.post('/purchase-intake/baskets/:id/email-draft', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
-    const dto = basketDto(c.req.param('id'));
+    const dto = await basketDto(c.req.param('id'));
     if (!dto) return c.json({ error: 'not found' }, 404);
     const lines = (dto.lines || []) as Array<Record<string, unknown>>;
     const subject = `Заказ: ${dto.name}${dto.supplier_name ? ` · ${dto.supplier_name}` : ''}`;
@@ -1256,12 +1256,12 @@ export function mountPurchaseIntakeRoutes(api: Hono): void {
     });
   });
 
-  api.get('/purchase-intake/baskets/:id/order.html', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-intake/baskets/:id/order.html', async (c) => {
+    const actor = await actorFromContext(c);
     if (!actor || !canUsePurchaseIntake(actor)) {
       return c.text('Доступ запрещён', 403);
     }
-    const dto = basketDto(c.req.param('id'));
+    const dto = await basketDto(c.req.param('id'));
     if (!dto) return c.text('not found', 404);
     const lines = (dto.lines || []) as Array<Record<string, unknown>>;
     const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"/><title>${esc(String(dto.name))}</title>
@@ -1282,46 +1282,46 @@ ${lines
   });
 
   api.post('/purchase-intake/baskets/:id/allocate-barcodes', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     if (!canDo(actor, 'can_edit_products')) {
       return c.json({ error: 'Нужны права на номенклатуру' }, 403);
     }
-    const dto = basketDto(c.req.param('id'));
+    const dto = await basketDto(c.req.param('id'));
     if (!dto) return c.json({ error: 'not found' }, 404);
     const lines = (dto.lines || []) as Array<Record<string, unknown>>;
     const need = lines.filter((L) => !String(L.barcode || '').trim() && !String(L.product_id || '').trim());
     if (!need.length) return c.json({ ...dto, allocated: 0, note: 'Нечего назначать' });
     try {
-      const codes = allocateDisaiBarcodes(need.length);
-      need.forEach((L, i) => {
-        run('UPDATE purchase_basket_lines SET barcode = ? WHERE id = ?', [codes[i]!, String(L.id)]);
+      const codes = await allocateDisaiBarcodes(need.length);
+      need.forEach(async (L, i) => {
+        await run('UPDATE purchase_basket_lines SET barcode = ? WHERE id = ?', [codes[i]!, String(L.id)]);
       });
-      run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [
+      await run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [
         c.req.param('id'),
       ]);
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'purchase_intake.allocate_barcodes',
         entity: 'purchase_basket',
         entityId: c.req.param('id'),
         summary: `Назначено DiSAI ШК: ${codes.length}`,
       });
-      return c.json({ ...basketDto(c.req.param('id')), allocated: codes.length, barcodes: codes });
+      return c.json({ ...await basketDto(c.req.param('id')), allocated: codes.length, barcodes: codes });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'allocate failed' }, 400);
     }
   });
 
   api.post('/purchase-intake/baskets/:id/create-products', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     if (!canDo(actor, 'can_edit_products')) {
       return c.json({ error: 'Нужны права на номенклатуру' }, 403);
     }
     const basketId = c.req.param('id');
-    const dto = basketDto(basketId);
+    const dto = await basketDto(basketId);
     if (!dto) return c.json({ error: 'not found' }, 404);
     const body = (await c.req.json().catch(() => ({}))) as {
       only_without_product?: boolean;
@@ -1336,10 +1336,10 @@ ${lines
     if (body.assign_barcodes !== false) {
       const needBc = lines.filter((L) => !String(L.barcode || '').trim());
       if (needBc.length) {
-        const codes = allocateDisaiBarcodes(needBc.length);
-        needBc.forEach((L, i) => {
+        const codes = await allocateDisaiBarcodes(needBc.length);
+        needBc.forEach(async (L, i) => {
           L.barcode = codes[i]!;
-          run('UPDATE purchase_basket_lines SET barcode = ? WHERE id = ?', [
+          await run('UPDATE purchase_basket_lines SET barcode = ? WHERE id = ?', [
             codes[i]!,
             String(L.id),
           ]);
@@ -1348,8 +1348,8 @@ ${lines
     }
 
     const unitId =
-      get<{ id: string }>('SELECT id FROM units WHERE short_name = ? LIMIT 1', ['шт'])?.id ||
-      get<{ id: string }>('SELECT id FROM units LIMIT 1')?.id ||
+      (await get<{ id: string }>('SELECT id FROM units WHERE short_name = ? LIMIT 1', ['шт']))?.id ||
+      (await get<{ id: string }>('SELECT id FROM units LIMIT 1'))?.id ||
       '';
     if (!unitId) return c.json({ error: 'нет единиц измерения' }, 400);
 
@@ -1361,14 +1361,14 @@ ${lines
       const name = String(L.name || '').trim();
       if (!name) continue;
       const id = newGuid();
-      const mx = get<{ m: number }>(
+      const mx = (await get<{ m: number }>(
         `SELECT MAX(CAST(substr(v, instr(v, '-') + 1) AS INTEGER)) AS m FROM (
            SELECT sku AS v FROM products WHERE sku LIKE 'НФ-%'
            UNION ALL SELECT code AS v FROM products WHERE code LIKE 'НФ-%'
          )`
-      )?.m;
-      if (mx && Number.isFinite(Number(mx))) ensureSeqAtLeast('НФ', Number(mx));
-      const sku = nextCode('НФ');
+      ))?.m;
+      if (mx && Number.isFinite(Number(mx))) await ensureSeqAtLeast('НФ', Number(mx));
+      const sku = await nextCode('НФ');
       const barcode = String(L.barcode || '').trim();
       const brand = String(L.brand || '').trim();
       const article = String(L.article || '').trim();
@@ -1380,34 +1380,34 @@ ${lines
         .join(',');
 
       try {
-        run(
+        await run(
           `INSERT INTO products (id, sku, name, category_id, unit_id, barcode, item_kind, code, brand, array_sku)
            VALUES (?,?,?,?,?,?, 'product', ?,?,?)`,
           [id, sku, name, null, unitId, barcode, sku, brand, arraySku]
         );
       } catch (e) {
         // fallback without brand/array if columns somehow missing
-        run(
+        await run(
           `INSERT INTO products (id, sku, name, category_id, unit_id, barcode, item_kind, code)
            VALUES (?,?,?,?,?,?,'product',?)`,
           [id, sku, name, null, unitId, barcode, sku]
         );
         try {
-          run('UPDATE products SET brand = ?, array_sku = ? WHERE id = ?', [brand, arraySku, id]);
+          await run('UPDATE products SET brand = ?, array_sku = ? WHERE id = ?', [brand, arraySku, id]);
         } catch {
           /* ignore */
         }
       }
 
       if (Number(L.price) > 0) {
-        run(
+        await run(
           `INSERT OR REPLACE INTO product_prices (id, product_id, price_type, price) VALUES (?,?,?,?)`,
           [newGuid(), id, priceType, Math.round(Number(L.price))]
         );
       }
 
       for (const app of parseApplicability(String(L.applicability || ''))) {
-        run(
+        await run(
           `INSERT INTO product_applicability (id, product_id, mark, model, only_model, generation, years)
            VALUES (?,?,?,?, '','', ?)`,
           [newGuid(), id, app.mark, app.model, app.years]
@@ -1419,7 +1419,7 @@ ${lines
       if (importRowId) {
         try {
           ensurePurchaseIntakeSchema();
-          const prow = get<{ picture_path: string; import_id: string }>(
+          const prow = await get<{ picture_path: string; import_id: string }>(
             `SELECT picture_path, import_id FROM purchase_price_rows WHERE id = ?`,
             [importRowId]
           );
@@ -1436,21 +1436,21 @@ ${lines
         }
       }
 
-      run(
+      await run(
         `UPDATE purchase_basket_lines SET product_id = ?, barcode = ? WHERE id = ?`,
         [id, barcode, String(L.id)]
       );
       created.push({ line_id: String(L.id), product_id: id, sku, barcode });
     }
 
-    run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [basketId]);
-    auditFromContext(c, {
+    await run(`UPDATE purchase_baskets SET updated_at = datetime('now') WHERE id = ?`, [basketId]);
+    await auditFromContext(c, {
       action: 'purchase_intake.create_products',
       entity: 'purchase_basket',
       entityId: basketId,
       summary: `Создано товаров из корзины: ${created.length}`,
     });
-    return c.json({ created, basket: basketDto(basketId) });
+    return c.json({ created, basket: await basketDto(basketId) });
   });
 }
 

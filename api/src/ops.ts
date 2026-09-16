@@ -51,14 +51,14 @@ function channelLabel(ch: string): string {
   return map[ch] || ch || '—';
 }
 
-function dealLooksPaid(dealId: string): boolean {
-  const paid = get<{ c: number }>(
+async function dealLooksPaid(dealId: string): Promise<boolean> {
+  const paid = (await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM deal_payments
      WHERE deal_id = ? AND status IN ('paid','confirmed','success','active')`,
     [dealId]
-  )?.c;
+  ))?.c;
   if (paid && paid > 0) return true;
-  const d = get<{ payment_status?: string; paid?: number }>(
+  const d = await get<{ payment_status?: string; paid?: number }>(
     `SELECT payment_status, paid FROM crm_deals WHERE id = ?`,
     [dealId]
   ) as { payment_status?: string; paid?: number } | undefined;
@@ -68,8 +68,8 @@ function dealLooksPaid(dealId: string): boolean {
   return ps === 'paid' || ps === 'оплачен' || ps.includes('оплач');
 }
 
-export function opsDashboard() {
-  const byStatus = all<{ status: string; c: number }>(
+export async function opsDashboard() {
+  const byStatus = await all<{ status: string; c: number }>(
     `SELECT status, COUNT(*) AS c FROM warehouse_tasks
      WHERE status != 'cancelled' GROUP BY status`
   );
@@ -77,20 +77,20 @@ export function opsDashboard() {
   for (const r of byStatus) map[r.status] = Number(r.c) || 0;
 
   const todayHanded =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM warehouse_tasks
        WHERE status = 'handed' AND date(handed_at) = date('now','localtime')`
-    )?.c ?? 0;
+    ))?.c ?? 0;
 
-  const blocked = all(
+  const blocked = (await all(
     `SELECT id, number, deal_id, city, amount_locked, channel, status
      FROM warehouse_tasks
      WHERE status IN ('new','picking','packed','ready')
        AND payment_required = 1
      ORDER BY datetime(created_at) ASC LIMIT 50`
-  ).filter((t) => !dealLooksPaid(String((t as { deal_id: string }).deal_id)));
+  )).filter(async (t) => !await dealLooksPaid(String((t as { deal_id: string }).deal_id)));
 
-  const queue = all(
+  const queue = await all(
     `SELECT id, number, deal_id, city, buyer_name, channel, status, amount_locked, created_at
      FROM warehouse_tasks
      WHERE status IN ('new','picking','packed','ready')
@@ -101,12 +101,12 @@ export function opsDashboard() {
   );
 
   const incomeToday =
-    get<{ c: number; s: number }>(
+    await get<{ c: number; s: number }>(
       `SELECT COUNT(*) AS c, IFNULL(SUM(amount),0) AS s FROM income_mirror
        WHERE date(created_at) = date('now','localtime')`
     ) || { c: 0, s: 0 };
 
-  const stockValue = stockValuationSummary();
+  const stockValue = await stockValuationSummary();
 
   return {
     warehouse: {
@@ -125,13 +125,13 @@ export function opsDashboard() {
     })),
     income_today: { count: incomeToday.c, sum: incomeToday.s },
     stock_value: stockValue,
-    cdek_widget_template: getCdekBridgeSettings().widget_url,
-    cdek_native: Boolean(getCdekBridgeSettings().wms_key),
+    cdek_widget_template: (await getCdekBridgeSettings()).widget_url,
+    cdek_native: Boolean((await getCdekBridgeSettings()).wms_key),
   };
 }
 
-export function cdekWidgetUrl(dealId: string): string {
-  const tpl = getCdekBridgeSettings().widget_url;
+export async function cdekWidgetUrl(dealId: string): Promise<string> {
+  const tpl = (await getCdekBridgeSettings()).widget_url;
   return tpl
     .replace('{lead_id}', encodeURIComponent(dealId))
     .replace('{deal_id}', encodeURIComponent(dealId));
@@ -142,7 +142,7 @@ export function writeIncomeMirrorFromTask(_taskId: string, _actorId?: string) {
   return null;
 }
 
-export function listIncomeMirror(opts: { limit?: number; q?: string }) {
+export async function listIncomeMirror(opts: { limit?: number; q?: string }) {
   const where: string[] = [];
   const params: Array<string | number> = [];
   if (opts.q?.trim()) {
@@ -154,7 +154,7 @@ export function listIncomeMirror(opts: { limit?: number; q?: string }) {
   }
   const limit = Math.min(200, Math.max(1, opts.limit || 50));
   params.push(limit);
-  return all(
+  return await all(
     `SELECT * FROM income_mirror
      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
      ORDER BY datetime(created_at) DESC

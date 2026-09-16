@@ -149,5 +149,5 @@ export async function telegramSendMessage(
       error: `worker: ${viaWorker.error}; direct: ${direct.error}`,
     };
   }
-  return callDirect(token, 'sendMessage', params);
+  return await callDirect(token, 'sendMessage', params);
 }

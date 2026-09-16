@@ -45,18 +45,18 @@ export function amoWebhookPublicUrl(): string {
 }
 
 /** По умолчанию включён, если ключ есть и meta ещё не задана. */
-export function isAmoWebhookEnabled(): boolean {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_ENABLED]);
+export async function isAmoWebhookEnabled(): Promise<boolean> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_ENABLED]);
   if (!row) return Boolean(amoWebhookSecret());
   return String(row.value || '') === '1';
 }
 
-function writeEnabled(on: boolean): void {
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_ENABLED, on ? '1' : '0']);
+async function writeEnabled(on: boolean): Promise<void> {
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_ENABLED, on ? '1' : '0']);
 }
 
-function readLast(): AmoWebhookLast | null {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_LAST]);
+async function readLast(): Promise<AmoWebhookLast | null> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_LAST]);
   if (!row?.value) return null;
   try {
     const parsed = JSON.parse(row.value) as AmoWebhookLast;
@@ -66,9 +66,9 @@ function readLast(): AmoWebhookLast | null {
   }
 }
 
-function writeLast(last: AmoWebhookLast): void {
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_AT, last.at]);
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_LAST, JSON.stringify(last)]);
+async function writeLast(last: AmoWebhookLast): Promise<void> {
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_AT, last.at]);
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_LAST, JSON.stringify(last)]);
 }
 
 function maxIso(...vals: Array<string | null | undefined>): string | null {
@@ -330,18 +330,18 @@ export function parseAmoWebhookPayload(
   };
 }
 
-export function recordAmoWebhookHit(parsed: {
+export async function recordAmoWebhookHit(parsed: {
   entities: AmoWebhookEntity[];
   ids: string[];
   raw_keys: string[];
-}): AmoWebhookLast {
+}): Promise<AmoWebhookLast> {
   const last: AmoWebhookLast = {
     at: new Date().toISOString(),
     entities: parsed.entities.length ? parsed.entities : ['other'],
     ids: parsed.ids,
     raw_keys: parsed.raw_keys,
   };
-  writeLast(last);
+  await writeLast(last);
   return last;
 }
 
@@ -404,26 +404,26 @@ export async function setAmoWebhookEnabled(enabled: boolean): Promise<{
   const amo = await callAmoWebhookManage(enabled ? 'on' : 'off');
   // локально включаем даже если Amo ответил ошибкой — URL всё равно готов; но при off всегда гасим
   if (enabled) {
-    writeEnabled(true);
+    await writeEnabled(true);
   } else {
-    writeEnabled(false);
+    await writeEnabled(false);
   }
 
   return {
     ok: true,
-    enabled: isAmoWebhookEnabled(),
+    enabled: await isAmoWebhookEnabled(),
     amo_ok: amo.ok,
     amo_subscribed: Boolean(amo.subscribed),
     error: amo.ok ? undefined : amo.error,
   };
 }
 
-export function amoIntegrationStatusPublic() {
+export async function amoIntegrationStatusPublic() {
   const secret = amoWebhookSecret();
-  const enabled = isAmoWebhookEnabled();
-  const webhookLast = readLast();
-  const deals = dealsMeta();
-  const cps = amoCounterpartiesMeta();
+  const enabled = await isAmoWebhookEnabled();
+  const webhookLast = await readLast();
+  const deals = await dealsMeta();
+  const cps = await amoCounterpartiesMeta();
   const lastReceived = maxIso(webhookLast?.at, deals.lastSync, cps.lastSync);
   const dealsCount = Number(deals.deals || 0);
 

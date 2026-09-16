@@ -69,10 +69,10 @@ function joinSemi(parts: string[]): string {
 }
 
 /** Предпочесть «чистую» карточку MRAER без зеркал @podveska. */
-export function findCleanProduct(sku: string): ProductRow | null {
+export async function findCleanProduct(sku: string): Promise<ProductRow | null> {
   const k = normSku(sku);
   if (!k) return null;
-  const rows = all<ProductRow>(
+  const rows = await all<ProductRow>(
     `SELECT id, sku, IFNULL(code,'') AS code, IFNULL(name,'') AS name,
             IFNULL(brand,'') AS brand, category_id, IFNULL(unit_id,'') AS unit_id,
             IFNULL(array_sku,'') AS array_sku, IFNULL(warehouse_sku,'') AS warehouse_sku,
@@ -99,12 +99,12 @@ export function findCleanProduct(sku: string): ProductRow | null {
 }
 
 /** Поиск по sku / code / array_sku / warehouse_sku. */
-export function findProductByAnySku(sku: string): ProductRow | null {
-  const exact = findCleanProduct(sku);
+export async function findProductByAnySku(sku: string): Promise<ProductRow | null> {
+  const exact = await findCleanProduct(sku);
   if (exact) return exact;
   const k = normSku(sku);
   if (!k) return null;
-  const row = get<ProductRow>(
+  const row = await get<ProductRow>(
     `SELECT id, sku, IFNULL(code,'') AS code, IFNULL(name,'') AS name,
             IFNULL(brand,'') AS brand, category_id, IFNULL(unit_id,'') AS unit_id,
             IFNULL(array_sku,'') AS array_sku, IFNULL(warehouse_sku,'') AS warehouse_sku,
@@ -153,8 +153,8 @@ function twinId(productId: string): string {
   return `pnevmopodveska_2025::${id}`;
 }
 
-function copyChildRows(table: string, cols: string[], fromId: string, toId: string): number {
-  const rows = all<Record<string, unknown>>(`SELECT * FROM ${table} WHERE product_id = ?`, [
+async function copyChildRows(table: string, cols: string[], fromId: string, toId: string): Promise<number> {
+  const rows = await all<Record<string, unknown>>(`SELECT * FROM ${table} WHERE product_id = ?`, [
     fromId,
   ]);
   for (const row of rows) {
@@ -164,7 +164,7 @@ function copyChildRows(table: string, cols: string[], fromId: string, toId: stri
       if (c === 'product_id') return toId;
       return row[c] as string | number | null;
     });
-    run(
+    await run(
       `INSERT OR IGNORE INTO ${table} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
       values
     );
@@ -172,12 +172,12 @@ function copyChildRows(table: string, cols: string[], fromId: string, toId: stri
   return rows.length;
 }
 
-export function ensureOldSkuOnCard(
+export async function ensureOldSkuOnCard(
   productId: string,
   oldSku: string
-): { changed: boolean; array_sku: string; warehouse_sku: string } {
+): Promise<{ changed: boolean; array_sku: string; warehouse_sku: string }> {
   const old = String(oldSku || '').trim();
-  const p = get<{ id: string; array_sku: string; warehouse_sku: string }>(
+  const p = await get<{ id: string; array_sku: string; warehouse_sku: string }>(
     `SELECT id, IFNULL(array_sku,'') AS array_sku, IFNULL(warehouse_sku,'') AS warehouse_sku
      FROM products WHERE id = ?`,
     [productId]
@@ -189,7 +189,7 @@ export function ensureOldSkuOnCard(
   const wsku = joinSemi([...splitCodes(p.warehouse_sku), old]);
   const changed = asku !== p.array_sku || wsku !== p.warehouse_sku;
   if (changed) {
-    run(`UPDATE products SET array_sku = ?, warehouse_sku = ? WHERE id = ?`, [
+    await run(`UPDATE products SET array_sku = ?, warehouse_sku = ? WHERE id = ?`, [
       asku,
       wsku,
       productId,
@@ -198,42 +198,42 @@ export function ensureOldSkuOnCard(
   return { changed, array_sku: asku, warehouse_sku: wsku };
 }
 
-export function createMinimalProduct(input: {
+export async function createMinimalProduct(input: {
   sku: string;
   name?: string;
   brand?: string;
   category_id?: string | null;
   old_sku?: string;
-}): { product: ProductRow; created: boolean } {
+}): Promise<{ product: ProductRow; created: boolean }> {
   const sku = normSku(input.sku);
   if (!sku) throw new Error('sku required');
-  const existing = findCleanProduct(sku);
+  const existing = await findCleanProduct(sku);
   if (existing) {
-    if (input.old_sku) ensureOldSkuOnCard(existing.id, input.old_sku);
-    return { product: findCleanProduct(sku) || existing, created: false };
+    if (input.old_sku) await ensureOldSkuOnCard(existing.id, input.old_sku);
+    return { product: await findCleanProduct(sku) || existing, created: false };
   }
-  const mx = get<{ m: number }>(
+  const mx = (await get<{ m: number }>(
     `SELECT MAX(CAST(substr(v, instr(v, '-') + 1) AS INTEGER)) AS m FROM (
        SELECT sku AS v FROM products WHERE sku LIKE 'НФ-%'
        UNION ALL
        SELECT code AS v FROM products WHERE code LIKE 'НФ-%'
      )`
-  )?.m;
-  if (mx && Number.isFinite(Number(mx))) ensureSeqAtLeast('НФ', Number(mx));
+  ))?.m;
+  if (mx && Number.isFinite(Number(mx))) await ensureSeqAtLeast('НФ', Number(mx));
   const unitId =
-    get<{ id: string }>(`SELECT id FROM units WHERE short_name = ? LIMIT 1`, ['шт'])?.id ||
-    get<{ id: string }>(`SELECT id FROM units LIMIT 1`)?.id ||
+    (await get<{ id: string }>(`SELECT id FROM units WHERE short_name = ? LIMIT 1`, ['шт']))?.id ||
+    (await get<{ id: string }>(`SELECT id FROM units LIMIT 1`))?.id ||
     '';
   if (!unitId) throw new Error('нет единиц измерения');
   const id = newGuid();
-  const code = nextCode('НФ');
+  const code = await nextCode('НФ');
   const name = String(input.name || '').trim() || sku;
   const brand = String(input.brand || 'MRAER').trim() || 'MRAER';
   const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const old = String(input.old_sku || '').trim();
   const arraySku = joinComma([sku, old].filter(Boolean));
   const warehouseSku = old ? joinSemi([old]) : '';
-  run(
+  await run(
     `INSERT INTO products (
        id, sku, name, category_id, unit_id, barcode, is_active, created_at, brand, code,
        array_sku, warehouse_sku, item_kind, is_main
@@ -252,32 +252,32 @@ export function createMinimalProduct(input: {
       warehouseSku,
     ]
   );
-  return { product: findCleanProduct(sku)!, created: true };
+  return { product: (await findCleanProduct(sku))!, created: true };
 }
 
-export function cloneProductFrom(input: {
+export async function cloneProductFrom(input: {
   new_sku: string;
   from_sku?: string;
   from_product_id?: string;
   old_sku?: string;
   minimal?: boolean;
-}): {
+}): Promise<{
   product: ProductRow;
   created: boolean;
   meta?: Record<string, unknown>;
-} {
+}> {
   const newSku = normSku(input.new_sku);
   if (!newSku) throw new Error('new_sku required');
-  const existing = findCleanProduct(newSku);
+  const existing = await findCleanProduct(newSku);
   if (existing) {
-    if (input.old_sku) ensureOldSkuOnCard(existing.id, input.old_sku);
-    return { product: findCleanProduct(newSku) || existing, created: false };
+    if (input.old_sku) await ensureOldSkuOnCard(existing.id, input.old_sku);
+    return { product: await findCleanProduct(newSku) || existing, created: false };
   }
 
   let src: ProductRow | null = null;
   if (input.from_product_id) {
     src =
-      get<ProductRow>(
+      await get<ProductRow>(
         `SELECT id, sku, IFNULL(code,'') AS code, IFNULL(name,'') AS name,
               IFNULL(brand,'') AS brand, category_id, IFNULL(unit_id,'') AS unit_id,
               IFNULL(array_sku,'') AS array_sku, IFNULL(warehouse_sku,'') AS warehouse_sku,
@@ -294,11 +294,11 @@ export function cloneProductFrom(input: {
         [input.from_product_id]
       ) || null;
   }
-  if (!src && input.from_sku) src = findProductByAnySku(input.from_sku);
-  if (!src && input.old_sku) src = findProductByAnySku(input.old_sku);
+  if (!src && input.from_sku) src = await findProductByAnySku(input.from_sku);
+  if (!src && input.old_sku) src = await findProductByAnySku(input.old_sku);
 
   if (!src || input.minimal) {
-    return createMinimalProduct({
+    return await createMinimalProduct({
       sku: newSku,
       name: src?.name,
       brand: src?.brand || 'MRAER',
@@ -307,22 +307,22 @@ export function cloneProductFrom(input: {
     });
   }
 
-  const mx = get<{ m: number }>(
+  const mx = (await get<{ m: number }>(
     `SELECT MAX(CAST(substr(v, instr(v, '-') + 1) AS INTEGER)) AS m FROM (
        SELECT sku AS v FROM products WHERE sku LIKE 'НФ-%'
        UNION ALL
        SELECT code AS v FROM products WHERE code LIKE 'НФ-%'
      )`
-  )?.m;
-  if (mx && Number.isFinite(Number(mx))) ensureSeqAtLeast('НФ', Number(mx));
+  ))?.m;
+  if (mx && Number.isFinite(Number(mx))) await ensureSeqAtLeast('НФ', Number(mx));
 
   const id = newGuid();
-  const code = nextCode('НФ');
+  const code = await nextCode('НФ');
   const old = String(input.old_sku || input.from_sku || '').trim();
   const arraySku = joinComma([...splitCodes(src.array_sku), newSku, src.sku, old].filter(Boolean));
   const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
-  run(
+  await run(
     `INSERT INTO products (
        id, sku, name, category_id, unit_id, barcode, is_active, created_at, brand, code,
        array_sku, notupload, package_width_cm, package_height_cm, package_length_cm, package_weight_g,
@@ -357,40 +357,40 @@ export function cloneProductFrom(input: {
   );
 
   const twin = twinId(src.id);
-  const twinExists = !!get(`SELECT id FROM products WHERE id = ?`, [twin]);
-  const pickFrom = (table: string) =>
+  const twinExists = !!await get(`SELECT id FROM products WHERE id = ?`, [twin]);
+  const pickFrom = async (table: string) =>
     twinExists &&
-    get(`SELECT product_id FROM ${table} WHERE product_id = ? LIMIT 1`, [twin])
+    await get(`SELECT product_id FROM ${table} WHERE product_id = ? LIMIT 1`, [twin])
       ? twin
       : src!.id;
 
-  const apps = copyChildRows(
+  const apps = await copyChildRows(
     'product_applicability',
     ['id', 'product_id', 'mark', 'model', 'only_model', 'generation', 'years'],
-    pickFrom('product_applicability'),
+    await pickFrom('product_applicability'),
     id
   );
-  const prices = copyChildRows(
+  const prices = await copyChildRows(
     'product_prices',
     ['id', 'product_id', 'price_type', 'price'],
-    pickFrom('product_prices'),
+    await pickFrom('product_prices'),
     id
   );
-  const props = copyChildRows(
+  const props = await copyChildRows(
     'product_properties',
     ['id', 'product_id', 'property', 'value'],
-    pickFrom('product_properties'),
+    await pickFrom('product_properties'),
     id
   );
 
-  const mediaSrc = all<Record<string, unknown>>(
+  const mediaSrc = await all<Record<string, unknown>>(
     `SELECT * FROM product_media WHERE product_id = ? AND IFNULL(kind,'') != 'empty'`,
     [src.id]
   );
   for (const m of mediaSrc) {
     const midSrc = String(m.id || '');
     const suffix = midSrc.includes('|') ? midSrc.split('|').slice(1).join('|') : newGuid();
-    run(
+    await run(
       `INSERT OR IGNORE INTO product_media
         (id, product_id, kind, mime, ext, s3_key, url, size, sha256, sort_order, synced_at, width, height, orientation)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -413,10 +413,10 @@ export function cloneProductFrom(input: {
     );
   }
 
-  if (old) ensureOldSkuOnCard(id, old);
+  if (old) await ensureOldSkuOnCard(id, old);
 
   return {
-    product: findCleanProduct(newSku)!,
+    product: (await findCleanProduct(newSku))!,
     created: true,
     meta: {
       id,

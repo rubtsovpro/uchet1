@@ -6,8 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, all } from '../db.js';
 
-export function ensureTaxSchema(): void {
-  db.exec(`
+export async function ensureTaxSchema(): Promise<void> {
+  /* PG: replace prepare */ db.exec(`
     CREATE TABLE IF NOT EXISTS tax_org_settings (
       organization_id TEXT PRIMARY KEY,
       tax_system TEXT NOT NULL DEFAULT 'usn_income',
@@ -200,12 +200,12 @@ export function ensureTaxSchema(): void {
   `);
 
   try {
-    const cols = all<{ name: string }>(`PRAGMA table_info(staff)`).map((c) => c.name);
+    const cols = (await all<{ name: string }>(`PRAGMA table_info(staff)`)).map((c) => c.name);
     if (!cols.includes('salary')) {
-      db.exec(`ALTER TABLE staff ADD COLUMN salary REAL NOT NULL DEFAULT 0`);
+      /* PG: replace prepare */ db.exec(`ALTER TABLE staff ADD COLUMN salary REAL NOT NULL DEFAULT 0`);
     }
     if (!cols.includes('organization_id')) {
-      db.exec(`ALTER TABLE staff ADD COLUMN organization_id TEXT NOT NULL DEFAULT ''`);
+      /* PG: replace prepare */ db.exec(`ALTER TABLE staff ADD COLUMN organization_id TEXT NOT NULL DEFAULT ''`);
     }
   } catch {
     /* ignore */

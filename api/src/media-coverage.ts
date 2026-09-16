@@ -71,9 +71,9 @@ const STOCK_WAREHOUSES_SQL = `CASE
   )
 END`;
 
-export function mediaCoverageByCategory(opts?: {
+export async function mediaCoverageByCategory(opts?: {
   source_departments?: string[] | null;
-}): {
+}): Promise<{
   categories: MediaCoverageCategory[];
   totals: {
     products: number;
@@ -83,9 +83,9 @@ export function mediaCoverageByCategory(opts?: {
     pct: number;
     images: number;
   };
-} {
+}> {
   const dept = sqlSourceDepartmentIn('p', opts?.source_departments);
-  const rows = all<{
+  const rows = await all<{
     category_id: string | null;
     category_name: string;
     products: number;
@@ -131,15 +131,15 @@ export function mediaCoverageByCategory(opts?: {
   const withPhoto = categories.reduce((s, c) => s + c.with_photo, 0);
   const without = products - withPhoto;
   const images =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c
        FROM product_media m
        JOIN products p ON p.id = m.product_id AND p.is_active = 1
        WHERE m.kind = 'image'${dept.sql}`,
       dept.params
-    )?.c ?? 0;
+    ))?.c ?? 0;
   const stockWithout =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c
        FROM products p
        ${STOCK_AGG_JOIN}
@@ -148,7 +148,7 @@ export function mediaCoverageByCategory(opts?: {
          AND IFNULL(st.qty, 0) > 0
          AND img.product_id IS NULL${dept.sql}`,
       dept.params
-    )?.c ?? 0;
+    ))?.c ?? 0;
 
   return {
     categories,
@@ -163,7 +163,7 @@ export function mediaCoverageByCategory(opts?: {
   };
 }
 
-export function listMediaProducts(opts: {
+export async function listMediaProducts(opts: {
   q?: string;
   category_id?: string;
   status?: 'all' | 'with' | 'without' | 'stock_without';
@@ -237,12 +237,12 @@ export function listMediaProducts(opts: {
   }
 
   const total =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c ${fromSql} ${whereSql}`,
       params
-    )?.c ?? 0;
+    ))?.c ?? 0;
 
-  const items = all(
+  const items = await all(
     `SELECT
        p.id, p.sku, p.code, p.name, p.brand, p.barcode,
        IFNULL(c.name, '') AS category,
@@ -272,7 +272,7 @@ export function listMediaProducts(opts: {
 }
 
 /** Очередь фотографа: на складе (qty > 0) и без фото. */
-export function listPhotographerQueue(opts: {
+export async function listPhotographerQueue(opts: {
   q?: string;
   warehouse_id?: string;
   category_id?: string;
@@ -326,9 +326,9 @@ export function listPhotographerQueue(opts: {
   const whereSql = `WHERE ${where.join(' AND ')}`;
 
   const total =
-    get<{ c: number }>(`SELECT COUNT(*) AS c FROM products p ${whereSql}`, params)?.c ?? 0;
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM products p ${whereSql}`, params))?.c ?? 0;
 
-  const items = all<{
+  const items = await all<{
     id: string;
     sku: string | null;
     code: string | null;

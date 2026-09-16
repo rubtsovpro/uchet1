@@ -4,6 +4,10 @@
  *
  * Не трогает: COURIER, STO, STO-RSV-MSK, STO-RES-MSK, WAIT-PAY, Б/У.
  *
+ * ВНИМАНИЕ: это разовая полная подмена остатков Основного/Брака с листа ячеек.
+ * Обычный режим: остатки с номенклатурного листа грузим 1 раз при создании
+ * товара (sync/import) и больше не обновляем. Этот скрипт — только явный apply.
+ *
  * Usage (VPS):
  *   node --experimental-sqlite bin/apply-msk-sheet-stock.mjs --dry-run
  *   node --experimental-sqlite bin/apply-msk-sheet-stock.mjs --apply --create-missing

@@ -135,11 +135,11 @@ function sanitizeStoBuyerAddress(raw: string): string {
   return t;
 }
 
-function fioFromPdnSession(dealId: string): string {
+async function fioFromPdnSession(dealId: string): Promise<string> {
   const id = String(dealId || '').trim();
   if (!id) return '';
   try {
-    const s = getLatestPdnSignForDeal(id);
+    const s = await getLatestPdnSignForDeal(id);
     const fromId = String(s?.identity?.fio || '').trim();
     if (looksLikePersonFio(fromId)) return fromId;
     const fromBuyer = String(s?.buyer_name || '').trim();
@@ -150,21 +150,21 @@ function fioFromPdnSession(dealId: string): string {
   return '';
 }
 
-function dealFillCtx(
+async function dealFillCtx(
   deal: Record<string, unknown>,
   org: OrgProfile,
   number: string,
   extra?: Partial<StoFillContext>
-): StoFillContext {
-  const garage = garageForDeal(String(deal.id || ''), { ensure: false });
+): Promise<StoFillContext> {
+  const garage = await garageForDeal(String(deal.id || ''), { ensure: false });
   const garageVehicles = (garage.vehicles || []) as Array<Record<string, unknown>>;
   const v = pickPrimaryGarageVehicle(deal, garageVehicles);
   const extraName = String(extra?.buyerName || '').trim();
   const personFio =
     (looksLikePersonFio(extraName) ? extraName : '') ||
     resolvePersonDocFio(deal, garageVehicles) ||
-    fioFromPdnSession(String(deal.id || ''));
-  const legalBuyer = resolveContractBuyerFromDeal(deal as never, {
+    await fioFromPdnSession(String(deal.id || ''));
+  const legalBuyer = await resolveContractBuyerFromDeal(deal as never, {
     name: personFio || undefined,
     inn: String(extra?.buyerInn || '').trim() || undefined,
     phone: String(extra?.buyerPhone || '').trim() || undefined,
@@ -307,7 +307,7 @@ function dealFillCtx(
       (garage.vehicles || []) as Array<Record<string, unknown>>
     ),
     city: cityForStoPack(deal, org),
-    faults: resolveAmoClientComplaintForDeal(deal),
+    faults: await resolveAmoClientComplaintForDeal(deal),
     workLines,
     partLines,
     clientPartLines:
@@ -317,11 +317,11 @@ function dealFillCtx(
     ...contactFieldsFromDeal(deal, {
       docDate: new Date().toISOString().slice(0, 10),
     }),
-    ...staffFieldsFromDeal(deal, {
+    ...await staffFieldsFromDeal(deal, {
       staffName: extra?.staffName,
       actorOnly: !!String(extra?.staffName || '').trim(),
     }),
-    ...handoverFieldsFromDeal(deal),
+    ...await handoverFieldsFromDeal(deal),
     ...(extra?.handover104
       ? {
           handover104: extra.handover104,
@@ -347,7 +347,7 @@ async function templatePartAsync(
     id,
     code: meta.code,
     title: meta.title,
-    text: fillStoTemplateText(loaded.text, ctx),
+    text: await fillStoTemplateText(loaded.text, ctx),
     source: loaded.source,
   };
 }
@@ -356,11 +356,11 @@ async function templatePartAsync(
  * Состав полного пакета приёма для заказа.
  * Физ: договор + ЗН + ПДн. Юр/ИП: договор + приложения + ЗН (без ПДн).
  */
-export function resolveStoFullPackTemplateIds(
+export async function resolveStoFullPackTemplateIds(
   deal: Record<string, unknown>,
   opts?: { organizationId?: string }
-): string[] {
-  const contractId = suggestStoContractTemplateId(deal, {
+): Promise<string[]> {
+  const contractId = await suggestStoContractTemplateId(deal, {
     organizationId: opts?.organizationId,
   });
   const woId = suggestStoWorkorderTemplateId(deal);
@@ -525,16 +525,16 @@ async function prepareStoFullPack(
   dealId: string,
   opts?: { organizationId?: string; staffName?: string; forceDrive?: boolean }
 ): Promise<StoPackPrepared | null> {
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return null;
 
-  const orgId = resolveOrganizationId(
+  const orgId = await resolveOrganizationId(
     opts?.organizationId ||
       String(deal.organization_id || '') ||
       String(deal.org_company_id || '')
   );
-  const org = getOrgProfile(orgId);
-  const sales = listSalesDocs({ dealId, limit: 100 }).items as Array<{
+  const org = await getOrgProfile(orgId);
+  const sales = (await listSalesDocs({ dealId, limit: 100 })).items as Array<{
     id: string;
     doc_type?: string;
     number?: string;
@@ -549,7 +549,7 @@ async function prepareStoFullPack(
     // не подменять ответственным Amo — в ЗН «оформивший» = кто скачал
   }
   for (const sid of [woDoc?.id, contractDoc?.id].filter(Boolean) as string[]) {
-    const full = getSalesDoc(sid) as Record<string, unknown> | null;
+    const full = await getSalesDoc(sid) as Record<string, unknown> | null;
     if (!full) continue;
     if (!enrich.buyerName && full.counterparty_name) enrich.buyerName = String(full.counterparty_name);
     if (!enrich.buyerInn && full.counterparty_inn) enrich.buyerInn = String(full.counterparty_inn);
@@ -608,17 +608,17 @@ async function prepareStoFullPack(
   }
   Object.assign(
     enrich,
-    handoverFieldsFromDeal(deal, { workorderId: woDoc?.id ? String(woDoc.id) : undefined })
+    await handoverFieldsFromDeal(deal, { workorderId: woDoc?.id ? String(woDoc.id) : undefined })
   );
 
-  const baseCtx = dealFillCtx(
+  const baseCtx = await dealFillCtx(
     deal,
     org,
     workorderPrintNumber(dealId, String(woDoc?.number || '')) ||
       String(contractDoc?.number || deal.id || dealId),
     enrich
   );
-  const templateIds = resolveStoFullPackTemplateIds(deal, { organizationId: orgId });
+  const templateIds = await resolveStoFullPackTemplateIds(deal, { organizationId: orgId });
   const parts: PackPart[] = [];
   const sellerInn = String(org.inn || '');
 
@@ -631,7 +631,7 @@ async function prepareStoFullPack(
       String(baseCtx.number || '');
     const part = await templatePartAsync(
       tid,
-      dealFillCtx(deal, org, num, enrich),
+      await dealFillCtx(deal, org, num, enrich),
       sellerInn
     );
     if (part) parts.push(part);
@@ -758,11 +758,11 @@ export async function buildDealStoFullPackPdf(
 
   // Печать полного пакета = ЗН считается распечатанным (гейт оплаты)
   try {
-    const wo = listSalesDocs({ dealId, limit: 50 }).items.find(
+    const wo = (await listSalesDocs({ dealId, limit: 50 })).items.find(
       (d) => String(d.doc_type) === 'workorder'
     );
     if (wo?.id) {
-      markSalesDocPrinted(String(wo.id), { actor: opts?.actor ?? null, via: 'sto-pack.pdf' });
+      await markSalesDocPrinted(String(wo.id), { actor: opts?.actor ?? null, via: 'sto-pack.pdf' });
     }
   } catch {
     /* non-fatal */
@@ -795,7 +795,7 @@ export async function buildDealStoPdnPdf(
   const dealNumber = String(
     prep.deal.number || prep.deal.amo_id || prep.deal.id || dealId
   ).trim();
-  const fioCtx = dealFillCtx(prep.deal, prep.org, dealNumber);
+  const fioCtx = await dealFillCtx(prep.deal, prep.org, dealNumber);
   if (!looksLikePersonFio(String(fioCtx.buyerName || ''))) {
     throw new Error(
       'Для согласия ПДн укажите ФИО как в паспорте (фамилия имя отчество) во вкладке «Документы»'
@@ -826,7 +826,7 @@ export async function buildDealStoPdnPdf(
   if (!pdn) {
     pdn = await templatePartAsync(
       STO_PDN_CONSENT,
-      dealFillCtx(prep.deal, prep.org, dealNumber),
+      await dealFillCtx(prep.deal, prep.org, dealNumber),
       prep.org.inn
     );
   }
@@ -886,7 +886,7 @@ export async function buildDealPdnConsentSnapshot(dealId: string): Promise<{
   const dealNumber = String(
     prep.deal.number || prep.deal.amo_id || prep.deal.id || dealId
   ).trim();
-  const fioCtx = dealFillCtx(prep.deal, prep.org, dealNumber);
+  const fioCtx = await dealFillCtx(prep.deal, prep.org, dealNumber);
   const buyerName = String(fioCtx.buyerName || '').trim();
   const phone = String(fioCtx.buyerPhone || prep.deal.buyer_phone || '').trim();
   let part = prep.parts.find((p) => p.id === STO_PDN_CONSENT) || null;
@@ -915,7 +915,7 @@ export async function buildDealStoExtraPdf(
   if (!isStoExtraDealTemplateId(tid)) {
     throw new Error('Этот бланк не в доп. документах заказа');
   }
-  return buildDealStoTemplatePdf(dealId, tid, opts);
+  return await buildDealStoTemplatePdf(dealId, tid, opts);
 }
 
 /**
@@ -933,7 +933,7 @@ export async function buildDealStoTemplatePdf(
   if (!prep) return null;
 
   // Номер документа: договор / ЗН из sales-docs, иначе контекст пакета
-  const sales = listSalesDocs({ dealId, limit: 100 }).items as Array<{
+  const sales = (await listSalesDocs({ dealId, limit: 100 })).items as Array<{
     id: string;
     doc_type?: string;
     number?: string;

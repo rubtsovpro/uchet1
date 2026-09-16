@@ -57,58 +57,58 @@ function asMode(v: unknown, fallback: RateMode = 'manual'): RateMode {
   return RATE_MODES.has(m) ? (m as RateMode) : fallback;
 }
 
-export function listCurrencies(activeOnly = true): CurrencyRow[] {
+export async function listCurrencies(activeOnly = true): Promise<CurrencyRow[]> {
   if (activeOnly) {
-    return all(
+    return await all(
       `SELECT * FROM currencies WHERE is_active = 1 ORDER BY sort_order, code`
     ) as CurrencyRow[];
   }
-  return all(`SELECT * FROM currencies ORDER BY sort_order, code`) as CurrencyRow[];
+  return await all(`SELECT * FROM currencies ORDER BY sort_order, code`) as CurrencyRow[];
 }
 
-export function getCurrency(code: string): CurrencyRow | undefined {
+export async function getCurrency(code: string): Promise<CurrencyRow | undefined> {
   const c = normCode(code);
   if (!c) return undefined;
-  return get(`SELECT * FROM currencies WHERE code = ? LIMIT 1`, [c]) as CurrencyRow | undefined;
+  return await get(`SELECT * FROM currencies WHERE code = ? LIMIT 1`, [c]) as CurrencyRow | undefined;
 }
 
-export function listCurrencyRates(opts: {
+export async function listCurrencyRates(opts: {
   base?: string;
   quote?: string;
   limit?: number;
-} = {}): CurrencyRateRow[] {
+} = {}): Promise<CurrencyRateRow[]> {
   const base = normCode(opts.base);
   const quote = normCode(opts.quote);
   const limit = Math.min(500, Math.max(1, opts.limit || 50));
   const order = `ORDER BY CASE WHEN source = 'stub' THEN 1 ELSE 0 END,
        rate_date DESC, datetime(updated_at) DESC LIMIT ?`;
   if (base && quote) {
-    return all(
+    return await all(
       `SELECT * FROM currency_rates WHERE base_code = ? AND quote_code = ? ${order}`,
       [base, quote, limit]
     ) as CurrencyRateRow[];
   }
   if (base) {
-    return all(
+    return await all(
       `SELECT * FROM currency_rates WHERE base_code = ? OR quote_code = ? ${order}`,
       [base, base, limit]
     ) as CurrencyRateRow[];
   }
-  return all(`SELECT * FROM currency_rates ${order}`, [limit]) as CurrencyRateRow[];
+  return await all(`SELECT * FROM currency_rates ${order}`, [limit]) as CurrencyRateRow[];
 }
 
 /** Последний курс «1 CODE = N RUB» (как в шапке 1С). Stub-сиды не перекрывают ЦБ/manual. */
-export function latestRateToRub(code: string): CurrencyRateRow | undefined {
+export async function latestRateToRub(code: string): Promise<CurrencyRateRow | undefined> {
   const c = normCode(code);
   if (!c || c === 'RUB') return undefined;
   const order = `ORDER BY CASE WHEN source = 'stub' THEN 1 ELSE 0 END,
      rate_date DESC, datetime(updated_at) DESC LIMIT 1`;
-  const direct = get(
+  const direct = await get(
     `SELECT * FROM currency_rates WHERE base_code = ? AND quote_code = 'RUB' ${order}`,
     [c]
   ) as CurrencyRateRow | undefined;
   if (direct) return direct;
-  const inv = get(
+  const inv = await get(
     `SELECT * FROM currency_rates WHERE base_code = 'RUB' AND quote_code = ? ${order}`,
     [c]
   ) as CurrencyRateRow | undefined;
@@ -121,9 +121,9 @@ export function latestRateToRub(code: string): CurrencyRateRow | undefined {
   };
 }
 
-export function headerRates() {
-  const usd = latestRateToRub('USD');
-  const cny = latestRateToRub('CNY');
+export async function headerRates() {
+  const usd = await latestRateToRub('USD');
+  const cny = await latestRateToRub('CNY');
   return {
     as_of: usd?.rate_date || cny?.rate_date || null,
     items: [
@@ -147,10 +147,10 @@ export function headerRates() {
   };
 }
 
-export function currenciesCatalog() {
-  const currencies = listCurrencies(true);
-  const rates = listCurrencyRates({ limit: 80 });
-  const header = headerRates();
+export async function currenciesCatalog() {
+  const currencies = await listCurrencies(true);
+  const rates = await listCurrencyRates({ limit: 80 });
+  const header = await headerRates();
   return {
     currencies,
     rates,
@@ -165,13 +165,13 @@ export function currenciesCatalog() {
   };
 }
 
-export function upsertCurrencyRate(input: {
+export async function upsertCurrencyRate(input: {
   base_code?: string;
   quote_code: string;
   rate: number;
   rate_date?: string;
   source?: string;
-}): CurrencyRateRow {
+}): Promise<CurrencyRateRow> {
   const base = normCode(input.base_code || 'RUB') || 'RUB';
   const quote = normCode(input.quote_code);
   const rate = Number(input.rate);
@@ -180,28 +180,28 @@ export function upsertCurrencyRate(input: {
   const rateDate = String(input.rate_date || todayIso()).slice(0, 10);
   const source = String(input.source || 'manual').slice(0, 40);
 
-  const existing = get<{ id: string }>(
+  const existing = await get<{ id: string }>(
     `SELECT id FROM currency_rates WHERE base_code = ? AND quote_code = ? AND rate_date = ? LIMIT 1`,
     [base, quote, rateDate]
   );
   if (existing) {
-    run(
+    await run(
       `UPDATE currency_rates SET rate = ?, source = ?, updated_at = datetime('now') WHERE id = ?`,
       [rate, source, existing.id]
     );
-    return get(`SELECT * FROM currency_rates WHERE id = ?`, [existing.id]) as CurrencyRateRow;
+    return await get(`SELECT * FROM currency_rates WHERE id = ?`, [existing.id]) as CurrencyRateRow;
   }
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO currency_rates (id, base_code, quote_code, rate, rate_date, source, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
     [id, base, quote, rate, rateDate, source]
   );
-  return get(`SELECT * FROM currency_rates WHERE id = ?`, [id]) as CurrencyRateRow;
+  return await get(`SELECT * FROM currency_rates WHERE id = ?`, [id]) as CurrencyRateRow;
 }
 
 /** Сохранить пару CODE↔RUB (1 CODE = rate RUB + обратный). */
-export function upsertRubPair(opts: {
+export async function upsertRubPair(opts: {
   code: string;
   rateToRub: number;
   rate_date?: string;
@@ -213,14 +213,14 @@ export function upsertRubPair(opts: {
   if (!(rateToRub > 0)) throw new Error('rate must be > 0');
   const rateDate = String(opts.rate_date || todayIso()).slice(0, 10);
   const source = String(opts.source || 'manual').slice(0, 40);
-  const forward = upsertCurrencyRate({
+  const forward = await upsertCurrencyRate({
     base_code: code,
     quote_code: 'RUB',
     rate: rateToRub,
     rate_date: rateDate,
     source,
   });
-  upsertCurrencyRate({
+  await upsertCurrencyRate({
     base_code: 'RUB',
     quote_code: code,
     rate: 1 / rateToRub,
@@ -230,10 +230,10 @@ export function upsertRubPair(opts: {
   return forward;
 }
 
-export function upsertCurrency(input: Partial<CurrencyRow> & { code: string }): CurrencyRow {
+export async function upsertCurrency(input: Partial<CurrencyRow> & { code: string }): Promise<CurrencyRow> {
   const code = normCode(input.code);
   if (!code || code.length < 3) throw new Error('code required (ISO 4217)');
-  const existing = getCurrency(code);
+  const existing = await getCurrency(code);
   const name = String(input.name ?? existing?.name ?? code).trim().slice(0, 120) || code;
   const symbol = String(input.symbol ?? existing?.symbol ?? '').trim().slice(0, 8);
   const numeric = String(input.numeric_code ?? existing?.numeric_code ?? '')
@@ -266,7 +266,7 @@ export function upsertCurrency(input: Partial<CurrencyRow> & { code: string }): 
         : 100;
 
   if (existing) {
-    run(
+    await run(
       `UPDATE currencies SET
         name = ?, symbol = ?, numeric_code = ?, alt_code = ?,
         rate_mode = ?, linked_code = ?, linked_markup_pct = ?, formula = ?,
@@ -295,7 +295,7 @@ export function upsertCurrency(input: Partial<CurrencyRow> & { code: string }): 
       ]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO currencies (
         code, name, symbol, numeric_code, alt_code,
         rate_mode, linked_code, linked_markup_pct, formula,
@@ -324,7 +324,7 @@ export function upsertCurrency(input: Partial<CurrencyRow> & { code: string }): 
       ]
     );
   }
-  return getCurrency(code)!;
+  return (await getCurrency(code))!;
 }
 
 type CbrPayload = {
@@ -377,15 +377,15 @@ export function evalRateFormula(formula: string, ratesToRub: Record<string, numb
   return val;
 }
 
-function rebuildDerivedRates(rateDate: string, sourceTag: string) {
+async function rebuildDerivedRates(rateDate: string, sourceTag: string) {
   const ratesMap: Record<string, number> = { RUB: 1 };
-  for (const row of listCurrencies(false)) {
+  for (const row of await listCurrencies(false)) {
     if (row.code === 'RUB') continue;
-    const latest = latestRateToRub(row.code);
+    const latest = await latestRateToRub(row.code);
     if (latest?.rate) ratesMap[row.code] = Number(latest.rate);
   }
 
-  for (const row of listCurrencies(false)) {
+  for (const row of await listCurrencies(false)) {
     if (row.code === 'RUB') continue;
     if (row.rate_mode === 'linked') {
       const base = normCode(row.linked_code);
@@ -393,12 +393,12 @@ function rebuildDerivedRates(rateDate: string, sourceTag: string) {
       if (!(baseRate > 0)) continue;
       const markup = Number(row.linked_markup_pct) || 0;
       const rate = baseRate * (1 + markup / 100);
-      upsertRubPair({ code: row.code, rateToRub: rate, rate_date: rateDate, source: sourceTag });
+      await upsertRubPair({ code: row.code, rateToRub: rate, rate_date: rateDate, source: sourceTag });
       ratesMap[row.code] = rate;
     } else if (row.rate_mode === 'formula' && row.formula) {
       try {
         const rate = evalRateFormula(row.formula, ratesMap);
-        upsertRubPair({
+        await upsertRubPair({
           code: row.code,
           rateToRub: rate,
           rate_date: rateDate,
@@ -415,27 +415,27 @@ function rebuildDerivedRates(rateDate: string, sourceTag: string) {
 export async function syncRatesFromCbr(opts: { force?: boolean } = {}) {
   const { date, valute } = await fetchCbrDaily();
   if (!opts.force) {
-    const already = get<{ c: number }>(
+    const already = (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM currency_rates
        WHERE source = 'cbr' AND rate_date = ? AND quote_code = 'RUB'`,
       [date]
-    )?.c;
+    ))?.c;
     if (already && already > 0) {
       return {
         ok: true,
         cached: true,
         rate_date: date,
         updated: [] as string[],
-        header: headerRates(),
+        header: await headerRates(),
         message: `Курсы ЦБ на ${date} уже загружены`,
       };
     }
   }
 
   // Убрать старые stub-сиды — иначе «сегодняшний» stub перекрывает ЦБ в шапке
-  run(`DELETE FROM currency_rates WHERE source = 'stub'`);
+  await run(`DELETE FROM currency_rates WHERE source = 'stub'`);
 
-  const internetCodes = listCurrencies(false)
+  const internetCodes = (await listCurrencies(false))
     .filter((c) => c.rate_mode === 'internet' || c.code === 'USD' || c.code === 'CNY')
     .map((c) => c.code);
   const want = new Set(internetCodes.length ? internetCodes : ['USD', 'CNY']);
@@ -452,12 +452,12 @@ export async function syncRatesFromCbr(opts: { force?: boolean } = {}) {
     const value = Number(v.Value);
     if (!(value > 0) || !(nominal > 0)) continue;
     const rateToRub = value / nominal;
-    upsertRubPair({ code, rateToRub, rate_date: date, source: 'cbr' });
+    await upsertRubPair({ code, rateToRub, rate_date: date, source: 'cbr' });
     updated.push({ code, rate: rateToRub, name: v.Name });
     // Keep numeric/name in sync for known CBR currencies
-    const cur = getCurrency(code);
+    const cur = await getCurrency(code);
     if (cur) {
-      run(
+      await run(
         `UPDATE currencies SET
           name = COALESCE(NULLIF(?, ''), name),
           numeric_code = COALESCE(NULLIF(?, ''), numeric_code),
@@ -468,14 +468,14 @@ export async function syncRatesFromCbr(opts: { force?: boolean } = {}) {
     }
   }
 
-  rebuildDerivedRates(date, 'derived');
+  await rebuildDerivedRates(date, 'derived');
 
   return {
     ok: true,
     cached: false,
     rate_date: date,
     updated,
-    header: headerRates(),
+    header: await headerRates(),
     source: CBR_DAILY_URL,
     message: `Загружено из ЦБ РФ: ${updated.map((u) => `${u.code}=${u.rate.toFixed(4)}`).join(', ') || 'нет совпадений'}`,
   };

@@ -114,10 +114,10 @@ type CatRow = { id: string; name: string; nameLower: string; tokens: string[]; p
 
 let cache: { at: number; cats: CatRow[] } | null = null;
 
-function loadCategories(): CatRow[] {
+async function loadCategories(): Promise<CatRow[]> {
   const now = Date.now();
   if (cache && now - cache.at < 60_000) return cache.cats;
-  const rows = all<{ id: string; name: string; products: number }>(
+  const rows = await all<{ id: string; name: string; products: number }>(
     `SELECT c.id, c.name, COALESCE(pc.cnt, 0) AS products
      FROM categories c
      LEFT JOIN (
@@ -196,15 +196,15 @@ function scoreCategory(
 }
 
 /** Соседи только по «типовому» слову (амортизатор…), не по марке авто / пневмо. */
-function neighborVote(
+async function neighborVote(
   typeLabel: string | null,
   strongTokens: string[],
   excludeId: string
-): Map<string, { votes: number; name: string }> {
+): Promise<Map<string, { votes: number; name: string }>> {
   const votes = new Map<string, { votes: number; name: string }>();
   const key = typeLabel || strongTokens.sort((a, b) => b.length - a.length)[0];
   if (!key || key.length < 4) return votes;
-  const rows = all<{ category_id: string; category_name: string; c: number }>(
+  const rows = await all<{ category_id: string; category_name: string; c: number }>(
     `SELECT p.category_id AS category_id, IFNULL(c.name,'') AS category_name, COUNT(*) AS c
      FROM products p
      LEFT JOIN categories c ON c.id = p.category_id
@@ -227,11 +227,11 @@ function neighborVote(
   return votes;
 }
 
-export function suggestCategoryForProduct(input: {
+export async function suggestCategoryForProduct(input: {
   id: string;
   name?: string;
   sku?: string;
-}): CategorySuggestion | null {
+}): Promise<CategorySuggestion | null> {
   const id = String(input.id || '').trim();
   const name = String(input.name || '').trim();
   const sku = String(input.sku || '').trim();
@@ -240,7 +240,7 @@ export function suggestCategoryForProduct(input: {
   let productName = name;
   let productSku = sku;
   if (!productName) {
-    const row = get<{ name: string; sku: string; category_id: string }>(
+    const row = await get<{ name: string; sku: string; category_id: string }>(
       `SELECT IFNULL(name,'') AS name, IFNULL(sku,'') AS sku, IFNULL(category_id,'') AS category_id
        FROM products WHERE id = ?`,
       [id]
@@ -250,7 +250,7 @@ export function suggestCategoryForProduct(input: {
     productName = row.name;
     productSku = productSku || row.sku;
   } else if (id) {
-    const row = get<{ category_id: string }>(
+    const row = await get<{ category_id: string }>(
       `SELECT IFNULL(category_id,'') AS category_id FROM products WHERE id = ?`,
       [id]
     );
@@ -263,7 +263,7 @@ export function suggestCategoryForProduct(input: {
   const tokens = tokenize(text);
   if (!tokens.length && !type) return null;
 
-  const cats = loadCategories();
+  const cats = await loadCategories();
   let best: { cat: CatRow; score: number; reason: string } | null = null;
 
   for (const cat of cats) {
@@ -273,7 +273,7 @@ export function suggestCategoryForProduct(input: {
     if (!best || score > best.score) best = { cat, score, reason };
   }
 
-  const neighbors = neighborVote(type?.label || null, tokens, id);
+  const neighbors = await neighborVote(type?.label || null, tokens, id);
   for (const [cid, v] of neighbors) {
     const cat = cats.find((c) => c.id === cid);
     if (!cat) continue;
@@ -299,11 +299,11 @@ export function suggestCategoryForProduct(input: {
   };
 }
 
-export function suggestCategoriesForProducts(ids: string[]): CategorySuggestion[] {
+export async function suggestCategoriesForProducts(ids: string[]): Promise<CategorySuggestion[]> {
   const uniq = [...new Set(ids.map((x) => String(x || '').trim()).filter(Boolean))].slice(0, 100);
   if (!uniq.length) return [];
   const placeholders = uniq.map(() => '?').join(',');
-  const rows = all<{ id: string; name: string; sku: string; category_id: string }>(
+  const rows = await all<{ id: string; name: string; sku: string; category_id: string }>(
     `SELECT id, IFNULL(name,'') AS name, IFNULL(sku,'') AS sku, IFNULL(category_id,'') AS category_id
      FROM products WHERE id IN (${placeholders})`,
     uniq
@@ -311,7 +311,7 @@ export function suggestCategoriesForProducts(ids: string[]): CategorySuggestion[
   const out: CategorySuggestion[] = [];
   for (const r of rows) {
     if (String(r.category_id || '').trim()) continue;
-    const s = suggestCategoryForProduct({ id: r.id, name: r.name, sku: r.sku });
+    const s = await suggestCategoryForProduct({ id: r.id, name: r.name, sku: r.sku });
     if (s) out.push(s);
   }
   return out;

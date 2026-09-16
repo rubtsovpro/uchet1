@@ -53,13 +53,13 @@ export function runWithDealFlowCache<T>(fn: () => T): T {
   }
 }
 
-function clearHandoffReturnState(dealId: string): void {
+async function clearHandoffReturnState(dealId: string): Promise<void> {
   const key = HANDOFF_RETURN_META(dealId);
   // Не трогаем SQLite, если метки нет — иначе каждый poll stock-flow пишет DELETE и ловит lock.
-  const exists = get<{ x: number }>(`SELECT 1 AS x FROM meta WHERE key = ? LIMIT 1`, [key]);
+  const exists = await get<{ x: number }>(`SELECT 1 AS x FROM meta WHERE key = ? LIMIT 1`, [key]);
   if (!exists) return;
   try {
-    run(`DELETE FROM meta WHERE key = ?`, [key]);
+    await run(`DELETE FROM meta WHERE key = ?`, [key]);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (/database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(msg)) return;
@@ -118,8 +118,8 @@ function moscowLabel(): string {
   });
 }
 
-function readMetaJson<T>(key: string): T | null {
-  const row = get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [key]);
+async function readMetaJson<T>(key: string): Promise<T | null> {
+  const row = await get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [key]);
   if (!row?.value) return null;
   try {
     return JSON.parse(String(row.value)) as T;
@@ -128,17 +128,17 @@ function readMetaJson<T>(key: string): T | null {
   }
 }
 
-function writeMetaJson(key: string, value: unknown): void {
-  run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [key, JSON.stringify(value)]);
+async function writeMetaJson(key: string, value: unknown): Promise<void> {
+  await run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [key, JSON.stringify(value)]);
 }
 
 /** Снимок уже перемещённого (по проведённым TR), не весь состав заказа.
  * Иначе позиции с бумаги, которые не вошли в проводку, помечаются «уехали»
  * и пропадают из следующих заданий / СРОЧНО на СТО. */
-export function snapshotDealFlowLines(dealId: string): void {
+export async function snapshotDealFlowLines(dealId: string): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id) return;
-  const posted = all<{ product_id: string; qty: number; name: string; sku: string }>(
+  const posted = await all<{ product_id: string; qty: number; name: string; sku: string }>(
     `SELECT IFNULL(l.product_id,'') AS product_id, IFNULL(SUM(l.qty),0) AS qty,
             IFNULL(MAX(NULLIF(TRIM(i.name),'')), IFNULL(MAX(p.name),'')) AS name,
             IFNULL(MAX(NULLIF(TRIM(i.sku),'')), IFNULL(MAX(p.sku),'')) AS sku
@@ -170,7 +170,7 @@ export function snapshotDealFlowLines(dealId: string): void {
     const pid = String(row.product_id || '').trim();
     if (!pid) continue;
     let qty = Math.max(0, Number(row.qty) || 0);
-    const returned = dealReturnedToMainQty(id, pid);
+    const returned = await dealReturnedToMainQty(id, pid);
     qty = Math.max(0, qty - returned);
     if (qty <= 0.0001) continue;
     byPid.set(pid, {
@@ -180,7 +180,7 @@ export function snapshotDealFlowLines(dealId: string): void {
       sku: String(row.sku || '').trim(),
     });
   }
-  writeMetaJson(FLOW_SNAPSHOT(id), {
+  await writeMetaJson(FLOW_SNAPSHOT(id), {
     at: new Date().toISOString(),
     lines: [...byPid.values()],
   });
@@ -190,19 +190,19 @@ export function snapshotDealFlowLines(dealId: string): void {
  * Сколько уже ушло на резерв/курьера по сделке (снимок + проведённые TR/OUT «Передача»).
  * Нужен fallback, если meta-снимок не записался — иначе виджет снова шлёт ту же номенклатуру.
  */
-export function movedQtyMapForDeal(dealId: string): Map<string, number> {
+export async function movedQtyMapForDeal(dealId: string): Promise<Map<string, number>> {
   const id = String(dealId || '').trim();
   const map = new Map<string, number>();
   if (!id) return map;
 
-  const snap = readMetaJson<{ lines: StockReturnLine[] }>(FLOW_SNAPSHOT(id));
+  const snap = await readMetaJson<{ lines: StockReturnLine[] }>(FLOW_SNAPSHOT(id));
   for (const prev of snap?.lines || []) {
     const pid = String(prev.product_id || '').trim();
     if (!pid) continue;
     map.set(pid, Math.max(map.get(pid) || 0, Math.max(0, Number(prev.qty) || 0)));
   }
 
-  const posted = all<{ product_id: string; qty: number }>(
+  const posted = await all<{ product_id: string; qty: number }>(
     `SELECT IFNULL(l.product_id,'') AS product_id, IFNULL(SUM(l.qty),0) AS qty
      FROM stock_doc_lines l
      INNER JOIN stock_docs d ON d.id = l.doc_id
@@ -234,7 +234,7 @@ export function movedQtyMapForDeal(dealId: string): Map<string, number> {
 
   // Открытые задания /pick (в т.ч. СРОЧНО) — тоже «уже занято», иначе второй клик
   // «→ Резерв» списывает с Основного ту же qty параллельно.
-  const pending = all<{ product_id: string; qty: number }>(
+  const pending = await all<{ product_id: string; qty: number }>(
     `SELECT IFNULL(l.product_id,'') AS product_id, IFNULL(SUM(l.qty),0) AS qty
      FROM stock_doc_lines l
      INNER JOIN stock_docs d ON d.id = l.doc_id
@@ -257,7 +257,7 @@ export function movedQtyMapForDeal(dealId: string): Map<string, number> {
   // Минус уже возвращённое на Основной — иначе после возврата кнопка «Основной → Курьер/Резерв» не появляется.
   if (map.size) {
     for (const pid of [...map.keys()]) {
-      const returned = dealReturnedToMainQty(id, pid);
+      const returned = await dealReturnedToMainQty(id, pid);
       const net = Math.max(0, (map.get(pid) || 0) - returned);
       if (net <= 0.0001) map.delete(pid);
       else map.set(pid, net);
@@ -397,15 +397,15 @@ export function handoffRouteKindFromDoc(input: {
   return null;
 }
 
-function isHandoffDocBefore(docId: string, beforeDocId: string): boolean {
+async function isHandoffDocBefore(docId: string, beforeDocId: string): Promise<boolean> {
   const did = String(docId || '').trim();
   const beforeId = String(beforeDocId || '').trim();
   if (!did || !beforeId || did === beforeId) return false;
-  const doc = get<{ created_at: string; number: string }>(
+  const doc = await get<{ created_at: string; number: string }>(
     `SELECT IFNULL(created_at,'') AS created_at, IFNULL(number,'') AS number FROM stock_docs WHERE id = ?`,
     [did]
   );
-  const anchor = get<{ created_at: string; number: string }>(
+  const anchor = await get<{ created_at: string; number: string }>(
     `SELECT IFNULL(created_at,'') AS created_at, IFNULL(number,'') AS number FROM stock_docs WHERE id = ?`,
     [beforeId]
   );
@@ -418,11 +418,11 @@ function isHandoffDocBefore(docId: string, beforeDocId: string): boolean {
 }
 
 /** Позиции заказа, которые на этом маршруте уже прошли — переносить не нужно. */
-export function dealSkipLinesOnRoute(
+export async function dealSkipLinesOnRoute(
   dealId: string,
   route: HandoffRouteKind,
   opts?: { excludeProductIds?: Set<string> | string[]; beforeDocId?: string }
-): DealAlreadyMovedBriefRow[] {
+): Promise<DealAlreadyMovedBriefRow[]> {
   const id = String(dealId || '').trim();
   if (!id) return [];
   const exclude = new Set(
@@ -431,12 +431,12 @@ export function dealSkipLinesOnRoute(
       : opts?.excludeProductIds || []
     ).map((x) => String(x || '').trim()).filter(Boolean)
   );
-  const { reserveIn, stoOut } = dealHandoffTransferSums(id, { beforeDocId: opts?.beforeDocId });
-  const allLines = getDealAlreadyMovedLines(id);
+  const { reserveIn, stoOut } = await dealHandoffTransferSums(id, { beforeDocId: opts?.beforeDocId });
+  const allLines = await getDealAlreadyMovedLines(id);
   const out: DealAlreadyMovedBriefRow[] = [];
 
   // Сумма по SKU: заказ 2×1 и TR на 1 → «уже отгружено» только 1, не две галочки.
-  for (const item of dealGoodsQtyAggregated(id)) {
+  for (const item of await dealGoodsQtyAggregated(id)) {
     const pid = String(item.product_id || '').trim();
     const need = Math.max(0, Number(item.qty) || 0);
     if (!pid || !need) continue;
@@ -451,10 +451,10 @@ export function dealSkipLinesOnRoute(
     const line = allLines.find((l) => l.product_id === pid);
     if (!line) continue;
     const beforeId = String(opts?.beforeDocId || '').trim();
-    const routeStages = line.stages.filter((s) => {
+    const routeStages = line.stages.filter(async (s) => {
       const okLabel = route === 'main_to_reserve' ? s.label === 'На резерве' : s.label === 'На СТО';
       if (!okLabel) return false;
-      if (beforeId && !isHandoffDocBefore(String(s.doc_id || ''), beforeId)) return false;
+      if (beforeId && !await isHandoffDocBefore(String(s.doc_id || ''), beforeId)) return false;
       return true;
     });
     const last = routeStages[routeStages.length - 1];
@@ -482,7 +482,7 @@ export function dealSkipLinesOnRoute(
 }
 
 /** Коротко: сделка + маршрут + что не переносить повторно. */
-export function buildHandoffRouteBrief(
+export async function buildHandoffRouteBrief(
   dealId: string,
   route: HandoffRouteKind,
   opts?: {
@@ -491,9 +491,9 @@ export function buildHandoffRouteBrief(
     excludeProductIds?: Set<string> | string[];
     beforeDocId?: string;
   }
-): string[] {
+): Promise<string[]> {
   const id = String(dealId || '').trim();
-  const skip = dealSkipLinesOnRoute(id, route, {
+  const skip = await dealSkipLinesOnRoute(id, route, {
     excludeProductIds: opts?.excludeProductIds,
     beforeDocId: opts?.beforeDocId,
   });
@@ -536,18 +536,18 @@ export function buildHandoffRouteBrief(
 }
 
 /** Ячейка, с которой собрали/спустили в этом документе. */
-export function handoffLineDoneCell(
+export async function handoffLineDoneCell(
   dealId: string,
   docId: string,
   productId: string,
   route: HandoffRouteKind,
   docComment?: string,
   movedLines?: DealAlreadyMovedLine[]
-): string {
+): Promise<string> {
   const pid = String(productId || '').trim();
   const did = String(docId || '').trim();
   if (!pid || !did) return '';
-  const line = (movedLines || getDealAlreadyMovedLines(dealId)).find((l) => l.product_id === pid);
+  const line = (movedLines || await getDealAlreadyMovedLines(dealId)).find((l) => l.product_id === pid);
   const stage = line?.stages.find((s) => s.doc_id === did);
   if (stage?.cell_code) return String(stage.cell_code);
   const docCell = parseCellFromDocComment(String(docComment || ''));
@@ -568,13 +568,13 @@ export function parseCellFromDocComment(comment: string): string {
 }
 
 /** Ячейка списания с Основного по picks кладовщика (если сохраняли). */
-function handoffPickCellForProduct(docId: string, productId: string): string {
+async function handoffPickCellForProduct(docId: string, productId: string): Promise<string> {
   const did = String(docId || '').trim();
   const pid = String(productId || '').trim();
   if (!did || !pid) return '';
-  const raw = get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [
+  const raw = (await get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [
     `handoff_picks:${did}`,
-  ])?.value;
+  ]))?.value;
   if (!raw) return '';
   try {
     const parsed = JSON.parse(String(raw)) as {
@@ -598,10 +598,10 @@ function handoffPickCellForProduct(docId: string, productId: string): string {
  * 2) где сейчас лежит такой же SKU на Основном (остаток в ячейках)
  * 3) общая «яч: …» из комментария документа — только если на Основном нет своей ячейки
  */
-function resolveOriginMainCell(
+async function resolveOriginMainCell(
   productId: string,
   stages: DealMovedLineStage[] | undefined
-): { cell: string; stage: DealMovedLineStage | null } {
+): Promise<{ cell: string; stage: DealMovedLineStage | null }> {
   const pid = String(productId || '').trim();
   const list = Array.isArray(stages) ? stages : [];
   const fromMain = (s: DealMovedLineStage) =>
@@ -614,19 +614,19 @@ function resolveOriginMainCell(
   for (const s of list) {
     if (!fromMain(s)) continue;
     stageHint = s;
-    const fromPicks = handoffPickCellForProduct(s.doc_id, pid);
+    const fromPicks = await handoffPickCellForProduct(s.doc_id, pid);
     if (fromPicks) return { cell: fromPicks, stage: s };
     const nProd = Number(
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(DISTINCT product_id) AS c FROM stock_doc_lines WHERE doc_id = ?`,
         [s.doc_id]
-      )?.c || 0
+      ))?.c || 0
     );
     if (nProd > 1) multiProductDoc = true;
   }
   if (!stageHint) {
     for (const s of list) {
-      const fromPicks = handoffPickCellForProduct(s.doc_id, pid);
+      const fromPicks = await handoffPickCellForProduct(s.doc_id, pid);
       if (fromPicks) return { cell: fromPicks, stage: s };
       if (!stageHint && s.cell_code) stageHint = s;
     }
@@ -634,9 +634,9 @@ function resolveOriginMainCell(
 
   // Где сейчас лежит такой же товар на Основном — лучше общей «яч» на весь multi-SKU TR
   try {
-    const mainWh = mainWarehouseId();
+    const mainWh = await mainWarehouseId();
     if (mainWh && pid) {
-      const onMain = cellBalanceForProduct(mainWh, pid);
+      const onMain = await cellBalanceForProduct(mainWh, pid);
       if (onMain) return { cell: onMain, stage: stageHint };
     }
   } catch {
@@ -680,12 +680,12 @@ function classifyPostedHandoffDoc(row: {
 }
 
 /** Уже проведённые перемещения по сделке — для дозаказа и подсказок на /pick. */
-export function getDealAlreadyMovedLines(dealId: string): DealAlreadyMovedLine[] {
+export async function getDealAlreadyMovedLines(dealId: string): Promise<DealAlreadyMovedLine[]> {
   const id = String(dealId || '').trim();
   if (!id) return [];
   const cached = dealFlowCache?.movedLines.get(id);
   if (cached) return cached;
-  const rows = all<{
+  const rows = await all<{
     product_id: string;
     qty: number;
     sku: string;
@@ -763,13 +763,13 @@ export function getDealAlreadyMovedLines(dealId: string): DealAlreadyMovedLine[]
 type DealFlowQtyLine = { product_id: string; qty: number; name: string; sku: string };
 
 /** Суммы перемещений по сделке (не общий остаток склада — резерв общий на все заказы). */
-function dealHandoffTransferSums(
+async function dealHandoffTransferSums(
   dealId: string,
   opts?: { beforeDocId?: string }
-): {
+): Promise<{
   reserveIn: Map<string, number>;
   stoOut: Map<string, number>;
-} {
+}> {
   const id = String(dealId || '').trim();
   const reserveIn = new Map<string, number>();
   const stoOut = new Map<string, number>();
@@ -782,7 +782,7 @@ function dealHandoffTransferSums(
   let beforeSql = '';
   const beforeParams: string[] = [];
   if (beforeId) {
-    const anchor = get<{ created_at: string; number: string }>(
+    const anchor = await get<{ created_at: string; number: string }>(
       `SELECT IFNULL(created_at,'') AS created_at, IFNULL(number,'') AS number FROM stock_docs WHERE id = ?`,
       [beforeId]
     );
@@ -795,7 +795,7 @@ function dealHandoffTransferSums(
     }
   }
 
-  const rows = all<{
+  const rows = await all<{
     product_id: string;
     qty: number;
     comment: string;
@@ -841,12 +841,12 @@ function dealHandoffTransferSums(
   return result;
 }
 
-function dealGoodsLines(dealId: string): DealFlowQtyLine[] {
+async function dealGoodsLines(dealId: string): Promise<DealFlowQtyLine[]> {
   const id = String(dealId || '').trim();
   if (!id) return [];
   const cached = dealFlowCache?.goodsLines.get(id);
   if (cached) return cached;
-  const rows = all<DealFlowQtyLine>(
+  const rows = await all<DealFlowQtyLine>(
     `SELECT IFNULL(i.product_guid,'') AS product_id, IFNULL(i.qty,0) AS qty,
             IFNULL(i.name,'') AS name, IFNULL(i.sku,'') AS sku
      FROM crm_deal_items i
@@ -864,9 +864,9 @@ function dealGoodsLines(dealId: string): DealFlowQtyLine[] {
  * Несколько строк заказа с одним product_id (две «левые» по 1 шт) → одна сумма.
  * Иначе дозаказ/«уже отгружено» сравнивают каждую строку с общим TR и дублируют ✓.
  */
-function dealGoodsQtyAggregated(dealId: string): DealFlowQtyLine[] {
+async function dealGoodsQtyAggregated(dealId: string): Promise<DealFlowQtyLine[]> {
   const map = new Map<string, DealFlowQtyLine>();
-  for (const item of dealGoodsLines(dealId)) {
+  for (const item of await dealGoodsLines(dealId)) {
     const pid = String(item.product_id || '').trim();
     if (!pid) continue;
     const qty = Math.max(0, Number(item.qty) || 0);
@@ -891,19 +891,19 @@ function dealGoodsQtyAggregated(dealId: string): DealFlowQtyLine[] {
  * (битый GUID / старый каталог). Тогда склад «не видит» номенклатуру.
  * Резолвим живую карточку по code / sku / warehouse_sku (с приоритетом is_main).
  */
-function resolveExistingProductId(opts: {
+async function resolveExistingProductId(opts: {
   product_guid?: string;
   sku?: string;
   code?: string;
-}): string {
+}): Promise<string> {
   const guid = String(opts.product_guid || '').trim();
   if (guid) {
-    const byId = get<{ id: string }>(`SELECT id FROM products WHERE id = ? LIMIT 1`, [guid]);
+    const byId = await get<{ id: string }>(`SELECT id FROM products WHERE id = ? LIMIT 1`, [guid]);
     if (byId?.id) return String(byId.id);
   }
   const keys = [String(opts.code || '').trim(), String(opts.sku || '').trim()].filter(Boolean);
   for (const key of keys) {
-    const hit = get<{ id: string }>(
+    const hit = await get<{ id: string }>(
       `SELECT id FROM products
        WHERE (code = ? OR sku = ? OR IFNULL(warehouse_sku,'') = ?)
          AND IFNULL(is_active,1) = 1
@@ -953,12 +953,12 @@ function aggregateProductQtyLines<
 }
 
 /** Сколько по сделке ещё ждёт спуска Резерв → СТО (по проведённым TR, не stock_balances). */
-export function dealReservePendingToStoLines(dealId: string): DealFlowQtyLine[] {
+export async function dealReservePendingToStoLines(dealId: string): Promise<DealFlowQtyLine[]> {
   const id = String(dealId || '').trim();
   if (!id) return [];
-  const { reserveIn, stoOut } = dealHandoffTransferSums(id);
+  const { reserveIn, stoOut } = await dealHandoffTransferSums(id);
   const pending: DealFlowQtyLine[] = [];
-  for (const item of dealGoodsQtyAggregated(id)) {
+  for (const item of await dealGoodsQtyAggregated(id)) {
     const pid = String(item.product_id || '').trim();
     const need = Math.max(0, Number(item.qty) || 0);
     const onReserve = Math.max(0, (reserveIn.get(pid) || 0) - (stoOut.get(pid) || 0));
@@ -976,12 +976,12 @@ export function dealReservePendingToStoLines(dealId: string): DealFlowQtyLine[] 
 }
 
 /** Сколько по сделке уже спущено на СТО (по проведённым TR). */
-export function dealOnStoLines(dealId: string): DealFlowQtyLine[] {
+export async function dealOnStoLines(dealId: string): Promise<DealFlowQtyLine[]> {
   const id = String(dealId || '').trim();
   if (!id) return [];
-  const { stoOut } = dealHandoffTransferSums(id);
+  const { stoOut } = await dealHandoffTransferSums(id);
   const onSto: DealFlowQtyLine[] = [];
-  for (const item of dealGoodsQtyAggregated(id)) {
+  for (const item of await dealGoodsQtyAggregated(id)) {
     const pid = String(item.product_id || '').trim();
     const need = Math.max(0, Number(item.qty) || 0);
     const qty = Math.min(need, Math.max(0, stoOut.get(pid) || 0));
@@ -998,13 +998,13 @@ export function dealOnStoLines(dealId: string): DealFlowQtyLine[] {
 }
 
 /** Позиции, которых не было в снимке после прошлого «Готово» (дозаказ). */
-export function detectAddedFlowLines(dealId: string): StockReturnLine[] {
+export async function detectAddedFlowLines(dealId: string): Promise<StockReturnLine[]> {
   const id = String(dealId || '').trim();
-  const snapQty = movedQtyMapForDeal(id);
+  const snapQty = await movedQtyMapForDeal(id);
   // Без прошлого перемещения это первый заказ, не дозаказ.
   if (snapQty.size === 0) return [];
   const added: StockReturnLine[] = [];
-  for (const item of dealGoodsQtyAggregated(id)) {
+  for (const item of await dealGoodsQtyAggregated(id)) {
     const pid = String(item.product_id || '').trim();
     if (!pid) continue;
     const now = Math.max(0, Number(item.qty) || 0);
@@ -1021,11 +1021,11 @@ export function detectAddedFlowLines(dealId: string): StockReturnLine[] {
   return added;
 }
 
-function cellBalanceForProduct(warehouseId: string, productId: string): string {
+async function cellBalanceForProduct(warehouseId: string, productId: string): Promise<string> {
   const wh = String(warehouseId || '').trim();
   const pid = String(productId || '').trim();
   if (!wh || !pid) return '';
-  const row = get<{ cell_code: string }>(
+  const row = await get<{ cell_code: string }>(
     `SELECT IFNULL(c.code,'') AS cell_code
      FROM stock_cell_balances b
      JOIN warehouse_cells c ON c.id = b.cell_id
@@ -1038,26 +1038,26 @@ function cellBalanceForProduct(warehouseId: string, productId: string): string {
 }
 
 /** Где лежит позиция сделки сейчас + откуда брали (для возврата на основной). */
-export function enrichStockReturnLineLocation(
+export async function enrichStockReturnLineLocation(
   dealId: string,
   line: StockReturnLine
-): StockReturnLine {
+): Promise<StockReturnLine> {
   const id = String(dealId || '').trim();
   const pid = String(line.product_id || '').trim();
   if (!id || !pid) return line;
 
-  const stoWh = stoWarehouseId();
-  const site = resolvePickSiteForDeal(id);
-  const rsvWh = reserveWarehouseForPickSite(site);
+  const stoWh = await stoWarehouseId();
+  const site = await resolvePickSiteForDeal(id);
+  const rsvWh = await reserveWarehouseForPickSite(site);
   const holdWh =
-    get<{ id: string; code: string; name: string }>(
+    await get<{ id: string; code: string; name: string }>(
       `SELECT id, IFNULL(code,'') AS code, IFNULL(name,'') AS name
        FROM warehouses WHERE code = 'STO-RES-MSK' AND IFNULL(is_active,1)=1 LIMIT 1`
     ) || null;
 
   const candidates: Array<{ id: string; code: string; name: string; priority: number }> = [];
   if (stoWh) {
-    const sto = get<{ code: string; name: string }>(
+    const sto = await get<{ code: string; name: string }>(
       `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [stoWh]
     );
@@ -1084,9 +1084,9 @@ export function enrichStockReturnLineLocation(
       priority: 3,
     });
   }
-  const courierWh = courierWarehouseId();
+  const courierWh = await courierWarehouseId();
   if (courierWh) {
-    const cour = get<{ code: string; name: string }>(
+    const cour = await get<{ code: string; name: string }>(
       `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [courierWh]
     );
@@ -1102,52 +1102,57 @@ export function enrichStockReturnLineLocation(
     | { id: string; code: string; name: string; priority: number }
     | null = null;
 
-  const pickWithBalance = (
+  const pickWithBalance = async (
     ids: Array<string | undefined | null>
-  ): (typeof candidates)[0] | null => {
+  ): Promise<(typeof candidates)[0] | null> => {
     for (const wid of ids) {
       const idStr = String(wid || '').trim();
       if (!idStr) continue;
       const c = candidates.find((x) => x.id === idStr);
       if (!c) continue;
-      if (productQtyOnWarehouse(pid, c.id) > 0) return c;
+      if (await productQtyOnWarehouse(pid, c.id) > 0) return c;
     }
     return null;
   };
 
   // Сначала по истории сделки (не общий остаток SKU на СТО от чужих заказов)
-  const onStoQty = dealOnStoLines(id).find((l) => l.product_id === pid);
-  const onRsvQty = dealReservePendingToStoLines(id).find((l) => l.product_id === pid);
-  if (onStoQty && stoWh && productQtyOnWarehouse(pid, stoWh) > 0) {
+  const onStoQty = (await dealOnStoLines(id)).find((l) => l.product_id === pid);
+  const onRsvQty = (await dealReservePendingToStoLines(id)).find((l) => l.product_id === pid);
+  if (onStoQty && stoWh && await productQtyOnWarehouse(pid, stoWh) > 0) {
     from = candidates.find((c) => c.id === stoWh) || null;
   } else if (onRsvQty) {
     // «На резерве» в истории — фактически может лежать на Отложено (STO-RES)
-    from = pickWithBalance([holdWh?.id, rsvWh?.id]) || pickWithBalance([rsvWh?.id, holdWh?.id]);
+    from = await pickWithBalance([holdWh?.id, rsvWh?.id]) || await pickWithBalance([rsvWh?.id, holdWh?.id]);
   }
   // Позицию уже убрали из заказа — смотрим историю перемещений / остаток + TR сделки
   if (!from) {
-    const movedHint = getDealAlreadyMovedLines(id).find((l) => l.product_id === pid);
+    const movedHint = (await getDealAlreadyMovedLines(id)).find((l) => l.product_id === pid);
     const last = [...(movedHint?.stages || [])].reverse()[0];
-    if (last?.label === 'На СТО' && stoWh && productQtyOnWarehouse(pid, stoWh) > 0) {
+    if (last?.label === 'На СТО' && stoWh && await productQtyOnWarehouse(pid, stoWh) > 0) {
       from = candidates.find((c) => c.id === stoWh) || null;
-    } else if (last?.label === 'На курьере' && courierWh && productQtyOnWarehouse(pid, courierWh) > 0) {
+    } else if (last?.label === 'На курьере' && courierWh && await productQtyOnWarehouse(pid, courierWh) > 0) {
       from = candidates.find((c) => c.id === courierWh) || null;
     } else if (last?.label === 'На резерве') {
-      from = pickWithBalance([holdWh?.id, rsvWh?.id]) || pickWithBalance([rsvWh?.id, holdWh?.id]);
+      from = await pickWithBalance([holdWh?.id, rsvWh?.id]) || await pickWithBalance([rsvWh?.id, holdWh?.id]);
     }
   }
   if (!from) {
     // Сначала склады, где реально есть qty (Отложено важнее пустого Резерва)
-    for (const c of [...candidates].sort((a, b) => {
-      const qa = productQtyOnWarehouse(pid, a.id) > 0 ? 0 : 1;
-      const qb = productQtyOnWarehouse(pid, b.id) > 0 ? 0 : 1;
-      if (qa !== qb) return qa - qb;
-      return a.priority - b.priority;
-    })) {
-      const bal = productQtyOnWarehouse(pid, c.id);
+    const scored = await Promise.all(
+      candidates.map(async (c) => ({
+        c,
+        hasQty: (await productQtyOnWarehouse(pid, c.id)) > 0 ? 0 : 1,
+      }))
+    );
+    scored.sort((a, b) => {
+      if (a.hasQty !== b.hasQty) return a.hasQty - b.hasQty;
+      return a.c.priority - b.c.priority;
+    });
+    for (const { c } of scored) {
+      const bal = await productQtyOnWarehouse(pid, c.id);
       if (!(bal > 0)) continue;
       // Подтверждаем, что по сделке был приход на этот склад ИЛИ соседний RSV/RES
-      const hit = get<{ c: number }>(
+      const hit = await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM stock_docs d
          JOIN stock_doc_lines l ON l.doc_id = d.id
          WHERE d.deal_id = ? AND l.product_id = ?
@@ -1176,10 +1181,10 @@ export function enrichStockReturnLineLocation(
     }
   }
 
-  const moved = getDealAlreadyMovedLines(id).find((l) => l.product_id === pid);
+  const moved = (await getDealAlreadyMovedLines(id)).find((l) => l.product_id === pid);
   const reserveStage = [...(moved?.stages || [])].reverse().find((s) => s.label === 'На резерве');
   const stoStage = [...(moved?.stages || [])].reverse().find((s) => s.label === 'На СТО');
-  const { cell: resolvedOriginCell, stage: originStage } = resolveOriginMainCell(
+  const { cell: resolvedOriginCell, stage: originStage } = await resolveOriginMainCell(
     pid,
     moved?.stages
   );
@@ -1190,7 +1195,7 @@ export function enrichStockReturnLineLocation(
   if (!fromCell && from) {
     if (from.code.toUpperCase() === 'STO' && stoStage?.cell_code) fromCell = stoStage.cell_code;
     else if (reserveStage?.cell_code) fromCell = reserveStage.cell_code;
-    if (!fromCell) fromCell = cellBalanceForProduct(from.id, pid);
+    if (!fromCell) fromCell = await cellBalanceForProduct(from.id, pid);
   }
 
   // Явные ячейки из заявки/ручного ввода важнее эвристики
@@ -1220,7 +1225,7 @@ export function enrichStockReturnLineLocation(
     origin_cell_code: originCell,
     origin_label: originLabel,
     to_cell_code: toCell,
-    ...supplierLotFieldsForLine(pid, {
+    ...await supplierLotFieldsForLine(pid, {
       preferCell: fromCell || originCell || toCell || '',
       dealId: id,
     }),
@@ -1228,10 +1233,10 @@ export function enrichStockReturnLineLocation(
 }
 
 /** Название и артикул для строк возврата (виджет /pick, приходная). */
-function enrichStockReturnLineProductInfo(
+async function enrichStockReturnLineProductInfo(
   dealId: string,
   line: StockReturnLine
-): StockReturnLine {
+): Promise<StockReturnLine> {
   const pid = String(line.product_id || '').trim();
   if (!pid) return line;
   let name = String(line.name || '').trim();
@@ -1239,7 +1244,7 @@ function enrichStockReturnLineProductInfo(
 
   // Артикул всегда от product_id в каталоге: в заказе часто висит чужой OEM/текст,
   // а остаток и возврат идут по guid (как 9Y… vs MRAA21113 на одной пневмостойке).
-  const fromProducts = get<{ name: string; sku: string; code: string }>(
+  const fromProducts = await get<{ name: string; sku: string; code: string }>(
     `SELECT IFNULL(name,'') AS name, IFNULL(sku,'') AS sku, IFNULL(code,'') AS code
      FROM products WHERE id = ?`,
     [pid]
@@ -1253,7 +1258,7 @@ function enrichStockReturnLineProductInfo(
 
   const id = String(dealId || '').trim();
   if (id && (!name || !sku)) {
-    const fromDeal = get<{ name: string; sku: string }>(
+    const fromDeal = await get<{ name: string; sku: string }>(
       `SELECT IFNULL(NULLIF(TRIM(i.name),''), IFNULL(p.name,'')) AS name,
               IFNULL(NULLIF(TRIM(p.sku),''), IFNULL(NULLIF(TRIM(i.sku),''), '')) AS sku
        FROM crm_deal_items i
@@ -1275,13 +1280,13 @@ function enrichStockReturnLineProductInfo(
   };
 }
 
-function summarizeReturnRequest(req: StockReturnRequest): StockReturnRequest {
-  const lines = (req.lines || []).map((l) =>
-    enrichStockReturnLineLocation(
+async function summarizeReturnRequest(req: StockReturnRequest): Promise<StockReturnRequest> {
+  const lines = await Promise.all((req.lines || []).map(async (l) =>
+    await enrichStockReturnLineLocation(
       req.deal_id,
-      enrichStockReturnLineProductInfo(req.deal_id, l)
+      await enrichStockReturnLineProductInfo(req.deal_id, l)
     )
-  );
+  ));
   const primary =
     lines.find((l) => l.from_warehouse_id) || lines[0] || null;
   const fromName = String(primary?.from_warehouse_name || '').trim() || 'Резерв/СТО';
@@ -1295,29 +1300,29 @@ function summarizeReturnRequest(req: StockReturnRequest): StockReturnRequest {
   };
 }
 
-function dealOrderProductQty(dealId: string, productId: string): number {
+async function dealOrderProductQty(dealId: string, productId: string): Promise<number> {
   const id = String(dealId || '').trim();
   const pid = String(productId || '').trim();
   if (!id || !pid) return 0;
   return (
     Number(
-      get<{ q: number }>(
+      (await get<{ q: number }>(
         `SELECT IFNULL(SUM(qty),0) AS q FROM crm_deal_items
          WHERE deal_id = ? AND product_guid = ?`,
         [id, pid]
-      )?.q
+      ))?.q
     ) || 0
   );
 }
 
 /** Проведённые TR на СТО / резерв / отложено по сделке (только вход с не-буфера). */
-function dealMovedToBufferQty(dealId: string, productId: string): number {
+async function dealMovedToBufferQty(dealId: string, productId: string): Promise<number> {
   const id = String(dealId || '').trim();
   const pid = String(productId || '').trim();
   if (!id || !pid) return 0;
   return (
     Number(
-      get<{ q: number }>(
+      (await get<{ q: number }>(
         `SELECT IFNULL(SUM(l.qty),0) AS q
          FROM stock_doc_lines l
          INNER JOIN stock_docs d ON d.id = l.doc_id
@@ -1339,19 +1344,19 @@ function dealMovedToBufferQty(dealId: string, productId: string): number {
              OR UPPER(IFNULL(wf.code,'')) = 'COURIER'
            )`,
         [id, pid]
-      )?.q
+      ))?.q
     ) || 0
   );
 }
 
 /** Уже вернулось на Основной (проведённый TR) — чтобы не показывать фантом на /pick. */
-function dealReturnedToMainQty(dealId: string, productId: string): number {
+async function dealReturnedToMainQty(dealId: string, productId: string): Promise<number> {
   const id = String(dealId || '').trim();
   const pid = String(productId || '').trim();
   if (!id || !pid) return 0;
   return (
     Number(
-      get<{ q: number }>(
+      (await get<{ q: number }>(
         `SELECT IFNULL(SUM(l.qty),0) AS q
          FROM stock_doc_lines l
          INNER JOIN stock_docs d ON d.id = l.doc_id
@@ -1374,7 +1379,7 @@ function dealReturnedToMainQty(dealId: string, productId: string): number {
              )
            )`,
         [id, pid]
-      )?.q
+      ))?.q
     ) || 0
   );
 }
@@ -1384,14 +1389,14 @@ function dealReturnedToMainQty(dealId: string, productId: string): number {
  * либо возврат на основной уже проведён документом.
  * null → meta удалена, карточку на /pick не показываем.
  */
-function prunePhantomStockReturn(req: StockReturnRequest): StockReturnRequest | null {
+async function prunePhantomStockReturn(req: StockReturnRequest): Promise<StockReturnRequest | null> {
   if (req.status !== 'pending') return req;
   const reason = String(req.reason || '').trim();
   const fullReturn = /^полный возврат/i.test(reason);
   const dealId = String(req.deal_id || '').trim();
   const lines = [...(req.lines || [])];
   if (!dealId || !lines.length) {
-    if (dealId) run(`DELETE FROM meta WHERE key = ?`, [RETURN_META(dealId)]);
+    if (dealId) await run(`DELETE FROM meta WHERE key = ?`, [RETURN_META(dealId)]);
     return null;
   }
 
@@ -1399,13 +1404,13 @@ function prunePhantomStockReturn(req: StockReturnRequest): StockReturnRequest | 
   for (const l of lines) {
     const pid = String(l.product_id || '').trim();
     if (!pid || maxReturn.has(pid)) continue;
-    const moved = dealMovedToBufferQty(dealId, pid);
-    const returned = dealReturnedToMainQty(dealId, pid);
+    const moved = await dealMovedToBufferQty(dealId, pid);
+    const returned = await dealReturnedToMainQty(dealId, pid);
     const stillAway = Math.max(0, moved - returned);
     if (fullReturn) {
       maxReturn.set(pid, stillAway);
     } else {
-      const order = dealOrderProductQty(dealId, pid);
+      const order = await dealOrderProductQty(dealId, pid);
       maxReturn.set(pid, Math.max(0, stillAway - order));
     }
   }
@@ -1425,7 +1430,7 @@ function prunePhantomStockReturn(req: StockReturnRequest): StockReturnRequest | 
   }
 
   if (!kept.length) {
-    run(`DELETE FROM meta WHERE key = ?`, [RETURN_META(dealId)]);
+    await run(`DELETE FROM meta WHERE key = ?`, [RETURN_META(dealId)]);
     return null;
   }
 
@@ -1438,10 +1443,10 @@ function prunePhantomStockReturn(req: StockReturnRequest): StockReturnRequest | 
 }
 
 /** Все открытые требования возврата (для /pick). */
-export function listPendingStockReturns(limit = 60): Array<Record<string, unknown>> {
+export async function listPendingStockReturns(limit = 60): Promise<Array<Record<string, unknown>>> {
   // Кэш movedLines / остатков — иначе каждый auto-refresh /pick (12с) бьёт SQLite пачкой JOIN.
-  return runWithDealFlowCache(() => {
-    const rows = all<{ key: string; value: string }>(
+  return await runWithDealFlowCache(async () => {
+    const rows = await all<{ key: string; value: string }>(
       `SELECT key, value FROM meta WHERE key LIKE 'stock_return_pending:%' ORDER BY key DESC LIMIT ?`,
       [Math.min(200, Math.max(1, limit * 3))]
     );
@@ -1450,12 +1455,12 @@ export function listPendingStockReturns(limit = 60): Array<Record<string, unknow
       try {
         const raw = JSON.parse(String(row.value || '')) as StockReturnRequest;
         if (!raw || raw.status !== 'pending') continue;
-        const pruned = prunePhantomStockReturn(raw);
+        const pruned = await prunePhantomStockReturn(raw);
         if (!pruned) continue;
-        const req = summarizeReturnRequest(pruned);
+        const req = await summarizeReturnRequest(pruned);
         // Не пишем meta на каждый GET /pick — иначе WAL растёт и экран «висит» на Загрузка…
         // Ячейки подтягиваются при complete / явном сохранении.
-        const deal = get<{ name: string; buyer_name: string; amo_channel: string }>(
+        const deal = await get<{ name: string; buyer_name: string; amo_channel: string }>(
           `SELECT IFNULL(name,'') AS name, IFNULL(buyer_name,'') AS buyer_name,
                   IFNULL(amo_channel,'') AS amo_channel
            FROM crm_deals WHERE id = ?`,
@@ -1507,12 +1512,12 @@ async function applyPendingReturnDeletesToAmo(dealId: string, orderItemIds: numb
   }
 }
 
-export function detectRemovedFlowLines(dealId: string): StockReturnLine[] {
+export async function detectRemovedFlowLines(dealId: string): Promise<StockReturnLine[]> {
   const id = String(dealId || '').trim();
-  const snap = readMetaJson<{ lines: StockReturnLine[] }>(FLOW_SNAPSHOT(id));
+  const snap = await readMetaJson<{ lines: StockReturnLine[] }>(FLOW_SNAPSHOT(id));
   if (!snap?.lines?.length) return [];
   const current = new Map<string, number>();
-  for (const row of all<{ product_id: string; qty: number; name: string; sku: string }>(
+  for (const row of await all<{ product_id: string; qty: number; name: string; sku: string }>(
     `SELECT IFNULL(product_guid,'') AS product_id, IFNULL(qty,0) AS qty,
             IFNULL(name,'') AS name, IFNULL(sku,'') AS sku
      FROM crm_deal_items WHERE deal_id = ?`,
@@ -1540,25 +1545,25 @@ export function detectRemovedFlowLines(dealId: string): StockReturnLine[] {
   return removed;
 }
 
-export function getPendingStockReturn(dealId: string): StockReturnRequest | null {
-  return readMetaJson<StockReturnRequest>(RETURN_META(dealId));
+export async function getPendingStockReturn(dealId: string): Promise<StockReturnRequest | null> {
+  return await readMetaJson<StockReturnRequest>(RETURN_META(dealId));
 }
 
-export function requestStockReturn(input: {
+export async function requestStockReturn(input: {
   deal_id: string;
   reason?: string;
   lines?: StockReturnLine[];
   order_item_ids?: number[];
-}): StockReturnRequest {
+}): Promise<StockReturnRequest> {
   const dealId = String(input.deal_id || '').trim();
   if (!dealId) throw new Error('Нет id сделки');
   let incoming = (input.lines || []).filter((l) => l.product_id && Number(l.qty) > 0);
   if (!incoming.length) {
-    incoming = detectRemovedFlowLines(dealId);
+    incoming = await detectRemovedFlowLines(dealId);
   }
   if (!incoming.length) throw new Error('Нет позиций для возврата');
 
-  const existing = getPendingStockReturn(dealId);
+  const existing = await getPendingStockReturn(dealId);
   let lines = incoming;
   let orderItemIds = (input.order_item_ids || [])
     .map((n) => Number(n) || 0)
@@ -1592,7 +1597,7 @@ export function requestStockReturn(input: {
     orderItemIds = [...new Set([...prevIds, ...orderItemIds].filter((n) => n > 0))];
   }
 
-  const req: StockReturnRequest = summarizeReturnRequest({
+  const req: StockReturnRequest = await summarizeReturnRequest({
     id: existing?.status === 'pending' ? String(existing.id) : newGuid(),
     deal_id: dealId,
     status: 'pending',
@@ -1601,13 +1606,13 @@ export function requestStockReturn(input: {
     order_item_ids: orderItemIds,
     created_at: existing?.status === 'pending' ? String(existing.created_at) : new Date().toISOString(),
   });
-  const pruned = prunePhantomStockReturn(req);
+  const pruned = await prunePhantomStockReturn(req);
   if (!pruned) {
     throw new Error('Нет позиций для возврата на склад');
   }
-  writeMetaJson(RETURN_META(dealId), pruned);
+  await writeMetaJson(RETURN_META(dealId), pruned);
   try {
-    abortOpenProductionForDeal(dealId, pruned.reason || reasonText);
+    await abortOpenProductionForDeal(dealId, pruned.reason || reasonText);
   } catch (e) {
     console.warn('[deal-stock-flow] abort production on return failed', e);
   }
@@ -1618,17 +1623,17 @@ export function requestStockReturn(input: {
  * Если товар убрали из заказа после перемещения на резерв/СТО —
  * сразу ставим требование возврата на /pick (без клика менеджера в Amo).
  */
-export function ensureAutoStockReturnForRemoved(dealId: string): StockReturnRequest | null {
+export async function ensureAutoStockReturnForRemoved(dealId: string): Promise<StockReturnRequest | null> {
   const id = String(dealId || '').trim();
   if (!id) return null;
-  const existing = getPendingStockReturn(id);
+  const existing = await getPendingStockReturn(id);
   if (existing?.status === 'pending') {
-    return prunePhantomStockReturn(existing);
+    return await prunePhantomStockReturn(existing);
   }
-  const removed = detectRemovedFlowLines(id);
+  const removed = await detectRemovedFlowLines(id);
   if (!removed.length) return null;
   try {
-    return requestStockReturn({
+    return await requestStockReturn({
       deal_id: id,
       reason: 'Удалено из заказа после перемещения',
       lines: removed,
@@ -1644,25 +1649,25 @@ export function ensureAutoStockReturnForRemoved(dealId: string): StockReturnRequ
 }
 
 /** Остаток товара на складе (stock_balances). */
-export function productQtyOnWarehouse(productId: string, warehouseId: string): number {
+export async function productQtyOnWarehouse(productId: string, warehouseId: string): Promise<number> {
   const pid = String(productId || '').trim();
   const wh = String(warehouseId || '').trim();
   if (!pid || !wh) return 0;
   return (
     Number(
-      get<{ q: number }>(
+      (await get<{ q: number }>(
         `SELECT IFNULL(SUM(qty),0) AS q FROM stock_balances
          WHERE product_id = ? AND warehouse_id = ? AND qty > 0`,
         [pid, wh]
-      )?.q
+      ))?.q
     ) || 0
   );
 }
 
 /** Основной склад контура (1С филиал), с которого обычно идёт «→ Резерв». */
-export function handoffMainWarehouseIdForSite(site: PickSiteId): string {
+export async function handoffMainWarehouseIdForSite(site: PickSiteId): Promise<string> {
   if (site === 'msk') {
-    const msk = get<{ id: string }>(
+    const msk = await get<{ id: string }>(
       `SELECT id FROM warehouses
        WHERE code IN ('НФ-000032','00-000001') AND IFNULL(is_active,1)=1
        ORDER BY CASE code WHEN 'НФ-000032' THEN 0 ELSE 1 END
@@ -1671,7 +1676,7 @@ export function handoffMainWarehouseIdForSite(site: PickSiteId): string {
     if (msk?.id) return String(msk.id);
   }
   if (site === 'strela' || site === 'fogel') {
-    const row = get<{ id: string }>(
+    const row = await get<{ id: string }>(
       `SELECT id FROM warehouses
        WHERE code IN ('НФ-000045','НФ-000047','НФ-000041','НФ-000042') AND IFNULL(is_active,1)=1
        ORDER BY CASE code
@@ -1681,12 +1686,12 @@ export function handoffMainWarehouseIdForSite(site: PickSiteId): string {
     );
     if (row?.id) return String(row.id);
   }
-  return mainWarehouseId();
+  return await mainWarehouseId();
 }
 
 /** «Отложено под СТО» контура — альтернативный источник списания. */
-export function handoffHoldWarehouseIdForSite(site: PickSiteId): string {
-  const ensured = ensureStoReserveWarehouses();
+export async function handoffHoldWarehouseIdForSite(site: PickSiteId): Promise<string> {
+  const ensured = await ensureStoReserveWarehouses();
   if (site === 'msk') return String(ensured.mskHold || '');
   return String(ensured.strela || '');
 }
@@ -1696,19 +1701,19 @@ export function handoffHoldWarehouseIdForSite(site: PickSiteId): string {
  * allowHold=true (резерв/СТО): если на «Отложено» хватает qty — оттуда, иначе Основной.
  * allowHold=false (отправка → курьер): только Основной.
  */
-export function resolveHandoffSourceWarehouseId(
+export async function resolveHandoffSourceWarehouseId(
   productId: string,
   qty: number,
   site: PickSiteId,
   opts?: { allowHold?: boolean }
-): string {
+): Promise<string> {
   const need = Math.max(0, Number(qty) || 0);
-  const mainWh = handoffMainWarehouseIdForSite(site);
+  const mainWh = await handoffMainWarehouseIdForSite(site);
   const allowHold = opts?.allowHold !== false;
   if (allowHold) {
-    const holdWh = handoffHoldWarehouseIdForSite(site);
+    const holdWh = await handoffHoldWarehouseIdForSite(site);
     if (holdWh && need > 0) {
-      const holdQty = productQtyOnWarehouse(productId, holdWh);
+      const holdQty = await productQtyOnWarehouse(productId, holdWh);
       if (holdQty + 1e-9 >= need) return holdWh;
     }
   }
@@ -1716,17 +1721,17 @@ export function resolveHandoffSourceWarehouseId(
 }
 
 /** Создать черновик «Передача на склад» для /pick (резерв или курьер). */
-export function createHandoffPickDraft(input: {
+export async function createHandoffPickDraft(input: {
   deal_id: string;
   source?: 'auto' | 'widget' | 'manual';
   actor_name?: string;
-}): Record<string, unknown> {
-  ensureStoReserveWarehouses();
+}): Promise<Record<string, unknown>> {
+  await ensureStoReserveWarehouses();
   const dealId = String(input.deal_id || '').trim();
   if (!dealId) throw new Error('Нет id сделки');
 
   // СРОЧНО уже в очереди /pick — нельзя параллельно слать «→ Резерв» на ту же qty.
-  const openUrgent = get<{ id: string; number: string }>(
+  const openUrgent = await get<{ id: string; number: string }>(
     `SELECT id, number FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
        AND comment LIKE '%СРОЧНО на СТО%'
@@ -1740,7 +1745,7 @@ export function createHandoffPickDraft(input: {
     );
   }
 
-  const existing = get<{
+  const existing = await get<{
     id: string;
     number: string;
     posted: number;
@@ -1761,12 +1766,12 @@ export function createHandoffPickDraft(input: {
   if (existing) {
     return {
       created: false,
-      doc: get('SELECT * FROM stock_docs WHERE id = ?', [existing.id]),
+      doc: await get('SELECT * FROM stock_docs WHERE id = ?', [existing.id]),
       message: `Черновик уже есть: ${existing.number}`,
     };
   }
 
-  const deal = get<{
+  const deal = await get<{
     amo_channel: string;
     amo_shipment: string;
     ship_channel: string;
@@ -1779,14 +1784,14 @@ export function createHandoffPickDraft(input: {
   );
   if (!deal) throw new Error('Сделка не найдена');
 
-  const site = resolvePickSiteForDeal(dealId);
-  const mainWh = handoffMainWarehouseIdForSite(site);
+  const site = await resolvePickSiteForDeal(dealId);
+  const mainWh = await handoffMainWarehouseIdForSite(site);
   // Отправка → Курьер: только с Основы. «Отложено» — только для резерва / спуска на СТО.
   const shipOnly =
     !isReserveChannelDeal(deal) && isShipChannelDeal(deal);
   const allowHold = !shipOnly;
 
-  const rows = all<{
+  const rows = await all<{
     product_guid: string;
     qty: number;
     price: number;
@@ -1807,19 +1812,19 @@ export function createHandoffPickDraft(input: {
     [dealId]
   );
 
-  const snapQty = movedQtyMapForDeal(dealId);
+  const snapQty = await movedQtyMapForDeal(dealId);
   const hasSnapshot = snapQty.size > 0;
 
-  const resolvedRows = rows.map((r) => {
+  const resolvedRows = await Promise.all(rows.map(async (r) => {
     const rawGuid = String(r.product_guid || '').trim();
-    const resolved = resolveExistingProductId({
+    const resolved = await resolveExistingProductId({
       product_guid: rawGuid,
       sku: r.sku,
       code: r.code,
     });
     if (resolved && rawGuid && resolved !== rawGuid && r.item_id) {
       try {
-        run(`UPDATE crm_deal_items SET product_guid = ? WHERE id = ? AND deal_id = ?`, [
+        await run(`UPDATE crm_deal_items SET product_guid = ? WHERE id = ? AND deal_id = ?`, [
           resolved,
           r.item_id,
           dealId,
@@ -1829,9 +1834,9 @@ export function createHandoffPickDraft(input: {
       }
     }
     return { ...r, product_guid: resolved || rawGuid };
-  });
+  }));
 
-  const allProductLines = aggregateProductQtyLines(
+  const allProductLines = await Promise.all(aggregateProductQtyLines(
     resolvedRows
       .filter((r) => String(r.item_kind) !== 'service' && String(r.product_guid || '').trim())
       .map((r) => ({
@@ -1841,27 +1846,27 @@ export function createHandoffPickDraft(input: {
         name: String(r.name || ''),
         sku: String(r.sku || ''),
       }))
-  ).map((l) => ({
+  ).map(async (l) => ({
     ...l,
-    warehouse_id: resolveHandoffSourceWarehouseId(l.product_id, l.qty, site, { allowHold }),
-  }));
+    warehouse_id: await resolveHandoffSourceWarehouseId(l.product_id, l.qty, site, { allowHold }),
+  })));
 
   // Правило 3: после прошлого «Готово» — только дельта (что ещё не перемещали).
   const deltaLines = hasSnapshot
-    ? allProductLines
-        .map((l) => {
+    ? (await Promise.all(allProductLines
+        .map(async (l) => {
           const was = snapQty.get(l.product_id) ?? 0;
           const need = Math.max(0, l.qty - was);
           if (need <= 0) return null;
           return {
             ...l,
             qty: need,
-            warehouse_id: resolveHandoffSourceWarehouseId(l.product_id, need, site, {
+            warehouse_id: await resolveHandoffSourceWarehouseId(l.product_id, need, site, {
               allowHold,
             }),
           };
-        })
-        .filter((l): l is NonNullable<typeof l> => !!l)
+        }))
+      ).filter((l): l is NonNullable<typeof l> => !!l)
     : allProductLines;
 
   const alreadyMoved = hasSnapshot
@@ -1891,7 +1896,7 @@ export function createHandoffPickDraft(input: {
     if (hasSnapshot) {
       // Дописываем снимок, если его не было — чтобы UI/следующий раз видели can_reorder=false.
       try {
-        snapshotDealFlowLines(dealId);
+        await snapshotDealFlowLines(dealId);
       } catch {
         /* ignore */
       }
@@ -1918,9 +1923,9 @@ export function createHandoffPickDraft(input: {
   }
 
   const reserve = isReserveChannelDeal(deal)
-    ? buildHandoffReserveMeta(dealId, fromWh)
+    ? await buildHandoffReserveMeta(dealId, fromWh)
     : null;
-  const ship = !reserve && isShipChannelDeal(deal) ? buildHandoffShipMeta(dealId, fromWh) : null;
+  const ship = !reserve && isShipChannelDeal(deal) ? await buildHandoffShipMeta(dealId, fromWh) : null;
   if (!reserve && !ship) {
     throw new Error('Канал не требует передачи на склад (только Автосервис / Самовывоз / Отправка)');
   }
@@ -1944,8 +1949,8 @@ export function createHandoffPickDraft(input: {
     : `Передача на склад · ${srcLabel} · ${label} · сделка ${dealId}`;
   if (reserve) comment = ensureReserveHandoffComment(comment);
 
-  clearHandoffReturnState(dealId);
-  const docId = createDocument({
+  await clearHandoffReturnState(dealId);
+  const docId = await createDocument({
     doc_type: 'out',
     deal_id: dealId,
     warehouse_id: fromWh,
@@ -1954,8 +1959,8 @@ export function createHandoffPickDraft(input: {
     lines,
     post: false,
   });
-  const doc = get('SELECT * FROM stock_docs WHERE id = ?', [docId]);
-  const movedDetail = getDealAlreadyMovedLines(dealId);
+  const doc = await get('SELECT * FROM stock_docs WHERE id = ?', [docId]);
+  const movedDetail = await getDealAlreadyMovedLines(dealId);
   return {
     created: true,
     doc,
@@ -1964,7 +1969,7 @@ export function createHandoffPickDraft(input: {
     is_reorder: isReorder,
     already_moved: alreadyMoved,
     already_moved_lines: movedDetail,
-    already_moved_brief: buildHandoffRouteBrief(dealId, 'main_to_reserve'),
+    already_moved_brief: await buildHandoffRouteBrief(dealId, 'main_to_reserve'),
     need_move: deltaLines.map((l) => ({
       product_id: l.product_id,
       qty: l.qty,
@@ -1979,14 +1984,14 @@ export function createHandoffPickDraft(input: {
 }
 
 /** После оплаты — черновик на /pick (резерв или курьер). */
-export function ensureHandoffPickAfterPaid(dealId: string): {
+export async function ensureHandoffPickAfterPaid(dealId: string): Promise<{
   created: boolean;
   doc: Record<string, unknown> | null;
   reason?: string;
-} {
+}> {
   const id = String(dealId || '').trim();
   if (!id) return { created: false, doc: null, reason: 'no deal' };
-  const deal = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+  const deal = await get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
     `SELECT IFNULL(amo_channel,'') AS amo_channel,
             IFNULL(amo_shipment,'') AS amo_shipment,
             IFNULL(ship_channel,'') AS ship_channel
@@ -1997,7 +2002,7 @@ export function ensureHandoffPickAfterPaid(dealId: string): {
     return { created: false, doc: null, reason: 'channel_skip' };
   }
   try {
-    const r = createHandoffPickDraft({ deal_id: id, source: 'auto' });
+    const r = await createHandoffPickDraft({ deal_id: id, source: 'auto' });
     return { created: !!r.created, doc: (r.doc as Record<string, unknown>) || null };
   } catch (e) {
     return {
@@ -2009,10 +2014,10 @@ export function ensureHandoffPickAfterPaid(dealId: string): {
 }
 
 /** История перемещений по сделке. */
-export function listDealStockMovements(dealId: string, limit = 40): Array<Record<string, unknown>> {
+export async function listDealStockMovements(dealId: string, limit = 40): Promise<Array<Record<string, unknown>>> {
   const id = String(dealId || '').trim();
   if (!id) return [];
-  return all(
+  return await all(
     `SELECT d.id, d.number, d.doc_type, d.posted, d.comment, d.created_at,
             IFNULL(w.name,'') AS warehouse,
             IFNULL(wt.name,'') AS warehouse_to,
@@ -2028,9 +2033,9 @@ export function listDealStockMovements(dealId: string, limit = 40): Array<Record
   ) as Array<Record<string, unknown>>;
 }
 
-export function getDealStockFlowStatus(dealId: string): Record<string, unknown> {
+export async function getDealStockFlowStatus(dealId: string): Promise<Record<string, unknown>> {
   const id = String(dealId || '').trim();
-  const deal = get<{
+  const deal = await get<{
     amo_channel: string;
     amo_shipment: string;
     ship_channel: string;
@@ -2042,7 +2047,7 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
     [id]
   );
 
-  const handoff = get<Record<string, unknown>>(
+  const handoff = await get<Record<string, unknown>>(
     `SELECT d.*, IFNULL(w.name,'') AS warehouse_name, IFNULL(wt.name,'') AS warehouse_to_name
      FROM stock_docs d
      LEFT JOIN warehouses w ON w.id = d.warehouse_id
@@ -2053,32 +2058,32 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
     [id]
   );
 
-  const reserveMeta = buildHandoffReserveMeta(
+  const reserveMeta = await buildHandoffReserveMeta(
     id,
-    String(handoff?.warehouse_id || mainWarehouseId()),
+    String(handoff?.warehouse_id || await mainWarehouseId()),
     String(handoff?.warehouse_to_id || '')
   );
-  const shipMeta = buildHandoffShipMeta(id, String(handoff?.warehouse_id || mainWarehouseId()));
+  const shipMeta = await buildHandoffShipMeta(id, String(handoff?.warehouse_id || await mainWarehouseId()));
 
-  const reserveQty = dealReservePendingToStoLines(id);
-  const stoQty = dealOnStoLines(id);
+  const reserveQty = await dealReservePendingToStoLines(id);
+  const stoQty = await dealOnStoLines(id);
 
-  const pendingReturn = getPendingStockReturn(id);
-  const removedDetected = detectRemovedFlowLines(id);
+  const pendingReturn = await getPendingStockReturn(id);
+  const removedDetected = await detectRemovedFlowLines(id);
   // Авто: удалили из заказа → требование возврата на /pick без клика в Amo.
   let pendingReturnEffective = pendingReturn;
   if (removedDetected.length && (!pendingReturn || pendingReturn.status !== 'pending')) {
-    pendingReturnEffective = ensureAutoStockReturnForRemoved(id) || pendingReturn;
+    pendingReturnEffective = await ensureAutoStockReturnForRemoved(id) || pendingReturn;
   } else if (pendingReturn?.status === 'pending') {
-    pendingReturnEffective = prunePhantomStockReturn(pendingReturn);
+    pendingReturnEffective = await prunePhantomStockReturn(pendingReturn);
   }
-  const addedDetected = detectAddedFlowLines(id);
-  const movedMap = movedQtyMapForDeal(id);
+  const addedDetected = await detectAddedFlowLines(id);
+  const movedMap = await movedQtyMapForDeal(id);
   // После полного возврата на Основной старое «не собрали» больше не блокирует новую передачу.
   if (movedMap.size === 0) {
-    clearHandoffReturnState(id);
+    await clearHandoffReturnState(id);
   }
-  const openDraft = get<{ id: string; comment: string }>(
+  const openDraft = await get<{ id: string; comment: string }>(
     `SELECT id, IFNULL(comment,'') AS comment FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
        AND comment LIKE '%Передача на склад%'
@@ -2088,7 +2093,7 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
      LIMIT 1`,
     [id]
   );
-  const openToStoDraft = get<{ id: string }>(
+  const openToStoDraft = await get<{ id: string }>(
     `SELECT id FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
        AND comment LIKE '%Спуск на СТО%'
@@ -2096,7 +2101,7 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
      LIMIT 1`,
     [id]
   );
-  const openUrgentDraft = get<{ id: string }>(
+  const openUrgentDraft = await get<{ id: string }>(
     `SELECT id FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
        AND comment LIKE '%СРОЧНО на СТО%'
@@ -2107,8 +2112,8 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
   // Дельта Основной/Отложено → ещё не ушло в резерв / срочно на СТО
   const mainPendingLines: DealFlowQtyLine[] = [];
   {
-    const site = resolvePickSiteForDeal(id);
-    for (const item of dealGoodsLines(id)) {
+    const site = await resolvePickSiteForDeal(id);
+    for (const item of await dealGoodsLines(id)) {
       const pid = String(item.product_id || '').trim();
       const need = Math.max(0, Math.round(Number(item.qty) || 0));
       const was = movedMap.get(pid) ?? 0;
@@ -2138,14 +2143,14 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
     to_sto_pending: !!openToStoDraft,
     on_reserve: reserveQty,
     on_sto: stoQty,
-    movements: listDealStockMovements(id),
+    movements: await listDealStockMovements(id),
     pending_return: pendingReturnEffective,
     removed_detected: removedDetected,
     added_detected: addedDetected,
     can_reorder: movedMap.size > 0 && addedDetected.length > 0 && !openDraft,
     already_moved_count: movedMap.size,
-    already_moved_lines: getDealAlreadyMovedLines(id),
-    already_moved_brief: buildHandoffRouteBrief(id, 'main_to_reserve'),
+    already_moved_lines: await getDealAlreadyMovedLines(id),
+    already_moved_brief: await buildHandoffRouteBrief(id, 'main_to_reserve'),
     nothing_to_handoff:
       (movedMap.size > 0 && addedDetected.length === 0 && !openDraft) || !!openUrgentDraft,
     // Кнопка «Резерв → СТО»: товар на резерве, нет открытого задания складу на спуск
@@ -2163,10 +2168,10 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
       !openUrgentDraft &&
       !openDraft &&
       mainPendingLines.length > 0,
-    block_success_reasons: getDealStockFlowBlockers(id),
-    chain: buildDealWarehouseChain(id),
-    sale_writeoff: (() => {
-      const doc = getDealSaleWriteOffDoc(id);
+    block_success_reasons: await getDealStockFlowBlockers(id),
+    chain: await buildDealWarehouseChain(id),
+    sale_writeoff: (async () => {
+      const doc = await getDealSaleWriteOffDoc(id);
       if (doc) {
         return {
           doc_id: doc.id,
@@ -2175,20 +2180,20 @@ export function getDealStockFlowStatus(dealId: string): Record<string, unknown> 
           comment: doc.comment,
         };
       }
-      return readMetaJson<Record<string, unknown>>(SALE_WRITEOFF_META(id));
+      return await readMetaJson<Record<string, unknown>>(SALE_WRITEOFF_META(id));
     })(),
   };
 }
 
-export function getDealStockFlowBlockers(
+export async function getDealStockFlowBlockers(
   dealId: string,
   opts?: { ignore_on_sto?: boolean }
-): string[] {
+): Promise<string[]> {
   const id = String(dealId || '').trim();
   if (!id) return [];
   const blockers: string[] = [];
 
-  const handoff = get<{ posted: number; comment: string }>(
+  const handoff = await get<{ posted: number; comment: string }>(
     `SELECT IFNULL(posted,0) AS posted, IFNULL(comment,'') AS comment
      FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
@@ -2205,19 +2210,19 @@ export function getDealStockFlowBlockers(
     }
   }
 
-  const pendingReturn = getPendingStockReturn(id);
+  const pendingReturn = await getPendingStockReturn(id);
   if (pendingReturn?.status === 'pending') {
     blockers.push(`Возврат на основной склад: ${pendingReturn.reason}`);
   }
 
   if (!opts?.ignore_on_sto) {
-    const stoWh = stoWarehouseId();
-    const onSto = get<{ c: number }>(
+    const stoWh = await stoWarehouseId();
+    const onSto = (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM stock_balances b
        WHERE b.warehouse_id = ? AND b.qty > 0
          AND b.product_id IN (SELECT product_guid FROM crm_deal_items WHERE deal_id = ?)`,
       [stoWh, id]
-    )?.c;
+    ))?.c;
     if (Number(onSto) > 0) {
       blockers.push('На СТО ещё лежит товар по заказу — спишется при закрытии в «Успешно»');
     }
@@ -2235,13 +2240,13 @@ export function isToStoHandoffComment(comment: string): boolean {
  * Кнопка «Резерв → СТО»: не проводит сразу, а ставит задание складу на /pick.
  * Склад нажимает «✓ На СТО» → перемещение Резерв → СТО.
  */
-export function transferReserveToSto(dealId: string, actorName?: string): Record<string, unknown> {
+export async function transferReserveToSto(dealId: string, actorName?: string): Promise<Record<string, unknown>> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('Нет id сделки');
-  const site = resolvePickSiteForDeal(id);
-  const reserveWh = reserveWarehouseForPickSite(site).id;
-  const stoWh = stoWarehouseId();
-  const deal = get<{ amo_channel: string }>(
+  const site = await resolvePickSiteForDeal(id);
+  const reserveWh = (await reserveWarehouseForPickSite(site)).id;
+  const stoWh = await stoWarehouseId();
+  const deal = await get<{ amo_channel: string }>(
     `SELECT IFNULL(amo_channel,'') AS amo_channel FROM crm_deals WHERE id = ?`,
     [id]
   );
@@ -2250,7 +2255,7 @@ export function transferReserveToSto(dealId: string, actorName?: string): Record
   }
   const channel = String(deal?.amo_channel || '').trim() || '—';
 
-  const existing = get<Record<string, unknown>>(
+  const existing = await get<Record<string, unknown>>(
     `SELECT * FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
        AND comment LIKE '%Спуск на СТО%'
@@ -2269,19 +2274,19 @@ export function transferReserveToSto(dealId: string, actorName?: string): Record
     };
   }
 
-  const pendingLines = dealReservePendingToStoLines(id);
+  const pendingLines = await dealReservePendingToStoLines(id);
   if (!pendingLines.length) throw new Error('По этой сделке нечего спускать: всё уже на СТО или ещё не на резерве');
 
   const reserveName =
-    get<{ name: string }>(
+    (await get<{ name: string }>(
       `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [reserveWh]
-    )?.name || 'Резерв СТО';
+    ))?.name || 'Резерв СТО';
   const stoName =
-    get<{ name: string }>(
+    (await get<{ name: string }>(
       `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [stoWh]
-    )?.name || 'СТО';
+    ))?.name || 'СТО';
   const label = moscowLabel();
   const who = String(actorName || '').trim();
   const comment = [
@@ -2298,29 +2303,29 @@ export function transferReserveToSto(dealId: string, actorName?: string): Record
   const holdWh =
     site === 'msk'
       ? String(
-          get<{ id: string }>(
+          (await get<{ id: string }>(
             `SELECT id FROM warehouses WHERE code = 'STO-RES-MSK' AND IFNULL(is_active,1)=1 LIMIT 1`
-          )?.id || ''
+          ))?.id || ''
         )
       : '';
   let fromWh = reserveWh;
   if (holdWh && holdWh !== reserveWh) {
     const onRsv = Number(
-      get<{ s: number }>(
+      (await get<{ s: number }>(
         `SELECT IFNULL(SUM(qty),0) AS s FROM stock_balances WHERE warehouse_id = ? AND qty > 0`,
         [reserveWh]
-      )?.s || 0
+      ))?.s || 0
     );
     const onHold = Number(
-      get<{ s: number }>(
+      (await get<{ s: number }>(
         `SELECT IFNULL(SUM(qty),0) AS s FROM stock_balances WHERE warehouse_id = ? AND qty > 0`,
         [holdWh]
-      )?.s || 0
+      ))?.s || 0
     );
     if (onRsv <= 0 && onHold > 0) fromWh = holdWh;
   }
 
-  const docId = createDocument({
+  const docId = await createDocument({
     doc_type: 'out',
     warehouse_id: fromWh,
     warehouse_to_id: stoWh,
@@ -2338,7 +2343,7 @@ export function transferReserveToSto(dealId: string, actorName?: string): Record
     created: true,
     pending_pick: true,
     doc_id: docId,
-    doc: get('SELECT * FROM stock_docs WHERE id = ?', [docId]),
+    doc: await get('SELECT * FROM stock_docs WHERE id = ?', [docId]),
     message: 'Задание складу: Резерв → СТО (экран /pick)',
     route_label: `${reserveName} → ${stoName}`,
   };
@@ -2351,14 +2356,14 @@ export function transferReserveToSto(dealId: string, actorName?: string): Record
  *  1) Основной/Отложено → СТО — то, что ещё не ушло в резерв (дозаказ / первый остаток);
  *  2) Резерв → СТО — то, что уже лежит на резерве.
  */
-export function createUrgentToStoHandoffs(
+export async function createUrgentToStoHandoffs(
   dealId: string,
   actorName?: string
-): Record<string, unknown> {
-  ensureStoReserveWarehouses();
+): Promise<Record<string, unknown>> {
+  await ensureStoReserveWarehouses();
   const id = String(dealId || '').trim();
   if (!id) throw new Error('Нет id сделки');
-  const deal = get<{ amo_channel: string }>(
+  const deal = await get<{ amo_channel: string }>(
     `SELECT IFNULL(amo_channel,'') AS amo_channel FROM crm_deals WHERE id = ?`,
     [id]
   );
@@ -2366,18 +2371,18 @@ export function createUrgentToStoHandoffs(
     throw new Error('СРОЧНО на СТО только для Автосервис / Самовывоз');
   }
   const channel = String(deal?.amo_channel || '').trim() || '—';
-  const site = resolvePickSiteForDeal(id);
-  const mainWh = handoffMainWarehouseIdForSite(site);
-  const stoWh = stoWarehouseId();
+  const site = await resolvePickSiteForDeal(id);
+  const mainWh = await handoffMainWarehouseIdForSite(site);
+  const stoWh = await stoWarehouseId();
   const stoName =
-    get<{ name: string }>(
+    (await get<{ name: string }>(
       `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [stoWh]
-    )?.name || 'СТО';
+    ))?.name || 'СТО';
   const label = moscowLabel();
   const who = String(actorName || '').trim() || 'виджет';
 
-  const existingUrgent = get<Record<string, unknown>>(
+  const existingUrgent = await get<Record<string, unknown>>(
     `SELECT * FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
        AND comment LIKE '%СРОЧНО на СТО%'
@@ -2397,7 +2402,7 @@ export function createUrgentToStoHandoffs(
   }
 
   // Открытый черновик «→ Резерв» мешает: срочно везём те же позиции сразу на СТО.
-  const openReserveDrafts = all<{ id: string }>(
+  const openReserveDrafts = await all<{ id: string }>(
     `SELECT id FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
        AND comment LIKE '%Передача на склад%'
@@ -2407,12 +2412,12 @@ export function createUrgentToStoHandoffs(
     [id]
   );
   for (const d of openReserveDrafts) {
-    run('DELETE FROM stock_doc_lines WHERE doc_id = ?', [d.id]);
-    run('DELETE FROM stock_docs WHERE id = ?', [d.id]);
+    await run('DELETE FROM stock_doc_lines WHERE doc_id = ?', [d.id]);
+    await run('DELETE FROM stock_docs WHERE id = ?', [d.id]);
   }
 
-  const snapQty = movedQtyMapForDeal(id);
-  const dealRows = all<{
+  const snapQty = await movedQtyMapForDeal(id);
+  const dealRows = await all<{
     product_guid: string;
     qty: number;
     price: number;
@@ -2452,7 +2457,7 @@ export function createUrgentToStoHandoffs(
       product_id,
       qty: left,
       price: r.price,
-      warehouse_id: resolveHandoffSourceWarehouseId(product_id, left, site),
+      warehouse_id: await resolveHandoffSourceWarehouseId(product_id, left, site),
     });
   }
 
@@ -2474,10 +2479,10 @@ export function createUrgentToStoHandoffs(
       }
     }
     const fromName =
-      get<{ name: string }>(
+      (await get<{ name: string }>(
         `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
         [fromWh]
-      )?.name || 'Основной';
+      ))?.name || 'Основной';
     const comment = [
       'Передача на склад',
       'СРОЧНО на СТО',
@@ -2487,7 +2492,7 @@ export function createUrgentToStoHandoffs(
       `сделка ${id}`,
       `${fromName} → ${stoName}`,
     ].join(' · ');
-    const docId = createDocument({
+    const docId = await createDocument({
       doc_type: 'out',
       warehouse_id: fromWh,
       warehouse_to_id: stoWh,
@@ -2496,20 +2501,20 @@ export function createUrgentToStoHandoffs(
       lines: mainLines,
       post: false,
     });
-    const doc = get('SELECT * FROM stock_docs WHERE id = ?', [docId]) as Record<string, unknown>;
+    const doc = await get('SELECT * FROM stock_docs WHERE id = ?', [docId]) as Record<string, unknown>;
     docs.push(doc);
     created.push('main_to_sto');
   }
 
   // 2) Уже на резерве → СТО (как обычная кнопка, без повторного idempotent-блока если уже создали)
   let reserveResult: Record<string, unknown> | null = null;
-  const reservePending = dealReservePendingToStoLines(id);
+  const reservePending = await dealReservePendingToStoLines(id);
   if (reservePending.length) {
     try {
-      reserveResult = transferReserveToSto(id, who);
+      reserveResult = await transferReserveToSto(id, who);
       if (reserveResult?.doc) docs.push(reserveResult.doc as Record<string, unknown>);
       else if (reserveResult?.doc_id) {
-        const d = get('SELECT * FROM stock_docs WHERE id = ?', [String(reserveResult.doc_id)]);
+        const d = await get('SELECT * FROM stock_docs WHERE id = ?', [String(reserveResult.doc_id)]);
         if (d) docs.push(d as Record<string, unknown>);
       }
       created.push('reserve_to_sto');
@@ -2562,25 +2567,25 @@ export async function completeStockReturnPick(input: {
   actor_name?: string;
 }): Promise<Record<string, unknown>> {
   const dealId = String(input.deal_id || '').trim();
-  const pendingRaw = getPendingStockReturn(dealId);
+  const pendingRaw = await getPendingStockReturn(dealId);
   if (!pendingRaw || pendingRaw.status !== 'pending') {
     throw new Error('Нет открытого требования на возврат');
   }
-  const pending = summarizeReturnRequest(pendingRaw);
-  const mainWh = mainWarehouseId();
-  const site = resolvePickSiteForDeal(dealId);
-  const reserveWh = reserveWarehouseForPickSite(site).id;
-  const stoWh = stoWarehouseId();
+  const pending = await summarizeReturnRequest(pendingRaw);
+  const mainWh = await mainWarehouseId();
+  const site = await resolvePickSiteForDeal(dealId);
+  const reserveWh = (await reserveWarehouseForPickSite(site)).id;
+  const stoWh = await stoWarehouseId();
   const holdWh =
     String(
-      get<{ id: string }>(
+      (await get<{ id: string }>(
         `SELECT id FROM warehouses
          WHERE code IN ('STO-RES-MSK','STO-RES-STRELA') AND IFNULL(is_active,1)=1
          ORDER BY CASE code WHEN 'STO-RES-MSK' THEN 0 ELSE 1 END
          LIMIT 1`
-      )?.id || ''
-    ).trim() || handoffHoldWarehouseIdForSite(site);
-  const courierWh = courierWarehouseId();
+      ))?.id || ''
+    ).trim() || await handoffHoldWarehouseIdForSite(site);
+  const courierWh = await courierWarehouseId();
 
   const lineOverrides = new Map(
     (input.lines || []).map((l) => [String(l.product_id || '').trim(), l])
@@ -2596,7 +2601,7 @@ export async function completeStockReturnPick(input: {
   if (!headerFromHint) throw new Error('Не удалось определить склад, откуда возвращать');
 
   /** Склад списания: где реально есть qty (часто «Отложено», а в заявке — «Резерв»). */
-  const resolveReturnFromWh = (productId: string, qtyNeed: number, preferred: string): string => {
+  const resolveReturnFromWh = async (productId: string, qtyNeed: number, preferred: string): Promise<string> => {
     const need = Math.max(1, qtyNeed);
     const candidates = [
       preferred,
@@ -2611,7 +2616,7 @@ export async function completeStockReturnPick(input: {
     for (const wid of candidates) {
       if (seen.has(wid)) continue;
       seen.add(wid);
-      const bal = get<{ qty: number }>(
+      const bal = await get<{ qty: number }>(
         'SELECT qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?',
         [wid, productId]
       );
@@ -2620,8 +2625,8 @@ export async function completeStockReturnPick(input: {
     return preferred || candidates[0] || headerFromHint;
   };
 
-  const lines = pending.lines
-    .map((l) => {
+  const lines = (await Promise.all(pending.lines
+    .map(async (l) => {
       const ov = lineOverrides.get(String(l.product_id));
       const fromCell =
         ov && Object.prototype.hasOwnProperty.call(ov, 'from_cell_code')
@@ -2637,14 +2642,14 @@ export async function completeStockReturnPick(input: {
       return {
         product_id: String(l.product_id),
         qty,
-        warehouse_id: resolveReturnFromWh(String(l.product_id), qty, preferred),
+        warehouse_id: await resolveReturnFromWh(String(l.product_id), qty, preferred),
         sku: String(l.sku || ''),
         name: String(l.name || ''),
         from_cell_code: fromCell,
         to_cell_code: toCell,
       };
-    })
-    .filter((l) => l.product_id);
+    }))
+  ).filter((l) => l.product_id);
 
   if (!lines.length) throw new Error('Нет позиций для возврата');
 
@@ -2663,7 +2668,7 @@ export async function completeStockReturnPick(input: {
     .join(' · ');
 
   // Как handoff на /pick: остаток может быть только в ячейках / на соседнем СТО-складе.
-  const docId = createDocument({
+  const docId = await createDocument({
     doc_type: 'transfer',
     warehouse_id: headerFrom,
     warehouse_to_id: mainWh,
@@ -2684,7 +2689,7 @@ export async function completeStockReturnPick(input: {
     for (const l of lines) {
       if (l.from_cell_code) {
         try {
-          applyCellIssueDelta({
+          await applyCellIssueDelta({
             warehouse_id: l.warehouse_id,
             cell_code: l.from_cell_code,
             product_id: l.product_id,
@@ -2697,7 +2702,7 @@ export async function completeStockReturnPick(input: {
       }
       if (l.to_cell_code) {
         try {
-          applyCellReceiveDelta({
+          await applyCellReceiveDelta({
             warehouse_id: mainWh,
             cell_code: l.to_cell_code,
             product_id: l.product_id,
@@ -2731,9 +2736,9 @@ export async function completeStockReturnPick(input: {
     to_cell_code: l.to_cell_code,
     from_warehouse_id: l.warehouse_id,
   }));
-  writeMetaJson(RETURN_META(dealId), pending);
+  await writeMetaJson(RETURN_META(dealId), pending);
   try {
-    snapshotDealFlowLines(dealId);
+    await snapshotDealFlowLines(dealId);
   } catch (e) {
     console.warn(
       'snapshotDealFlowLines after return',
@@ -2745,7 +2750,7 @@ export async function completeStockReturnPick(input: {
   // Правило 1: только после «Готово» по возврату позиции пропадают из виджета.
   await applyPendingReturnDeletesToAmo(dealId, orderItemIds);
 
-  const docRow = get<{ number?: string }>('SELECT number FROM stock_docs WHERE id = ?', [docId]);
+  const docRow = await get<{ number?: string }>('SELECT number FROM stock_docs WHERE id = ?', [docId]);
   const skuBits = lines
     .map((l) => {
       const sku = String(l.sku || '').trim();
@@ -2769,14 +2774,14 @@ export async function completeStockReturnPick(input: {
   try {
     const amo = await notifyAmoWarehousePacked({ dealId, text: amoNote });
     if (!amo.ok) {
-      writeMetaJson(`amo_note_err:return:${dealId}`, {
+      await writeMetaJson(`amo_note_err:return:${dealId}`, {
         at: new Date().toISOString(),
         text: amoNote,
         error: amo.error || 'amo note failed',
       });
     }
   } catch (e) {
-    writeMetaJson(`amo_note_err:return:${dealId}`, {
+    await writeMetaJson(`amo_note_err:return:${dealId}`, {
       at: new Date().toISOString(),
       text: amoNote,
       error: e instanceof Error ? e.message : 'amo note failed',
@@ -2785,7 +2790,7 @@ export async function completeStockReturnPick(input: {
 
   try {
     const { cancelActiveCourierRunsForDeal } = await import('./sto-parts-flow.js');
-    cancelActiveCourierRunsForDeal(dealId, 'Возврат на основной — снять с курьера');
+    await cancelActiveCourierRunsForDeal(dealId, 'Возврат на основной — снять с курьера');
   } catch (e) {
     console.warn(
       'cancelActiveCourierRunsForDeal',
@@ -2794,26 +2799,26 @@ export async function completeStockReturnPick(input: {
     );
   }
 
-  return { ok: true, doc_id: docId, return: pending, doc: get('SELECT * FROM stock_docs WHERE id = ?', [docId]) };
+  return { ok: true, doc_id: docId, return: pending, doc: await get('SELECT * FROM stock_docs WHERE id = ?', [docId]) };
 }
 
 const SALE_WRITEOFF_META = (dealId: string) =>
   `stock_flow_sale_writeoff:${String(dealId || '').trim()}`;
 
-function resolveSuccessStatusForDeal(dealId: string): { statusId: string } | null {
-  const deal = get<{ pipeline_id?: string }>(
+async function resolveSuccessStatusForDeal(dealId: string): Promise<{ statusId: string } | null> {
+  const deal = await get<{ pipeline_id?: string }>(
     `SELECT IFNULL(pipeline_id,'') AS pipeline_id FROM crm_deals WHERE id = ?`,
     [dealId]
   );
   if (!deal) return null;
   const pipelineId = String(deal.pipeline_id || '').trim();
   if (!pipelineId) return null;
-  const mapped = mappedSuccessStatus(pipelineId);
+  const mapped = await mappedSuccessStatus(pipelineId);
   if (mapped) return { statusId: mapped.statusId };
-  const hit = all<{ id: string; name: string }>(
+  const hit = (await all<{ id: string; name: string }>(
     `SELECT id, name FROM crm_pipeline_statuses WHERE pipeline_id = ? ORDER BY sort, name`,
     [pipelineId]
-  ).find((s) => {
+  )).find((s) => {
     const n = String(s.name || '');
     if (FAIL_NAME_RE.test(n)) return false;
     return SUCCESS_NAME_RE.test(n);
@@ -2823,50 +2828,50 @@ function resolveSuccessStatusForDeal(dealId: string): { statusId: string } | nul
 }
 
 /** Сделка на этапе «Успешно реализовано» в своей воронке. */
-export function dealIsSuccessful(dealId: string): boolean {
+export async function dealIsSuccessful(dealId: string): Promise<boolean> {
   const id = String(dealId || '').trim();
   if (!id) return false;
-  const target = resolveSuccessStatusForDeal(id);
+  const target = await resolveSuccessStatusForDeal(id);
   if (!target) return false;
-  const cur = get<{ status_id: string }>(
+  const cur = await get<{ status_id: string }>(
     `SELECT IFNULL(status_id,'') AS status_id FROM crm_deals WHERE id = ?`,
     [id]
   );
   return rawStatusId(String(cur?.status_id || '')) === rawStatusId(target.statusId);
 }
 
-function dealHasStockOnSto(dealId: string): boolean {
-  const stoWh = stoWarehouseId();
+async function dealHasStockOnSto(dealId: string): Promise<boolean> {
+  const stoWh = await stoWarehouseId();
   const id = String(dealId || '').trim();
   if (!stoWh || !id) return false;
   const c =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM stock_balances b
        WHERE b.warehouse_id = ? AND b.qty > 0
          AND b.product_id IN (SELECT product_guid FROM crm_deal_items WHERE deal_id = ?)`,
       [stoWh, id]
-    )?.c ?? 0;
+    ))?.c ?? 0;
   return Number(c) > 0;
 }
 
 /** Есть ли по успешной сделке несписанный остаток спущенного на СТО. */
-function dealHasPendingStoSaleWriteoff(dealId: string): boolean {
+async function dealHasPendingStoSaleWriteoff(dealId: string): Promise<boolean> {
   const id = String(dealId || '').trim();
   if (!id) return false;
-  const stoWh = stoWarehouseId();
+  const stoWh = await stoWarehouseId();
   if (!stoWh) return false;
-  const descended = dealDescendedToStoQtyByProduct(id);
-  const alreadyOff = dealSaleWriteOffQtyByProduct(id);
+  const descended = await dealDescendedToStoQtyByProduct(id);
+  const alreadyOff = await dealSaleWriteOffQtyByProduct(id);
   const productIds =
     descended.size > 0
       ? [...descended.keys()]
-      : all<{ product_id: string }>(
+      : (await all<{ product_id: string }>(
           `SELECT DISTINCT IFNULL(i.product_guid,'') AS product_id
            FROM crm_deal_items i
            LEFT JOIN products p ON p.id = i.product_guid
            WHERE i.deal_id = ? AND IFNULL(p.item_kind,'product') != 'service'`,
           [id]
-        )
+        ))
           .map((r) => String(r.product_id || '').trim())
           .filter(Boolean);
   for (const productId of productIds) {
@@ -2876,11 +2881,11 @@ function dealHasPendingStoSaleWriteoff(dealId: string): boolean {
     } else {
       const dealQty =
         Number(
-          get<{ qty: number }>(
+          (await get<{ qty: number }>(
             `SELECT IFNULL(SUM(qty),0) AS qty FROM crm_deal_items
              WHERE deal_id = ? AND product_guid = ?`,
             [id, productId]
-          )?.qty
+          ))?.qty
         ) || 0;
       need = dealQty - (alreadyOff.get(productId) || 0);
     }
@@ -2888,10 +2893,10 @@ function dealHasPendingStoSaleWriteoff(dealId: string): boolean {
     if (!(need > 0)) continue;
     const onSto =
       Number(
-        get<{ qty: number }>(
+        (await get<{ qty: number }>(
           `SELECT IFNULL(qty,0) AS qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?`,
           [stoWh, productId]
-        )?.qty
+        ))?.qty
       ) || 0;
     if (Math.min(need, onSto) > 0) return true;
   }
@@ -2962,36 +2967,36 @@ const OPEN_DEAL_LATEST_INBOUND_CTE = `
   )`;
 
 /** Сколько сделок с товаром на складе (по актуальному переносу на каждую позицию). */
-export function countOpenDealsOnWarehouse(warehouseId: string): number {
-  return listOpenDealIdsOnWarehouse(warehouseId).length;
+export async function countOpenDealsOnWarehouse(warehouseId: string): Promise<number> {
+  return (await listOpenDealIdsOnWarehouse(warehouseId)).length;
 }
 
 /** Сделки с актуальным остатком на складе (без списания по продаже). */
-export function listOpenDealIdsOnWarehouse(warehouseId: string): string[] {
+export async function listOpenDealIdsOnWarehouse(warehouseId: string): Promise<string[]> {
   const wh = String(warehouseId || '').trim();
   if (!wh) return [];
-  if (isStoHoldWarehouseId(wh)) return [];
-  return all<{ deal_id: string }>(
+  if (await isStoHoldWarehouseId(wh)) return [];
+  return (await all<{ deal_id: string }>(
     `${OPEN_DEAL_LATEST_INBOUND_CTE}
      SELECT DISTINCT deal_id AS deal_id
      FROM open_deal_inbound
      WHERE rn = 1 AND warehouse_id = ? AND IFNULL(deal_id,'') != ''
      ORDER BY deal_id`,
     [wh]
-  )
+  ))
     .map((r) => String(r.deal_id || '').trim())
     .filter(Boolean);
 }
 
 /** Текущие позиции сделки на складе (для паллета СТО / Резерв). */
-export function listOpenDealStockLinesOnWarehouse(
+export async function listOpenDealStockLinesOnWarehouse(
   warehouseId: string,
   dealId: string
-): Array<{ sku: string; name: string; qty: number; product_id: string }> {
+): Promise<Array<{ sku: string; name: string; qty: number; product_id: string }>> {
   const wh = String(warehouseId || '').trim();
   const id = String(dealId || '').trim();
   if (!wh || !id) return [];
-  return all<{ sku: string; name: string; qty: number; product_id: string }>(
+  return (await all<{ sku: string; name: string; qty: number; product_id: string }>(
     `${OPEN_DEAL_LATEST_INBOUND_CTE}
      SELECT IFNULL(p.sku,'') AS sku,
             IFNULL(p.name,'') AS name,
@@ -3004,7 +3009,7 @@ export function listOpenDealStockLinesOnWarehouse(
      WHERE o.rn = 1 AND o.warehouse_id = ? AND o.deal_id = ? AND b.qty > 0
      ORDER BY p.sku COLLATE NOCASE`,
     [wh, id]
-  ).map((r) => ({
+  )).map((r) => ({
     sku: String(r.sku || ''),
     name: String(r.name || ''),
     qty: Number(r.qty) || 0,
@@ -3013,11 +3018,11 @@ export function listOpenDealStockLinesOnWarehouse(
 }
 
 /** «Отложено под СТО» — не склад сделок для метрик карточки. */
-function isStoHoldWarehouseId(warehouseId: string): boolean {
+async function isStoHoldWarehouseId(warehouseId: string): Promise<boolean> {
   const id = String(warehouseId || '').trim();
   if (!id) return false;
   const code = String(
-    get<{ code: string }>(`SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`, [id])
+    (await get<{ code: string }>(`SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`, [id]))
       ?.code || ''
   )
     .trim()
@@ -3026,11 +3031,11 @@ function isStoHoldWarehouseId(warehouseId: string): boolean {
 }
 
 /** «Резерв СТО» (сделки) — код STO-RSV-*. */
-export function isStoDealReserveWarehouseId(warehouseId: string): boolean {
+export async function isStoDealReserveWarehouseId(warehouseId: string): Promise<boolean> {
   const id = String(warehouseId || '').trim();
   if (!id) return false;
   const code = String(
-    get<{ code: string }>(`SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`, [id])
+    (await get<{ code: string }>(`SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`, [id]))
       ?.code || ''
   )
     .trim()
@@ -3064,14 +3069,14 @@ export type PendingHandoffInboundLine = {
 };
 
 /** Черновики «Передача на склад» → этот склад (ещё не проведены на /pick). */
-export function pendingHandoffInboundOnWarehouse(warehouseId: string): PendingHandoffInboundLine[] {
+export async function pendingHandoffInboundOnWarehouse(warehouseId: string): Promise<PendingHandoffInboundLine[]> {
   const wh = String(warehouseId || '').trim();
   if (!wh) return [];
-  const whRow = get<{ name: string; code: string }>(
+  const whRow = await get<{ name: string; code: string }>(
     `SELECT IFNULL(name,'') AS name, IFNULL(code,'') AS code FROM warehouses WHERE id = ?`,
     [wh]
   );
-  const rows = all<{
+  const rows = await all<{
     doc_id: string;
     doc_number: string;
     deal_id: string;
@@ -3149,12 +3154,12 @@ export function pendingHandoffInboundOnWarehouse(warehouseId: string): PendingHa
   });
 }
 
-export function pendingHandoffInboundSummary(warehouseId: string): {
+export async function pendingHandoffInboundSummary(warehouseId: string): Promise<{
   lines: number;
   qty: number;
   deals: number;
-} {
-  const rows = pendingHandoffInboundOnWarehouse(warehouseId);
+}> {
+  const rows = await pendingHandoffInboundOnWarehouse(warehouseId);
   const deals = new Set(rows.map((r) => r.deal_id).filter(Boolean));
   return {
     lines: rows.length,
@@ -3167,11 +3172,11 @@ export function pendingHandoffInboundSummary(warehouseId: string): {
  * Уникальные сделки на «Резерв СТО»: остаток на складе ∪ черновики «Передача на склад».
  * Не Math.max(остаток, черновики) — иначе 1+1 разных сделок показывают как «1».
  */
-export function countStoDealReserveDeals(warehouseId: string): number {
+export async function countStoDealReserveDeals(warehouseId: string): Promise<number> {
   const wh = String(warehouseId || '').trim();
   if (!wh) return 0;
   const ids = new Set<string>();
-  const onStock = all<{ deal_id: string }>(
+  const onStock = await all<{ deal_id: string }>(
     `${OPEN_DEAL_LATEST_INBOUND_CTE}
      SELECT DISTINCT deal_id AS deal_id
      FROM open_deal_inbound
@@ -3182,18 +3187,18 @@ export function countStoDealReserveDeals(warehouseId: string): number {
     const id = String(r.deal_id || '').trim();
     if (id) ids.add(id);
   }
-  for (const r of pendingHandoffInboundOnWarehouse(wh)) {
+  for (const r of await pendingHandoffInboundOnWarehouse(wh)) {
     const id = String(r.deal_id || '').trim();
     if (id) ids.add(id);
   }
   return ids.size;
 }
 
-function isStoFloorWarehouseId(warehouseId: string): boolean {
+async function isStoFloorWarehouseId(warehouseId: string): Promise<boolean> {
   const id = String(warehouseId || '').trim();
   if (!id) return false;
   const code = String(
-    get<{ code: string }>(`SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`, [id])
+    (await get<{ code: string }>(`SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`, [id]))
       ?.code || ''
   )
     .trim()
@@ -3202,19 +3207,19 @@ function isStoFloorWarehouseId(warehouseId: string): boolean {
 }
 
 /** Пол СТО или «Резерв СТО» — склады сделок; «Отложено» сюда не входит. */
-function isStoDealLinkWarehouseId(warehouseId: string): boolean {
-  return isStoFloorWarehouseId(warehouseId) || isStoDealReserveWarehouseId(warehouseId);
+async function isStoDealLinkWarehouseId(warehouseId: string): Promise<boolean> {
+  return await isStoFloorWarehouseId(warehouseId) || await isStoDealReserveWarehouseId(warehouseId);
 }
 
 /** Остаток на складе только по позициям с открытой сделкой (последний приход). */
-export function dealLinkedStockOnWarehouse(warehouseId: string): {
+export async function dealLinkedStockOnWarehouse(warehouseId: string): Promise<{
   lines: number;
   qty: number;
   deals: number;
-} {
+}> {
   const wh = String(warehouseId || '').trim();
   if (!wh) return { lines: 0, qty: 0, deals: 0 };
-  const row = get<{ lines: number; qty: number; deals: number }>(
+  const row = await get<{ lines: number; qty: number; deals: number }>(
     `${OPEN_DEAL_LATEST_INBOUND_CTE}
      SELECT COUNT(*) AS lines,
             IFNULL(SUM(b.qty), 0) AS qty,
@@ -3233,8 +3238,8 @@ export function dealLinkedStockOnWarehouse(warehouseId: string): {
 }
 
 /** Открытые сделки по каждому складу (для карточек / stock-totals). */
-export function openDealsCountByWarehouse(): Map<string, number> {
-  const rows = all<{ warehouse_id: string; c: number }>(
+export async function openDealsCountByWarehouse(): Promise<Map<string, number>> {
+  const rows = await all<{ warehouse_id: string; c: number }>(
     `${OPEN_DEAL_LATEST_INBOUND_CTE}
      SELECT warehouse_id, COUNT(DISTINCT deal_id) AS c
      FROM open_deal_inbound
@@ -3243,7 +3248,7 @@ export function openDealsCountByWarehouse(): Map<string, number> {
   );
   const map = new Map(rows.map((r) => [String(r.warehouse_id), Number(r.c) || 0]));
   // Отложено под СТО: сделок на карточке не показываем (это не «склад сделок»)
-  for (const r of all<{ id: string }>(
+  for (const r of await all<{ id: string }>(
     `SELECT id FROM warehouses WHERE UPPER(IFNULL(code,'')) LIKE 'STO-RES-%'`
   )) {
     map.set(String(r.id), 0);
@@ -3260,11 +3265,11 @@ export type OpenDealLink = {
   responsible_name: string;
 };
 
-function staffNamesByAmoId(amoIds: string[]): Map<string, string> {
+async function staffNamesByAmoId(amoIds: string[]): Promise<Map<string, string>> {
   const ids = [...new Set(amoIds.map(String).filter((id) => id && id !== '0'))];
   const map = new Map<string, string>();
   if (!ids.length) return map;
-  const rows = all<{ amo_id: string; name: string }>(
+  const rows = await all<{ amo_id: string; name: string }>(
     `SELECT amo_id, name FROM staff WHERE amo_id IN (${ids.map(() => '?').join(',')})`,
     ids
   );
@@ -3276,14 +3281,14 @@ function staffNamesByAmoId(amoIds: string[]): Map<string, string> {
   // fallback: meta.amo_user_directory (как в deals.responsibleNameMap)
   for (const id of ids) {
     if (map.has(id)) continue;
-    const n = String(amoUserDisplayName(id) || '').trim();
+    const n = String(await amoUserDisplayName(id) || '').trim();
     if (n) map.set(id, n);
   }
   return map;
 }
 
-function enrichOpenDealLinks(links: OpenDealLink[]): OpenDealLink[] {
-  const names = staffNamesByAmoId(links.map((l) => l.responsible_user_id));
+async function enrichOpenDealLinks(links: OpenDealLink[]): Promise<OpenDealLink[]> {
+  const names = await staffNamesByAmoId(links.map((l) => l.responsible_user_id));
   return links.map((l) => ({
     ...l,
     responsible_name:
@@ -3296,15 +3301,15 @@ function enrichOpenDealLinks(links: OpenDealLink[]): OpenDealLink[] {
  * с этой позицией в составе (Машина на СТО / записан на сто / is_sto).
  * Закрытые «Успешно» / «не реализовано» и уже списанные по продаже — не подставляем.
  */
-function fillStoFloorOpenDealFallbacks(
+async function fillStoFloorOpenDealFallbacks(
   out: Map<string, OpenDealLink[]>,
   rows: Array<{ product_id: string; warehouse_id: string }>
-): void {
+): Promise<void> {
   const missingByWh = new Map<string, string[]>();
   for (const r of rows) {
     const pid = String(r.product_id || '').trim();
     const wh = String(r.warehouse_id || '').trim();
-    if (!pid || !wh || !isStoDealLinkWarehouseId(wh) || isStoHoldWarehouseId(wh)) continue;
+    if (!pid || !wh || !await isStoDealLinkWarehouseId(wh) || await isStoHoldWarehouseId(wh)) continue;
     const key = `${pid}\0${wh}`;
     if (out.has(key)) continue;
     const list = missingByWh.get(wh) || [];
@@ -3317,7 +3322,7 @@ function fillStoFloorOpenDealFallbacks(
   for (const [wh, pidsRaw] of missingByWh) {
     const pids = [...new Set(pidsRaw)];
     if (!pids.length) continue;
-    const cand = all<{
+    const cand = await all<{
       product_id: string;
       deal_id: string;
       deal_name: string;
@@ -3382,7 +3387,7 @@ function fillStoFloorOpenDealFallbacks(
       });
     }
   }
-  enrichOpenDealLinks(pending).forEach((link, i) => {
+  (await enrichOpenDealLinks(pending)).forEach((link, i) => {
     const key = pendingKeys[i];
     if (key && link.deal_id) out.set(key, [link]);
   });
@@ -3392,15 +3397,15 @@ function fillStoFloorOpenDealFallbacks(
  * Последний приход на пол СТО с deal_id (даже если уже списан) — чтобы в остатках
  * не было «—». Без сделки на СТО по процессу быть не должно.
  */
-function fillStoFloorLastInboundFallbacks(
+async function fillStoFloorLastInboundFallbacks(
   out: Map<string, OpenDealLink[]>,
   rows: Array<{ product_id: string; warehouse_id: string }>
-): void {
+): Promise<void> {
   const missing: Array<{ product_id: string; warehouse_id: string }> = [];
   for (const r of rows) {
     const pid = String(r.product_id || '').trim();
     const wh = String(r.warehouse_id || '').trim();
-    if (!pid || !wh || !isStoDealLinkWarehouseId(wh) || isStoHoldWarehouseId(wh)) continue;
+    if (!pid || !wh || !await isStoDealLinkWarehouseId(wh) || await isStoHoldWarehouseId(wh)) continue;
     if (out.has(`${pid}\0${wh}`)) continue;
     missing.push({ product_id: pid, warehouse_id: wh });
   }
@@ -3408,7 +3413,7 @@ function fillStoFloorLastInboundFallbacks(
   const pendingKeys: string[] = [];
   const pending: OpenDealLink[] = [];
   for (const { product_id: pid, warehouse_id: wh } of missing) {
-    const row = get<{
+    const row = await get<{
       deal_id: string;
       deal_name: string;
       status_name: string;
@@ -3445,7 +3450,7 @@ function fillStoFloorLastInboundFallbacks(
       responsible_name: '',
     });
   }
-  enrichOpenDealLinks(pending).forEach((link, i) => {
+  (await enrichOpenDealLinks(pending)).forEach((link, i) => {
     const key = pendingKeys[i];
     if (key && link.deal_id) out.set(key, [link]);
   });
@@ -3454,9 +3459,9 @@ function fillStoFloorLastInboundFallbacks(
 /** Привязка строк остатков к сделке переноса (товар+склад → последний проведённый приход).
  * «Отложено под СТО» — без сделок в UI (это не склад сделок).
  * Пол СТО: дополнительно открытые СТО-сделки с позицией в составе. */
-export function openDealLinksForStockRows(
+export async function openDealLinksForStockRows(
   rows: Array<{ product_id: string; warehouse_id: string }>
-): Map<string, OpenDealLink[]> {
+): Promise<Map<string, OpenDealLink[]>> {
   const out = new Map<string, OpenDealLink[]>();
   if (!rows.length) return out;
   const productIds = [...new Set(rows.map((r) => String(r.product_id || '').trim()).filter(Boolean))];
@@ -3465,7 +3470,7 @@ export function openDealLinksForStockRows(
     ...new Set(
       rows
         .map((r) => String(r.warehouse_id || '').trim())
-        .filter((id) => id && !isStoHoldWarehouseId(id))
+        .filter(async (id) => id && !await isStoHoldWarehouseId(id))
     ),
   ];
   if (!whIds.length) return out;
@@ -3478,7 +3483,7 @@ export function openDealLinksForStockRows(
     whSql = `AND b.warehouse_id IN (${whIds.map(() => '?').join(',')})`;
     params.push(...whIds);
   }
-  const links = all<{
+  const links = await all<{
     warehouse_id: string;
     product_id: string;
     deal_id: string;
@@ -3505,7 +3510,7 @@ export function openDealLinksForStockRows(
   for (const row of links) {
     const key = `${row.product_id}\0${row.warehouse_id}`;
     if (out.has(key)) continue;
-    if (isStoHoldWarehouseId(String(row.warehouse_id))) continue;
+    if (await isStoHoldWarehouseId(String(row.warehouse_id))) continue;
     pendingKeys.push(key);
     pending.push({
       deal_id: String(row.deal_id),
@@ -3516,12 +3521,12 @@ export function openDealLinksForStockRows(
       responsible_name: '',
     });
   }
-  enrichOpenDealLinks(pending).forEach((link, i) => {
+  (await enrichOpenDealLinks(pending)).forEach((link, i) => {
     const key = pendingKeys[i];
     if (key) out.set(key, [link]);
   });
-  fillStoFloorOpenDealFallbacks(out, rows);
-  fillStoFloorLastInboundFallbacks(out, rows);
+  await fillStoFloorOpenDealFallbacks(out, rows);
+  await fillStoFloorLastInboundFallbacks(out, rows);
   return out;
 }
 
@@ -3530,12 +3535,12 @@ function saleWriteOffComment(dealId: string): string {
 }
 
 /** Сколько спустили на СТО по сделке (все проведённые TR на склад СТО). */
-function dealDescendedToStoQtyByProduct(dealId: string): Map<string, number> {
+async function dealDescendedToStoQtyByProduct(dealId: string): Promise<Map<string, number>> {
   const id = String(dealId || '').trim();
-  const stoWh = stoWarehouseId();
+  const stoWh = await stoWarehouseId();
   const map = new Map<string, number>();
   if (!id || !stoWh) return map;
-  const rows = all<{ product_id: string; qty: number }>(
+  const rows = await all<{ product_id: string; qty: number }>(
     `SELECT l.product_id AS product_id, IFNULL(SUM(l.qty), 0) AS qty
      FROM stock_docs d
      INNER JOIN stock_doc_lines l ON l.doc_id = d.id
@@ -3557,12 +3562,12 @@ function dealDescendedToStoQtyByProduct(dealId: string): Map<string, number> {
 }
 
 /** Уже списано со СТО по продаже этой сделки. */
-function dealSaleWriteOffQtyByProduct(dealId: string): Map<string, number> {
+async function dealSaleWriteOffQtyByProduct(dealId: string): Promise<Map<string, number>> {
   const id = String(dealId || '').trim();
-  const stoWh = stoWarehouseId();
+  const stoWh = await stoWarehouseId();
   const map = new Map<string, number>();
   if (!id || !stoWh) return map;
-  const rows = all<{ product_id: string; qty: number }>(
+  const rows = await all<{ product_id: string; qty: number }>(
     `SELECT l.product_id AS product_id, IFNULL(SUM(l.qty), 0) AS qty
      FROM stock_docs d
      INNER JOIN stock_doc_lines l ON l.doc_id = d.id
@@ -3597,11 +3602,11 @@ export type DealWarehouseChainStep = {
 };
 
 /** Проведённое списание по продаже со СТО (если уже было). */
-export function getDealSaleWriteOffDoc(dealId: string): Record<string, unknown> | null {
+export async function getDealSaleWriteOffDoc(dealId: string): Promise<Record<string, unknown> | null> {
   const id = String(dealId || '').trim();
   if (!id) return null;
   return (
-    get<Record<string, unknown>>(
+    await get<Record<string, unknown>>(
       `SELECT id, number, doc_date, posted, comment, created_at
        FROM stock_docs
        WHERE deal_id = ?
@@ -3616,11 +3621,11 @@ export function getDealSaleWriteOffDoc(dealId: string): Record<string, unknown> 
 }
 
 /** Цепочка склада по сделке: основной → резерв → СТО → списание при продаже. */
-export function buildDealWarehouseChain(dealId: string): DealWarehouseChainStep[] {
+export async function buildDealWarehouseChain(dealId: string): Promise<DealWarehouseChainStep[]> {
   const id = String(dealId || '').trim();
   if (!id) return [];
 
-  const docs = all<{
+  const docs = await all<{
     id: string;
     number: string;
     doc_type: string;
@@ -3649,7 +3654,7 @@ export function buildDealWarehouseChain(dealId: string): DealWarehouseChainStep[
     [id]
   );
 
-  const openReserveDraft = get<{ id: string; number: string }>(
+  const openReserveDraft = await get<{ id: string; number: string }>(
     `SELECT id, IFNULL(number,'') AS number FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
        AND comment LIKE '%Передача на склад%'
@@ -3658,7 +3663,7 @@ export function buildDealWarehouseChain(dealId: string): DealWarehouseChainStep[
      LIMIT 1`,
     [id]
   );
-  const openToStoDraft = get<{ id: string; number: string }>(
+  const openToStoDraft = await get<{ id: string; number: string }>(
     `SELECT id, IFNULL(number,'') AS number FROM stock_docs
      WHERE deal_id = ? AND doc_type = 'out'
        AND comment LIKE '%Спуск на СТО%'
@@ -3685,8 +3690,8 @@ export function buildDealWarehouseChain(dealId: string): DealWarehouseChainStep[
         (isReserveCode(d.from_code) && String(d.to_code || '').toUpperCase() === 'STO'))
   );
   const reserveToSto = reserveToStoDocs.length ? reserveToStoDocs[reserveToStoDocs.length - 1] : null;
-  const reservePending = dealReservePendingToStoLines(id);
-  const saleWo = getDealSaleWriteOffDoc(id);
+  const reservePending = await dealReservePendingToStoLines(id);
+  const saleWo = await getDealSaleWriteOffDoc(id);
 
   const step = (
     key: DealWarehouseChainStep['step'],
@@ -3739,10 +3744,10 @@ export function buildDealWarehouseChain(dealId: string): DealWarehouseChainStep[
             number: String(saleWo.number || ''),
             doc_date: String(saleWo.doc_date || ''),
             qty_sum: Number(
-              get<{ q: number }>(
+              (await get<{ q: number }>(
                 `SELECT IFNULL(SUM(qty),0) AS q FROM stock_doc_lines WHERE doc_id = ?`,
                 [String(saleWo.id)]
-              )?.q || 0
+              ))?.q || 0
             ),
           }
         : null,
@@ -3756,10 +3761,10 @@ export function buildDealWarehouseChain(dealId: string): DealWarehouseChainStep[
  * Списываем всё, что спустили на СТО по сделке (сумма TR), а не только qty строк заказа.
  * Если уже было частичное списание — досписываем остаток. Не создаёт УПД.
  */
-export function writeOffStoOnDealSuccess(
+export async function writeOffStoOnDealSuccess(
   dealId: string,
   opts?: { createdBy?: string; requireSuccess?: boolean }
-): {
+): Promise<{
   ok: boolean;
   skipped?: boolean;
   already?: boolean;
@@ -3768,11 +3773,11 @@ export function writeOffStoOnDealSuccess(
   stock_doc_id?: string | null;
   stock_doc_number?: string | null;
   lines_count?: number;
-} {
+}> {
   const id = String(dealId || '').trim();
   if (!id) return { ok: false, reason: 'no deal' };
 
-  const deal = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+  const deal = await get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
     `SELECT IFNULL(amo_channel,'') AS amo_channel,
             IFNULL(amo_shipment,'') AS amo_shipment,
             IFNULL(ship_channel,'') AS ship_channel
@@ -3785,25 +3790,25 @@ export function writeOffStoOnDealSuccess(
   }
 
   const requireSuccess = opts?.requireSuccess !== false;
-  if (requireSuccess && !dealIsSuccessful(id)) {
+  if (requireSuccess && !await dealIsSuccessful(id)) {
     return { ok: true, skipped: true, reason: 'deal_not_success' };
   }
 
-  const stoWh = stoWarehouseId();
-  const descended = dealDescendedToStoQtyByProduct(id);
-  const alreadyOff = dealSaleWriteOffQtyByProduct(id);
+  const stoWh = await stoWarehouseId();
+  const descended = await dealDescendedToStoQtyByProduct(id);
+  const alreadyOff = await dealSaleWriteOffQtyByProduct(id);
 
   // Основной источник — спуски; иначе (нет TR) — строки заказа.
   const productIds =
     descended.size > 0
       ? [...descended.keys()]
-      : all<{ product_id: string }>(
+      : (await all<{ product_id: string }>(
           `SELECT DISTINCT IFNULL(i.product_guid,'') AS product_id
            FROM crm_deal_items i
            LEFT JOIN products p ON p.id = i.product_guid
            WHERE i.deal_id = ? AND IFNULL(p.item_kind,'product') != 'service'`,
           [id]
-        )
+        ))
           .map((r) => String(r.product_id || '').trim())
           .filter(Boolean);
 
@@ -3815,11 +3820,11 @@ export function writeOffStoOnDealSuccess(
     } else {
       const dealQty =
         Number(
-          get<{ qty: number }>(
+          (await get<{ qty: number }>(
             `SELECT IFNULL(SUM(qty),0) AS qty FROM crm_deal_items
              WHERE deal_id = ? AND product_guid = ?`,
             [id, productId]
-          )?.qty
+          ))?.qty
         ) || 0;
       need = dealQty - (alreadyOff.get(productId) || 0);
     }
@@ -3827,10 +3832,10 @@ export function writeOffStoOnDealSuccess(
     if (!(need > 0)) continue;
     const onSto =
       Number(
-        get<{ qty: number }>(
+        (await get<{ qty: number }>(
           `SELECT IFNULL(qty,0) AS qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?`,
           [stoWh, productId]
-        )?.qty
+        ))?.qty
       ) || 0;
     const writeQty = Math.min(need, onSto);
     if (writeQty > 0) {
@@ -3838,7 +3843,7 @@ export function writeOffStoOnDealSuccess(
     }
   }
 
-  const existing = getDealSaleWriteOffDoc(id);
+  const existing = await getDealSaleWriteOffDoc(id);
   if (!lines.length) {
     if (existing) {
       return {
@@ -3859,7 +3864,7 @@ export function writeOffStoOnDealSuccess(
     ? `${commentBase} · досписание спущенного на СТО`
     : commentBase;
 
-  const stockDocId = createDocument({
+  const stockDocId = await createDocument({
     doc_type: 'out',
     warehouse_id: stoWh,
     deal_id: id,
@@ -3868,10 +3873,10 @@ export function writeOffStoOnDealSuccess(
     lines,
     post: true,
   });
-  const stockDoc = get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [
+  const stockDoc = await get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [
     stockDocId,
   ]);
-  writeMetaJson(SALE_WRITEOFF_META(id), {
+  await writeMetaJson(SALE_WRITEOFF_META(id), {
     at: new Date().toISOString(),
     doc_id: stockDocId,
     number: stockDoc?.number || '',
@@ -3881,15 +3886,18 @@ export function writeOffStoOnDealSuccess(
     by_descended: descended.size > 0,
   });
 
-  const lineHint = lines
-    .map((l) => {
-      const sku =
-        get<{ sku: string }>(
-          `SELECT IFNULL(sku,'') AS sku FROM products WHERE id = ?`,
-          [l.product_id]
-        )?.sku || '';
-      return `${sku || l.product_id.slice(0, 8)}×${l.qty}`;
-    })
+  const lineHint = (
+    await Promise.all(
+      lines.map(async (l) => {
+        const sku =
+          (await get<{ sku: string }>(
+            `SELECT IFNULL(sku,'') AS sku FROM products WHERE id = ?`,
+            [l.product_id]
+          ))?.sku || '';
+        return `${sku || l.product_id.slice(0, 8)}×${l.qty}`;
+      })
+    )
+  )
     .slice(0, 8)
     .join(', ');
   const amoNote = [
@@ -3903,9 +3911,9 @@ export function writeOffStoOnDealSuccess(
   ]
     .filter(Boolean)
     .join(' · ');
-  void notifyAmoWarehousePacked({ dealId: id, text: amoNote }).then((r) => {
+  void notifyAmoWarehousePacked({ dealId: id, text: amoNote }).then(async (r) => {
     if (!r.ok) {
-      writeMetaJson(`amo_note_err:writeoff:${id}`, {
+      await writeMetaJson(`amo_note_err:writeoff:${id}`, {
         at: new Date().toISOString(),
         text: amoNote,
         error: r.error || 'amo note failed',
@@ -3923,24 +3931,24 @@ export function writeOffStoOnDealSuccess(
 }
 
 /** После синка Amo: этап сменился на «Успешно» — списать со СТО, если ещё не списано. */
-export function maybeWriteOffStoAfterAmoStatusSync(
+export async function maybeWriteOffStoAfterAmoStatusSync(
   dealId: string,
   prevStatusId: string,
   nextStatusId: string,
   createdBy = 'синк Amo'
-): ReturnType<typeof writeOffStoOnDealSuccess> | { ok: true; skipped: true; reason: string } {
+): Promise<Awaited<ReturnType<typeof writeOffStoOnDealSuccess>> | { ok: true; skipped: true; reason: string }> {
   const id = String(dealId || '').trim();
   if (!id) return { ok: true, skipped: true, reason: 'no deal' };
   if (rawStatusId(prevStatusId) === rawStatusId(nextStatusId)) {
     return { ok: true, skipped: true, reason: 'status_unchanged' };
   }
-  if (!dealIsSuccessful(id)) {
+  if (!await dealIsSuccessful(id)) {
     return { ok: true, skipped: true, reason: 'not_success' };
   }
   try {
-    return writeOffStoOnDealSuccess(id, { createdBy, requireSuccess: true });
+    return await writeOffStoOnDealSuccess(id, { createdBy, requireSuccess: true });
   } catch (e) {
-    writeMetaJson(`stock_flow_sale_writeoff_err:${id}`, {
+    await writeMetaJson(`stock_flow_sale_writeoff_err:${id}`, {
       at: new Date().toISOString(),
       error: e instanceof Error ? e.message : String(e),
     });
@@ -3956,10 +3964,10 @@ function courierWriteOffComment(dealId: string): string {
 }
 
 /** Списание со склада «Курьер» когда курьер нажал «Доставил». */
-export function writeOffCourierOnDelivered(
+export async function writeOffCourierOnDelivered(
   dealId: string,
   opts?: { createdBy?: string; actor_name?: string }
-): {
+): Promise<{
   ok: boolean;
   skipped?: boolean;
   already?: boolean;
@@ -3968,11 +3976,11 @@ export function writeOffCourierOnDelivered(
   stock_doc_id?: string | null;
   stock_doc_number?: string | null;
   lines_count?: number;
-} {
+}> {
   const id = String(dealId || '').trim();
   if (!id) return { ok: false, reason: 'no deal' };
 
-  const existing = get<{ id: string; number: string }>(
+  const existing = await get<{ id: string; number: string }>(
     `SELECT id, IFNULL(number,'') AS number FROM stock_docs
      WHERE deal_id = ?
        AND doc_type = 'out'
@@ -3992,7 +4000,7 @@ export function writeOffCourierOnDelivered(
   }
 
   // старые списания с формулировкой «курьер отвёз»
-  const existingOld = get<{ id: string; number: string }>(
+  const existingOld = await get<{ id: string; number: string }>(
     `SELECT id, IFNULL(number,'') AS number FROM stock_docs
      WHERE deal_id = ?
        AND doc_type = 'out'
@@ -4011,7 +4019,7 @@ export function writeOffCourierOnDelivered(
     };
   }
 
-  const deal = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+  const deal = await get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
     `SELECT IFNULL(amo_channel,'') AS amo_channel,
             IFNULL(amo_shipment,'') AS amo_shipment,
             IFNULL(ship_channel,'') AS ship_channel
@@ -4023,8 +4031,8 @@ export function writeOffCourierOnDelivered(
     return { ok: true, skipped: true, reason: 'not_ship_channel' };
   }
 
-  const courierWh = courierWarehouseId();
-  const itemRows = all<{ product_id: string; qty: number }>(
+  const courierWh = await courierWarehouseId();
+  const itemRows = await all<{ product_id: string; qty: number }>(
     `SELECT IFNULL(i.product_guid,'') AS product_id, IFNULL(i.qty,0) AS qty
      FROM crm_deal_items i
      LEFT JOIN products p ON p.id = i.product_guid
@@ -4040,10 +4048,10 @@ export function writeOffCourierOnDelivered(
     if (!productId || !(need > 0)) continue;
     const onCourier =
       Number(
-        get<{ qty: number }>(
+        (await get<{ qty: number }>(
           `SELECT IFNULL(qty,0) AS qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?`,
           [courierWh, productId]
-        )?.qty
+        ))?.qty
       ) || 0;
     const writeQty = Math.min(need, onCourier);
     if (writeQty > 0) {
@@ -4058,7 +4066,7 @@ export function writeOffCourierOnDelivered(
   const actor = String(opts?.actor_name || opts?.createdBy || '').trim();
   const comment = actor ? `${courierWriteOffComment(id)} · ${actor}` : courierWriteOffComment(id);
 
-  const stockDocId = createDocument({
+  const stockDocId = await createDocument({
     doc_type: 'out',
     warehouse_id: courierWh,
     deal_id: id,
@@ -4067,18 +4075,18 @@ export function writeOffCourierOnDelivered(
     lines,
     post: true,
   });
-  const stockDoc = get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [
+  const stockDoc = await get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [
     stockDocId,
   ]);
 
-  writeMetaJson(COURIER_DELIVERED_META(id), {
+  await writeMetaJson(COURIER_DELIVERED_META(id), {
     at: new Date().toISOString(),
     doc_id: stockDocId,
     number: stockDoc?.number || '',
     lines_count: lines.length,
     by: actor || null,
   });
-  writeMetaJson(SALE_WRITEOFF_META(id), {
+  await writeMetaJson(SALE_WRITEOFF_META(id), {
     at: new Date().toISOString(),
     doc_id: stockDocId,
     number: stockDoc?.number || '',
@@ -4102,15 +4110,15 @@ export function writeOffCourierOnDelivered(
 }
 
 /** Вечерний / ручной cron: успешные сделки с товаром на СТО без списания. */
-export function runStoSaleWriteoffCron(limit = 80): {
+export async function runStoSaleWriteoffCron(limit = 80): Promise<{
   scanned: number;
   written: number;
   skipped: number;
   errors: Array<{ deal_id: string; error: string }>;
   items: Array<Record<string, unknown>>;
-} {
+}> {
   const cap = Math.min(200, Math.max(1, limit));
-  const candidates = all<{ id: string }>(
+  const candidates = await all<{ id: string }>(
     `SELECT DISTINCT d.id
      FROM crm_deals d
      INNER JOIN stock_docs sd ON sd.deal_id = d.id
@@ -4132,11 +4140,11 @@ export function runStoSaleWriteoffCron(limit = 80): {
     if (items.length >= cap) break;
     const dealId = String(row.id || '').trim();
     if (!dealId) continue;
-    if (!dealIsSuccessful(dealId)) {
+    if (!await dealIsSuccessful(dealId)) {
       skipped += 1;
       continue;
     }
-    const ch = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+    const ch = await get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
       `SELECT IFNULL(amo_channel,'') AS amo_channel,
               IFNULL(amo_shipment,'') AS amo_shipment,
               IFNULL(ship_channel,'') AS ship_channel
@@ -4148,12 +4156,12 @@ export function runStoSaleWriteoffCron(limit = 80): {
       continue;
     }
     // Не пропускаем из‑за уже существующего списания: возможны досписания (СРОЧНО / частичные).
-    if (!dealHasPendingStoSaleWriteoff(dealId)) {
+    if (!await dealHasPendingStoSaleWriteoff(dealId)) {
       skipped += 1;
       continue;
     }
     try {
-      const r = writeOffStoOnDealSuccess(dealId, {
+      const r = await writeOffStoOnDealSuccess(dealId, {
         createdBy: 'cron · вечернее списание СТО',
         requireSuccess: true,
       });

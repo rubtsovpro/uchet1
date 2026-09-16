@@ -60,11 +60,11 @@ function paidStatus(st: string): boolean {
   return ['paid', 'confirmed', 'success', 'accepted'].includes(String(st || '').toLowerCase());
 }
 
-function dealAmountSuggest(dealId: string): number {
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+async function dealAmountSuggest(dealId: string): Promise<number> {
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return 0;
   const fromDeal = Number(deal.amount || deal.price || 0) || 0;
-  const tvd = get<{ amount: number }>(
+  const tvd = await get<{ amount: number }>(
     `SELECT IFNULL(amount,0) AS amount FROM thin_journal_docs
      WHERE journal_key = 'money_refund_requests'
        AND IFNULL(status,'') IN ('','draft','open','new')
@@ -77,23 +77,23 @@ function dealAmountSuggest(dealId: string): number {
   return Math.round(fromDeal * 100) / 100;
 }
 
-function resolvePayerOrg(dealId: string): {
+async function resolvePayerOrg(dealId: string): Promise<{
   rs: string;
   bik: string;
   customer_code: string;
   organization_id: string;
   name: string;
-} {
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+}> {
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   const orgId = String(
     (deal as { organization_id?: string } | null)?.organization_id ||
-      get<{ organization_id?: string }>(
+      (await get<{ organization_id?: string }>(
         `SELECT organization_id FROM payment_links WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 1`,
         [dealId]
-      )?.organization_id ||
+      ))?.organization_id ||
       ''
   ).trim();
-  const org = (orgId ? getOrganization(orgId) : null) || getDefaultOrganization();
+  const org = (orgId ? await getOrganization(orgId) : null) || await getDefaultOrganization();
   return {
     rs: digits(org?.rs),
     bik: digits(org?.bik) || '044525104',
@@ -103,7 +103,7 @@ function resolvePayerOrg(dealId: string): {
   };
 }
 
-function resolveCounterpartyBank(dealId: string): {
+async function resolveCounterpartyBank(dealId: string): Promise<{
   name: string;
   inn: string;
   kpp: string;
@@ -111,22 +111,22 @@ function resolveCounterpartyBank(dealId: string): {
   rs: string;
   ks: string;
   counterparty_id: string;
-} {
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+}> {
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   const cpId = String(
     deal?.counterparty_id || deal?.buyer_counterparty_id || deal?.contact_counterparty_id || ''
   ).trim();
   let cp: Record<string, unknown> | null = null;
   if (cpId) {
     cp =
-      (get(`SELECT * FROM counterparties WHERE id = ?`, [cpId]) as Record<string, unknown> | null) ||
+      (await get(`SELECT * FROM counterparties WHERE id = ?`, [cpId]) as Record<string, unknown> | null) ||
       null;
   }
   if (!cp) {
     const inn = digits(deal?.buyer_inn);
     if (inn) {
       cp =
-        (get(
+        (await get(
           `SELECT * FROM counterparties WHERE replace(IFNULL(inn,''), ' ', '') = ? LIMIT 1`,
           [inn]
         ) as Record<string, unknown> | null) || null;
@@ -146,8 +146,8 @@ function resolveCounterpartyBank(dealId: string): {
   };
 }
 
-function listSbpChannels(dealId: string): RefundChannelOption[] {
-  const rows = all<{
+async function listSbpChannels(dealId: string): Promise<RefundChannelOption[]> {
+  const rows = await all<{
     id: string;
     amount: number;
     status: string;
@@ -184,8 +184,8 @@ function listSbpChannels(dealId: string): RefundChannelOption[] {
   return out;
 }
 
-function listAcquiringChannels(dealId: string): RefundChannelOption[] {
-  const links = all<{
+async function listAcquiringChannels(dealId: string): Promise<RefundChannelOption[]> {
+  const links = await all<{
     id: string;
     amount: number;
     status: string;
@@ -222,18 +222,18 @@ function listAcquiringChannels(dealId: string): RefundChannelOption[] {
   return out;
 }
 
-export function getDealRefundOptions(dealId: string): RefundOptions {
+export async function getDealRefundOptions(dealId: string): Promise<RefundOptions> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('Нет заказа');
-  const deal = getDeal(id);
+  const deal = await getDeal(id);
   if (!deal) throw new Error('Заказ не найден');
 
-  const sbp = listSbpChannels(id);
-  const acq = listAcquiringChannels(id);
+  const sbp = await listSbpChannels(id);
+  const acq = await listAcquiringChannels(id);
   const channels = [...sbp, ...acq];
-  const amount_suggest = dealAmountSuggest(id);
-  const payer = resolvePayerOrg(id);
-  const cp = resolveCounterpartyBank(id);
+  const amount_suggest = await dealAmountSuggest(id);
+  const payer = await resolvePayerOrg(id);
+  const cp = await resolveCounterpartyBank(id);
   const missing: string[] = [];
   if (payer.rs.length !== 20) missing.push('р/с организации-плательщика');
   if (cp.name === '') missing.push('название получателя');
@@ -268,9 +268,10 @@ async function resolveSbpTrxId(opts: {
   qrcId: string;
   customerCode?: string;
 }): Promise<string> {
-  const key = (await import('./integration-settings.js')).getTochkaBridgeSettings().bank_sbp_key;
-  const statusUrl = (await import('./integration-settings.js')).getTochkaBridgeSettings()
-    .sbp_status_url;
+  const mod = await import('./integration-settings.js');
+  const bridge = await mod.getTochkaBridgeSettings();
+  const key = bridge.bank_sbp_key;
+  const statusUrl = bridge.sbp_status_url;
   if (!key) return '';
   try {
     const res = await fetch(statusUrl, {
@@ -308,7 +309,7 @@ export async function refundDealOriginal(opts: {
   actor?: { id?: string; name?: string } | null;
 }): Promise<Record<string, unknown>> {
   const dealId = String(opts.dealId || '').trim();
-  const options = getDealRefundOptions(dealId);
+  const options = await getDealRefundOptions(dealId);
   const want = opts.channel || 'auto';
   let pick: RefundChannelOption | undefined;
   if (want === 'sbp' || (want === 'auto' && options.preferred === 'sbp')) {
@@ -335,7 +336,7 @@ export async function refundDealOriginal(opts: {
 
   const purpose =
     String(opts.purpose || '').trim() || `Возврат по заказу ${dealId}`;
-  const payer = resolvePayerOrg(dealId);
+  const payer = await resolvePayerOrg(dealId);
 
   if (pick.channel === 'sbp') {
     let account = digits(opts.accountCode) || digits(pick.account);
@@ -363,9 +364,9 @@ export async function refundDealOriginal(opts: {
     if (!r.ok) throw new Error(String(r.error || 'СБП возврат не прошёл'));
     let marked: unknown = null;
     if (opts.markDone !== false) {
-      marked = markDealMoneyRefunded(dealId, opts.actor);
+      marked = await markDealMoneyRefunded(dealId, opts.actor);
     }
-    rememberRefundMeta(dealId, {
+    await rememberRefundMeta(dealId, {
       channel: 'sbp',
       amount,
       qrc_id: pick.qrc_id,
@@ -385,9 +386,9 @@ export async function refundDealOriginal(opts: {
   if (!r.ok) throw new Error(String(r.error || 'Возврат эквайринга не прошёл'));
   let marked: unknown = null;
   if (opts.markDone !== false) {
-    marked = markDealMoneyRefunded(dealId, opts.actor);
+    marked = await markDealMoneyRefunded(dealId, opts.actor);
   }
-  rememberRefundMeta(dealId, {
+  await rememberRefundMeta(dealId, {
     channel: 'acquiring',
     amount,
     operation_id: pick.operation_id,
@@ -397,9 +398,9 @@ export async function refundDealOriginal(opts: {
   return { ok: true, channel: 'acquiring', amount, bank: r, marked };
 }
 
-function rememberRefundMeta(dealId: string, patch: Record<string, unknown>) {
+async function rememberRefundMeta(dealId: string, patch: Record<string, unknown>) {
   try {
-    const row = get<{ id: string; meta_json: string }>(
+    const row = await get<{ id: string; meta_json: string }>(
       `SELECT id, IFNULL(meta_json,'') AS meta_json FROM payment_links
        WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 1`,
       [dealId]
@@ -409,7 +410,7 @@ function rememberRefundMeta(dealId: string, patch: Record<string, unknown>) {
     const prev = Array.isArray(meta.tochka_refunds) ? meta.tochka_refunds : [];
     prev.push(patch);
     meta.tochka_refunds = prev.slice(-20);
-    run(`UPDATE payment_links SET meta_json = ? WHERE id = ?`, [
+    await run(`UPDATE payment_links SET meta_json = ? WHERE id = ?`, [
       JSON.stringify(meta),
       row.id,
     ]);
@@ -435,9 +436,9 @@ export async function createDealPaymentForSign(opts: {
   actor?: { id?: string; name?: string } | null;
 }): Promise<Record<string, unknown>> {
   const dealId = String(opts.dealId || '').trim();
-  const options = getDealRefundOptions(dealId);
-  const payer = resolvePayerOrg(dealId);
-  const cp = resolveCounterpartyBank(dealId);
+  const options = await getDealRefundOptions(dealId);
+  const payer = await resolvePayerOrg(dealId);
+  const cp = await resolveCounterpartyBank(dealId);
 
   const amount =
     opts.amount != null && Number(opts.amount) > 0
@@ -486,7 +487,7 @@ export async function createDealPaymentForSign(opts: {
 
   if (opts.tvdId) {
     try {
-      const doc = get<{ payload_json: string; comment: string }>(
+      const doc = await get<{ payload_json: string; comment: string }>(
         `SELECT IFNULL(payload_json,'') AS payload_json, IFNULL(comment,'') AS comment
          FROM thin_journal_docs WHERE id = ? AND journal_key = 'money_refund_requests'`,
         [String(opts.tvdId)]
@@ -504,7 +505,7 @@ export async function createDealPaymentForSign(opts: {
           doc.comment && !doc.comment.includes('ПП на подпись')
             ? `${doc.comment} · ПП на подпись`
             : doc.comment || 'ПП на подпись в Точке';
-        run(
+        await run(
           `UPDATE thin_journal_docs SET payload_json = ?, comment = ?, updated_at = datetime('now') WHERE id = ?`,
           [JSON.stringify(payload), comment, String(opts.tvdId)]
         );
@@ -514,7 +515,7 @@ export async function createDealPaymentForSign(opts: {
     }
   }
 
-  rememberRefundMeta(dealId, {
+  await rememberRefundMeta(dealId, {
     channel: 'payment_for_sign',
     amount,
     request_id: r.request_id,
@@ -532,8 +533,8 @@ export async function createDealPaymentForSign(opts: {
   };
 }
 
-export function loadTvdDealId(tvdId: string): { deal_id: string; amount: number; number: string } {
-  const row = get<{
+export async function loadTvdDealId(tvdId: string): Promise<{ deal_id: string; amount: number; number: string }> {
+  const row = await get<{
     id: string;
     number: string;
     amount: number;
@@ -552,6 +553,6 @@ export function loadTvdDealId(tvdId: string): { deal_id: string; amount: number;
 }
 
 /** Не используется напрямую — оставляем для отладки URL моста. */
-export function tochkaRefundBridgeUrl(): string {
-  return bankApiUrlFromOverview('tochka_refund.php');
+export async function tochkaRefundBridgeUrl(): Promise<string> {
+  return await bankApiUrlFromOverview('tochka_refund.php');
 }

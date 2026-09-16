@@ -43,8 +43,8 @@ const SEED_VER_KEY = 'dev_plan_seed_ver';
 const SEED_VER = 'sales-v1';
 const BLOCK_SALES = { key: 'sales', title: 'Продажи', sort: 10 };
 
-export function ensureDevPlanSchema(): void {
-  run(`
+export async function ensureDevPlanSchema(): Promise<void> {
+  await run(`
     CREATE TABLE IF NOT EXISTS dev_plan_items (
       id TEXT PRIMARY KEY,
       block_key TEXT NOT NULL DEFAULT 'sales',
@@ -64,20 +64,20 @@ export function ensureDevPlanSchema(): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
-  const cols = all<{ name: string }>(`PRAGMA table_info(dev_plan_items)`).map((c) => c.name);
+  const cols = (await all<{ name: string }>(`PRAGMA table_info(dev_plan_items)`)).map((c) => c.name);
   if (!cols.includes('block_key')) {
-    run(`ALTER TABLE dev_plan_items ADD COLUMN block_key TEXT NOT NULL DEFAULT 'sales'`);
+    await run(`ALTER TABLE dev_plan_items ADD COLUMN block_key TEXT NOT NULL DEFAULT 'sales'`);
   }
   if (!cols.includes('block_title')) {
-    run(`ALTER TABLE dev_plan_items ADD COLUMN block_title TEXT NOT NULL DEFAULT 'Продажи'`);
+    await run(`ALTER TABLE dev_plan_items ADD COLUMN block_title TEXT NOT NULL DEFAULT 'Продажи'`);
   }
   if (!cols.includes('block_sort')) {
-    run(`ALTER TABLE dev_plan_items ADD COLUMN block_sort INTEGER NOT NULL DEFAULT 10`);
+    await run(`ALTER TABLE dev_plan_items ADD COLUMN block_sort INTEGER NOT NULL DEFAULT 10`);
   }
-  run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_dates ON dev_plan_items(start_date, end_date)`);
-  run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_staff ON dev_plan_items(responsible_staff_id)`);
-  run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_block ON dev_plan_items(block_sort, sort_order)`);
-  run(`
+  await run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_dates ON dev_plan_items(start_date, end_date)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_staff ON dev_plan_items(responsible_staff_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_block ON dev_plan_items(block_sort, sort_order)`);
+  await run(`
     CREATE TABLE IF NOT EXISTS dev_plan_comments (
       id TEXT PRIMARY KEY,
       item_id TEXT NOT NULL,
@@ -92,8 +92,8 @@ export function ensureDevPlanSchema(): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
-  run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_comments_item ON dev_plan_comments(item_id, created_at)`);
-  run(`
+  await run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_comments_item ON dev_plan_comments(item_id, created_at)`);
+  await run(`
     CREATE TABLE IF NOT EXISTS dev_plan_deps (
       id TEXT PRIMARY KEY,
       item_id TEXT NOT NULL,
@@ -103,15 +103,15 @@ export function ensureDevPlanSchema(): void {
       UNIQUE(item_id, depends_on_id)
     )
   `);
-  run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_deps_item ON dev_plan_deps(item_id)`);
-  run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_deps_on ON dev_plan_deps(depends_on_id)`);
-  seedDevPlanSalesBlock();
-  seedDevPlanSalesDeps();
+  await run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_deps_item ON dev_plan_deps(item_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_dev_plan_deps_on ON dev_plan_deps(depends_on_id)`);
+  await seedDevPlanSalesBlock();
+  await seedDevPlanSalesDeps();
 }
 
-function defaultResponsibleStaffId(): string {
+async function defaultResponsibleStaffId(): Promise<string> {
   return (
-    get<{ id: string }>(
+    (await get<{ id: string }>(
       `SELECT id FROM staff
        WHERE IFNULL(is_active,1)=1
          AND (
@@ -121,19 +121,19 @@ function defaultResponsibleStaffId(): string {
          )
        ORDER BY CASE WHEN role = 'admin' THEN 0 ELSE 1 END, name
        LIMIT 1`
-    )?.id || ''
+    ))?.id || ''
   );
 }
 
 /** Полная замена старого сида: первый блок — Продажи. */
-function seedDevPlanSalesBlock(): void {
-  const ver = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [SEED_VER_KEY])?.value;
+async function seedDevPlanSalesBlock(): Promise<void> {
+  const ver = (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [SEED_VER_KEY]))?.value;
   if (ver === SEED_VER) return;
 
-  run(`DELETE FROM dev_plan_comments`);
-  run(`DELETE FROM dev_plan_items`);
+  await run(`DELETE FROM dev_plan_comments`);
+  await run(`DELETE FROM dev_plan_items`);
 
-  const rubtsov = defaultResponsibleStaffId();
+  const rubtsov = await defaultResponsibleStaffId();
   const B = BLOCK_SALES;
 
   const rows: Array<{
@@ -253,7 +253,7 @@ function seedDevPlanSalesBlock(): void {
   ];
 
   for (const r of rows) {
-    run(
+    await run(
       `INSERT INTO dev_plan_items (
          id, block_key, block_title, block_sort,
          title, description, result_plan, result_fact, constraint_text,
@@ -276,7 +276,7 @@ function seedDevPlanSalesBlock(): void {
     );
   }
 
-  run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [SEED_VER_KEY, SEED_VER]);
+  await run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [SEED_VER_KEY, SEED_VER]);
 }
 
 const DEPS_SEED_VER_KEY = 'dev_plan_deps_seed_ver';
@@ -286,13 +286,13 @@ const DEPS_SEED_VER = 'sales-deps-v1';
  * Стартовые связи «работа зависит от …» (1:1 / 1:N / N:1).
  * item зависит от depends_on (стрелка: prerequisite → dependent).
  */
-function seedDevPlanSalesDeps(): void {
-  const ver = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [DEPS_SEED_VER_KEY])
+async function seedDevPlanSalesDeps(): Promise<void> {
+  const ver = (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [DEPS_SEED_VER_KEY]))
     ?.value;
   if (ver === DEPS_SEED_VER) return;
 
   const byTitle = new Map<string, string>();
-  for (const r of all<{ id: string; title: string }>(
+  for (const r of await all<{ id: string; title: string }>(
     `SELECT id, title FROM dev_plan_items WHERE block_key = 'sales'`
   )) {
     byTitle.set(String(r.title || '').trim(), String(r.id));
@@ -322,18 +322,18 @@ function seedDevPlanSalesDeps(): void {
     const itemId = idOf(itemTitle);
     const dependsOnId = idOf(depTitle);
     if (!itemId || !dependsOnId || itemId === dependsOnId) continue;
-    const exists = get(
+    const exists = await get(
       `SELECT id FROM dev_plan_deps WHERE item_id = ? AND depends_on_id = ?`,
       [itemId, dependsOnId]
     );
     if (exists) continue;
-    run(
+    await run(
       `INSERT INTO dev_plan_deps (id, item_id, depends_on_id, note) VALUES (?, ?, ?, '')`,
       [newGuid(), itemId, dependsOnId]
     );
   }
 
-  run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [
+  await run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [
     DEPS_SEED_VER_KEY,
     DEPS_SEED_VER,
   ]);
@@ -349,9 +349,9 @@ export type DevPlanDep = {
   created_at: string;
 };
 
-export function listDevPlanDeps(): DevPlanDep[] {
-  ensureDevPlanSchema();
-  return all<{
+export async function listDevPlanDeps(): Promise<DevPlanDep[]> {
+  await ensureDevPlanSchema();
+  return (await all<{
     id: string;
     item_id: string;
     depends_on_id: string;
@@ -368,7 +368,7 @@ export function listDevPlanDeps(): DevPlanDep[] {
      LEFT JOIN dev_plan_items a ON a.id = d.item_id
      LEFT JOIN dev_plan_items b ON b.id = d.depends_on_id
      ORDER BY datetime(d.created_at) ASC, d.rowid ASC`
-  ).map((r) => ({
+  )).map((r) => ({
     id: String(r.id || ''),
     item_id: String(r.item_id || ''),
     depends_on_id: String(r.depends_on_id || ''),
@@ -379,10 +379,10 @@ export function listDevPlanDeps(): DevPlanDep[] {
   }));
 }
 
-function wouldCreateCycle(itemId: string, dependsOnId: string): boolean {
+async function wouldCreateCycle(itemId: string, dependsOnId: string): Promise<boolean> {
   // item зависит от dependsOn — цикл, если dependsOn уже зависит (транзитивно) от item
   const kids = new Map<string, string[]>();
-  for (const d of all<{ item_id: string; depends_on_id: string }>(
+  for (const d of await all<{ item_id: string; depends_on_id: string }>(
     `SELECT item_id, depends_on_id FROM dev_plan_deps`
   )) {
     const from = String(d.depends_on_id);
@@ -403,59 +403,59 @@ function wouldCreateCycle(itemId: string, dependsOnId: string): boolean {
   return false;
 }
 
-export function addDevPlanDep(input: {
+export async function addDevPlanDep(input: {
   item_id: string;
   depends_on_id: string;
   note?: string;
-}): DevPlanDep {
-  ensureDevPlanSchema();
+}): Promise<DevPlanDep> {
+  await ensureDevPlanSchema();
   const itemId = String(input.item_id || '').trim();
   const dependsOnId = String(input.depends_on_id || '').trim();
   const note = String(input.note || '').trim();
   if (!itemId || !dependsOnId) throw new Error('Укажите обе работы');
   if (itemId === dependsOnId) throw new Error('Работа не может зависеть от себя');
-  const a = get('SELECT id FROM dev_plan_items WHERE id = ?', [itemId]);
-  const b = get('SELECT id FROM dev_plan_items WHERE id = ?', [dependsOnId]);
+  const a = await get('SELECT id FROM dev_plan_items WHERE id = ?', [itemId]);
+  const b = await get('SELECT id FROM dev_plan_items WHERE id = ?', [dependsOnId]);
   if (!a || !b) throw new Error('Работа не найдена');
-  if (wouldCreateCycle(itemId, dependsOnId)) {
+  if (await wouldCreateCycle(itemId, dependsOnId)) {
     throw new Error('Так получится цикл зависимостей');
   }
-  const existing = get<{ id: string }>(
+  const existing = await get<{ id: string }>(
     `SELECT id FROM dev_plan_deps WHERE item_id = ? AND depends_on_id = ?`,
     [itemId, dependsOnId]
   );
   if (existing?.id) {
-    const allDeps = listDevPlanDeps();
+    const allDeps = await listDevPlanDeps();
     const found = allDeps.find((d) => d.id === existing.id);
     if (found) return found;
   }
   const id = newGuid();
-  run(`INSERT INTO dev_plan_deps (id, item_id, depends_on_id, note) VALUES (?, ?, ?, ?)`, [
+  await run(`INSERT INTO dev_plan_deps (id, item_id, depends_on_id, note) VALUES (?, ?, ?, ?)`, [
     id,
     itemId,
     dependsOnId,
     note,
   ]);
-  const row = listDevPlanDeps().find((d) => d.id === id);
+  const row = (await listDevPlanDeps()).find((d) => d.id === id);
   if (!row) throw new Error('Не удалось сохранить связь');
   return row;
 }
 
-export function deleteDevPlanDep(idRaw: string): { ok: true; id: string } {
-  ensureDevPlanSchema();
+export async function deleteDevPlanDep(idRaw: string): Promise<{ ok: true; id: string }> {
+  await ensureDevPlanSchema();
   const id = String(idRaw || '').trim();
-  const cur = get('SELECT id FROM dev_plan_deps WHERE id = ?', [id]);
+  const cur = await get('SELECT id FROM dev_plan_deps WHERE id = ?', [id]);
   if (!cur) throw new Error('Связь не найдена');
-  run(`DELETE FROM dev_plan_deps WHERE id = ?`, [id]);
+  await run(`DELETE FROM dev_plan_deps WHERE id = ?`, [id]);
   return { ok: true, id };
 }
 
-function staffNameMap(ids: string[]): Map<string, string> {
+async function staffNameMap(ids: string[]): Promise<Map<string, string>> {
   const uniq = [...new Set(ids.map(String).filter(Boolean))];
   const map = new Map<string, string>();
   if (!uniq.length) return map;
   const ph = uniq.map(() => '?').join(',');
-  const rows = all<{ id: string; name: string }>(
+  const rows = await all<{ id: string; name: string }>(
     `SELECT id, name FROM staff WHERE id IN (${ph})`,
     uniq
   );
@@ -479,12 +479,12 @@ function mapComment(r: Record<string, unknown>): DevPlanComment {
   };
 }
 
-function listCommentsForItems(itemIds: string[]): Map<string, DevPlanComment[]> {
+async function listCommentsForItems(itemIds: string[]): Promise<Map<string, DevPlanComment[]>> {
   const map = new Map<string, DevPlanComment[]>();
   const uniq = [...new Set(itemIds.map(String).filter(Boolean))];
   if (!uniq.length) return map;
   const ph = uniq.map(() => '?').join(',');
-  const rows = all<Record<string, unknown>>(
+  const rows = await all<Record<string, unknown>>(
     `SELECT * FROM dev_plan_comments
      WHERE item_id IN (${ph})
      ORDER BY datetime(created_at) ASC, rowid ASC`,
@@ -499,8 +499,8 @@ function listCommentsForItems(itemIds: string[]): Map<string, DevPlanComment[]> 
   return map;
 }
 
-export function listDevPlanStaffOptions(): Array<{ id: string; name: string; role: string }> {
-  return all<{ id: string; name: string; role: string }>(
+export async function listDevPlanStaffOptions(): Promise<Array<{ id: string; name: string; role: string }>> {
+  return await all<{ id: string; name: string; role: string }>(
     `SELECT id, name, IFNULL(role,'') AS role FROM staff
      WHERE IFNULL(is_active,1)=1
      ORDER BY name COLLATE NOCASE`
@@ -508,15 +508,15 @@ export function listDevPlanStaffOptions(): Array<{ id: string; name: string; rol
 }
 
 /** Сопоставить актора (в т.ч. системного админа) с id в staff. */
-export function resolveDevPlanStaffIdForActor(actor: {
+export async function resolveDevPlanStaffIdForActor(actor: {
   id?: string;
   name?: string;
   login?: string;
-} | null): string {
+} | null): Promise<string> {
   if (!actor) return '';
   const aid = String(actor.id || '').trim();
   if (aid && aid !== '__admin__') {
-    const row = get<{ id: string }>(
+    const row = await get<{ id: string }>(
       `SELECT id FROM staff WHERE id = ? AND IFNULL(is_active,1)=1`,
       [aid]
     );
@@ -524,12 +524,12 @@ export function resolveDevPlanStaffIdForActor(actor: {
   }
   const name = String(actor.name || '').trim();
   if (name) {
-    const byName = get<{ id: string }>(
+    const byName = await get<{ id: string }>(
       `SELECT id FROM staff WHERE name = ? AND IFNULL(is_active,1)=1 LIMIT 1`,
       [name]
     );
     if (byName?.id) return String(byName.id);
-    const like = get<{ id: string }>(
+    const like = await get<{ id: string }>(
       `SELECT id FROM staff WHERE name LIKE ? AND IFNULL(is_active,1)=1 LIMIT 1`,
       [`%${name.split(/\s+/)[0]}%`]
     );
@@ -537,7 +537,7 @@ export function resolveDevPlanStaffIdForActor(actor: {
   }
   const login = String(actor.login || '').trim();
   if (login) {
-    const byLogin = get<{ id: string }>(
+    const byLogin = await get<{ id: string }>(
       `SELECT id FROM staff
        WHERE IFNULL(is_active,1)=1
          AND (lower(login)=lower(?) OR lower(auth_login)=lower(?) OR lower(email)=lower(?))
@@ -550,21 +550,21 @@ export function resolveDevPlanStaffIdForActor(actor: {
 }
 
 /** Назначить одного ответственного на все работы плана. */
-export function assignAllDevPlanResponsible(staffIdRaw: string): {
+export async function assignAllDevPlanResponsible(staffIdRaw: string): Promise<{
   updated: number;
   staff_id: string;
   staff_name: string;
-} {
-  ensureDevPlanSchema();
+}> {
+  await ensureDevPlanSchema();
   const staffId = String(staffIdRaw || '').trim();
   if (!staffId) throw new Error('Укажите ответственного');
-  const staff = get<{ id: string; name: string }>(
+  const staff = await get<{ id: string; name: string }>(
     `SELECT id, name FROM staff WHERE id = ? AND IFNULL(is_active,1)=1`,
     [staffId]
   );
   if (!staff) throw new Error('Сотрудник не найден');
-  const before = get<{ c: number }>(`SELECT COUNT(*) AS c FROM dev_plan_items`)?.c || 0;
-  run(
+  const before = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM dev_plan_items`))?.c || 0;
+  await run(
     `UPDATE dev_plan_items
      SET responsible_staff_id = ?, updated_at = datetime('now')`,
     [staffId]
@@ -576,14 +576,14 @@ export function assignAllDevPlanResponsible(staffIdRaw: string): {
   };
 }
 
-export function listDevPlanItems(): DevPlanItem[] {
-  ensureDevPlanSchema();
-  const rows = all<Record<string, unknown>>(
+export async function listDevPlanItems(): Promise<DevPlanItem[]> {
+  await ensureDevPlanSchema();
+  const rows = await all<Record<string, unknown>>(
     `SELECT * FROM dev_plan_items
      ORDER BY block_sort ASC, sort_order ASC, datetime(start_date) ASC, title ASC`
   );
-  const names = staffNameMap(rows.map((r) => String(r.responsible_staff_id || '')));
-  const comments = listCommentsForItems(rows.map((r) => String(r.id || '')));
+  const names = await staffNameMap(rows.map((r) => String(r.responsible_staff_id || '')));
+  const comments = await listCommentsForItems(rows.map((r) => String(r.id || '')));
   return rows.map((r) => {
     const id = String(r.id || '');
     return {
@@ -609,11 +609,11 @@ export function listDevPlanItems(): DevPlanItem[] {
   });
 }
 
-function getDevPlanItem(id: string): DevPlanItem | null {
-  return listDevPlanItems().find((x) => x.id === id) || null;
+async function getDevPlanItem(id: string): Promise<DevPlanItem | null> {
+  return (await listDevPlanItems()).find((x) => x.id === id) || null;
 }
 
-export function createDevPlanItem(input: {
+export async function createDevPlanItem(input: {
   title: string;
   description?: string;
   result_plan?: string;
@@ -627,15 +627,15 @@ export function createDevPlanItem(input: {
   block_key?: string;
   block_title?: string;
   block_sort?: number;
-}): DevPlanItem {
-  ensureDevPlanSchema();
+}): Promise<DevPlanItem> {
+  await ensureDevPlanSchema();
   const title = String(input.title || '').trim();
   if (!title) throw new Error('Укажите название работы');
   const id = newGuid();
   const sort =
     input.sort_order != null && Number.isFinite(Number(input.sort_order))
       ? Math.floor(Number(input.sort_order))
-      : (get<{ c: number }>('SELECT COALESCE(MAX(sort_order),0)+10 AS c FROM dev_plan_items')?.c ??
+      : ((await get<{ c: number }>('SELECT COALESCE(MAX(sort_order),0)+10 AS c FROM dev_plan_items'))?.c ??
         10);
   const blockKey = String(input.block_key || BLOCK_SALES.key).trim() || BLOCK_SALES.key;
   const blockTitle = String(input.block_title || BLOCK_SALES.title).trim() || BLOCK_SALES.title;
@@ -643,7 +643,7 @@ export function createDevPlanItem(input: {
     input.block_sort != null && Number.isFinite(Number(input.block_sort))
       ? Math.floor(Number(input.block_sort))
       : BLOCK_SALES.sort;
-  run(
+  await run(
     `INSERT INTO dev_plan_items (
        id, block_key, block_title, block_sort,
        title, description, result_plan, result_fact, constraint_text,
@@ -666,12 +666,12 @@ export function createDevPlanItem(input: {
       sort,
     ]
   );
-  const row = getDevPlanItem(id);
+  const row = await getDevPlanItem(id);
   if (!row) throw new Error('Не удалось создать работу');
   return row;
 }
 
-function insertComment(input: {
+async function insertComment(input: {
   item_id: string;
   kind: string;
   body: string;
@@ -681,11 +681,11 @@ function insertComment(input: {
   new_end?: string;
   author_staff_id?: string;
   author_name?: string;
-}): DevPlanComment {
+}): Promise<DevPlanComment> {
   const id = newGuid();
   const body = String(input.body || '').trim();
   if (!body) throw new Error('Укажите текст комментария');
-  run(
+  await run(
     `INSERT INTO dev_plan_comments (
        id, item_id, kind, body, old_start, old_end, new_start, new_end,
        author_staff_id, author_name
@@ -703,12 +703,12 @@ function insertComment(input: {
       String(input.author_name || '').trim(),
     ]
   );
-  const row = get<Record<string, unknown>>(`SELECT * FROM dev_plan_comments WHERE id = ?`, [id]);
+  const row = await get<Record<string, unknown>>(`SELECT * FROM dev_plan_comments WHERE id = ?`, [id]);
   if (!row) throw new Error('Не удалось сохранить комментарий');
   return mapComment(row);
 }
 
-export function addDevPlanComment(
+export async function addDevPlanComment(
   itemIdRaw: string,
   input: {
     body: string;
@@ -716,25 +716,25 @@ export function addDevPlanComment(
     author_staff_id?: string;
     author_name?: string;
   }
-): { item: DevPlanItem; comment: DevPlanComment } {
-  ensureDevPlanSchema();
+): Promise<{ item: DevPlanItem; comment: DevPlanComment }> {
+  await ensureDevPlanSchema();
   const itemId = String(itemIdRaw || '').trim();
-  const cur = get('SELECT id FROM dev_plan_items WHERE id = ?', [itemId]);
+  const cur = await get('SELECT id FROM dev_plan_items WHERE id = ?', [itemId]);
   if (!cur) throw new Error('Работа не найдена');
-  const comment = insertComment({
+  const comment = await insertComment({
     item_id: itemId,
     kind: input.kind || 'note',
     body: input.body,
     author_staff_id: input.author_staff_id,
     author_name: input.author_name,
   });
-  run(`UPDATE dev_plan_items SET updated_at = datetime('now') WHERE id = ?`, [itemId]);
-  const item = getDevPlanItem(itemId);
+  await run(`UPDATE dev_plan_items SET updated_at = datetime('now') WHERE id = ?`, [itemId]);
+  const item = await getDevPlanItem(itemId);
   if (!item) throw new Error('Работа не найдена');
   return { item, comment };
 }
 
-export function updateDevPlanItem(
+export async function updateDevPlanItem(
   idRaw: string,
   patch: Partial<{
     title: string;
@@ -753,10 +753,10 @@ export function updateDevPlanItem(
     reschedule_reason: string;
   }>,
   author?: { id?: string; name?: string }
-): DevPlanItem {
-  ensureDevPlanSchema();
+): Promise<DevPlanItem> {
+  await ensureDevPlanSchema();
   const id = String(idRaw || '').trim();
-  const cur = get<{
+  const cur = await get<{
     id: string;
     start_date: string;
     end_date: string;
@@ -807,13 +807,13 @@ export function updateDevPlanItem(
   if (sets.length) {
     sets.push(`updated_at = datetime('now')`);
     params.push(id);
-    run(`UPDATE dev_plan_items SET ${sets.join(', ')} WHERE id = ?`, params);
+    await run(`UPDATE dev_plan_items SET ${sets.join(', ')} WHERE id = ?`, params);
   }
 
   if (datesChanged) {
     const from = `${oldStart || '—'}${oldEnd && oldEnd !== oldStart ? ' → ' + oldEnd : ''}`;
     const to = `${nextStart || '—'}${nextEnd && nextEnd !== nextStart ? ' → ' + nextEnd : ''}`;
-    insertComment({
+    await insertComment({
       item_id: id,
       kind: 'reschedule',
       body: `Перенос срока: ${from} → ${to}. ${reason}`,
@@ -825,33 +825,33 @@ export function updateDevPlanItem(
       author_name: author?.name,
     });
     if (!sets.length) {
-      run(`UPDATE dev_plan_items SET updated_at = datetime('now') WHERE id = ?`, [id]);
+      await run(`UPDATE dev_plan_items SET updated_at = datetime('now') WHERE id = ?`, [id]);
     }
   }
 
-  const row = getDevPlanItem(id);
+  const row = await getDevPlanItem(id);
   if (!row) throw new Error('Работа не найдена');
   return row;
 }
 
-export function deleteDevPlanItem(idRaw: string): void {
-  ensureDevPlanSchema();
+export async function deleteDevPlanItem(idRaw: string): Promise<void> {
+  await ensureDevPlanSchema();
   const id = String(idRaw || '').trim();
   if (!id) throw new Error('Не указан id');
-  const cur = get('SELECT id FROM dev_plan_items WHERE id = ?', [id]);
+  const cur = await get('SELECT id FROM dev_plan_items WHERE id = ?', [id]);
   if (!cur) throw new Error('Работа не найдена');
-  run(`DELETE FROM dev_plan_deps WHERE item_id = ? OR depends_on_id = ?`, [id, id]);
-  run(`DELETE FROM dev_plan_comments WHERE item_id = ?`, [id]);
-  run(`DELETE FROM dev_plan_items WHERE id = ?`, [id]);
+  await run(`DELETE FROM dev_plan_deps WHERE item_id = ? OR depends_on_id = ?`, [id, id]);
+  await run(`DELETE FROM dev_plan_comments WHERE item_id = ?`, [id]);
+  await run(`DELETE FROM dev_plan_items WHERE id = ?`, [id]);
 }
 
 /** Удалить все работы плана (комментарии и связи тоже). Сид не пересоздаёт — версия meta уже стоит. */
-export function clearAllDevPlanItems(): { deleted: number } {
-  ensureDevPlanSchema();
-  const n = get<{ c: number }>(`SELECT COUNT(*) AS c FROM dev_plan_items`)?.c || 0;
-  run(`DELETE FROM dev_plan_deps`);
-  run(`DELETE FROM dev_plan_comments`);
-  run(`DELETE FROM dev_plan_items`);
+export async function clearAllDevPlanItems(): Promise<{ deleted: number }> {
+  await ensureDevPlanSchema();
+  const n = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM dev_plan_items`))?.c || 0;
+  await run(`DELETE FROM dev_plan_deps`);
+  await run(`DELETE FROM dev_plan_comments`);
+  await run(`DELETE FROM dev_plan_items`);
   return { deleted: n };
 }
 

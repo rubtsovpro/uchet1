@@ -15,19 +15,19 @@ import { isBarcodePickToken } from './product-units.js';
 import { ensureCourierHandoffRun } from './sto-parts-courier.js';
 import { logStoTransferEvent } from './deal-doc-numbers.js';
 
-export function resolveStoRequestIdFromTask(task: {
+export async function resolveStoRequestIdFromTask(task: {
   stock_doc_id?: string;
   track_number?: string;
   comment?: string;
-}): string {
+}): Promise<string> {
   const a = String(task.stock_doc_id || '').trim();
   if (a && !a.includes('-00') && a.length > 8) {
-    const byId = get(`SELECT id FROM sto_transfer_requests WHERE id = ?`, [a]);
+    const byId = await get(`SELECT id FROM sto_transfer_requests WHERE id = ?`, [a]);
     if (byId) return a;
   }
   const b = String(task.track_number || '').trim();
   if (b) {
-    const byTrack = get(`SELECT id FROM sto_transfer_requests WHERE id = ?`, [b]);
+    const byTrack = await get(`SELECT id FROM sto_transfer_requests WHERE id = ?`, [b]);
     if (byTrack) return b;
   }
   return a || b || '';
@@ -40,20 +40,20 @@ function cleanSerials(raw: string[]): string[] {
 }
 
 /** Если есть экземпляры, а qty-остаток пуст — подтянуть баланс под единицы. */
-function ensureBalanceForMove(warehouseId: string, productId: string, qty: number, serials: string[]) {
+async function ensureBalanceForMove(warehouseId: string, productId: string, qty: number, serials: string[]) {
   const need = Math.max(1, Math.ceil(Number(qty) || 1));
   const have =
     Number(
-      get<{ qty: number }>(
+      (await get<{ qty: number }>(
         `SELECT IFNULL(qty,0) AS qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?`,
         [warehouseId, productId]
-      )?.qty || 0
+      ))?.qty || 0
     ) || 0;
   if (have + 0.0001 >= need) return;
   let units = 0;
   if (serials.length) {
     for (const serial of serials) {
-      const u = get(
+      const u = await get(
         `SELECT id FROM product_units
          WHERE product_id = ? AND lower(serial) = lower(?) AND status = 'in_stock'
            AND warehouse_id = ?
@@ -64,33 +64,33 @@ function ensureBalanceForMove(warehouseId: string, productId: string, qty: numbe
     }
   } else {
     units = Number(
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM product_units
          WHERE product_id = ? AND warehouse_id = ? AND status = 'in_stock'`,
         [productId, warehouseId]
-      )?.c || 0
+      ))?.c || 0
     );
   }
   if (units + 0.0001 >= need) {
-    applyStockDelta(warehouseId, productId, need - have);
+    await applyStockDelta(warehouseId, productId, need - have);
   }
 }
 
 /** Закрытие задания складу: перемещение (и при dest=СТО — списание). */
-export function executeStoPartsFromTask(input: {
+export async function executeStoPartsFromTask(input: {
   task_id: string;
   actor_id?: string;
-}): {
+}): Promise<{
   skipped?: string;
   transfer_doc_id?: string;
   out_doc_id?: string;
   sto_request_id?: string;
   dest_code?: string;
   courier_run_id?: string;
-} {
+}> {
   const taskId = String(input.task_id || '').trim();
   if (!taskId) throw new Error('Нет задания');
-  const task = get<{
+  const task = await get<{
     id: string;
     channel: string;
     deal_id: string;
@@ -102,9 +102,9 @@ export function executeStoPartsFromTask(input: {
   if (!task) throw new Error('Задание не найдено');
   if (String(task.channel) !== 'sto_parts') return { skipped: 'not_sto_parts' };
 
-  const reqId = resolveStoRequestIdFromTask(task);
+  const reqId = await resolveStoRequestIdFromTask(task);
   if (!reqId) throw new Error('Не найдено связанное «Задание на СТО»');
-  const req = getStoTransferRequest(reqId) as Record<string, unknown> | null;
+  const req = await getStoTransferRequest(reqId) as Record<string, unknown> | null;
   if (!req) throw new Error('Задание на СТО не найдено');
 
   const source = String(req.source || 'warehouse');
@@ -114,8 +114,8 @@ export function executeStoPartsFromTask(input: {
 
   const existingXfer = String(req.transfer_doc_id || '').trim();
   const existingOut = String(req.out_doc_id || '').trim();
-  const courierWh = courierWarehouseId();
-  const stoWh = stoWarehouseId();
+  const courierWh = await courierWarehouseId();
+  const stoWh = await stoWarehouseId();
   const destWh = String(req.dest_warehouse_id || '').trim() || stoWh;
   const toCourier = destWh === courierWh;
   const destCode = toCourier ? 'COURIER' : 'STO';
@@ -123,11 +123,11 @@ export function executeStoPartsFromTask(input: {
   if (existingXfer && (toCourier || existingOut)) {
     let courier_run_id = '';
     if (toCourier) {
-      courier_run_id = ensureCourierHandoffRun({
+      courier_run_id = (await ensureCourierHandoffRun({
         sto_request_id: reqId,
         warehouse_task_id: taskId,
         actor_id: input.actor_id,
-      }).id;
+      })).id;
     }
     return {
       transfer_doc_id: existingXfer,
@@ -151,7 +151,7 @@ export function executeStoPartsFromTask(input: {
     }))
     .filter((l) => l.product_id && l.qty > 0);
 
-  const taskLines = all<{ product_id: string; qty: number; dims_json: string }>(
+  const taskLines = await all<{ product_id: string; qty: number; dims_json: string }>(
     `SELECT product_id, qty, IFNULL(dims_json,'{}') AS dims_json
      FROM warehouse_task_lines WHERE task_id = ? AND IFNULL(product_id,'') != ''`,
     [taskId]
@@ -190,17 +190,17 @@ export function executeStoPartsFromTask(input: {
   }
   if (!lines.length) throw new Error('Нет позиций для перемещения / списания');
 
-  const mainWh = mainWarehouseId();
+  const mainWh = await mainWarehouseId();
   const dealId = String(req.deal_id || task.deal_id || '').trim();
   const num = String(req.number || task.number || '');
 
   for (const l of lines) {
-    ensureBalanceForMove(mainWh, l.product_id, l.qty, l.serials);
+    await ensureBalanceForMove(mainWh, l.product_id, l.qty, l.serials);
   }
 
   let transferId = existingXfer;
   if (!transferId) {
-    transferId = createDocument({
+    transferId = await createDocument({
       doc_type: 'transfer',
       warehouse_id: mainWh,
       warehouse_to_id: destWh,
@@ -216,7 +216,7 @@ export function executeStoPartsFromTask(input: {
 
   let outId = existingOut;
   if (!toCourier && !outId) {
-    outId = createDocument({
+    outId = await createDocument({
       doc_type: 'out',
       warehouse_id: stoWh,
       deal_id: dealId,
@@ -227,7 +227,7 @@ export function executeStoPartsFromTask(input: {
     });
   }
 
-  run(
+  await run(
     `UPDATE sto_transfer_requests
      SET transfer_doc_id = ?,
          out_doc_id = ?,
@@ -236,7 +236,7 @@ export function executeStoPartsFromTask(input: {
      WHERE id = ?`,
     [transferId, outId || '', reqId]
   );
-  run(
+  await run(
     `UPDATE sto_transfer_request_lines
      SET status = 'done'
      WHERE request_id = ? AND status = 'new'`,
@@ -244,7 +244,7 @@ export function executeStoPartsFromTask(input: {
   );
 
   const destName = toCourier ? 'Склад курьера' : 'СТО';
-  logStoTransferEvent({
+  await logStoTransferEvent({
     request_id: reqId,
     event: toCourier ? 'transferred_courier' : 'executed_sto',
     summary: `${num} · Основной → ${destName}`,
@@ -259,11 +259,11 @@ export function executeStoPartsFromTask(input: {
 
   let courier_run_id = '';
   if (toCourier) {
-    courier_run_id = ensureCourierHandoffRun({
+    courier_run_id = (await ensureCourierHandoffRun({
       sto_request_id: reqId,
       warehouse_task_id: taskId,
       actor_id: input.actor_id,
-    }).id;
+    })).id;
   }
 
   return {

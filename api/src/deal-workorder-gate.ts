@@ -39,13 +39,13 @@ export function dealNeedsWorkorderBeforePayment(
   return false;
 }
 
-export function getDealWorkorder(
+export async function getDealWorkorder(
   dealId: string
-): Record<string, unknown> | null {
+): Promise<Record<string, unknown> | null> {
   const id = String(dealId || '').trim();
   if (!id) return null;
   return (
-    (get(
+    (await get(
       `SELECT id, number, total, amount, car_plate, printed_at, created_at, status,
               IFNULL(checklist_json,'') AS checklist_json,
               IFNULL(template_id,'') AS template_id
@@ -57,10 +57,10 @@ export function getDealWorkorder(
   );
 }
 
-function workorderPdnOk(
+async function workorderPdnOk(
   workorder: Record<string, unknown> | null,
   dealId?: string
-): boolean {
+): Promise<boolean> {
   if (workorder) {
     const state = parseStoChecklistJson(workorder.checklist_json);
     if (state.checks.pdn) return true;
@@ -73,7 +73,7 @@ function workorderPdnOk(
       /* ignore */
     }
     try {
-      if (dealHasPdnSmsSigned(id)) return true;
+      if (await dealHasPdnSmsSigned(id)) return true;
     } catch {
       /* ignore */
     }
@@ -81,18 +81,18 @@ function workorderPdnOk(
   return false;
 }
 
-export function getDealWorkorderGate(
+export async function getDealWorkorderGate(
   deal: Record<string, unknown> | null | undefined
-): DealWorkorderGate {
+): Promise<DealWorkorderGate> {
   const required = dealNeedsWorkorderBeforePayment(deal);
   const dealId = String(deal?.id || '').trim();
-  const workorder = dealId ? getDealWorkorder(dealId) : null;
+  const workorder = dealId ? await getDealWorkorder(dealId) : null;
   const docs = resolveScenarioDocs(deal);
   const stsRequired = !!docs.sts;
   const has_plate = Boolean(String(workorder?.car_plate || deal?.car_plate || '').trim());
   const printed = Boolean(String(workorder?.printed_at || '').trim());
   const pdn_required = !!docs.pdn;
-  const pdn_ok = !pdn_required || workorderPdnOk(workorder, dealId);
+  const pdn_ok = !pdn_required || await workorderPdnOk(workorder, dealId);
   if (!required) {
     return {
       required: false,
@@ -174,15 +174,15 @@ export function getDealWorkorderGate(
   };
 }
 
-export function assertDealWorkorderReadyForPayment(
+export async function assertDealWorkorderReadyForPayment(
   deal: Record<string, unknown> | null | undefined
-): void {
-  const gate = getDealWorkorderGate(deal);
+): Promise<void> {
+  const gate = await getDealWorkorderGate(deal);
   if (!gate.ok && gate.error) throw new Error(gate.error);
 }
 
 /** Отметить печать ЗН / PDF и записать в историю заказа. */
-export function markSalesDocPrinted(
+export async function markSalesDocPrinted(
   docId: string,
   opts?: {
     actor?: import('./auth.js').Actor | null;
@@ -190,17 +190,17 @@ export function markSalesDocPrinted(
     actorName?: string;
     via?: string;
   }
-): { first: boolean; doc: Record<string, unknown> | null } {
+): Promise<{ first: boolean; doc: Record<string, unknown> | null }> {
   const id = String(docId || '').trim();
   if (!id) return { first: false, doc: null };
-  const doc = get(
+  const doc = await get(
     `SELECT id, doc_type, number, total, amount, deal_id, printed_at FROM sales_docs WHERE id = ?`,
     [id]
   ) as Record<string, unknown> | undefined;
   if (!doc) return { first: false, doc: null };
   const wasPrinted = Boolean(String(doc.printed_at || '').trim());
   const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
-  run(`UPDATE sales_docs SET printed_at = ? WHERE id = ?`, [now, id]);
+  await run(`UPDATE sales_docs SET printed_at = ? WHERE id = ?`, [now, id]);
   if (!wasPrinted && String(doc.doc_type || '') === 'workorder') {
     const total = Number(doc.total) || Number(doc.amount) || 0;
     const num = String(doc.number || '').trim() || id.slice(0, 8);
@@ -230,7 +230,7 @@ export function markSalesDocPrinted(
             isSystemAdmin: false,
           } satisfies import('./auth.js').Actor)
         : null);
-    writeAudit({
+    await writeAudit({
       action: 'sales_doc.print',
       entity: 'sales_doc',
       entityId: id,

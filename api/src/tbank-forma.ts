@@ -45,8 +45,8 @@ async function runTbankFormaPostPaidHooks(opts: {
   return { amo, automation };
 }
 
-function dealHasFullFiscal(dealId: string): boolean {
-  const row = get<{ c: number }>(
+async function dealHasFullFiscal(dealId: string): Promise<boolean> {
+  const row = await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM fiscal_receipts
      WHERE deal_id = ? AND kind = 'full'
        AND lower(IFNULL(status,'')) NOT IN ('error','cancelled','canceled')`,
@@ -68,7 +68,7 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
     return { ok: false, error: 'no_status', deal_id: dealId, action: 'ignored' as const };
   }
 
-  const deal = get<{ id: string; name?: string; paid?: number; payment_status?: string }>(
+  const deal = await get<{ id: string; name?: string; paid?: number; payment_status?: string }>(
     `SELECT id, name, paid, payment_status FROM crm_deals WHERE id = ?`,
     [dealId]
   );
@@ -81,7 +81,7 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
 
   // Идемпотентность по событию Forma
   const eventKey = `forma:${orderRaw}:${status}:${committed ? '1' : '0'}`;
-  const already = get<{ id: string; amount?: number }>(
+  const already = await get<{ id: string; amount?: number }>(
     `SELECT id, amount FROM deal_payments
      WHERE deal_id = ? AND IFNULL(meta_json,'') LIKE ?
      LIMIT 1`,
@@ -89,7 +89,7 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
   );
   if (already?.id && (status === 'signed' || status === 'approved')) {
     // Повторный signed без чека — добить TG / Sheets / фискал
-    if (status === 'signed' && !dealHasFullFiscal(dealId)) {
+    if (status === 'signed' && !await dealHasFullFiscal(dealId)) {
       const payAmount = Number(already.amount) > 0 ? Number(already.amount) : amount;
       const hooks = await runTbankFormaPostPaidHooks({
         dealId,
@@ -116,7 +116,7 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
   }
 
   if (status === 'approved') {
-    const n = notifyDealResponsible({
+    const n = await notifyDealResponsible({
       deal_id: dealId,
       kind: 'tbank_approved',
       title: 'Рассрочка одобрена',
@@ -133,7 +133,7 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
   }
 
   if (status === 'rejected' || status === 'canceled' || status === 'cancelled') {
-    const n = notifyDealResponsible({
+    const n = await notifyDealResponsible({
       deal_id: dealId,
       kind: 'tbank_rejected',
       title: status === 'rejected' ? 'Рассрочка отклонена' : 'Рассрочка отменена',
@@ -165,7 +165,7 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
   const markPaid = committed || forceOnSigned;
 
   if (!markPaid) {
-    const n = notifyDealResponsible({
+    const n = await notifyDealResponsible({
       deal_id: dealId,
       kind: 'tbank_signed',
       title: 'Рассрочка подписана',
@@ -184,7 +184,7 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
   let payAmount = amount;
   if (!(payAmount > 0)) {
     const price = Number(
-      get<{ price?: number }>(`SELECT price FROM crm_deals WHERE id = ?`, [dealId])?.price
+      (await get<{ price?: number }>(`SELECT price FROM crm_deals WHERE id = ?`, [dealId]))?.price
     );
     payAmount = price > 0 ? price : 0;
   }
@@ -202,7 +202,7 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
     term: payload.term || null,
     loan_number: payload.loan_number || null,
   };
-  run(
+  await run(
     `INSERT INTO deal_payments (
        id, deal_id, kind, amount, status, qrc_id, payload, image_png_base64, account, purpose, meta_json
      ) VALUES (?, ?, 'tbank_installment', ?, 'paid', '', '', '', '', ?, ?)`,
@@ -210,26 +210,26 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
   );
 
   try {
-    markPaymentLinkPaidForDeal(dealId, 'tbank_forma');
+    await markPaymentLinkPaidForDeal(dealId, 'tbank_forma');
   } catch {
     /* */
   }
-  const synced = syncDealPaidStatus(dealId);
+  const synced = await syncDealPaidStatus(dealId);
   let warehouseTask: unknown = null;
   if (synced.paid) {
     try {
-      warehouseTask = ensureWarehouseTaskAfterPaid({ dealId });
+      warehouseTask = await ensureWarehouseTaskAfterPaid({ dealId });
     } catch {
       warehouseTask = null;
     }
     try {
-      ensureOrderDocChain(dealId);
+      await ensureOrderDocChain(dealId);
     } catch {
       /* */
     }
   }
 
-  const n = notifyDealResponsible({
+  const n = await notifyDealResponsible({
     deal_id: dealId,
     kind: 'deal_paid_tbank',
     title: 'Сделка оплачена · рассрочка',
@@ -263,8 +263,8 @@ export async function applyTbankFormaWebhook(payload: Record<string, unknown>) {
 }
 
 /** Диагностика: последние платежи Forma по сделке. */
-export function listTbankFormaPayments(dealId: string) {
-  return all(
+export async function listTbankFormaPayments(dealId: string) {
+  return await all(
     `SELECT id, amount, status, purpose, meta_json, created_at
      FROM deal_payments
      WHERE deal_id = ? AND kind = 'tbank_installment'

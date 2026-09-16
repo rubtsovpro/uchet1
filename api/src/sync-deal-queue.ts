@@ -48,7 +48,7 @@ async function pump(): Promise<void> {
 }
 
 /** Полный export через amo1c (новая сделка / нет в WMS / нужны позиции). */
-export function enqueueSyncDealFromAmo1c(dealId: string): void {
+export async function enqueueSyncDealFromAmo1c(dealId: string): Promise<void> {
   if (MAX_CONCURRENT <= 0) return;
   const id = String(dealId || '')
     .replace(/\D/g, '')
@@ -56,7 +56,7 @@ export function enqueueSyncDealFromAmo1c(dealId: string): void {
   if (!id || seen.has(id)) return;
   seen.add(id);
   pending.push(id);
-  void pump();
+  void await pump();
 }
 
 export function syncDealQueueStats(): { pending: number; running: number; max: number } {

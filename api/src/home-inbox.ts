@@ -60,10 +60,10 @@ function canSeeCourier(actor: HomeInboxActor): boolean {
   return canAccessSection(actor, 'delivery');
 }
 
-function dealOrgCompanyId(dealId: string): string {
+async function dealOrgCompanyId(dealId: string): Promise<string> {
   const id = String(dealId || '').trim();
   if (!id) return '';
-  const row = get<{ org_company_id?: string }>(
+  const row = await get<{ org_company_id?: string }>(
     `SELECT IFNULL(org_company_id,'') AS org_company_id FROM crm_deals WHERE id = ?`,
     [id]
   );
@@ -71,12 +71,12 @@ function dealOrgCompanyId(dealId: string): string {
 }
 
 /** Филиал выбран в шапке — оставляем только задачи сделок этого контура. */
-function matchesCompany(dealId: string | undefined, companyId: string): boolean {
+async function matchesCompany(dealId: string | undefined, companyId: string): Promise<boolean> {
   const co = String(companyId || '').trim();
   if (!co) return true;
   const did = String(dealId || '').trim();
   if (!did) return false;
-  return dealOrgCompanyId(did) === co;
+  return await dealOrgCompanyId(did) === co;
 }
 
 function kindTitlePhoto(kind: string): string {
@@ -107,23 +107,23 @@ function courierStatusRu(s: string): string {
   return m[s] || s || '';
 }
 
-export function buildHomeInbox(
+export async function buildHomeInbox(
   actor: HomeInboxActor,
   opts?: { companyId?: string }
-): {
+): Promise<{
   groups: HomeInboxGroup[];
   total: number;
   company_id: string;
-} {
+}> {
   const companyId = String(opts?.companyId || '').trim();
   const groups: HomeInboxGroup[] = [];
 
   if (canSeePhoto(actor)) {
-    const photos = listOpenCarPhotoTasks(80)
-      .filter((t) => matchesCompany(t.deal_id, companyId))
+    const photos = await Promise.all((await listOpenCarPhotoTasks(80))
+      .filter(async (t) => await matchesCompany(t.deal_id, companyId))
       .slice(0, 40)
-      .map((t) => {
-        const deal = getDeal(t.deal_id) as Record<string, unknown> | null;
+      .map(async (t) => {
+        const deal = await getDeal(t.deal_id) as Record<string, unknown> | null;
         const fio =
           String(t.buyer_name || '').trim() ||
           resolvePersonDocFio(deal) ||
@@ -142,9 +142,9 @@ export function buildHomeInbox(
           status: 'open',
           created_at: t.created_at,
           deal_id: t.deal_id,
-          org_company_id: dealOrgCompanyId(t.deal_id),
+          org_company_id: await dealOrgCompanyId(t.deal_id),
         };
-      });
+      }));
     groups.push({
       id: 'photo',
       title: 'Фото приёмки',
@@ -153,13 +153,13 @@ export function buildHomeInbox(
   }
 
   if (canSeeWarehouse(actor)) {
-    const open = listTasks({ limit: 100 }).filter((r) => {
+    const open = (await listTasks({ limit: 100 })).filter(async (r) => {
       const st = String((r as { status?: string }).status || '');
       if (!(st === 'new' || st === 'picking' || st === 'packed' || st === 'ready')) return false;
       const dealId = String((r as { deal_id?: string }).deal_id || '').trim();
-      return matchesCompany(dealId, companyId);
+      return await matchesCompany(dealId, companyId);
     });
-    const items: HomeInboxItem[] = open.slice(0, 40).map((r) => {
+    const items: HomeInboxItem[] = await Promise.all(open.slice(0, 40).map(async (r) => {
       const row = r as Record<string, unknown>;
       const num = String(row.number || row.id || '');
       const buyer = String(row.buyer_name || '').trim();
@@ -183,9 +183,9 @@ export function buildHomeInbox(
         status: st,
         created_at: String(row.created_at || ''),
         deal_id: dealId || undefined,
-        org_company_id: dealId ? dealOrgCompanyId(dealId) : '',
+        org_company_id: dealId ? await dealOrgCompanyId(dealId) : '',
       };
-    });
+    }));
     groups.push({
       id: 'warehouse',
       title: 'Склад · перемещения / задания',
@@ -194,15 +194,15 @@ export function buildHomeInbox(
   }
 
   if (canSeeCourier(actor)) {
-    const runs = listCourierRuns({
+    const runs = (await listCourierRuns({
       scope: 'active',
       limit: 80,
       courier_staff_id: isAdmin(actor) ? undefined : String(actor?.id || ''),
-    }).items.filter((r) => {
+    })).items.filter(async (r) => {
       const dealId = String((r as { deal_id?: string }).deal_id || '').trim();
-      return matchesCompany(dealId, companyId);
+      return await matchesCompany(dealId, companyId);
     });
-    const items: HomeInboxItem[] = runs.slice(0, 40).map((r) => {
+    const items: HomeInboxItem[] = await Promise.all(runs.slice(0, 40).map(async (r) => {
       const row = r as Record<string, unknown>;
       const st = String(row.status || 'new');
       const buyer = String(row.buyer_name || row.deal_name || '').trim();
@@ -223,9 +223,9 @@ export function buildHomeInbox(
         status: st,
         created_at: String(row.created_at || ''),
         deal_id: dealId || undefined,
-        org_company_id: dealId ? dealOrgCompanyId(dealId) : '',
+        org_company_id: dealId ? await dealOrgCompanyId(dealId) : '',
       };
-    });
+    }));
     groups.push({
       id: 'courier',
       title: 'Курьер',

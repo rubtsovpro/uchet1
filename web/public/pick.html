@@ -11,7 +11,7 @@
   <title>Склад · задачи · Учёт №1</title>
   <!-- pick-ui rev=pick-production-nom-check-20260903 -->
   <script>
-    window.__PICK_UI_REV = 'pc76';
+    window.__PICK_UI_REV = 'pc93';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -1812,6 +1812,31 @@
       width: 88px;
       max-width: 88px;
     }
+    .prod-put-to {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .prod-put-to input.handoff-route-from {
+      flex: 0 0 auto;
+      width: auto;
+      min-width: 7.5em;
+      max-width: 11em;
+      cursor: default;
+      opacity: 1;
+      color: var(--text);
+      background: color-mix(in srgb, var(--muted, #6b7280) 10%, var(--card));
+      border-color: var(--line);
+      font-weight: 700;
+      pointer-events: none;
+    }
+    .prod-put-to .return-cell-select {
+      flex: 1 1 120px;
+      min-width: 112px;
+      max-width: 220px;
+    }
     .prod-result-tbl .prod-del {
       width: 44px;
       text-align: center;
@@ -1848,8 +1873,10 @@
     }
     .prod-where.is-ok { color: #166534; }
     .prod-where.is-bad { color: #b91c1c; font-weight: 600; }
+    .prod-where.is-fact { color: #9a3412; }
     .prod-where b { color: #1e40af; }
     .prod-where.is-ok b { color: #166534; }
+    .prod-where.is-fact b { color: #c2410c; }
     .prod-where.is-bad b { color: #991b1b; }
     .lines li {
       display: flex;
@@ -2834,7 +2861,8 @@
     let mainCellRacksLoading = null;
     /** Черновик формы результата производства: taskId -> lines[] */
     let prodResultDrafts = {};
-    let prodCardsBound = false;
+    // Обработчики «+ деталь» / готово — один раз на #prod-cards (dataset.prodActionsBound).
+    // Раньше флаг сбрасывали при каждом render → N слушателей → N новых строк за клик.
     /** @type {Map<string, { stamp: string }>} */
     let prodCardsCache = new Map();
     /** deal_id → pending stock return (СТО → Основной) */
@@ -2921,30 +2949,52 @@
     }
 
     async function api(path, opts) {
+      opts = opts || {};
+      const external = opts.signal;
       const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const t = ctrl ? setTimeout(() => ctrl.abort(), 25000) : 0;
+      const onExtAbort = () => {
+        try {
+          if (ctrl) ctrl.abort();
+        } catch (_) {}
+      };
+      if (external) {
+        if (external.aborted) onExtAbort();
+        else external.addEventListener('abort', onExtAbort, { once: true });
+      }
       try {
-      const res = await fetch('/api' + path, {
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-          signal: ctrl ? ctrl.signal : undefined,
-        ...opts,
-      });
-      if (res.status === 401) {
+        const { signal: _ignoreSignal, quiet: _quiet, ...rest } = opts;
+        const res = await fetch('/api' + path, {
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          ...rest,
+          signal: ctrl ? ctrl.signal : external || undefined,
+        });
+        if (res.status === 401) {
           const next = (location.pathname || '/pick') + (location.search || '');
           if (!location.pathname.startsWith('/login')) {
             location.replace('/login?next=' + encodeURIComponent(next));
           }
-        throw new Error('login');
-      }
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || res.statusText);
-      return data;
+          throw new Error('login');
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
       } catch (e) {
-        if (e && e.name === 'AbortError') throw new Error('Нет ответа сервера (таймаут). Проверьте Wi‑Fi / интернет.');
+        if (e && e.name === 'AbortError') {
+          if (external && external.aborted) {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            throw err;
+          }
+          throw new Error(
+            'Сервер не ответил вовремя (перегрузка или перезапуск). Обновите страницу и повторите — это не Wi‑Fi.'
+          );
+        }
         throw e;
       } finally {
         if (t) clearTimeout(t);
+        if (external) external.removeEventListener('abort', onExtAbort);
       }
     }
 
@@ -3323,11 +3373,9 @@
              </div>`
           : '';
       const sendTitle =
-        isProduction && t.channel === 'production_send'
-          ? '<div class="prod-send-title">Уходит на производство</div>'
-          : isProduction && t.channel === 'production_receive'
-            ? '<div class="prod-send-title">Какие детали после производства получились</div>'
-        : '';
+        isProduction && t.channel === 'production_receive'
+          ? '<div class="prod-send-title">Какие детали после производства получились</div>'
+          : '';
       const taskNum = String(t.number || t.barcode || '').trim() || '—';
       const deal = t.deal && typeof t.deal === 'object' ? t.deal : {};
       const resp =
@@ -3436,8 +3484,12 @@
         name: l.name,
         qty: l.qty,
         code: l.code || '',
-        cell_code: l.cell_code || '',
+        cell_code: l.cell_code || l.lot_cell_code || '',
         product_id: l.product_id || '',
+        master_sku: l.master_sku || l.sku || '',
+        fact_sku: l.fact_sku || '',
+        supplier: l.supplier || '',
+        lot_cell_code: l.lot_cell_code || l.cell_code || '',
       }));
     }
 
@@ -4286,11 +4338,23 @@
     }
 
     function productionOpenCount() {
-      const open = Array.isArray(board && board.open) ? board.open : [];
-      const fromBoard = open.filter(isProductionTask).length;
       const atN = Array.isArray(prodAtJobs) ? prodAtJobs.length : 0;
       const sendN = Array.isArray(prodSendJobs) ? prodSendJobs.length : 0;
       const waitN = Array.isArray(prodWaitReceiveJobs) ? prodWaitReceiveJobs.length : 0;
+      const siteJobIds = new Set();
+      for (const list of [prodAtJobs, prodSendJobs, prodWaitReceiveJobs]) {
+        for (const j of list || []) {
+          const id = String(j && j.id || '').trim();
+          if (id) siteJobIds.add(id);
+        }
+      }
+      const open = Array.isArray(board && board.open) ? board.open : [];
+      const fromBoard = open.filter((t) => {
+        if (!isProductionTask(t)) return false;
+        const jid = String(t.stock_doc_id || '').trim();
+        if (siteJobIds.size) return siteJobIds.has(jid);
+        return String(t.pick_site || '') === pickSite;
+      }).length;
       // board уже содержит await_send/receive tasks — не двойной счёт, если open непустой
       if (fromBoard > 0) return fromBoard + atN + waitN;
       return sendN + atN + waitN;
@@ -4321,7 +4385,7 @@
         created_at: j.updated_at || j.created_at || '',
         route_from: 'Производство',
         route_to: 'Основной',
-        title: j.deal_id ? 'Заказ №' + j.deal_id : j.number || 'Производство',
+        title: '',
       };
     }
 
@@ -4353,7 +4417,7 @@
         created_at: j.updated_at || j.created_at || '',
         route_from: 'Основной',
         route_to: 'Производство',
-        title: j.deal_id ? 'Заказ №' + j.deal_id : j.number || 'Производство',
+        title: '',
       };
     }
 
@@ -4385,7 +4449,7 @@
         created_at: j.updated_at || j.created_at || '',
         route_from: 'Производство',
         route_to: 'Основной',
-        title: j.deal_id ? 'Заказ №' + j.deal_id : j.number || 'Производство',
+        title: '',
       };
     }
 
@@ -4413,13 +4477,27 @@
         rows
           .map((l) => {
             const name = String(l.name || l.sku || '—');
-            const sku = String(l.sku || '').trim();
-            const cell = String(l.cell_code || '').trim();
+            const master = String(l.master_sku || l.sku || l.article || '').trim();
+            const fact = String(l.fact_sku || '').trim() || master;
+            const supplier = String(l.supplier || '').trim();
+            const cell = String(
+              l.lot_cell_code || l.cell_code || l.cells_label || ''
+            ).trim();
+            const lotBits = [];
+            if (master) lotBits.push('Мастер: <b>' + esc(master) + '</b>');
+            if (fact) lotBits.push('Факт: <b>' + esc(fact) + '</b>');
+            if (supplier) lotBits.push('Поставщик: <b>' + esc(supplier) + '</b>');
+            if (cell) lotBits.push('Ячейка: <b>' + esc(cell) + '</b>');
             return (
               '<tr><td>' +
               esc(name) +
-              (sku ? '<div class="muted mono">' + esc(sku) + '</div>' : '') +
-              (cell ? '<div class="muted">яч. ' + esc(cell) + '</div>' : '') +
+              (lotBits.length
+                ? '<div class="prod-lot-meta" style="margin-top:4px;font-size:13px;line-height:1.45">' +
+                  lotBits.join(' · ') +
+                  '</div>'
+                : master
+                  ? '<div class="muted mono">' + esc(master) + '</div>'
+                  : '') +
               '</td><td class="qty-ok">×' +
               esc(l.qty != null ? l.qty : 1) +
               '</td></tr>'
@@ -4499,7 +4577,37 @@
       return pickMainCellSelectHtml(selectedRaw, 'data-prod-cell');
     }
 
-    function productionResultRowHtml(l, idx) {
+    /** Склад приёмки после производства — как в route-bar исходящего (Основной). */
+    function productionPutWarehouseName(t) {
+      const atProd =
+        String((t && t.production_phase) || (t && t.channel) || '') === 'at_production' ||
+        String((t && t.channel) || '') === 'production_at';
+      const waitReceive =
+        String((t && t.production_phase) || '') === 'await_receive' ||
+        String((t && t.channel) || '') === 'production_wait_receive';
+      const from = String(
+        (t && t.route_from) || (atProd || waitReceive ? 'Производство' : 'Основной')
+      ).trim();
+      const to = String(
+        (t && t.route_to) || (atProd || waitReceive ? 'Основной' : 'Производство')
+      ).trim();
+      // Кладём на тот же склад, откуда ушло в исходящем (Основной).
+      return from === 'Производство' ? to || 'Основной' : from || 'Основной';
+    }
+
+    function productionPutCellHtml(selectedRaw, warehouseName) {
+      const wh = String(warehouseName || 'Основной').trim() || 'Основной';
+      return (
+        '<div class="prod-put-to">' +
+        '<input type="text" class="handoff-route-from" value="' +
+        esc(wh) +
+        '" disabled readonly tabindex="-1" aria-label="Склад приёмки" title="Склад фиксирован — менять нельзя" />' +
+        prodCellSelectHtml(selectedRaw) +
+        '</div>'
+      );
+    }
+
+    function productionResultRowHtml(l, idx, warehouseName) {
       const sku = String((l && l.sku) || '');
       const qty = l && l.qty != null ? l.qty : 1;
       const cell = String((l && l.cell_code) || '');
@@ -4507,14 +4615,14 @@
         '<tr data-prod-result-row="' +
         idx +
         '">' +
-        '<td><input type="text" data-prod-sku placeholder="Артикул детали" value="' +
+        '<td><input type="text" data-prod-sku placeholder="Мастер-артикул" value="' +
         esc(sku) +
-        '" autocomplete="off" /></td>' +
+        '" autocomplete="off" title="Результат производства — только мастер (не номер на складе / факт)" /></td>' +
         '<td class="prod-qty"><input type="number" min="0.001" step="any" data-prod-qty placeholder="Кол-во" value="' +
         esc(qty) +
         '" /></td>' +
         '<td>' +
-        prodCellSelectHtml(cell) +
+        productionPutCellHtml(cell, warehouseName) +
         '</td>' +
         '<td class="prod-del"><button type="button" data-prod-row-del title="Удалить строку">×</button></td>' +
         '</tr>' +
@@ -4530,25 +4638,39 @@
       const taskId = String((t && t.id) || '').trim();
       const draft = taskId && Array.isArray(prodResultDrafts[taskId]) ? prodResultDrafts[taskId] : null;
       const produce = Array.isArray(t.production_produce) ? t.production_produce : [];
+      const putWh = productionPutWarehouseName(t);
       const seed =
         draft && draft.length
           ? draft
           : produce.length
             ? produce
             : [{ sku: '', qty: 1, cell_code: '', name: '' }];
-      const rows = seed.map((l, idx) => productionResultRowHtml(l, idx)).join('');
+      const rows = seed.map((l, idx) => productionResultRowHtml(l, idx, putWh)).join('');
       return (
-        '<div class="prod-result">' +
+        '<div class="prod-result" data-prod-put-wh="' +
+        esc(putWh) +
+        '">' +
         '<div class="prod-result-title">Какие детали после производства получились</div>' +
-        '<p class="muted" style="margin:0 0 6px;font-size:12px">Артикул должен быть в номенклатуре. Ячейка — по желанию («— без ячейки —»).</p>' +
+        '<p class="muted" style="margin:0 0 6px;font-size:12px">Результат — только <b>мастер</b> (не «номер на складе / факт»). Списать можно и с факта. Ячейка на Основном — по желанию.</p>' +
         '<table class="handoff-lines-tbl prod-result-tbl"><thead><tr>' +
-        '<th>Артикул</th><th>Кол-во</th><th>Ячейка</th><th></th>' +
+        '<th>Мастер</th><th>Кол-во</th><th>Склад · ячейка</th><th></th>' +
         '</tr></thead><tbody data-prod-result-form>' +
         rows +
         '</tbody></table>' +
         '<button type="button" class="prod-result-add" data-prod-row-add>+ деталь</button>' +
         '</div>'
       );
+    }
+
+    function refreshProdCellSelects(root) {
+      if (!root || !Array.isArray(mainCellRacks)) return;
+      root.querySelectorAll('[data-prod-cell]').forEach((sel) => {
+        const selected = String(sel.value || sel.getAttribute('data-prod-cell') || '—').trim();
+        const wrap = document.createElement('div');
+        wrap.innerHTML = pickMainCellSelectHtml(selected, 'data-prod-cell');
+        const next = wrap.firstElementChild;
+        if (next && sel.parentNode) sel.replaceWith(next);
+      });
     }
 
     function snapshotProductionResultDrafts() {
@@ -4576,6 +4698,40 @@
       });
     }
 
+    function productionDealTitle(t, deal, dealId) {
+      const id = String(dealId || (t && t.deal_id) || '').trim();
+      // Только название сделки (Amo / crm_deals.name). Не брать товар из lines / t.name.
+      const candidates = [
+        deal && deal.name,
+        deal && deal.title,
+        t && t.deal_name,
+        t && t.deal && t.deal.name,
+        t && t.deal && t.deal.title,
+        // у production_send в buyer_name часто лежит текст названия сделки из Amo
+        t && t.buyer_name,
+      ];
+      for (let i = 0; i < candidates.length; i++) {
+        const fromDeal = String(candidates[i] || '')
+          .replace(/[ \t]+/g, ' ')
+          .replace(/\r\n/g, '\n')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+        if (!fromDeal) continue;
+        if (/^заказ\s*№/i.test(fromDeal)) continue;
+        if (isGenericAmoDealName(fromDeal.replace(/\s+/g, ' '), id)) continue;
+        return fromDeal;
+      }
+      const buyer = String(
+        (deal && (deal.buyer_name || deal.company_name)) ||
+          (t && t.deal && (t.deal.buyer_name || t.deal.company_name)) ||
+          ''
+      ).trim();
+      if (id && buyer && !/^заказ\s*№/i.test(buyer) && !/→|⇒|производство/i.test(buyer)) {
+        return 'Заказ №' + id + ' · ' + buyer;
+      }
+      return id ? 'Заказ №' + id : 'Производство';
+    }
+
     function productionCardHtml(t) {
       const id = String(t.id || '').trim();
       const jobId = String(t.stock_doc_id || '').trim();
@@ -4596,13 +4752,11 @@
       ).trim() || 'Производство';
       const consume = Array.isArray(t.lines) ? t.lines : [];
       const deal = t.deal && typeof t.deal === 'object' ? t.deal : null;
-      const kindLbl = waitReceive ? 'Ждёт склад' : 'Произвести';
-      // buyer_name у production_send раньше писали как маршрут — не использовать как шапку
-      const title =
-        String((deal && (deal.title || deal.name)) || '').trim() ||
-        String(t.title || t.name || '').trim() ||
-        handoffDealTitle(deal, dealId) ||
-        (dealId ? 'Заказ №' + dealId : 'Производство');
+      const kindFromJob = String(t.production_kind_label || t.kind_label || '').trim();
+      const kindLbl = waitReceive
+        ? 'Ждёт склад'
+        : kindFromJob || 'Произвести';
+      const title = productionDealTitle(t, deal, dealId);
       const routeFake = {
         is_to_sto: true,
         warehouse_name: from,
@@ -4614,11 +4768,6 @@
         : atProd
           ? '<span class="handoff-reserve-badge" style="background:#fef3c7;color:#92400e">В производстве</span>'
           : '<span class="handoff-reserve-badge" style="background:#dbeafe;color:#1e40af">На производство</span>';
-      const sendTitle = waitReceive
-        ? '<div class="prod-send-title">Готово · ждёт приёмку на Основной (склад · /pick)</div>'
-        : atProd
-          ? '<div class="prod-send-title">Уже на участке · что ушло</div>'
-          : '<div class="prod-send-title">Уходит на производство</div>';
       const printBtn = atProd || waitReceive
         ? ''
         : '<div class="handoff-actionbar-secondary">' +
@@ -4653,7 +4802,7 @@
         '>' +
         handoffRouteBarHtml(routeFake) +
         '<div class="handoff-head">' +
-        '<div class="handoff-head-main"><strong>' +
+        '<div class="handoff-head-main"><strong style="white-space:pre-line">' +
         esc(title) +
         '</strong> ' +
         badge +
@@ -4668,7 +4817,6 @@
         (num ? (when || dealId ? ' · ' : '') + esc(num) : '') +
         '</div></div></div>' +
         stopBanner +
-        sendTitle +
         productionLinesTableHtml(consume) +
         (waitReceive
           ? ''
@@ -4691,12 +4839,25 @@
       const rows = article.querySelectorAll('[data-prod-result-row]');
       const out = [];
       rows.forEach((row) => {
-        const sku = String((row.querySelector('[data-prod-sku]') || {}).value || '').trim();
+        const skuEl = row.querySelector('[data-prod-sku]');
+        const rawSku = String((skuEl && skuEl.value) || '').trim();
+        const masterSku = String(
+          (skuEl && skuEl.getAttribute('data-resolved-master')) || rawSku
+        ).trim();
+        const productId = String(
+          (skuEl && skuEl.getAttribute('data-resolved-product-id')) || ''
+        ).trim();
         const qty = Number((row.querySelector('[data-prod-qty]') || {}).value || 0);
         const cellEl = row.querySelector('[data-prod-cell]');
         const cell = String((cellEl && cellEl.value) || '').trim();
-        if (!sku && !cell && !(qty > 0)) return;
-        out.push({ sku, qty: qty > 0 ? qty : 1, cell_code: cell });
+        if (!rawSku && !cell && !(qty > 0)) return;
+        out.push({
+          sku: masterSku || rawSku,
+          fact_sku: rawSku && masterSku && rawSku !== masterSku ? rawSku : '',
+          product_id: productId,
+          qty: qty > 0 ? qty : 1,
+          cell_code: cell,
+        });
       });
       return out;
     }
@@ -4710,67 +4871,97 @@
         (article && article.querySelector('[data-prod-where="' + idx + '"]')) ||
         null;
       if (!whereEl) return { ok: false, sku };
-      whereEl.classList.remove('is-ok', 'is-bad');
+      whereEl.classList.remove('is-ok', 'is-bad', 'is-fact');
       whereEl.removeAttribute('data-nom');
+      whereEl.removeAttribute('data-product-id');
+      whereEl.removeAttribute('data-kind');
+      whereEl.removeAttribute('data-master-sku');
+      if (skuInput) {
+        skuInput.removeAttribute('data-resolved-master');
+        skuInput.removeAttribute('data-resolved-product-id');
+      }
       if (sku.length < 2) {
         whereEl.textContent = '';
         return { ok: false, sku };
       }
       whereEl.textContent = 'Проверяю номенклатуру…';
+      if (row._skuAbort) {
+        try {
+          row._skuAbort.abort();
+        } catch (_) {}
+      }
+      row._skuAbort =
+        typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const seq = (row._skuSeq = (row._skuSeq || 0) + 1);
       try {
-        const r = await api(
-          '/products?q=' + encodeURIComponent(sku) + '&limit=20&archived=0'
+        const hit = await api(
+          '/products/resolve-production-sku?q=' + encodeURIComponent(sku),
+          { quiet: true, signal: row._skuAbort ? row._skuAbort.signal : undefined }
         );
-        const items = Array.isArray(r.items)
-          ? r.items
-          : Array.isArray(r.rows)
-            ? r.rows
-            : Array.isArray(r)
-              ? r
-              : [];
-        const q = sku.toLowerCase();
-        const qBase = q.replace(/@.*$/, '');
-        const scored = items
-          .map((it) => {
-            const s = String(it.sku || '')
-              .trim()
-              .toLowerCase();
-            const code = String(it.code || '')
-              .trim()
-              .toLowerCase();
-            let score = 0;
-            if (s === q || code === q) score = 100;
-            else if (s === qBase || s.replace(/@.*$/, '') === qBase) score = 90;
-            else if (s.startsWith(q) || s.startsWith(qBase)) score = 50;
-            else if (s.includes(q) || code.includes(q)) score = 20;
-            // клоны @podveska / @fogel — ниже приоритет при равном match
-            if (s.includes('@')) score -= 5;
-            return { it, score, s };
-          })
-          .filter((x) => x.score > 0)
-          .sort((a, b) => b.score - a.score);
-        const hit = scored[0] && scored[0].score >= 90 ? scored[0].it : null;
-        if (!hit) {
+        if (seq !== row._skuSeq) return { ok: false, sku };
+        if (!hit || !hit.ok) {
           whereEl.classList.add('is-bad');
           whereEl.setAttribute('data-nom', '0');
           whereEl.innerHTML =
-            'Нет в номенклатуре «' +
-            esc(sku) +
-            '» — <b>нельзя произвести</b>. Заведите карточку товара или укажите другой артикул.';
+            (hit && hit.message) ||
+            'Нет мастера для «' +
+              esc(sku) +
+              '» — <b>нельзя произвести</b>. Укажите мастер-артикул.';
           return { ok: false, sku };
         }
+        const masterSku = String(hit.master_sku || sku).trim();
         const name = String(hit.name || '').trim();
-        const hitSku = String(hit.sku || sku).trim();
+        const kind = String(hit.kind || 'master');
         whereEl.classList.add('is-ok');
+        if (kind === 'fact') whereEl.classList.add('is-fact');
         whereEl.setAttribute('data-nom', '1');
-        whereEl.setAttribute('data-product-id', String(hit.id || ''));
-        whereEl.innerHTML =
-          'В номенклатуре: <b>' +
-          esc(hitSku) +
-          '</b>' +
-          (name ? ' — ' + esc(name) : '');
-        return { ok: true, sku: hitSku, product_id: hit.id, name };
+        whereEl.setAttribute('data-kind', kind);
+        whereEl.setAttribute('data-product-id', String(hit.product_id || ''));
+        whereEl.setAttribute('data-master-sku', masterSku);
+        if (skuInput) {
+          skuInput.setAttribute('data-resolved-master', masterSku);
+          skuInput.setAttribute('data-resolved-product-id', String(hit.product_id || ''));
+        }
+        if (kind === 'fact') {
+          whereEl.classList.add('is-fact');
+          whereEl.innerHTML =
+            'Это <b>номер на складе (факт)</b> «' +
+            esc(sku) +
+            '» → в результат подставляем мастер <b>' +
+            esc(masterSku) +
+            '</b>' +
+            (name ? ' — ' + esc(name) : '');
+          // В поле — только мастер; без повторного lookup (иначе залипнет подпись факта)
+          if (skuInput && masterSku && masterSku !== sku) {
+            skuInput._skipSkuLookup = true;
+            skuInput.value = masterSku;
+            skuInput.removeAttribute('data-entered-fact');
+            setTimeout(() => {
+              skuInput._skipSkuLookup = false;
+            }, 0);
+          }
+        } else {
+          whereEl.innerHTML =
+            'Мастер: <b>' +
+            esc(masterSku) +
+            '</b>' +
+            (name ? ' — ' + esc(name) : '');
+          if (skuInput) skuInput.removeAttribute('data-entered-fact');
+        }
+        return {
+          ok: true,
+          sku: masterSku,
+          product_id: hit.product_id,
+          name,
+          kind,
+        };
       } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'aborted')) {
+          if (seq === row._skuSeq && whereEl.textContent === 'Проверяю номенклатуру…') {
+            whereEl.textContent = '';
+          }
+          return { ok: false, sku };
+        }
         whereEl.classList.add('is-bad');
         whereEl.setAttribute('data-nom', '0');
         whereEl.textContent = (e && e.message) || 'Не удалось проверить номенклатуру';
@@ -4779,8 +4970,9 @@
     }
 
     function bindProductionCardActions(root) {
-      if (!root || prodCardsBound) return;
-      prodCardsBound = true;
+      if (!root) return;
+      if (root.dataset.prodActionsBound === '1') return;
+      root.dataset.prodActionsBound = '1';
       root.addEventListener('click', async (e) => {
         const t = e.target;
         if (!t || !t.closest) return;
@@ -4790,35 +4982,114 @@
           const taskId = String(printBtn.getAttribute('data-prod-print') || '').trim();
           if (!taskId) return;
           try {
+            const article = printBtn.closest('[data-prod-task]');
             const slip = await api('/warehouse/tasks/' + encodeURIComponent(taskId) + '/slip');
             const lines = Array.isArray(slip.lines) ? slip.lines : [];
-            const rows = lines
-              .map(
-                (l) =>
-                  '<tr><td>' +
-                  esc(l.name || l.sku || '—') +
-                  '</td><td>' +
-                  esc(l.sku || '') +
-                  '</td><td>×' +
-                  esc(l.qty != null ? l.qty : 1) +
-                  '</td></tr>'
-              )
-              .join('');
+            // Жёлтая сводка + «ожидаемый результат» — только если в форме уже забиты артикулы.
+            const formProduce = article
+              ? collectProductionResultLines(article).filter(
+                  (l) => String(l.sku || '').trim().length >= 2
+                )
+              : [];
+            const slipProduce = Array.isArray(slip.produce_lines) ? slip.produce_lines : [];
+            const produceLines = formProduce.map((l) => {
+              const sku = String(l.sku || '').trim();
+              const hit = slipProduce.find(
+                (p) => String(p.sku || '').trim().toLowerCase() === sku.toLowerCase()
+              );
+              const whereIdx = formProduce.indexOf(l);
+              const whereEl =
+                article &&
+                article.querySelector('[data-prod-where="' + whereIdx + '"]');
+              const whereName =
+                whereEl && whereEl.classList.contains('is-ok')
+                  ? String(whereEl.textContent || '')
+                      .replace(/^В номенклатуре:[^\u2014\-]*[\u2014\-]\s*/i, '')
+                      .trim()
+                  : '';
+              return {
+                sku,
+                name: String((hit && hit.name) || whereName || sku).trim(),
+                qty: l.qty,
+                cell_code: l.cell_code,
+                master_sku: sku,
+                fact_sku: sku,
+              };
+            });
+            const rowHtml = (l, kind) => {
+              const master = String(l.master_sku || l.sku || l.article || '').trim();
+              const fact = String(l.fact_sku || '').trim() || master;
+              const supplier = String(l.supplier || '').trim();
+              const cell = String(l.lot_cell_code || l.cell_code || '').trim();
+              const lotBits = [];
+              if (master) lotBits.push('Мастер: <b>' + esc(master) + '</b>');
+              if (fact) lotBits.push('Факт: <b>' + esc(fact) + '</b>');
+              if (supplier) lotBits.push('Поставщик: <b>' + esc(supplier) + '</b>');
+              if (cell && cell !== '—') lotBits.push('Ячейка: <b>' + esc(cell) + '</b>');
+              return (
+                '<tr><td>' +
+                esc(l.name || master || '—') +
+                (lotBits.length
+                  ? '<div style="margin-top:6px;font-size:13px;line-height:1.45">' +
+                    lotBits.join(' · ') +
+                    '</div>'
+                  : '') +
+                '</td><td class="mono"><b>' +
+                esc(fact || master) +
+                '</b>' +
+                (master && fact && master !== fact
+                  ? '<div style="color:#64748b;font-size:12px">мастер ' + esc(master) + '</div>'
+                  : '') +
+                '</td><td>×' +
+                esc(l.qty != null ? l.qty : 1) +
+                '</td><td class="mono"><b>' +
+                esc(cell && cell !== '—' ? cell : '—') +
+                '</b></td></tr>'
+              );
+            };
+            const rows = lines.map((l) => rowHtml(l, 'consume')).join('');
+            const produceRows = produceLines.map((l) => rowHtml(l, 'produce')).join('');
+            const dealHead = String(slip.deal_name || slip.buyer_name || '')
+              .replace(/[ \t]+/g, ' ')
+              .replace(/\r\n/g, '\n')
+              .trim();
+            let summary = '';
+            if (produceLines.length && lines.length) {
+              const left = lines
+                .map((l) => (l.qty != null ? l.qty : 1) + '× ' + String(l.sku || '').trim())
+                .filter((x) => !x.endsWith(' '))
+                .join(', ');
+              const right = produceLines
+                .map((l) => (l.qty != null ? l.qty : 1) + '× ' + String(l.sku || '').trim())
+                .join(', ');
+              if (left && right) summary = left + ' → ' + right;
+            }
             const w = window.open('', '_blank');
             if (!w) return;
             w.document.write(
               '<!doctype html><html><head><meta charset="utf-8"><title>Расходная · производство ' +
                 esc(slip.number || taskId) +
-                '</title><style>body{font:14px/1.4 system-ui;padding:16px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left}h1{font-size:18px}</style></head><body>' +
+                '</title><style>body{font:14px/1.4 system-ui;padding:16px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #ccc;padding:8px 10px;text-align:left;vertical-align:top}h1{font-size:18px;margin:0 0 8px}h2{font-size:15px;margin:16px 0 8px}.deal-head{white-space:pre-line;font-size:15px;font-weight:700;margin:0 0 12px;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px}.mono{font-family:ui-monospace,Menlo,monospace}.sum{margin:8px 0 12px;padding:8px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;font-weight:600}</style></head><body>' +
                 '<h1>Расходная · на производство</h1>' +
+                (dealHead
+                  ? '<div class="deal-head">' + esc(dealHead) + '</div>'
+                  : '') +
                 '<p><b>' +
                 esc(slip.number || '') +
                 '</b> · сделка ' +
                 esc(slip.deal_id || '') +
                 '<br>Основной → Производство</p>' +
-                '<table><thead><tr><th>Товар</th><th>Артикул</th><th>Кол-во</th></tr></thead><tbody>' +
-                rows +
-                '</tbody></table></body></html>'
+                (summary ? '<div class="sum">' + esc(summary) + '</div>' : '') +
+                '<h2>Списать со склада (уходит на участок)</h2>' +
+                '<table><thead><tr><th>Товар</th><th>Артикул</th><th>Кол-во</th><th>Ячейка</th></tr></thead><tbody>' +
+                (rows || '<tr><td colspan="4">Нет позиций</td></tr>') +
+                '</tbody></table>' +
+                (produceRows
+                  ? '<h2>Ожидаемый результат после производства</h2><table><thead><tr><th>Товар</th><th>Артикул</th><th>Кол-во</th><th>Ячейка</th></tr></thead><tbody>' +
+                    produceRows +
+                    '</tbody></table>'
+                  : '') +
+                '</body></html>'
             );
             w.document.close();
             w.focus();
@@ -4831,13 +5102,25 @@
         const addBtn = t.closest('[data-prod-row-add]');
         if (addBtn) {
           e.preventDefault();
+          e.stopPropagation();
           const article = addBtn.closest('[data-prod-task]');
           const form = article && article.querySelector('[data-prod-result-form]');
           if (!form) return;
           const idx = form.querySelectorAll('[data-prod-result-row]').length;
-          form.insertAdjacentHTML('beforeend', productionResultRowHtml({ sku: '', qty: 1, cell_code: '' }, idx));
+          const putWh =
+            (article.querySelector('[data-prod-put-wh]') &&
+              article.querySelector('.prod-result') &&
+              article.querySelector('.prod-result').getAttribute('data-prod-put-wh')) ||
+            'Основной';
+          form.insertAdjacentHTML(
+            'beforeend',
+            productionResultRowHtml({ sku: '', qty: 1, cell_code: '' }, idx, putWh)
+          );
           const taskId = String((article && article.getAttribute('data-prod-task')) || '').trim();
           if (taskId) prodResultDrafts[taskId] = collectProductionResultLines(article);
+          const newRow = form.querySelector('[data-prod-result-row="' + idx + '"]');
+          const skuInput = newRow && newRow.querySelector('[data-prod-sku]');
+          if (skuInput) setTimeout(() => skuInput.focus(), 0);
           return;
         }
         const delBtn = t.closest('[data-prod-row-del]');
@@ -4963,6 +5246,8 @@
         const taskId = String(article.getAttribute('data-prod-task') || '').trim();
         if (taskId) prodResultDrafts[taskId] = collectProductionResultLines(article);
         if (t.matches && t.matches('[data-prod-sku]')) {
+          if (t._skipSkuLookup) return;
+          t.removeAttribute('data-entered-fact');
           const row = t.closest('[data-prod-result-row]');
           if (!row) return;
           if (row._skuTimer) clearTimeout(row._skuTimer);
@@ -4977,6 +5262,7 @@
         const taskId = String(article.getAttribute('data-prod-task') || '').trim();
         if (taskId) prodResultDrafts[taskId] = collectProductionResultLines(article);
         if (t.matches && t.matches('[data-prod-sku]')) {
+          if (t._skipSkuLookup) return;
           const row = t.closest('[data-prod-result-row]');
           if (row) lookupProdSkuWhere(row);
         }
@@ -5013,11 +5299,26 @@
     }
 
     function prodCardStamp(t) {
-      return prodCardCoreStamp(t) + '|' + prodLinesStamp(t);
+      // __PICK_UI_REV — сброс DOM-кэша карточек при смене шапки/разметки
+      return (
+        String(window.__PICK_UI_REV || '') +
+        '|' +
+        prodCardCoreStamp(t) +
+        '|' +
+        prodLinesStamp(t)
+      );
     }
 
     function prodCardHasLinesTable(el) {
-      return !!(el && el.querySelector && el.querySelector('.handoff-lines-tbl'));
+      // Только таблица «уходит» — не путать с формой результата (.prod-result-tbl).
+      if (!el || !el.querySelector) return false;
+      if (el.querySelector('p.handoffs-empty')) return false;
+      const tables = el.querySelectorAll('table.handoff-lines-tbl');
+      for (const tbl of tables) {
+        if (tbl.classList && tbl.classList.contains('prod-result-tbl')) continue;
+        if (tbl.querySelector('tbody tr')) return true;
+      }
+      return false;
     }
 
     function insertProdCardAt(root, el, index) {
@@ -5144,7 +5445,9 @@
           cached &&
           cached.core === core &&
           prodCardHasLinesTable(existing) &&
-          activeId === taskId
+          activeId === taskId &&
+          Array.isArray(seeded.lines) &&
+          seeded.lines.length
         ) {
           insertProdCardAt(root, existing, i);
           continue;
@@ -5180,12 +5483,11 @@
       }
 
       // Карточки уже в DOM — не ждём карту ячеек (иначе handoffs залипают на «Загрузка…»).
-      prodCardsBound = false;
       bindProductionCardActions(root);
       bindProductionCardLookups(root);
       void cellsPromise.then(() => {
         if (!document.getElementById('prod-cards')) return;
-        prodCardsBound = false;
+        refreshProdCellSelects(root);
         bindProductionCardActions(root);
         bindProductionCardLookups(root);
       });
@@ -5197,15 +5499,22 @@
         toEnrich.map(async (item) => {
           try {
             const full = await enrichProductionCard(item.t0);
-            if (activeProdTaskId() === item.taskId && prodCardHasLinesTable(item.el)) {
+            const hasLines = Array.isArray(full.lines) && full.lines.length > 0;
+            const cur = root.querySelector('[data-prod-task="' + CSS.escape(item.taskId) + '"]');
+            if (!cur) return;
+            // Не блокируем обновление из‑за фокуса в форме результата — иначе «Без строк» залипает.
+            if (
+              activeProdTaskId() === item.taskId &&
+              prodCardHasLinesTable(cur) &&
+              hasLines &&
+              prodLinesStamp(full) === prodLinesStamp(item.t0)
+            ) {
               prodCardsCache.set(item.taskId, {
                 stamp: prodCardStamp(full),
                 core: prodCardCoreStamp(full),
               });
               return;
             }
-            const cur = root.querySelector('[data-prod-task="' + CSS.escape(item.taskId) + '"]');
-            if (!cur) return;
             const newStamp = prodCardStamp(full);
             const cachedNow = prodCardsCache.get(item.taskId);
             if (
@@ -5228,7 +5537,6 @@
         })
       ).then(() => {
         if (!document.getElementById('prod-cards')) return;
-        prodCardsBound = false;
         bindProductionCardActions(root);
         bindProductionCardLookups(root);
       });
@@ -5239,10 +5547,23 @@
       if (!box) return;
       snapshotProductionResultDrafts();
       const groups = boardGroupsForUi();
+      const siteJobIds = new Set();
+      for (const list of [prodAtJobs, prodSendJobs, prodWaitReceiveJobs]) {
+        for (const j of list || []) {
+          const id = String(j && j.id || '').trim();
+          if (id) siteJobIds.add(id);
+        }
+      }
       const prodItems = [];
       const otherGroups = [];
       groups.forEach((g) => {
-        const prod = (g.items || []).filter(isProductionTask);
+        // Board light production раньше отдавал все площадки — оставляем только job текущей site.
+        const prod = (g.items || []).filter((t) => {
+          if (!isProductionTask(t)) return false;
+          const jid = String(t.stock_doc_id || '').trim();
+          if (!jid) return false;
+          return siteJobIds.size ? siteJobIds.has(jid) : String(t.pick_site || '') === pickSite;
+        });
         const rest = (g.items || []).filter((t) => !isProductionTask(t));
         prod.forEach((t) => prodItems.push(t));
         if (rest.length) otherGroups.push({ ...g, items: rest, count: rest.length });
@@ -5407,9 +5728,9 @@
       // pick/today под нагрузкой может висеть — производство берём из /production/jobs.
       const [data, jobsRes, sendJobsRes, waitJobsRes] = await Promise.all([
         api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)).catch(() => emptyBoard),
-        api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
-        api('/production/jobs?status=await_send&limit=80').catch(() => ({ items: [] })),
-        api('/production/jobs?status=await_receive&limit=80').catch(() => ({ items: [] })),
+        api('/production/jobs?status=at_production&limit=80&site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] })),
+        api('/production/jobs?status=await_send&limit=80&site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] })),
+        api('/production/jobs?status=await_receive&limit=80&site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] })),
       ]);
       board = data && typeof data === 'object' ? data : emptyBoard;
       if (!Array.isArray(board.groups)) board.groups = [];
@@ -5478,20 +5799,28 @@
       }
       let data;
       let jobsRes = { items: [] };
+      let sendJobsRes = { items: [] };
       let waitJobsRes = { items: [] };
       let handoffsRes = { items: [], completed_total: 0 };
+      let returnsRes = { items: [] };
       try {
-        [data, jobsRes, waitJobsRes, handoffsRes] = await Promise.all([
+        [data, jobsRes, sendJobsRes, waitJobsRes, handoffsRes, returnsRes] = await Promise.all([
           api('/warehouse/pick/today?site=' + encodeURIComponent(pickSite)),
-          api('/production/jobs?status=at_production&limit=80').catch(() => ({ items: [] })),
+          api('/production/jobs?status=at_production&limit=80&site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] })),
+          // Иначе production_send с light board без строк → «Без строк» на карточке.
+          api('/production/jobs?status=await_send&limit=80&site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] })),
           // Иначе «ждёт приёмку» видно только на /production, а /pick пустой при сбое light board.
-          api('/production/jobs?status=await_receive&limit=80').catch(() => ({ items: [] })),
+          api('/production/jobs?status=await_receive&limit=80&site=' + encodeURIComponent(pickSite)).catch(() => ({ items: [] })),
           // today больше не кладёт handoffs (event loop) — отдельный light-эндпоинт.
           api(
             '/warehouse/pick/handoffs?site=' +
               encodeURIComponent(pickSite) +
               '&limit=40'
           ).catch(() => ({ items: [], completed_total: 0 })),
+          // today тоже не кладёт returns — иначе панель «Вернуть на основной» пустая.
+          api('/warehouse/pick/returns?site=' + encodeURIComponent(pickSite)).catch(() => ({
+            items: [],
+          })),
         ]);
       } catch (e) {
         showErr((e && e.message) || 'Не удалось загрузить очередь');
@@ -5507,6 +5836,7 @@
       }
       board = data;
       prodAtJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
+      prodSendJobs = Array.isArray(sendJobsRes && sendJobsRes.items) ? sendJobsRes.items : [];
       prodWaitReceiveJobs = Array.isArray(waitJobsRes && waitJobsRes.items)
         ? waitJobsRes.items
         : [];
@@ -5516,7 +5846,11 @@
         : [];
       handoffs = fromHandoffsApi.length ? fromHandoffsApi : fromToday;
       noteNewAlerts(data, handoffs);
-      stockReturns = Array.isArray(data.returns) ? data.returns : [];
+      const fromReturnsApi = Array.isArray(returnsRes && returnsRes.items)
+        ? returnsRes.items
+        : [];
+      const fromTodayReturns = Array.isArray(data.returns) ? data.returns : [];
+      stockReturns = fromReturnsApi.length ? fromReturnsApi : fromTodayReturns;
       ensureMainCellRacks();
       handoffsCompletedTotal =
         Number(handoffsRes && handoffsRes.completed_total) ||
@@ -6252,7 +6586,12 @@
             const article = String(l.article || l.sku || '').trim();
             const name = String(l.name || '').trim();
             const qty = Number(l.qty) || 0;
-            const cell = String(l.done_cell || l.to_cell_code || l.cells_label || '').trim() || '—';
+            const cell =
+              String(
+                (opts.isReturn
+                  ? l.done_cell || l.to_cell_code || l.origin_cell_code
+                  : l.done_cell || l.to_cell_code || l.cells_label) || ''
+              ).trim() || '—';
             return (
               '<tr class="is-picked">' +
               '<td class="pick-col"><span class="chk-shipped">✓</span></td>' +

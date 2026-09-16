@@ -133,8 +133,8 @@ function formatRegion(city: string, regionName: string, country: string): string
   return place || country || '';
 }
 
-function readGeoCache(ip: string): { region: string; country: string } | null {
-  const row = get<{ region: string; country: string }>(
+async function readGeoCache(ip: string): Promise<{ region: string; country: string } | null> {
+  const row = await get<{ region: string; country: string }>(
     `SELECT region, country FROM ip_geo_cache
      WHERE ip = ? AND datetime(fetched_at) >= datetime('now', ?)`,
     [ip, `-${GEO_TTL_SEC} seconds`]
@@ -143,8 +143,8 @@ function readGeoCache(ip: string): { region: string; country: string } | null {
   return { region: row.region || '', country: row.country || '' };
 }
 
-function writeGeoCache(ip: string, region: string, country: string): void {
-  run(
+async function writeGeoCache(ip: string, region: string, country: string): Promise<void> {
+  await run(
     `INSERT INTO ip_geo_cache (ip, region, country, fetched_at)
      VALUES (?, ?, ?, datetime('now'))
      ON CONFLICT(ip) DO UPDATE SET
@@ -180,7 +180,7 @@ async function lookupGeoRemote(ip: string): Promise<{ region: string; country: s
       String(data.regionName || ''),
       country
     ).slice(0, 200);
-    writeGeoCache(ip, region, country);
+    await writeGeoCache(ip, region, country);
     return { region, country };
   } catch {
     return { region: '', country: '' };
@@ -188,11 +188,11 @@ async function lookupGeoRemote(ip: string): Promise<{ region: string; country: s
 }
 
 /** Geo из кэша без TTL — для отображения в журнале (устаревшее лучше, чем пусто). */
-export function peekGeo(ip: string): { region: string; country: string } {
+export async function peekGeo(ip: string): Promise<{ region: string; country: string }> {
   const key = String(ip || '').trim();
   if (!key) return { region: '', country: '' };
   if (privateIpRe.test(key)) return { region: 'локальная сеть', country: '' };
-  const row = get<{ region: string; country: string }>(
+  const row = await get<{ region: string; country: string }>(
     `SELECT region, country FROM ip_geo_cache WHERE ip = ?`,
     [key]
   );
@@ -204,17 +204,17 @@ export function peekGeo(ip: string): { region: string; country: string } {
 export async function resolveGeo(ip: string): Promise<{ region: string; country: string }> {
   if (!ip) return { region: '', country: '' };
   if (privateIpRe.test(ip)) return { region: 'локальная сеть', country: '' };
-  const cached = readGeoCache(ip);
+  const cached = await readGeoCache(ip);
   if (cached) return cached;
-  return lookupGeoRemote(ip);
+  return await lookupGeoRemote(ip);
 }
 
 /** Фоновый прогрев geo для списка IP (не ждём в запросе). */
-export function warmGeoIps(ips: string[]): void {
+export async function warmGeoIps(ips: string[]): Promise<void> {
   const uniq = [...new Set(ips.map((x) => String(x || '').trim()).filter(Boolean))];
   for (const ip of uniq.slice(0, 40)) {
     if (privateIpRe.test(ip)) continue;
-    if (readGeoCache(ip)) continue;
+    if (await readGeoCache(ip)) continue;
     void resolveGeo(ip).catch(() => undefined);
   }
 }

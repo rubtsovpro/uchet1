@@ -10,7 +10,14 @@ import { auditFromContext } from './audit.js';
 import { createDocument, postDocument } from './stock.js';
 import { insertLinePlacements } from './warehouse-cells.js';
 import { ensureWarehouseByCode } from './supply-chain.js';
-import { getTask, logTask, setTaskStatus } from './warehouse-tasks.js';
+import {
+  getTask,
+  logTask,
+  resolvePickSiteForDeal,
+  resolvePickSiteForWarehouse,
+  setTaskStatus,
+  type PickSiteId,
+} from './warehouse-tasks.js';
 import { notifyAmoWarehousePacked } from './amo-pick-handoff.js';
 import { getDeal } from './deals.js';
 
@@ -63,11 +70,11 @@ function denyProduction(c: { json: (b: unknown, s?: number) => Response }, actor
 }
 
 /** Каждый шаг производства — примечание в сделку Amo (через amo1c CLI). */
-export function postProductionDealNote(
+export async function postProductionDealNote(
   job: Record<string, unknown> | null | undefined,
   step: string,
   extra?: string
-): void {
+): Promise<void> {
   const dealId = String(job?.deal_id || '').replace(/\D/g, '');
   if (!dealId) return;
   const number = String(job?.number || '—');
@@ -85,17 +92,17 @@ export function postProductionDealNote(
   void notifyAmoWarehousePacked({ dealId, text }).catch(() => {});
 }
 
-export function productionMainWarehouseId(): string {
-  return ensureWarehouseByCode('MAIN', 'Основной');
+export async function productionMainWarehouseId(): Promise<string> {
+  return await ensureWarehouseByCode('MAIN', 'Основной');
 }
 
-export function productionWipWarehouseId(): string {
-  return ensureWarehouseByCode('PROD-WIP', 'Производство (сборка/разбор)');
+export async function productionWipWarehouseId(): Promise<string> {
+  return await ensureWarehouseByCode('PROD-WIP', 'Производство (сборка/разбор)');
 }
 
-function loadLines(jobId: string): ProductionLine[] {
-  ensureProdLineCellCol();
-  return all<ProductionLine>(
+async function loadLines(jobId: string): Promise<ProductionLine[]> {
+  await ensureProdLineCellCol();
+  return await all<ProductionLine>(
     `SELECT id, job_id, line_no, direction, product_id,
             IFNULL(sku,'') AS sku, IFNULL(name,'') AS name, qty,
             IFNULL(cell_code,'') AS cell_code
@@ -106,23 +113,23 @@ function loadLines(jobId: string): ProductionLine[] {
   );
 }
 
-function ensureProdLineCellCol(): void {
+async function ensureProdLineCellCol(): Promise<void> {
   try {
-    run(`ALTER TABLE production_job_lines ADD COLUMN cell_code TEXT NOT NULL DEFAULT ''`);
+    await run(`ALTER TABLE production_job_lines ADD COLUMN cell_code TEXT NOT NULL DEFAULT ''`);
   } catch {
     /* already exists */
   }
 }
 
-function resolveProductBySkuOrId(raw: string) {
+async function resolveProductBySkuOrId(raw: string) {
   const key = String(raw || '').trim();
   if (!key) throw new Error('Укажите артикул');
-  const byId = get<{ id: string; sku: string; name: string }>(
+  const byId = await get<{ id: string; sku: string; name: string }>(
     `SELECT id, IFNULL(sku,'') AS sku, IFNULL(name,'') AS name FROM products WHERE id = ?`,
     [key]
   );
   if (byId?.id) return byId;
-  const bySku = get<{ id: string; sku: string; name: string }>(
+  const bySku = await get<{ id: string; sku: string; name: string }>(
     `SELECT id, IFNULL(sku,'') AS sku, IFNULL(name,'') AS name
      FROM products
      WHERE sku = ? OR code = ? OR REPLACE(IFNULL(sku,''),' ','') = REPLACE(?,' ','')
@@ -142,7 +149,7 @@ function resolveProductBySkuOrId(raw: string) {
 }
 
 /** Кладовщик указывает, какие детали получились и в какую ячейку положили. */
-export function setProductionProduceResults(
+export async function setProductionProduceResults(
   jobId: string,
   linesIn: Array<{
     product_id?: string;
@@ -153,8 +160,8 @@ export function setProductionProduceResults(
   }>,
   actorId?: string
 ) {
-  ensureProdLineCellCol();
-  const job = getProductionJob(jobId);
+  await ensureProdLineCellCol();
+  const job = await getProductionJob(jobId);
   if (!job) throw new Error('Заказ не найден');
   if (['closed', 'cancelled'].includes(String(job.status))) {
     throw new Error('Производство уже закрыто');
@@ -172,7 +179,7 @@ export function setProductionProduceResults(
     if (!(qty > 0)) throw new Error('Укажите количество по каждой детали');
     // Ячейка необязательна: «—» / пусто = на склад без адреса
     if (!cell) cell = '—';
-    const p = resolveProductBySkuOrId(key);
+    const p = await resolveProductBySkuOrId(key);
     resolved.push({
       id: p.id,
       sku: p.sku || String(l.sku || ''),
@@ -182,20 +189,20 @@ export function setProductionProduceResults(
     });
   }
 
-  const maxConsume = get<{ n: number }>(
+  const maxConsume = await get<{ n: number }>(
     `SELECT IFNULL(MAX(line_no),0) AS n FROM production_job_lines WHERE job_id = ? AND direction = 'consume'`,
     [jobId]
   );
   let lineNo = Number(maxConsume?.n || 0) + 1;
-  run(`DELETE FROM production_job_lines WHERE job_id = ? AND direction = 'produce'`, [jobId]);
+  await run(`DELETE FROM production_job_lines WHERE job_id = ? AND direction = 'produce'`, [jobId]);
   for (const r of resolved) {
-    run(
+    await run(
       `INSERT INTO production_job_lines (id, job_id, line_no, direction, product_id, sku, name, qty, cell_code)
        VALUES (?, ?, ?, 'produce', ?, ?, ?, ?, ?)`,
       [newGuid(), jobId, lineNo++, r.id, r.sku, r.name, r.qty, r.cell_code]
     );
   }
-  logProductionEvent(jobId, 'produce_results_set', actorId, {
+  await logProductionEvent(jobId, 'produce_results_set', actorId, {
     lines: resolved.map((r) => ({
       product_id: r.id,
       sku: r.sku,
@@ -203,15 +210,15 @@ export function setProductionProduceResults(
       cell_code: r.cell_code,
     })),
   });
-  return getProductionJob(jobId)!;
+  return (await getProductionJob(jobId))!;
 }
 
-function enrichJob(
+async function enrichJob(
   row: Record<string, unknown> | null | undefined,
   opts?: { light?: boolean }
-): Record<string, unknown> | null {
+): Promise<Record<string, unknown> | null> {
   if (!row) return null;
-  const lines = loadLines(String(row.id));
+  const lines = await loadLines(String(row.id));
   const consume = lines.filter((l) => l.direction === 'consume');
   const produce = lines.filter((l) => l.direction === 'produce');
   const summary = formatJobSummary(consume, produce, String(row.kind || ''));
@@ -240,15 +247,17 @@ export function formatJobSummary(
   return `${inS} → ${outS}`;
 }
 
-export function getProductionJob(id: string): Record<string, unknown> | null {
-  const row = get('SELECT * FROM production_jobs WHERE id = ?', [id]) as Record<string, unknown> | null;
-  return enrichJob(row);
+export async function getProductionJob(id: string): Promise<Record<string, unknown> | null> {
+  const row = await get('SELECT * FROM production_jobs WHERE id = ?', [id]) as Record<string, unknown> | null;
+  return await enrichJob(row);
 }
 
-export function listProductionJobs(opts: {
+export async function listProductionJobs(opts: {
   status?: string;
   deal_id?: string;
   limit?: number;
+  /** Площадка pick: msk | strela | fogel — без фильтра отдаём все. */
+  site?: string;
 }) {
   const where: string[] = ['1=1'];
   const params: Array<string | number> = [];
@@ -263,18 +272,39 @@ export function listProductionJobs(opts: {
     params.push(dealId);
   }
   const limit = Math.min(200, Math.max(1, Number(opts.limit) || 50));
-  const items = all(
+  const siteRaw = String(opts.site || '').trim().toLowerCase();
+  const siteFilter: PickSiteId | '' =
+    siteRaw === 'msk' || siteRaw === 'strela' || siteRaw === 'fogel' ? siteRaw : '';
+  const fetchLimit = siteFilter ? Math.min(200, Math.max(limit * 5, 80)) : limit;
+  const rows = await all(
     `SELECT * FROM production_jobs
      WHERE ${where.join(' AND ')}
      ORDER BY datetime(updated_at) DESC, number DESC
      LIMIT ?`,
-    [...params, limit]
-  ).map((r) => enrichJob(r as Record<string, unknown>, { light: true }));
+    [...params, fetchLimit]
+  );
+  let items = (
+    await Promise.all(
+      rows.map(async (r) => await enrichJob(r as Record<string, unknown>, { light: true }))
+    )
+  ).filter((x): x is Record<string, unknown> => !!x);
+  if (siteFilter) {
+    const sites = await Promise.all(
+      items.map(async (job) => {
+        const d = String(job.deal_id || '').trim();
+        const wh = String(job.warehouse_id || '').trim();
+        return d
+          ? await resolvePickSiteForDeal(d, wh)
+          : await resolvePickSiteForWarehouse(wh);
+      })
+    );
+    items = items.filter((_, i) => sites[i] === siteFilter).slice(0, limit);
+  }
   return { items, status_labels: STATUS_LABELS, kind_labels: KIND_LABELS };
 }
 
-function resolveProduct(productId: string) {
-  const p = get<{ id: string; sku: string; name: string }>(
+async function resolveProduct(productId: string) {
+  const p = await get<{ id: string; sku: string; name: string }>(
     `SELECT id, IFNULL(sku,'') AS sku, IFNULL(name,'') AS name FROM products WHERE id = ?`,
     [productId]
   );
@@ -282,7 +312,7 @@ function resolveProduct(productId: string) {
   return p;
 }
 
-export function createProductionJob(input: {
+export async function createProductionJob(input: {
   kind: ProductionKind;
   deal_id?: string;
   comment?: string;
@@ -298,12 +328,12 @@ export function createProductionJob(input: {
     throw new Error('Нужны строки consume (что уходит) и produce (что получается)');
   }
   const dealId = String(input.deal_id || '').trim();
-  const mainWh = productionMainWarehouseId();
-  const prodWh = productionWipWarehouseId();
+  const mainWh = await productionMainWarehouseId();
+  const prodWh = await productionWipWarehouseId();
   const id = newGuid();
-  const number = nextCode('PJ', 5);
+  const number = await nextCode('PJ', 5);
   const docDate = new Date().toISOString().slice(0, 10);
-  run(
+  await run(
     `INSERT INTO production_jobs (
        id, number, doc_date, kind, status, deal_id,
        warehouse_id, prod_warehouse_id, comment, created_at, updated_at
@@ -325,40 +355,40 @@ export function createProductionJob(input: {
       const productId = String(l.product_id || '').trim();
       const qty = Number(l.qty) || 0;
       if (!productId || !(qty > 0)) continue;
-      const p = resolveProduct(productId);
-      run(
+      const p = await resolveProduct(productId);
+      await run(
         `INSERT INTO production_job_lines (id, job_id, line_no, direction, product_id, sku, name, qty)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [newGuid(), id, lineNo++, dir, p.id, p.sku, p.name, qty]
       );
     }
   }
-  const job = getProductionJob(id)!;
-  logProductionEvent(id, 'created', input.actor_id, { number, kind, deal_id: dealId });
-  postProductionDealNote(job, 'created');
+  const job = (await getProductionJob(id))!;
+  await logProductionEvent(id, 'created', input.actor_id, { number, kind, deal_id: dealId });
+  await postProductionDealNote(job, 'created');
   return job;
 }
 
-function logProductionEvent(
+async function logProductionEvent(
   jobId: string,
   event: string,
   actorId?: string,
   payload?: Record<string, unknown>
 ) {
-  run(
+  await run(
     `INSERT INTO production_job_events (id, job_id, event, actor_id, payload_json, created_at)
      VALUES (?, ?, ?, ?, ?, datetime('now'))`,
     [newGuid(), jobId, event, String(actorId || ''), JSON.stringify(payload || {})]
   );
-  run(`UPDATE production_jobs SET updated_at = datetime('now') WHERE id = ?`, [jobId]);
+  await run(`UPDATE production_jobs SET updated_at = datetime('now') WHERE id = ?`, [jobId]);
 }
 
-function nextTaskNumber(dealId?: string): string {
-  if (dealId) return nextCode('W', 4);
-  return nextCode('W', 5);
+async function nextTaskNumber(dealId?: string): Promise<string> {
+  if (dealId) return await nextCode('W', 4);
+  return await nextCode('W', 5);
 }
 
-function createProductionWarehouseTask(input: {
+async function createProductionWarehouseTask(input: {
   job: ProductionJob;
   channel: 'production_send' | 'production_receive';
   lines: ProductionLine[];
@@ -368,7 +398,7 @@ function createProductionWarehouseTask(input: {
   const job = input.job;
   const id = newGuid();
   const dealId = String(job.deal_id || '').trim();
-  const number = nextTaskNumber(dealId);
+  const number = await nextTaskNumber(dealId);
   const barcode = number.replace(/-/g, '');
   const kindLabel = KIND_LABELS[String(job.kind)] || String(job.kind);
   const routeNote =
@@ -377,7 +407,7 @@ function createProductionWarehouseTask(input: {
       : `Производство → Основной · ${kindLabel}`;
   let buyerName = '';
   if (dealId) {
-    const d = get<{ buyer_name: string; company_name: string; name: string }>(
+    const d = await get<{ buyer_name: string; company_name: string; name: string }>(
       `SELECT IFNULL(buyer_name,'') AS buyer_name,
               IFNULL(company_name,'') AS company_name,
               IFNULL(name,'') AS name
@@ -388,7 +418,7 @@ function createProductionWarehouseTask(input: {
   }
   if (!buyerName) buyerName = kindLabel || 'Производство';
 
-  run(
+  await run(
     `INSERT INTO warehouse_tasks (
       id, number, barcode, deal_id, status, channel, city, buyer_name, amount_locked,
       payment_required, track_number, comment, stock_doc_id, created_at, updated_at
@@ -407,7 +437,7 @@ function createProductionWarehouseTask(input: {
 
   let lineNo = 1;
   for (const l of input.lines) {
-    run(
+    await run(
       `INSERT INTO warehouse_task_lines (
         id, task_id, line_no, product_id, sku, name, qty, weight_g, dims_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, '{}')`,
@@ -415,55 +445,55 @@ function createProductionWarehouseTask(input: {
     );
   }
 
-  logTask(id, 'task.created', input.actor_id, {
+  await logTask(id, 'task.created', input.actor_id, {
     production_job_id: job.id,
     production_job_number: job.number,
     channel: input.channel,
   });
 
   const col = input.channel === 'production_send' ? 'send_task_id' : 'receive_task_id';
-  run(`UPDATE production_jobs SET ${col} = ?, updated_at = datetime('now') WHERE id = ?`, [
+  await run(`UPDATE production_jobs SET ${col} = ?, updated_at = datetime('now') WHERE id = ?`, [
     id,
     job.id,
   ]);
 
-  return getTask(id);
+  return await getTask(id);
 }
 
 /** Отправить на производство: задание кладовщику + статус await_send. */
-export function queueProductionSend(jobId: string, actorId?: string) {
-  const job = getProductionJob(jobId);
+export async function queueProductionSend(jobId: string, actorId?: string) {
+  const job = await getProductionJob(jobId);
   if (!job) throw new Error('Заказ не найден');
   const st = String(job.status);
   if (st !== 'draft' && st !== 'await_send') {
     throw new Error(`Нельзя отправить из статуса «${job.status_label}»`);
   }
   if (String(job.send_task_id || '').trim()) {
-    run(`UPDATE production_jobs SET status = 'await_send', updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE production_jobs SET status = 'await_send', updated_at = datetime('now') WHERE id = ?`, [
       jobId,
     ]);
-    return getProductionJob(jobId)!;
+    return (await getProductionJob(jobId))!;
   }
   const summary = String(job.summary || '');
   const dealNote = job.deal_id ? ` · сделка ${job.deal_id}` : '';
-  const task = createProductionWarehouseTask({
+  const task = await createProductionWarehouseTask({
     job: job as ProductionJob,
     channel: 'production_send',
     lines: job.consume as ProductionLine[],
     comment: `Производство ${job.number}: отнести на сборку/разбор${dealNote}. ${summary}`,
     actor_id: actorId,
   });
-  run(`UPDATE production_jobs SET status = 'await_send', updated_at = datetime('now') WHERE id = ?`, [
+  await run(`UPDATE production_jobs SET status = 'await_send', updated_at = datetime('now') WHERE id = ?`, [
     jobId,
   ]);
-  logProductionEvent(jobId, 'queued_send', actorId, { task_id: task?.id, task_number: task?.number });
-  postProductionDealNote(getProductionJob(jobId), 'queued_send');
-  return getProductionJob(jobId)!;
+  await logProductionEvent(jobId, 'queued_send', actorId, { task_id: task?.id, task_number: task?.number });
+  await postProductionDealNote(await getProductionJob(jobId), 'queued_send');
+  return (await getProductionJob(jobId))!;
 }
 
 /** Кладовщик отнёс на производство — перемещение на PROD-WIP. */
-export function executeProductionSendFromTask(input: { task_id: string; actor_id?: string }) {
-  const task = get('SELECT * FROM warehouse_tasks WHERE id = ?', [input.task_id]) as
+export async function executeProductionSendFromTask(input: { task_id: string; actor_id?: string }) {
+  const task = await get('SELECT * FROM warehouse_tasks WHERE id = ?', [input.task_id]) as
     | Record<string, unknown>
     | undefined;
   if (!task) throw new Error('Задание не найдено');
@@ -471,15 +501,15 @@ export function executeProductionSendFromTask(input: { task_id: string; actor_id
     throw new Error('Не задание на отправку в производство');
   }
   const jobId = String(task.stock_doc_id || '').trim();
-  const job = getProductionJob(jobId);
+  const job = await getProductionJob(jobId);
   if (!job) throw new Error('Заказ производства не найден');
 
-  const mainWh = String(job.warehouse_id || productionMainWarehouseId());
-  const prodWh = String(job.prod_warehouse_id || productionWipWarehouseId());
+  const mainWh = String(job.warehouse_id || await productionMainWarehouseId());
+  const prodWh = String(job.prod_warehouse_id || await productionWipWarehouseId());
   const dealId = String(job.deal_id || '').trim();
   const summary = String(job.summary || '');
 
-  const transferId = createDocument({
+  const transferId = await createDocument({
     doc_type: 'transfer',
     warehouse_id: mainWh,
     warehouse_to_id: prodWh,
@@ -494,58 +524,58 @@ export function executeProductionSendFromTask(input: { task_id: string; actor_id
     serials_optional: true,
   });
 
-  run(
+  await run(
     `UPDATE production_jobs
      SET status = 'at_production', send_transfer_id = ?, updated_at = datetime('now')
      WHERE id = ?`,
     [transferId, jobId]
   );
-  logProductionEvent(jobId, 'sent_to_production', input.actor_id, {
+  await logProductionEvent(jobId, 'sent_to_production', input.actor_id, {
     transfer_id: transferId,
     task_id: input.task_id,
   });
-  postProductionDealNote(getProductionJob(jobId), 'sent_to_production');
-  return { job: getProductionJob(jobId), transfer_id: transferId };
+  await postProductionDealNote(await getProductionJob(jobId), 'sent_to_production');
+  return { job: await getProductionJob(jobId), transfer_id: transferId };
 }
 
 /** Производство нажало «Готово» — задание складу на оприходование результата. */
-export function markProductionJobDone(jobId: string, actorId?: string) {
-  const job = getProductionJob(jobId);
+export async function markProductionJobDone(jobId: string, actorId?: string) {
+  const job = await getProductionJob(jobId);
   if (!job) throw new Error('Заказ не найден');
   if (String(job.status) !== 'at_production') {
     throw new Error(`Статус «${job.status_label}» — нельзя закрыть производство`);
   }
   if (String(job.receive_task_id || '').trim()) {
-    run(
+    await run(
       `UPDATE production_jobs SET status = 'await_receive', done_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
       [jobId]
     );
-    postProductionDealNote(getProductionJob(jobId), 'production_done');
-    return getProductionJob(jobId)!;
+    await postProductionDealNote(await getProductionJob(jobId), 'production_done');
+    return (await getProductionJob(jobId))!;
   }
   const summary = String(job.summary || '');
   const dealNote = job.deal_id ? ` · сделка ${job.deal_id}` : '';
-  createProductionWarehouseTask({
+  await createProductionWarehouseTask({
     job: job as ProductionJob,
     channel: 'production_receive',
     lines: job.produce as ProductionLine[],
     comment: `Производство ${job.number}: оприходовать результат${dealNote}. ${summary}`,
     actor_id: actorId,
   });
-  run(
+  await run(
     `UPDATE production_jobs
      SET status = 'await_receive', done_at = datetime('now'), updated_at = datetime('now')
      WHERE id = ?`,
     [jobId]
   );
-  logProductionEvent(jobId, 'production_done', actorId, {});
-  postProductionDealNote(getProductionJob(jobId), 'production_done');
-  return getProductionJob(jobId)!;
+  await logProductionEvent(jobId, 'production_done', actorId, {});
+  await postProductionDealNote(await getProductionJob(jobId), 'production_done');
+  return (await getProductionJob(jobId))!;
 }
 
 /** Кладовщик забрал с производства: списание комплектующих с PROD-WIP + приход готового на MAIN. */
-export function executeProductionReceiveFromTask(input: { task_id: string; actor_id?: string }) {
-  const task = get('SELECT * FROM warehouse_tasks WHERE id = ?', [input.task_id]) as
+export async function executeProductionReceiveFromTask(input: { task_id: string; actor_id?: string }) {
+  const task = await get('SELECT * FROM warehouse_tasks WHERE id = ?', [input.task_id]) as
     | Record<string, unknown>
     | undefined;
   if (!task) throw new Error('Задание не найдено');
@@ -553,15 +583,15 @@ export function executeProductionReceiveFromTask(input: { task_id: string; actor
     throw new Error('Не задание на приём с производства');
   }
   const jobId = String(task.stock_doc_id || '').trim();
-  const job = getProductionJob(jobId);
+  const job = await getProductionJob(jobId);
   if (!job) throw new Error('Заказ производства не найден');
 
-  const mainWh = String(job.warehouse_id || productionMainWarehouseId());
-  const prodWh = String(job.prod_warehouse_id || productionWipWarehouseId());
+  const mainWh = String(job.warehouse_id || await productionMainWarehouseId());
+  const prodWh = String(job.prod_warehouse_id || await productionWipWarehouseId());
   const dealId = String(job.deal_id || '').trim();
   const summary = String(job.summary || '');
 
-  const outId = createDocument({
+  const outId = await createDocument({
     doc_type: 'out',
     warehouse_id: prodWh,
     deal_id: dealId,
@@ -576,7 +606,7 @@ export function executeProductionReceiveFromTask(input: { task_id: string; actor
   });
 
   const produceLines = (job.produce as ProductionLine[]) || [];
-  const inId = createDocument({
+  const inId = await createDocument({
     doc_type: 'in',
     warehouse_id: mainWh,
     deal_id: dealId,
@@ -589,7 +619,7 @@ export function executeProductionReceiveFromTask(input: { task_id: string; actor
     post: false,
     serials_optional: true,
   });
-  const inDocLines = all<{ id: string; product_id: string; qty: number }>(
+  const inDocLines = await all<{ id: string; product_id: string; qty: number }>(
     `SELECT id, product_id, qty FROM stock_doc_lines WHERE doc_id = ? ORDER BY line_no`,
     [inId]
   );
@@ -600,7 +630,7 @@ export function executeProductionReceiveFromTask(input: { task_id: string; actor
     if (!docLine) continue;
     const plQty = Number(pl.qty) || Number(docLine.qty) || 0;
     if (!(plQty > 0)) continue;
-    insertLinePlacements({
+    await insertLinePlacements({
       doc_id: inId,
       line_id: docLine.id,
       warehouse_id: mainWh,
@@ -608,35 +638,35 @@ export function executeProductionReceiveFromTask(input: { task_id: string; actor
       placements: [{ cell_code: cellCode, qty: plQty, warehouse_id: mainWh }],
     });
   }
-  postDocument(inId, { serialsOptional: true });
+  await postDocument(inId, { serialsOptional: true });
 
-  run(
+  await run(
     `UPDATE production_jobs
      SET status = 'closed', receive_out_id = ?, receive_in_id = ?,
          received_at = datetime('now'), updated_at = datetime('now')
      WHERE id = ?`,
     [outId, inId, jobId]
   );
-  logProductionEvent(jobId, 'received_from_production', input.actor_id, {
+  await logProductionEvent(jobId, 'received_from_production', input.actor_id, {
     out_id: outId,
     in_id: inId,
     task_id: input.task_id,
   });
-  postProductionDealNote(getProductionJob(jobId), 'received_from_production');
-  return { job: getProductionJob(jobId), out_id: outId, in_id: inId };
+  await postProductionDealNote(await getProductionJob(jobId), 'received_from_production');
+  return { job: await getProductionJob(jobId), out_id: outId, in_id: inId };
 }
 
 /** Активные заказы производства по сделке (не closed/cancelled). */
-export function listActiveProductionJobsForDeal(dealId: string) {
+export async function listActiveProductionJobsForDeal(dealId: string) {
   const id = String(dealId || '').trim();
   if (!id) return [];
-  return listProductionJobs({ deal_id: id, limit: 20 }).items.filter(
+  return (await listProductionJobs({ deal_id: id, limit: 20 })).items.filter(
     (j) => !!j && !['closed', 'cancelled'].includes(String(j.status))
   );
 }
 
 /** Создать производство из сделки: consume из позиций заказа, produce из формы. */
-export function createProductionFromDeal(
+export async function createProductionFromDeal(
   dealId: string,
   input: {
     kind?: ProductionKind;
@@ -648,10 +678,10 @@ export function createProductionFromDeal(
   }
 ) {
   const dealIdStr = String(dealId || '').trim();
-  const deal = getDeal(dealIdStr) as { items?: Array<Record<string, unknown>> } | null;
+  const deal = await getDeal(dealIdStr) as { items?: Array<Record<string, unknown>> } | null;
   if (!deal) throw new Error('Сделка не найдена');
 
-  const open = all<{ id: string; number: string; status: string }>(
+  const open = await all<{ id: string; number: string; status: string }>(
     `SELECT id, number, status FROM production_jobs
      WHERE deal_id = ? AND status NOT IN ('closed','cancelled')
      LIMIT 5`,
@@ -715,7 +745,7 @@ export function createProductionFromDeal(
     })),
   ];
 
-  let job = createProductionJob({
+  let job = await createProductionJob({
     kind,
     deal_id: dealIdStr,
     comment: String(input.comment || '').trim() || `Из заказа ${dealIdStr}`,
@@ -724,55 +754,55 @@ export function createProductionFromDeal(
   });
 
   if (input.queue_send !== false) {
-    job = queueProductionSend(String(job.id), input.actor_id);
+    job = await queueProductionSend(String(job.id), input.actor_id);
   }
 
   return job;
 }
 
-export function cancelProductionJob(jobId: string, actorId?: string) {
-  const job = getProductionJob(jobId);
+export async function cancelProductionJob(jobId: string, actorId?: string) {
+  const job = await getProductionJob(jobId);
   if (!job) throw new Error('Заказ не найден');
   const st = String(job.status);
   if (['closed', 'cancelled'].includes(st)) throw new Error('Уже закрыто');
   if (['at_production', 'await_receive'].includes(st)) {
     throw new Error('Уже на производстве — отмена только вручную через склад');
   }
-  run(`UPDATE production_jobs SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`, [
+  await run(`UPDATE production_jobs SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`, [
     jobId,
   ]);
-  logProductionEvent(jobId, 'cancelled', actorId, {});
-  postProductionDealNote(getProductionJob(jobId), 'cancelled');
-  return getProductionJob(jobId)!;
+  await logProductionEvent(jobId, 'cancelled', actorId, {});
+  await postProductionDealNote(await getProductionJob(jobId), 'cancelled');
+  return (await getProductionJob(jobId))!;
 }
 
 /** Возврат со сделки: отменить производство, которое ещё не ушло на участок. */
-export function abortOpenProductionForDeal(
+export async function abortOpenProductionForDeal(
   dealId: string,
   reason: string,
   actorId?: string
-): { cancelled_jobs: string[]; cancelled_tasks: string[] } {
+): Promise<{ cancelled_jobs: string[]; cancelled_tasks: string[] }> {
   const id = String(dealId || '').trim();
   const why = String(reason || 'Возврат — производство остановлено').trim();
   const cancelledJobs: string[] = [];
   const cancelledTasks: string[] = [];
   if (!id) return { cancelled_jobs: cancelledJobs, cancelled_tasks: cancelledTasks };
 
-  const jobs = all<{ id: string; number: string; status: string }>(
+  const jobs = await all<{ id: string; number: string; status: string }>(
     `SELECT id, number, status FROM production_jobs
      WHERE deal_id = ? AND status IN ('draft','await_send')`,
     [id]
   );
   for (const j of jobs) {
     try {
-      cancelProductionJob(String(j.id), actorId);
+      await cancelProductionJob(String(j.id), actorId);
       cancelledJobs.push(String(j.number || j.id));
     } catch {
       /* уже закрыто или на участке */
     }
   }
 
-  const tasks = all<{ id: string; number: string }>(
+  const tasks = await all<{ id: string; number: string }>(
     `SELECT id, number FROM warehouse_tasks
      WHERE deal_id = ? AND channel IN ('production_send','production_receive')
        AND status NOT IN ('handed','cancelled')`,
@@ -780,7 +810,7 @@ export function abortOpenProductionForDeal(
   );
   for (const t of tasks) {
     try {
-      setTaskStatus({
+      await setTaskStatus({
         id: String(t.id),
         status: 'cancelled',
         block_reason: why,
@@ -800,30 +830,31 @@ export function mountProductionJobRoutes(api: Hono): void {
     c.json({ status_labels: STATUS_LABELS, kind_labels: KIND_LABELS })
   );
 
-  api.get('/production/jobs', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/production/jobs', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyProduction(c, actor);
     if (d) return d;
     return c.json(
-      listProductionJobs({
+      await listProductionJobs({
         status: c.req.query('status') || '',
         deal_id: c.req.query('deal_id') || '',
         limit: Number(c.req.query('limit') || 50),
+        site: c.req.query('site') || '',
       })
     );
   });
 
-  api.get('/production/jobs/:id', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/production/jobs/:id', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyProduction(c, actor);
     if (d) return d;
-    const row = getProductionJob(c.req.param('id'));
+    const row = await getProductionJob(c.req.param('id'));
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
   });
 
   api.post('/production/jobs', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyProduction(c, actor);
     if (d) return d;
     const body = (await c.req.json().catch(() => ({}))) as {
@@ -834,7 +865,7 @@ export function mountProductionJobRoutes(api: Hono): void {
       queue_send?: boolean;
     };
     try {
-      let job = createProductionJob({
+      let job = await createProductionJob({
         kind: body.kind || 'assemble',
         deal_id: body.deal_id,
         comment: body.comment,
@@ -842,9 +873,9 @@ export function mountProductionJobRoutes(api: Hono): void {
         actor_id: actor!.id,
       });
       if (body.queue_send) {
-        job = queueProductionSend(String(job.id), actor!.id);
+        job = await queueProductionSend(String(job.id), actor!.id);
       }
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'production.job_create',
         entity: 'production_job',
         entityId: String(job.id),
@@ -857,11 +888,11 @@ export function mountProductionJobRoutes(api: Hono): void {
   });
 
   api.post('/production/jobs/:id/send', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyProduction(c, actor);
     if (d) return d;
     try {
-      const job = queueProductionSend(c.req.param('id'), actor!.id);
+      const job = await queueProductionSend(c.req.param('id'), actor!.id);
       return c.json(job);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'send failed' }, 400);
@@ -869,7 +900,7 @@ export function mountProductionJobRoutes(api: Hono): void {
   });
 
   api.post('/production/jobs/:id/produce-results', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyProduction(c, actor);
     if (d) return d;
     const body = (await c.req.json().catch(() => ({}))) as {
@@ -882,12 +913,12 @@ export function mountProductionJobRoutes(api: Hono): void {
       }>;
     };
     try {
-      const job = setProductionProduceResults(
+      const job = await setProductionProduceResults(
         c.req.param('id'),
         Array.isArray(body.lines) ? body.lines : [],
         actor!.id
       );
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'production.produce_results',
         entity: 'production_job',
         entityId: c.req.param('id'),
@@ -900,12 +931,12 @@ export function mountProductionJobRoutes(api: Hono): void {
   });
 
   api.post('/production/jobs/:id/done', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyProduction(c, actor);
     if (d) return d;
     try {
-      const job = markProductionJobDone(c.req.param('id'), actor!.id);
-      auditFromContext(c, {
+      const job = await markProductionJobDone(c.req.param('id'), actor!.id);
+      await auditFromContext(c, {
         action: 'production.job_done',
         entity: 'production_job',
         entityId: c.req.param('id'),
@@ -918,11 +949,11 @@ export function mountProductionJobRoutes(api: Hono): void {
   });
 
   api.post('/production/jobs/:id/cancel', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyProduction(c, actor);
     if (d) return d;
     try {
-      return c.json(cancelProductionJob(c.req.param('id'), actor!.id));
+      return c.json(await cancelProductionJob(c.req.param('id'), actor!.id));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'cancel failed' }, 400);
     }

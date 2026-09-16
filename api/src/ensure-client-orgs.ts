@@ -14,15 +14,15 @@ const BANK = 'ООО "Банк Точка"';
 const BIK = '044525104';
 const KS = '30101810745374525104';
 
-function companyByCode(code: string): CompanyRow | undefined {
-  return get(`SELECT * FROM companies WHERE code = ? COLLATE NOCASE LIMIT 1`, [code]) as
+async function companyByCode(code: string): Promise<CompanyRow | undefined> {
+  return await get(`SELECT * FROM companies WHERE code = ? COLLATE NOCASE LIMIT 1`, [code]) as
     | CompanyRow
     | undefined;
 }
 
-function findOrg(opts: { companyId: string; inn: string; rs?: string }): OrganizationRow | undefined {
+async function findOrg(opts: { companyId: string; inn: string; rs?: string }): Promise<OrganizationRow | undefined> {
   if (opts.rs) {
-    const byRs = get(
+    const byRs = await get(
       `SELECT * FROM organizations
        WHERE company_id = ? AND inn = ? AND rs = ?
        LIMIT 1`,
@@ -30,7 +30,7 @@ function findOrg(opts: { companyId: string; inn: string; rs?: string }): Organiz
     ) as OrganizationRow | undefined;
     if (byRs) return byRs;
   }
-  return get(
+  return await get(
     `SELECT * FROM organizations
      WHERE company_id = ? AND inn = ?
      ORDER BY is_default DESC, is_active DESC
@@ -40,13 +40,13 @@ function findOrg(opts: { companyId: string; inn: string; rs?: string }): Organiz
 }
 
 /** Идемпотентно поднимает 3 контура и карточки юрлиц по реквизитам БМП/БРП. */
-export function ensureClientOrgContours(): {
+export async function ensureClientOrgContours(): Promise<{
   companies: CompanyRow[];
   organizations: OrganizationRow[];
-} {
+}> {
   let pnevmo =
-    companyByCode('PNEVMO') ||
-    upsertCompany({
+    await companyByCode('PNEVMO') ||
+    await upsertCompany({
       id: '00000000-0000-4000-8000-000000000001',
       name: 'Пневмоподвеска · Москва',
       code: 'PNEVMO',
@@ -54,7 +54,7 @@ export function ensureClientOrgContours(): {
       is_active: true,
     });
   if (String(pnevmo.name || '').trim() === 'Пневмоподвеска') {
-    pnevmo = upsertCompany({
+    pnevmo = await upsertCompany({
       id: pnevmo.id,
       name: 'Пневмоподвеска · Москва',
       code: pnevmo.code || 'PNEVMO',
@@ -64,9 +64,9 @@ export function ensureClientOrgContours(): {
   }
 
   const fogel =
-    companyByCode('ФОГЕЛЬ') ||
-    companyByCode('FOGEL') ||
-    upsertCompany({
+    await companyByCode('ФОГЕЛЬ') ||
+    await companyByCode('FOGEL') ||
+    await upsertCompany({
       name: 'Фогель',
       code: 'ФОГЕЛЬ',
       is_default: false,
@@ -74,22 +74,22 @@ export function ensureClientOrgContours(): {
     });
 
   const strela =
-    companyByCode('STRELA') ||
-    companyByCode('СТРЕЛА') ||
-    upsertCompany({
+    await companyByCode('STRELA') ||
+    await companyByCode('СТРЕЛА') ||
+    await upsertCompany({
       name: 'Стрела',
       code: 'STRELA',
       is_default: false,
       is_active: true,
     });
 
-  const fogelOrgExisting = findOrg({
+  const fogelOrgExisting = await findOrg({
     companyId: fogel.id,
     inn: '231295963240',
     rs: '40802810420000909020',
-  }) || findOrg({ companyId: fogel.id, inn: '231295963240' });
+  }) || await findOrg({ companyId: fogel.id, inn: '231295963240' });
 
-  const fogelOrg = upsertOrganization({
+  const fogelOrg = await upsertOrganization({
     id: fogelOrgExisting?.id,
     company_id: fogel.id,
     code: fogelOrgExisting?.code || 'BMP-FOGEL',
@@ -115,13 +115,13 @@ export function ensureClientOrgContours(): {
     is_active: true,
   });
 
-  const strelaOrgExisting = findOrg({
+  const strelaOrgExisting = await findOrg({
     companyId: strela.id,
     inn: '231295963240',
     rs: '40802810720000909005',
-  }) || findOrg({ companyId: strela.id, inn: '231295963240' });
+  }) || await findOrg({ companyId: strela.id, inn: '231295963240' });
 
-  const strelaOrg = upsertOrganization({
+  const strelaOrg = await upsertOrganization({
     id: strelaOrgExisting?.id,
     company_id: strela.id,
     code: strelaOrgExisting?.code || 'BMP-STRELA',
@@ -147,13 +147,13 @@ export function ensureClientOrgContours(): {
     is_active: true,
   });
 
-  const rpExisting = findOrg({
+  const rpExisting = await findOrg({
     companyId: pnevmo.id,
     inn: '231215603728',
     rs: '40802810109500030587',
-  }) || findOrg({ companyId: pnevmo.id, inn: '231215603728' });
+  }) || await findOrg({ companyId: pnevmo.id, inn: '231215603728' });
 
-  const rpOrg = upsertOrganization({
+  const rpOrg = await upsertOrganization({
     id: rpExisting?.id,
     company_id: pnevmo.id,
     code: rpExisting?.code || 'BRP-MSK',
@@ -185,11 +185,11 @@ export function ensureClientOrgContours(): {
   };
 }
 
-export function listClientOrgSnapshot() {
-  const companies = all(
+export async function listClientOrgSnapshot() {
+  const companies = await all(
     `SELECT id, code, name, is_active FROM companies WHERE is_active = 1 ORDER BY name COLLATE NOCASE`
   );
-  const organizations = all(
+  const organizations = await all(
     `SELECT id, code, company_id, name, inn, ogrnip, rs, is_default, is_active
      FROM organizations
      WHERE is_active = 1

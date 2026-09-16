@@ -51,8 +51,8 @@ const EMPTY_STAGES: AmoStageMap = {
   success_after_handed: {},
 };
 
-function readMeta(): Partial<AmoIntegrationSettings> {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_AMO]);
+async function readMeta(): Promise<Partial<AmoIntegrationSettings>> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_AMO]);
   if (!row?.value) return {};
   try {
     const parsed = JSON.parse(row.value) as Partial<AmoIntegrationSettings>;
@@ -62,8 +62,8 @@ function readMeta(): Partial<AmoIntegrationSettings> {
   }
 }
 
-function writeMeta(value: AmoIntegrationSettings): void {
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_AMO, JSON.stringify(value)]);
+async function writeMeta(value: AmoIntegrationSettings): Promise<void> {
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_AMO, JSON.stringify(value)]);
 }
 
 function cleanIdMap(raw: unknown): Record<string, string> {
@@ -80,7 +80,7 @@ function cleanIdMap(raw: unknown): Record<string, string> {
 }
 
 /** Подсказка контура по тексту филиала Amo (если маппинг ещё не сохранён). */
-function guessCompanyIdForBranchLabel(label: string, companies: ReturnType<typeof listCompanies>): string {
+function guessCompanyIdForBranchLabel(label: string, companies: Awaited<ReturnType<typeof listCompanies>>): string {
   const n = String(label || '')
     .trim()
     .toLowerCase()
@@ -104,23 +104,23 @@ function guessCompanyIdForBranchLabel(label: string, companies: ReturnType<typeo
 }
 
 /** Дефолтный маппинг филиалов Amo → контуры (по названиям). */
-export function defaultBranchCompanyMap(): Record<string, string> {
-  const companies = listCompanies({ activeOnly: true });
+export async function defaultBranchCompanyMap(): Promise<Record<string, string>> {
+  const companies = await listCompanies({ activeOnly: true });
   const out: Record<string, string> = {};
-  for (const label of amoSaleFieldOptions('amo_branch')) {
+  for (const label of await amoSaleFieldOptions('amo_branch')) {
     const id = guessCompanyIdForBranchLabel(label, companies);
     if (id) out[label] = id;
   }
   return out;
 }
 
-export function getAmoIntegrationSettings(): AmoIntegrationSettings {
-  const stored = readMeta();
+export async function getAmoIntegrationSettings(): Promise<AmoIntegrationSettings> {
+  const stored = await readMeta();
   const stages = stored.stages && typeof stored.stages === 'object' ? stored.stages : {};
   const storedBranch = cleanIdMap(stored.branch_company);
   const branch_company = Object.keys(storedBranch).length
     ? storedBranch
-    : defaultBranchCompanyMap();
+    : await defaultBranchCompanyMap();
   return {
     stages: {
       success_after_handed: cleanIdMap(
@@ -133,45 +133,45 @@ export function getAmoIntegrationSettings(): AmoIntegrationSettings {
 }
 
 /** Проставить org_company_id на сделках по маппингу воронок. */
-export function applyPipelineCompanyToDeals(
-  map: Record<string, string> = getAmoIntegrationSettings().pipeline_company
-): { updated: number } {
-  ensureDealOrgCompanyColumn();
+export async function applyPipelineCompanyToDeals(
+  map?: Record<string, string>
+): Promise<{ updated: number }> {
+  await ensureDealOrgCompanyColumn();
   let updated = 0;
   for (const [pipeId, companyId] of Object.entries(map || {})) {
     const p = String(pipeId || '').trim();
     const c = String(companyId || '').trim();
     if (!p || !c) continue;
     const before =
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM crm_deals WHERE pipeline_id = ? AND IFNULL(org_company_id,'') != ?`,
         [p, c]
-      )?.c ?? 0;
-    run(`UPDATE crm_deals SET org_company_id = ? WHERE pipeline_id = ?`, [c, p]);
+      ))?.c ?? 0;
+    await run(`UPDATE crm_deals SET org_company_id = ? WHERE pipeline_id = ?`, [c, p]);
     updated += before;
   }
   return { updated };
 }
 
 /** Проставить org_company_id по филиалу (источник истины — CF «Филиал», не воронка). */
-export function applyBranchCompanyToDeals(
-  map: Record<string, string> = getAmoIntegrationSettings().branch_company
-): { updated: number } {
-  ensureDealOrgCompanyColumn();
-  ensureDealAmoBranchColumn();
+export async function applyBranchCompanyToDeals(
+  map?: Record<string, string>
+): Promise<{ updated: number }> {
+  await ensureDealOrgCompanyColumn();
+  await ensureDealAmoBranchColumn();
   let updated = 0;
   for (const [branch, companyId] of Object.entries(map || {})) {
     const b = String(branch || '').trim();
     const c = String(companyId || '').trim();
     if (!b || !c) continue;
     const before =
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM crm_deals
          WHERE IFNULL(amo_branch,'') = ? AND IFNULL(org_company_id,'') != ?`,
         [b, c]
-      )?.c ?? 0;
+      ))?.c ?? 0;
     if (!before) continue;
-    run(
+    await run(
       `UPDATE crm_deals
        SET org_company_id = ?
        WHERE IFNULL(amo_branch,'') = ?`,
@@ -182,29 +182,29 @@ export function applyBranchCompanyToDeals(
   return { updated };
 }
 
-function ensureDealOrgCompanyColumn(): void {
-  const cols = all<{ name: string }>('PRAGMA table_info(crm_deals)').map((c) => c.name);
+async function ensureDealOrgCompanyColumn(): Promise<void> {
+  const cols = (await all<{ name: string }>('PRAGMA table_info(crm_deals)')).map((c) => c.name);
   if (cols.length && !cols.includes('org_company_id')) {
-    run(`ALTER TABLE crm_deals ADD COLUMN org_company_id TEXT NOT NULL DEFAULT ''`);
+    await run(`ALTER TABLE crm_deals ADD COLUMN org_company_id TEXT NOT NULL DEFAULT ''`);
   }
-  run(`CREATE INDEX IF NOT EXISTS idx_crm_deals_org_co ON crm_deals(org_company_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_crm_deals_org_co ON crm_deals(org_company_id)`);
 }
 
-function ensureDealAmoBranchColumn(): void {
-  const cols = all<{ name: string }>('PRAGMA table_info(crm_deals)').map((c) => c.name);
+async function ensureDealAmoBranchColumn(): Promise<void> {
+  const cols = (await all<{ name: string }>('PRAGMA table_info(crm_deals)')).map((c) => c.name);
   if (cols.length && !cols.includes('amo_branch')) {
-    run(`ALTER TABLE crm_deals ADD COLUMN amo_branch TEXT NOT NULL DEFAULT ''`);
+    await run(`ALTER TABLE crm_deals ADD COLUMN amo_branch TEXT NOT NULL DEFAULT ''`);
   }
 }
 
-export function saveAmoIntegrationSettings(
+export async function saveAmoIntegrationSettings(
   patch: Partial<{
     stages: Partial<AmoStageMap>;
     pipeline_company: Record<string, string>;
     branch_company: Record<string, string>;
   }>
-): AmoIntegrationSettings {
-  const cur = getAmoIntegrationSettings();
+): Promise<AmoIntegrationSettings> {
+  const cur = await getAmoIntegrationSettings();
   const next: AmoIntegrationSettings = {
     stages: {
       success_after_handed:
@@ -221,10 +221,10 @@ export function saveAmoIntegrationSettings(
         ? cleanIdMap(patch.branch_company)
         : cur.branch_company,
   };
-  writeMeta(next);
+  await writeMeta(next);
   // Воронки больше не привязывают к организации — только филиал
   if (patch.branch_company !== undefined) {
-    applyBranchCompanyToDeals(next.branch_company);
+    await applyBranchCompanyToDeals(next.branch_company);
   }
   return next;
 }
@@ -235,10 +235,10 @@ export function mappedOrgCompanyId(_pipelineId: string): string {
 }
 
 /** Контур по значению CF «Филиал». */
-export function mappedOrgCompanyIdForBranch(branch: string): string {
+export async function mappedOrgCompanyIdForBranch(branch: string): Promise<string> {
   const b = String(branch || '').trim();
   if (!b) return '';
-  const map = getAmoIntegrationSettings().branch_company;
+  const map = (await getAmoIntegrationSettings()).branch_company;
   if (map[b]) return String(map[b]).trim();
   const hit = Object.entries(map).find(
     ([k]) => k.trim().toLowerCase() === b.toLowerCase()
@@ -247,16 +247,16 @@ export function mappedOrgCompanyIdForBranch(branch: string): string {
 }
 
 /** Резолв этапа «успех после отгрузки» для воронки (маппинг → fallback null). */
-export function mappedSuccessStatus(
+export async function mappedSuccessStatus(
   pipelineId: string
-): { statusId: string; statusName: string; pipelineId: string } | null {
+): Promise<{ statusId: string; statusName: string; pipelineId: string } | null> {
   const pipe = String(pipelineId || '').trim();
   if (!pipe) return null;
-  const mapped = getAmoIntegrationSettings().stages.success_after_handed[pipe];
+  const mapped = (await getAmoIntegrationSettings()).stages.success_after_handed[pipe];
   if (!mapped) return null;
   const raw = rawStatusId(mapped);
   const composite = mapped.includes(':') ? mapped : `${pipe}:${raw}`;
-  const row = get<{ id: string; name: string; pipeline_id: string }>(
+  const row = await get<{ id: string; name: string; pipeline_id: string }>(
     `SELECT id, name, pipeline_id FROM crm_pipeline_statuses
      WHERE pipeline_id = ? AND (id = ? OR id = ? OR id LIKE ?)
      LIMIT 1`,
@@ -313,15 +313,12 @@ function amoOauthSharePublic(): {
   };
 }
 
-export function amoBridgePublic() {
-  const settings = getAmoIntegrationSettings();
-  const pipes = listPipelines().filter((p) => !p.is_archive);
+export async function amoBridgePublic() {
+  const settings = await getAmoIntegrationSettings();
+  const pipes = (await listPipelines()).filter((p) => !p.is_archive);
   const oauth = amoOauthSharePublic();
-  const integration = amoIntegrationStatusPublic();
-  const unmappedUsers = (() => {
-    // Маппинг менеджеров Amo→staff не используем — алерты не поднимаем.
-    return listUnmappedAmoUsers();
-  })();
+  const integration = await amoIntegrationStatusPublic();
+  const unmappedUsers = await listUnmappedAmoUsers();
   return {
     bridge: {
       deals_export: envPathSet('AMO1C_DEALS_EXPORT'),
@@ -330,8 +327,8 @@ export function amoBridgePublic() {
       stage_push: envPathSet('AMO1C_DEAL_STAGE_PUSH'),
       sale_fields_push: envPathSet('AMO1C_DEAL_SALE_FIELDS_PUSH'),
       push_to_amo_enabled: amoPushToAmoEnabled(),
-      ingest_key: hasAnyMachineApiKey(),
-      api_keys_active: countActiveIntegrationApiKeys(),
+      ingest_key: await hasAnyMachineApiKey(),
+      api_keys_active: await countActiveIntegrationApiKeys(),
       note: 'Ключи Amo хранятся в amo1c. Внешним клиентам — свой ключ в Помощь → Интеграции и API. Env WMS_INGEST_KEY — fallback.',
       oauth_client_id: oauth.client_id,
       oauth_share_url: oauth.share_url,
@@ -352,18 +349,18 @@ export function amoBridgePublic() {
       deals_count: integration.deals_count,
     },
     meta: {
-      deals: dealsMeta(),
-      counterparties: amoCounterpartiesMeta(),
-      staff: staffMeta(),
+      deals: await dealsMeta(),
+      counterparties: await amoCounterpartiesMeta(),
+      staff: await staffMeta(),
     },
     stages: settings.stages,
     pipeline_company: settings.pipeline_company,
     branch_company: settings.branch_company,
-    branches: amoSaleFieldOptions('amo_branch').map((label) => ({
+    branches: (await amoSaleFieldOptions('amo_branch')).map((label) => ({
       value: label,
       org_company_id: settings.branch_company[label] || '',
     })),
-    companies: listCompanies({ activeOnly: true }).map((c) => ({
+    companies: (await listCompanies({ activeOnly: true })).map((c) => ({
       id: String(c.id),
       name: String(c.name),
       is_default: Number(c.is_default) === 1,
@@ -375,7 +372,7 @@ export function amoBridgePublic() {
         hint: 'После статуса задания «Сдал» и оплаты — перевести сделку в этот этап Amo',
       },
     ],
-    sale_rules: amoSaleRulesPublic({
+    sale_rules: await amoSaleRulesPublic({
       unmapped_users_count: unmappedUsers.length,
       unmapped_amo_users: unmappedUsers,
     }),
@@ -391,7 +388,7 @@ export function amoBridgePublic() {
         sort: Number(s.sort) || 0,
       })),
     })),
-    staff: all<{
+    staff: (await all<{
       id: string;
       name: string;
       email: string;
@@ -406,7 +403,7 @@ export function amoBridgePublic() {
        FROM staff
        WHERE is_active = 1
        ORDER BY name COLLATE NOCASE`
-    ).map((r) => ({
+    )).map((r) => ({
       id: String(r.id),
       name: String(r.name || ''),
       email: String(r.email || ''),
@@ -417,13 +414,13 @@ export function amoBridgePublic() {
       can_login: Number(r.can_login) !== 0,
     })),
     /** Все известные Amo user id (из staff + ответственные в сделках) — для select. */
-    amo_users: (() => {
+    amo_users: (async () => {
       const byId = new Map<
         string,
         { amo_id: string; name: string; deals: number; staff_id: string; staff_name: string }
       >();
-      const dir = getAmoUserDirectory();
-      const dealRows = all<{ amo_id: string; c: number }>(
+      const dir = await getAmoUserDirectory();
+      const dealRows = await all<{ amo_id: string; c: number }>(
         `SELECT responsible_user_id AS amo_id, COUNT(*) AS c
          FROM crm_deals
          WHERE IFNULL(responsible_user_id,'') != ''
@@ -443,7 +440,7 @@ export function amoBridgePublic() {
         });
       }
       // имена: любой staff с amo_id (в т.ч. архив) + весь справочник Amo
-      const staffRows = all<{ id: string; name: string; amo_id: string; is_active: number }>(
+      const staffRows = await all<{ id: string; name: string; amo_id: string; is_active: number }>(
         `SELECT id, name, IFNULL(amo_id,'') AS amo_id, is_active FROM staff
          WHERE IFNULL(amo_id,'') != ''`
       );
@@ -498,27 +495,27 @@ export function amoBridgePublic() {
   };
 }
 
-export function saveStaffAmoMappings(
+export async function saveStaffAmoMappings(
   mappings: Array<{ staff_id: string; amo_id: string }>
-): { updated: number } {
+): Promise<{ updated: number }> {
   let updated = 0;
   for (const m of mappings || []) {
     const staffId = String(m.staff_id || '').trim();
     if (!staffId) continue;
     const amoId = String(m.amo_id || '').trim().replace(/[^\d]/g, '').slice(0, 32);
-    const row = get<{ id: string }>('SELECT id FROM staff WHERE id = ?', [staffId]);
+    const row = await get<{ id: string }>('SELECT id FROM staff WHERE id = ?', [staffId]);
     if (!row) continue;
     // уникальность: если amo_id занят другим — снимаем у того
     if (amoId) {
-      const other = get<{ id: string }>(
+      const other = await get<{ id: string }>(
         `SELECT id FROM staff WHERE amo_id = ? AND id != ? LIMIT 1`,
         [amoId, staffId]
       );
       if (other) {
-        run(`UPDATE staff SET amo_id = '' WHERE id = ?`, [other.id]);
+        await run(`UPDATE staff SET amo_id = '' WHERE id = ?`, [other.id]);
       }
     }
-    run(`UPDATE staff SET amo_id = ? WHERE id = ?`, [amoId, staffId]);
+    await run(`UPDATE staff SET amo_id = ? WHERE id = ?`, [amoId, staffId]);
     updated += 1;
   }
   return { updated };

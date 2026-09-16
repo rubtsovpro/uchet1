@@ -22,26 +22,26 @@ export type ArchiveRow = {
   created_at: string;
 };
 
-export function listArchive(organizationId: string | null | undefined, kind?: string): ArchiveRow[] {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
+export async function listArchive(organizationId: string | null | undefined, kind?: string): Promise<ArchiveRow[]> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
   if (kind) {
-    return all<ArchiveRow>(
+    return await all<ArchiveRow>(
       `SELECT id, organization_id, title, kind, period_label, filename, mime, size_bytes, notes, uploaded_by, created_at
        FROM tax_archive WHERE organization_id=? AND kind=? ORDER BY created_at DESC LIMIT 200`,
       [oid, kind]
     );
   }
-  return all<ArchiveRow>(
+  return await all<ArchiveRow>(
     `SELECT id, organization_id, title, kind, period_label, filename, mime, size_bytes, notes, uploaded_by, created_at
      FROM tax_archive WHERE organization_id=? ORDER BY created_at DESC LIMIT 200`,
     [oid]
   );
 }
 
-export function getArchiveMeta(id: string) {
-  ensureTaxSchema();
-  return get<{
+export async function getArchiveMeta(id: string) {
+  await ensureTaxSchema();
+  return await get<{
     id: string;
     organization_id: string;
     title: string;
@@ -55,13 +55,13 @@ export function getArchiveMeta(id: string) {
   );
 }
 
-export function readArchiveBytes(id: string): { meta: NonNullable<ReturnType<typeof getArchiveMeta>>; buf: Buffer } | null {
-  const meta = getArchiveMeta(id);
+export async function readArchiveBytes(id: string): Promise<{ meta: NonNullable<Awaited<ReturnType<typeof getArchiveMeta>>>; buf: Buffer } | null> {
+  const meta = await getArchiveMeta(id);
   if (!meta?.stored_path || !existsSync(meta.stored_path)) return null;
   return { meta, buf: readFileSync(meta.stored_path) };
 }
 
-export function saveArchiveUpload(opts: {
+export async function saveArchiveUpload(opts: {
   organizationId: string | null | undefined;
   kind: string;
   title?: string;
@@ -71,9 +71,9 @@ export function saveArchiveUpload(opts: {
   mime: string;
   buffer: Buffer;
   uploadedBy?: string;
-}): { id: string } {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(opts.organizationId);
+}): Promise<{ id: string }> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(opts.organizationId);
   const kind = String(opts.kind || 'other').slice(0, 64);
   const dir = path.join(orgTaxDir(oid, 'archive'), kind);
   mkdirSync(dir, { recursive: true });
@@ -83,7 +83,7 @@ export function saveArchiveUpload(opts: {
     .slice(0, 120);
   const filePath = path.join(dir, `${id}_${safe}`);
   writeFileSync(filePath, opts.buffer);
-  run(
+  await run(
     `INSERT INTO tax_archive (
        id, organization_id, title, kind, period_label, filename, mime, size_bytes, stored_path, notes, uploaded_by
      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
@@ -104,10 +104,10 @@ export function saveArchiveUpload(opts: {
   return { id };
 }
 
-export function deleteArchive(id: string): boolean {
-  ensureTaxSchema();
-  const row = getArchiveMeta(id);
+export async function deleteArchive(id: string): Promise<boolean> {
+  await ensureTaxSchema();
+  const row = await getArchiveMeta(id);
   if (!row) return false;
-  run(`DELETE FROM tax_archive WHERE id=?`, [id]);
+  await run(`DELETE FROM tax_archive WHERE id=?`, [id]);
   return true;
 }

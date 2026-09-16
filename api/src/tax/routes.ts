@@ -90,11 +90,11 @@ async function readUpload(c: {
   };
 }
 
-export function mountTaxRoutes(api: Hono): void {
-  ensureTaxSchema();
+export async function mountTaxRoutes(api: Hono): Promise<void> {
+  await ensureTaxSchema();
 
-  api.get('/tax/meta', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/meta', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     return c.json({
@@ -105,25 +105,25 @@ export function mountTaxRoutes(api: Hono): void {
     });
   });
 
-  api.get('/tax/settings', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/settings', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
-      return c.json({ settings: getTaxSettings(orgId(c)) });
+      return c.json({ settings: await getTaxSettings(orgId(c)) });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'settings failed' }, 400);
     }
   });
 
   api.patch('/tax/settings', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
       const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-      const settings = patchTaxSettings(orgId(c, body), body as never);
-      auditFromContext(c, {
+      const settings = await patchTaxSettings(orgId(c, body), body as never);
+      await auditFromContext(c, {
         action: 'tax.settings.patch',
         entity: 'tax_org_settings',
         entityId: settings.organization_id,
@@ -135,12 +135,12 @@ export function mountTaxRoutes(api: Hono): void {
     }
   });
 
-  api.get('/tax/calendar', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/calendar', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
-      return c.json({ items: buildTaxCalendar(orgId(c)) });
+      return c.json({ items: await buildTaxCalendar(orgId(c)) });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'calendar failed' }, 400);
     }
@@ -148,22 +148,22 @@ export function mountTaxRoutes(api: Hono): void {
 
   /* ——— НДС ——— */
   api.post('/tax/vat/rebuild', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
       const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
       const { year, quarter } = yq(c, body);
-      const counts = rebuildVatBooks(orgId(c, body), year, quarter);
-      const summary = vatBooksSummary(orgId(c, body), year, quarter);
+      const counts = await rebuildVatBooks(orgId(c, body), year, quarter);
+      const summary = await vatBooksSummary(orgId(c, body), year, quarter);
       return c.json({ ok: true, counts, summary, year, quarter });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'rebuild failed' }, 400);
     }
   });
 
-  api.get('/tax/vat/books', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/vat/books', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
@@ -172,9 +172,9 @@ export function mountTaxRoutes(api: Hono): void {
       return c.json({
         year,
         quarter,
-        summary: vatBooksSummary(oid, year, quarter),
-        sales: listVatSales(oid, year, quarter),
-        purchases: listVatPurchases(oid, year, quarter),
+        summary: await vatBooksSummary(oid, year, quarter),
+        sales: await listVatSales(oid, year, quarter),
+        purchases: await listVatPurchases(oid, year, quarter),
       });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'books failed' }, 400);
@@ -182,14 +182,14 @@ export function mountTaxRoutes(api: Hono): void {
   });
 
   api.post('/tax/vat/declare', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
       const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
       const { year, quarter } = yq(c, body);
-      const result = buildVatDeclarationXml(orgId(c, body), year, quarter);
-      auditFromContext(c, {
+      const result = await buildVatDeclarationXml(orgId(c, body), year, quarter);
+      await auditFromContext(c, {
         action: 'tax.vat.declare',
         entity: 'tax_report',
         entityId: result.report_id,
@@ -203,22 +203,22 @@ export function mountTaxRoutes(api: Hono): void {
 
   /* ——— УСН / КУДиР ——— */
   api.post('/tax/usn/rebuild', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
       const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
       const { year, quarter } = yq(c, body);
       const oid = orgId(c, body);
-      const counts = rebuildKudir(oid, year, quarter);
-      return c.json({ ok: true, counts, summary: kudirSummary(oid, year, quarter), year, quarter });
+      const counts = await rebuildKudir(oid, year, quarter);
+      return c.json({ ok: true, counts, summary: await kudirSummary(oid, year, quarter), year, quarter });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'rebuild failed' }, 400);
     }
   });
 
-  api.get('/tax/kudir', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/kudir', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
@@ -227,8 +227,8 @@ export function mountTaxRoutes(api: Hono): void {
       return c.json({
         year,
         quarter,
-        summary: kudirSummary(oid, year, quarter),
-        lines: listKudir(oid, year, quarter),
+        summary: await kudirSummary(oid, year, quarter),
+        lines: await listKudir(oid, year, quarter),
       });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'kudir failed' }, 400);
@@ -236,14 +236,14 @@ export function mountTaxRoutes(api: Hono): void {
   });
 
   api.post('/tax/usn/declare', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
       const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
       const { year, quarter } = yq(c, body);
-      const result = buildUsnReport(orgId(c, body), year, quarter);
-      auditFromContext(c, {
+      const result = await buildUsnReport(orgId(c, body), year, quarter);
+      await auditFromContext(c, {
         action: 'tax.usn.declare',
         entity: 'tax_report',
         entityId: result.report_id,
@@ -256,14 +256,14 @@ export function mountTaxRoutes(api: Hono): void {
   });
 
   api.post('/tax/notice/build', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
       const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
       const year = Number(body.year || new Date().getFullYear());
       const month = Number(body.month || new Date().getMonth() + 1);
-      const result = buildTaxNotice(orgId(c, body), year, month);
+      const result = await buildTaxNotice(orgId(c, body), year, month);
       return c.json(result);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'notice failed' }, 400);
@@ -271,73 +271,73 @@ export function mountTaxRoutes(api: Hono): void {
   });
 
   /* ——— Зарплата ——— */
-  api.get('/payroll/runs', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/payroll/runs', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyPayroll(c, actor);
     if (d) return d;
     try {
-      return c.json({ items: listPayrollRuns(orgId(c)) });
+      return c.json({ items: await listPayrollRuns(orgId(c)) });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'list failed' }, 400);
     }
   });
 
   api.post('/payroll/runs', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyPayroll(c, actor);
     if (d) return d;
     try {
       const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
       const year = Number(body.year || new Date().getFullYear());
       const month = Number(body.month || new Date().getMonth() + 1);
-      const result = createOrRebuildPayrollRun(orgId(c, body), year, month, actor?.id || '');
-      auditFromContext(c, {
+      const result = await createOrRebuildPayrollRun(orgId(c, body), year, month, actor?.id || '');
+      await auditFromContext(c, {
         action: 'payroll.run.create',
         entity: 'payroll_run',
         entityId: result.run_id,
         summary: `ЗП ${year}-${month}`,
       });
-      return c.json({ ...result, run: getPayrollRun(result.run_id) }, 201);
+      return c.json({ ...result, run: await getPayrollRun(result.run_id) }, 201);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'payroll failed' }, 400);
     }
   });
 
-  api.get('/payroll/runs/:id', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/payroll/runs/:id', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyPayroll(c, actor);
     if (d) return d;
-    const runRow = getPayrollRun(c.req.param('id'));
+    const runRow = await getPayrollRun(c.req.param('id'));
     if (!runRow) return c.json({ error: 'not found' }, 404);
     return c.json({ run: runRow });
   });
 
-  api.post('/payroll/runs/:id/post', (c) => {
-    const actor = actorFromContext(c);
+  api.post('/payroll/runs/:id/post', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyPayroll(c, actor);
     if (d) return d;
     try {
-      postPayrollRun(c.req.param('id'));
-      auditFromContext(c, {
+      await postPayrollRun(c.req.param('id'));
+      await auditFromContext(c, {
         action: 'payroll.run.post',
         entity: 'payroll_run',
         entityId: c.req.param('id'),
         summary: 'Проведение начисления ЗП',
       });
-      return c.json({ run: getPayrollRun(c.req.param('id')) });
+      return c.json({ run: await getPayrollRun(c.req.param('id')) });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'post failed' }, 400);
     }
   });
 
   /* ——— Отчёты XML ——— */
-  api.get('/tax/reports', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/reports', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
       return c.json({
-        items: listTaxReports(orgId(c), c.req.query('type') || undefined),
+        items: await listTaxReports(orgId(c), c.req.query('type') || undefined),
       });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'list failed' }, 400);
@@ -345,7 +345,7 @@ export function mountTaxRoutes(api: Hono): void {
   });
 
   api.post('/tax/reports/build', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
@@ -355,15 +355,15 @@ export function mountTaxRoutes(api: Hono): void {
       const oid = orgId(c, body);
       let result: { report_id: string; xml_path: string; amount: number };
       if (type === 'NDS') {
-        result = buildVatDeclarationXml(oid, year, Number(body.quarter || 1));
+        result = await buildVatDeclarationXml(oid, year, Number(body.quarter || 1));
       } else if (type === 'USN' || type === 'USN_ADV') {
-        result = buildUsnReport(oid, year, Number(body.quarter || 4));
+        result = await buildUsnReport(oid, year, Number(body.quarter || 4));
       } else if (type === 'NOTICE') {
-        result = buildTaxNotice(oid, year, Number(body.month || 1));
+        result = await buildTaxNotice(oid, year, Number(body.month || 1));
       } else if (['6NDFL', 'RSV', 'EFS1', 'PERS'].includes(type)) {
         const d2 = denyPayroll(c, actor);
         if (d2) return d2;
-        result = buildPayrollReportXml(
+        result = await buildPayrollReportXml(
           oid,
           type as '6NDFL' | 'RSV' | 'EFS1' | 'PERS',
           year,
@@ -372,7 +372,7 @@ export function mountTaxRoutes(api: Hono): void {
       } else {
         return c.json({ error: `Неизвестный тип отчёта: ${type}` }, 400);
       }
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'tax.report.build',
         entity: 'tax_report',
         entityId: result.report_id,
@@ -384,11 +384,11 @@ export function mountTaxRoutes(api: Hono): void {
     }
   });
 
-  api.get('/tax/reports/:id/xml', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/reports/:id/xml', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
-    const row = get<{ xml_path: string; report_type: string }>(
+    const row = await get<{ xml_path: string; report_type: string }>(
       `SELECT xml_path, report_type FROM tax_reports WHERE id=?`,
       [c.req.param('id')]
     );
@@ -405,26 +405,26 @@ export function mountTaxRoutes(api: Hono): void {
   });
 
   /* ——— Контур / отправки ——— */
-  api.get('/tax/kontur/status', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/kontur/status', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     return c.json(konturConfigStatus());
   });
 
-  api.get('/tax/filings', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/filings', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
-      return c.json({ items: listFilings(orgId(c)) });
+      return c.json({ items: await listFilings(orgId(c)) });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'list failed' }, 400);
     }
   });
 
   api.post('/tax/filings/:id/send', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     // id здесь — report_id (удобнее с UI) или filing через report
@@ -432,7 +432,7 @@ export function mountTaxRoutes(api: Hono): void {
       const body = (await c.req.json().catch(() => ({}))) as { dry_run?: boolean; report_id?: string };
       const reportId = String(body.report_id || c.req.param('id'));
       const result = await sendReportViaKontur(reportId, { dry_run: body.dry_run });
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'tax.filing.send',
         entity: 'tax_filing',
         entityId: result.filing_id,
@@ -445,7 +445,7 @@ export function mountTaxRoutes(api: Hono): void {
   });
 
   api.post('/tax/filings/send', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
@@ -455,7 +455,7 @@ export function mountTaxRoutes(api: Hono): void {
       };
       if (!body.report_id) return c.json({ error: 'report_id обязателен' }, 400);
       const result = await sendReportViaKontur(body.report_id, { dry_run: body.dry_run });
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'tax.filing.send',
         entity: 'tax_filing',
         entityId: result.filing_id,
@@ -468,7 +468,7 @@ export function mountTaxRoutes(api: Hono): void {
   });
 
   api.post('/tax/filings/sync-status', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
@@ -480,19 +480,19 @@ export function mountTaxRoutes(api: Hono): void {
   });
 
   /* ——— Архив эталонов ——— */
-  api.get('/tax/archive', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/archive', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
-      return c.json({ items: listArchive(orgId(c), c.req.query('kind') || undefined) });
+      return c.json({ items: await listArchive(orgId(c), c.req.query('kind') || undefined) });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'list failed' }, 400);
     }
   });
 
   api.post('/tax/archive/upload', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     try {
@@ -501,7 +501,7 @@ export function mountTaxRoutes(api: Hono): void {
       const title = String(c.req.query('title') || fileName);
       const periodLabel = String(c.req.query('period_label') || '');
       const notes = String(c.req.query('notes') || '');
-      const result = saveArchiveUpload({
+      const result = await saveArchiveUpload({
         organizationId: orgId(c),
         kind,
         title,
@@ -512,7 +512,7 @@ export function mountTaxRoutes(api: Hono): void {
         buffer: buf,
         uploadedBy: actor?.id || '',
       });
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'tax.archive.upload',
         entity: 'tax_archive',
         entityId: result.id,
@@ -524,11 +524,11 @@ export function mountTaxRoutes(api: Hono): void {
     }
   });
 
-  api.get('/tax/archive/:id/file', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/tax/archive/:id/file', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
-    const packed = readArchiveBytes(c.req.param('id'));
+    const packed = await readArchiveBytes(c.req.param('id'));
     if (!packed) return c.json({ error: 'not found' }, 404);
     c.header('Content-Type', packed.meta.mime || 'application/octet-stream');
     c.header(
@@ -538,23 +538,23 @@ export function mountTaxRoutes(api: Hono): void {
     return c.body(new Uint8Array(packed.buf));
   });
 
-  api.delete('/tax/archive/:id', (c) => {
-    const actor = actorFromContext(c);
+  api.delete('/tax/archive/:id', async (c) => {
+    const actor = await actorFromContext(c);
     const d = denyTax(c, actor);
     if (d) return d;
     if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'accountant') {
       return c.json({ error: 'forbidden' }, 403);
     }
-    const ok = deleteArchive(c.req.param('id'));
+    const ok = await deleteArchive(c.req.param('id'));
     if (!ok) return c.json({ error: 'not found' }, 404);
     return c.json({ ok: true });
   });
 
   /* seed partner account row (idempotent) */
   try {
-    const exists = get<{ c: number }>(`SELECT COUNT(*) AS c FROM tax_kontur_accounts`);
+    const exists = await get<{ c: number }>(`SELECT COUNT(*) AS c FROM tax_kontur_accounts`);
     if (!exists || Number(exists.c) === 0) {
-      run(
+      await run(
         `INSERT INTO tax_kontur_accounts (id, label, is_test, notes)
          VALUES (?,?,1,?)`,
         [

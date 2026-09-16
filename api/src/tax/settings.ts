@@ -29,18 +29,18 @@ const DEFAULTS: Omit<TaxOrgSettings, 'organization_id'> = {
   notes: '',
 };
 
-export function getTaxSettings(organizationId?: string | null): TaxOrgSettings {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
-  const row = get<TaxOrgSettings>(`SELECT * FROM tax_org_settings WHERE organization_id = ?`, [oid]);
+export async function getTaxSettings(organizationId?: string | null): Promise<TaxOrgSettings> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
+  const row = await get<TaxOrgSettings>(`SELECT * FROM tax_org_settings WHERE organization_id = ?`, [oid]);
   if (row) return row;
-  const org = getOrganization(oid);
+  const org = await getOrganization(oid);
   const seeded: TaxOrgSettings = {
     organization_id: oid,
     ...DEFAULTS,
     vat_rate: Number(org?.vat_rate) > 0 ? Number(org?.vat_rate) : 20,
   };
-  run(
+  await run(
     `INSERT INTO tax_org_settings (
        organization_id, tax_system, usn_rate, vat_rate, vat_payer, ifns_code, sfr_reg_number,
        trade_fee, kontur_account_id, cert_thumbprint, notes
@@ -62,11 +62,11 @@ export function getTaxSettings(organizationId?: string | null): TaxOrgSettings {
   return seeded;
 }
 
-export function patchTaxSettings(
+export async function patchTaxSettings(
   organizationId: string | null | undefined,
   patch: Partial<TaxOrgSettings>
-): TaxOrgSettings {
-  const cur = getTaxSettings(organizationId);
+): Promise<TaxOrgSettings> {
+  const cur = await getTaxSettings(organizationId);
   const next: TaxOrgSettings = {
     ...cur,
     tax_system: patch.tax_system != null ? String(patch.tax_system) : cur.tax_system,
@@ -85,7 +85,7 @@ export function patchTaxSettings(
       patch.cert_thumbprint != null ? String(patch.cert_thumbprint).trim() : cur.cert_thumbprint,
     notes: patch.notes != null ? String(patch.notes) : cur.notes,
   };
-  run(
+  await run(
     `UPDATE tax_org_settings SET
        tax_system=?, usn_rate=?, vat_rate=?, vat_payer=?, ifns_code=?, sfr_reg_number=?,
        trade_fee=?, kontur_account_id=?, cert_thumbprint=?, notes=?, updated_at=datetime('now')

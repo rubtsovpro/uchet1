@@ -13,15 +13,15 @@ import { getDealPaymentSplit } from './deal-payment-split.js';
 import { buildDealSaleRules } from './deal-sale-rules.js';
 
 /** Черновик заказа на перемещение по сделке — можно до оплаты, без резерва. */
-export function ensureDealTransferOrderDraft(dealIdRaw: string): {
+export async function ensureDealTransferOrderDraft(dealIdRaw: string): Promise<{
   created: boolean;
   id?: string;
   number?: string;
   already?: boolean;
-} {
+}> {
   const dealId = String(dealIdRaw || '').trim();
   if (!dealId) return { created: false };
-  const existing = listTransferOrdersForDeal(dealId);
+  const existing = await listTransferOrdersForDeal(dealId);
   if (existing.length) {
     return {
       created: false,
@@ -30,16 +30,16 @@ export function ensureDealTransferOrderDraft(dealIdRaw: string): {
       number: existing[0].number,
     };
   }
-  if (listStoRequestsForDeal(dealId).length) {
+  if ((await listStoRequestsForDeal(dealId)).length) {
     return { created: false, already: true };
   }
-  if (!dealHasGoods(dealId)) return { created: false };
-  const deal = get<{ id: string; name: string }>(
+  if (!await dealHasGoods(dealId)) return { created: false };
+  const deal = await get<{ id: string; name: string }>(
     `SELECT id, IFNULL(name,'') AS name FROM crm_deals WHERE id = ?`,
     [dealId]
   );
   if (!deal) return { created: false };
-  const row = createThinJournalDoc('transfer_orders', {
+  const row = await createThinJournalDoc('transfer_orders', {
     counterparty_name: String(deal.name || '').slice(0, 120),
     comment: `По заказу покупателя · сделка ${dealId}`,
     status: 'new',
@@ -56,14 +56,14 @@ export function ensureDealTransferOrderDraft(dealIdRaw: string): {
   return { created: true, id: String(row.id), number: String(row.number || '') };
 }
 
-function dealIsPaid(dealId: string): boolean {
-  const paid = get<{ c: number }>(
+async function dealIsPaid(dealId: string): Promise<boolean> {
+  const paid = (await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM deal_payments
      WHERE deal_id = ? AND status IN ('paid','confirmed','success','active')`,
     [dealId]
-  )?.c;
+  ))?.c;
   if (paid && paid > 0) return true;
-  const d = get<{ payment_status?: string; paid?: number }>(
+  const d = await get<{ payment_status?: string; paid?: number }>(
     `SELECT payment_status, paid FROM crm_deals WHERE id = ?`,
     [dealId]
   );
@@ -124,9 +124,9 @@ function parsePayload(raw: string): Record<string, unknown> {
   }
 }
 
-function dealHasGoods(dealId: string): boolean {
+async function dealHasGoods(dealId: string): Promise<boolean> {
   /** Только товары (не услуги) — услуги в расходную не входят. */
-  const row = get<{ c: number }>(
+  const row = await get<{ c: number }>(
     `SELECT COUNT(*) AS c
      FROM crm_deal_items i
      LEFT JOIN products p ON p.id = NULLIF(TRIM(IFNULL(i.product_guid,'')), '')
@@ -139,8 +139,8 @@ function dealHasGoods(dealId: string): boolean {
   return (Number(row?.c) || 0) > 0;
 }
 
-function listTransferOrdersForDeal(dealId: string) {
-  return all<{
+async function listTransferOrdersForDeal(dealId: string) {
+  return (await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -161,14 +161,14 @@ function listTransferOrdersForDeal(dealId: string) {
      ORDER BY datetime(created_at) DESC
      LIMIT 20`,
     [`%"deal_id":"${dealId}"%`, `%"deal_id": "${dealId}"%`, `%сделка ${dealId}%`]
-  ).filter((row) => {
+  )).filter((row) => {
     const p = parsePayload(row.payload_json);
     return String(p.deal_id || '').trim() === dealId || row.comment.includes(`сделка ${dealId}`);
   });
 }
 
-function listStockTransfersForDeal(dealId: string) {
-  return all<{
+async function listStockTransfersForDeal(dealId: string) {
+  return await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -191,8 +191,8 @@ function listStockTransfersForDeal(dealId: string) {
   );
 }
 
-function listOutsForDeal(dealId: string) {
-  return all<{
+async function listOutsForDeal(dealId: string) {
+  return await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -211,8 +211,8 @@ function listOutsForDeal(dealId: string) {
   );
 }
 
-function listCardOpsForDeal(dealId: string, outIds: string[]) {
-  const byDeal = all<{
+async function listCardOpsForDeal(dealId: string, outIds: string[]) {
+  const byDeal = await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -231,7 +231,7 @@ function listCardOpsForDeal(dealId: string, outIds: string[]) {
   );
   if (!outIds.length) return byDeal;
   const placeholders = outIds.map(() => '?').join(',');
-  const byOut = all<{
+  const byOut = await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -255,8 +255,8 @@ function listCardOpsForDeal(dealId: string, outIds: string[]) {
   return byDeal;
 }
 
-function listStoRequestsForDeal(dealId: string) {
-  return all<{
+async function listStoRequestsForDeal(dealId: string) {
+  return await all<{
     id: string;
     number: string;
     status: string;
@@ -272,8 +272,8 @@ function listStoRequestsForDeal(dealId: string) {
   );
 }
 
-function listWarehouseTasksForDeal(dealId: string) {
-  return all<{
+async function listWarehouseTasksForDeal(dealId: string) {
+  return await all<{
     id: string;
     number: string;
     status: string;
@@ -289,8 +289,8 @@ function listWarehouseTasksForDeal(dealId: string) {
   );
 }
 
-function listFiscalForDeal(dealId: string) {
-  return all<{ id: string; kind: string; status: string; created_at: string }>(
+async function listFiscalForDeal(dealId: string) {
+  return await all<{ id: string; kind: string; status: string; created_at: string }>(
     `SELECT id, IFNULL(kind,'') AS kind, IFNULL(status,'') AS status,
             IFNULL(created_at,'') AS created_at
      FROM fiscal_receipts WHERE deal_id = ?
@@ -299,8 +299,8 @@ function listFiscalForDeal(dealId: string) {
   );
 }
 
-function listPaymentsForDeal(dealId: string) {
-  return all<{ id: string; kind: string; status: string; amount: number }>(
+async function listPaymentsForDeal(dealId: string) {
+  return await all<{ id: string; kind: string; status: string; amount: number }>(
     `SELECT id, IFNULL(kind,'') AS kind, IFNULL(status,'') AS status, IFNULL(amount,0) AS amount
      FROM deal_payments WHERE deal_id = ?
      ORDER BY datetime(created_at) DESC LIMIT 40`,
@@ -319,8 +319,8 @@ function fiscalOk(
   );
 }
 
-function listSalesDocsForDeal(dealId: string) {
-  return all<{
+async function listSalesDocsForDeal(dealId: string) {
+  return await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -354,10 +354,10 @@ function placeholder(kind: OrderDocKind, label: string, required: boolean): Orde
 }
 
 /** Дерево документов по сделке (= заказ покупателя). */
-export function buildOrderDocTree(dealIdRaw: string): OrderDocTree | null {
+export async function buildOrderDocTree(dealIdRaw: string): Promise<OrderDocTree | null> {
   const dealId = String(dealIdRaw || '').trim();
   if (!dealId) return null;
-  const deal = get<{
+  const deal = await get<{
     id: string;
     name: string;
     price: number;
@@ -396,12 +396,12 @@ export function buildOrderDocTree(dealIdRaw: string): OrderDocTree | null {
   );
   if (!deal) return null;
 
-  const hasGoods = dealHasGoods(dealId);
-  const payments = listPaymentsForDeal(dealId);
-  const fiscalRows = listFiscalForDeal(dealId);
-  const split = getDealPaymentSplit(dealId);
+  const hasGoods = await dealHasGoods(dealId);
+  const payments = await listPaymentsForDeal(dealId);
+  const fiscalRows = await listFiscalForDeal(dealId);
+  const split = await getDealPaymentSplit(dealId);
   const unpaid = Number(split.due_total) > 0.009;
-  const paid = !unpaid && (dealIsPaid(dealId) || Number(deal.paid) === 1);
+  const paid = !unpaid && (await dealIsPaid(dealId) || Number(deal.paid) === 1);
   const dealForRules: Record<string, unknown> = {
     ...deal,
     id: dealId,
@@ -416,16 +416,16 @@ export function buildOrderDocTree(dealIdRaw: string): OrderDocTree | null {
   const needOut = hasGoods;
   const needCard = paid;
 
-  const transferOrders = listTransferOrdersForDeal(dealId);
-  const stoReqs = listStoRequestsForDeal(dealId);
-  const stockTransfers = listStockTransfersForDeal(dealId);
-  const outs = listOutsForDeal(dealId);
-  const cardOps = listCardOpsForDeal(
+  const transferOrders = await listTransferOrdersForDeal(dealId);
+  const stoReqs = await listStoRequestsForDeal(dealId);
+  const stockTransfers = await listStockTransfersForDeal(dealId);
+  const outs = await listOutsForDeal(dealId);
+  const cardOps = await listCardOpsForDeal(
     dealId,
     outs.map((o) => o.id)
   );
-  const tasks = listWarehouseTasksForDeal(dealId);
-  const salesDocs = listSalesDocsForDeal(dealId);
+  const tasks = await listWarehouseTasksForDeal(dealId);
+  const salesDocs = await listSalesDocsForDeal(dealId);
 
   // Перемещение запасов — только если уже есть (не обязательно, не блокирует complete)
   const transferChildren: OrderDocNode[] = [];
@@ -451,7 +451,7 @@ export function buildOrderDocTree(dealIdRaw: string): OrderDocTree | null {
     const p = parsePayload(to.payload_json);
     const sid = String(p.stock_doc_id || '').trim();
     if (!sid || transferChildren.some((c) => c.id === sid)) continue;
-    const st = get<{
+    const st = await get<{
       id: string;
       number: string;
       doc_date: string;
@@ -774,15 +774,15 @@ export function buildOrderDocTree(dealIdRaw: string): OrderDocTree | null {
 }
 
 /** Создать недостающие обязательные документы цепочки (где это безопасно без складов/остатков). */
-export function ensureOrderDocChain(dealIdRaw: string): {
+export async function ensureOrderDocChain(dealIdRaw: string): Promise<{
   tree: OrderDocTree | null;
   created: string[];
-} {
+}> {
   const dealId = String(dealIdRaw || '').trim();
   const created: string[] = [];
   if (!dealId) return { tree: null, created };
 
-  const deal = get<{
+  const deal = await get<{
     id: string;
     price: number;
     is_sto: number;
@@ -796,10 +796,10 @@ export function ensureOrderDocChain(dealIdRaw: string): {
   );
   if (!deal) return { tree: null, created };
 
-  const paid = dealIsPaid(dealId);
+  const paid = await dealIsPaid(dealId);
 
   // Привязать уже существующие перемещения без deal_id, если в comment есть сделка
-  run(
+  await run(
     `UPDATE stock_docs SET deal_id = ?
      WHERE doc_type = 'transfer'
        AND IFNULL(deal_id,'') = ''
@@ -809,8 +809,8 @@ export function ensureOrderDocChain(dealIdRaw: string): {
 
   // При оплате — операция по карте (если ещё нет)
   if (paid) {
-    const outsNow = listOutsForDeal(dealId);
-    const cards = listCardOpsForDeal(
+    const outsNow = await listOutsForDeal(dealId);
+    const cards = await listCardOpsForDeal(
       dealId,
       outsNow.map((o) => o.id)
     );
@@ -818,7 +818,7 @@ export function ensureOrderDocChain(dealIdRaw: string): {
       const amount =
         Number(outsNow[0]?.amount) || Number(deal.price) || 0;
       if (amount > 0) {
-        const op = createCardOp({
+        const op = await createCardOp({
           amount,
           status: 'ok',
           comment: outsNow[0]
@@ -832,7 +832,7 @@ export function ensureOrderDocChain(dealIdRaw: string): {
         }
       }
     } else if (outsNow[0]?.id) {
-      run(
+      await run(
         `UPDATE card_ops SET stock_doc_id = ?
          WHERE deal_id = ? AND IFNULL(stock_doc_id,'') = ''`,
         [outsNow[0].id, dealId]
@@ -840,52 +840,52 @@ export function ensureOrderDocChain(dealIdRaw: string): {
     }
   }
 
-  return { tree: buildOrderDocTree(dealId), created };
+  return { tree: await buildOrderDocTree(dealId), created };
 }
 
 /** После создания расходной — связать и досоздать операцию по карте при оплате. */
-export function linkOutToOrderChain(dealId: string, stockDocId: string): void {
+export async function linkOutToOrderChain(dealId: string, stockDocId: string): Promise<void> {
   const id = String(dealId || '').trim();
   const docId = String(stockDocId || '').trim();
   if (!id || !docId) return;
-  run(
+  await run(
     `UPDATE stock_docs SET deal_id = CASE WHEN IFNULL(deal_id,'')='' THEN ? ELSE deal_id END,
                           basis_order_id = CASE WHEN IFNULL(basis_order_id,'')='' THEN ? ELSE basis_order_id END
      WHERE id = ?`,
     [id, id, docId]
   );
-  if (dealIsPaid(id)) {
-    ensureOrderDocChain(id);
+  if (await dealIsPaid(id)) {
+    await ensureOrderDocChain(id);
   }
 }
 
 /** Привязать перемещение к заказу. */
-export function linkTransferToOrder(dealId: string, stockDocId: string, transferOrderId?: string): void {
+export async function linkTransferToOrder(dealId: string, stockDocId: string, transferOrderId?: string): Promise<void> {
   const id = String(dealId || '').trim();
   const docId = String(stockDocId || '').trim();
   if (!id || !docId) return;
-  run(`UPDATE stock_docs SET deal_id = ?, basis_order_id = ? WHERE id = ?`, [id, id, docId]);
+  await run(`UPDATE stock_docs SET deal_id = ?, basis_order_id = ? WHERE id = ?`, [id, id, docId]);
   const toId = String(transferOrderId || '').trim();
   if (toId) {
-    const row = get<{ payload_json: string }>(
+    const row = await get<{ payload_json: string }>(
       `SELECT IFNULL(payload_json,'') AS payload_json FROM thin_journal_docs WHERE id = ?`,
       [toId]
     );
     const p = parsePayload(row?.payload_json || '');
     p.deal_id = id;
     p.stock_doc_id = docId;
-    run(
+    await run(
       `UPDATE thin_journal_docs SET payload_json = ?, updated_at = datetime('now') WHERE id = ?`,
       [JSON.stringify(p), toId]
     );
   } else {
-    const orders = listTransferOrdersForDeal(id);
+    const orders = await listTransferOrdersForDeal(id);
     if (orders[0]) {
       const p = parsePayload(orders[0].payload_json);
       if (!String(p.stock_doc_id || '').trim()) {
         p.deal_id = id;
         p.stock_doc_id = docId;
-        run(
+        await run(
           `UPDATE thin_journal_docs SET payload_json = ?, status = 'done', updated_at = datetime('now')
            WHERE id = ?`,
           [JSON.stringify(p), orders[0].id]
@@ -895,19 +895,19 @@ export function linkTransferToOrder(dealId: string, stockDocId: string, transfer
   }
 }
 
-function staffNameById(staffId: string): string {
+async function staffNameById(staffId: string): Promise<string> {
   const id = String(staffId || '').trim();
   if (!id) return '';
   return (
-    get<{ name: string }>(`SELECT IFNULL(name,'') AS name FROM staff WHERE id = ?`, [id])?.name ||
+    (await get<{ name: string }>(`SELECT IFNULL(name,'') AS name FROM staff WHERE id = ?`, [id]))?.name ||
     ''
   );
 }
 
-function stockDocLinesWithSerials(stockDocId: string) {
+async function stockDocLinesWithSerials(stockDocId: string) {
   const docId = String(stockDocId || '').trim();
   if (!docId) return [];
-  return all<{
+  return (await all<{
     id: string;
     product_id: string;
     qty: number;
@@ -922,7 +922,7 @@ function stockDocLinesWithSerials(stockDocId: string) {
      WHERE l.doc_id = ?
      ORDER BY IFNULL(l.line_no,0), l.id`,
     [docId]
-  ).map((l) => {
+  )).map((l) => {
     let serials: string[] = [];
     try {
       const raw = JSON.parse(String(l.serials_json || '[]'));
@@ -949,10 +949,10 @@ type XferLine = {
 };
 
 /** Серийники с задания кладовщика (dims_json) — пока документ запасов ещё без марок. */
-function overlayWarehouseTaskSerials(lines: XferLine[], warehouseTaskId: string): XferLine[] {
+async function overlayWarehouseTaskSerials(lines: XferLine[], warehouseTaskId: string): Promise<XferLine[]> {
   const taskId = String(warehouseTaskId || '').trim();
   if (!taskId) return lines;
-  const tls = all<{
+  const tls = await all<{
     product_id: string;
     sku: string;
     name: string;
@@ -1011,10 +1011,10 @@ function overlayWarehouseTaskSerials(lines: XferLine[], warehouseTaskId: string)
 }
 
 /** Карточка перемещения С… (sto_transfer_requests + задание + серийники + ход). */
-function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | null {
+async function getStoTransferOrderDetail(idRaw: string): Promise<Record<string, unknown> | null> {
   const id = String(idRaw || '').trim();
   if (!id) return null;
-  const req = get<{
+  const req = await get<{
     id: string;
     number: string;
     status: string;
@@ -1046,7 +1046,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
   let dealName = '';
   let buyerName = '';
   if (dealId) {
-    const deal = get<{ name: string; buyer_name: string }>(
+    const deal = await get<{ name: string; buyer_name: string }>(
       `SELECT IFNULL(name,'') AS name, IFNULL(buyer_name,'') AS buyer_name FROM crm_deals WHERE id = ?`,
       [dealId]
     );
@@ -1054,8 +1054,8 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
     buyerName = String(deal?.buyer_name || '').trim();
   }
 
-  const whName = (wid: string) => {
-    const w = get<{ code: string; name: string }>(
+  const whName = async (wid: string) => {
+    const w = await get<{ code: string; name: string }>(
       `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [wid]
     );
@@ -1115,7 +1115,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
   });
 
   if (warehouseTaskId) {
-    const task = get<{
+    const task = await get<{
       status: string;
       number: string;
       created_at: string;
@@ -1141,7 +1141,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
       };
       taskStatusLabel = map[taskStatus] || taskStatus;
     }
-    const events = all<{
+    const events = await all<{
       actor_id: string;
       event: string;
       created_at: string;
@@ -1162,7 +1162,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
         aid === '__admin__'
           ? 'Админ'
           : aid
-            ? staffNameById(aid) || aid.slice(0, 8)
+            ? await staffNameById(aid) || aid.slice(0, 8)
             : '—';
       let detail = '';
       try {
@@ -1192,7 +1192,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
 
   // события заявки (курьер и т.п.)
   try {
-    const sev = all<{
+    const sev = await all<{
       event: string;
       actor_id: string;
       actor_name: string;
@@ -1213,7 +1213,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
       if (ev === 'created' || ev === 'warehouse_task') continue; // уже есть из task/создания
       activity.push({
         at: String(e.created_at || ''),
-        who: String(e.actor_name || '').trim() || (e.actor_id ? staffNameById(e.actor_id) : '') || '—',
+        who: String(e.actor_name || '').trim() || (e.actor_id ? await staffNameById(e.actor_id) : '') || '—',
         who_id: String(e.actor_id || ''),
         event: ev,
         action: eventAction(ev),
@@ -1248,7 +1248,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
   };
 
   if (warehouseTaskId) {
-    const tls = all<{
+    const tls = await all<{
       product_id: string;
       sku: string;
       name: string;
@@ -1275,7 +1275,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
     }
   }
 
-  const reqLines = all<{
+  const reqLines = await all<{
     product_id: string;
     qty: number;
     serial: string;
@@ -1301,7 +1301,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
   }
 
   const stockDocs = dealId
-    ? all<{
+    ? await all<{
         id: string;
         number: string;
         warehouse_id: string;
@@ -1326,10 +1326,10 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
   let toLabel = '';
   let warehouseFromId = '';
   let warehouseToId = String(req.dest_warehouse_id || '').trim();
-  if (warehouseToId) toLabel = whName(warehouseToId) || 'Склад назначения';
-  const movements = stockDocs.map((d) => {
-    const f = whName(d.warehouse_id) || d.warehouse_id.slice(0, 8);
-    const t = whName(d.warehouse_to_id) || d.warehouse_to_id.slice(0, 8);
+  if (warehouseToId) toLabel = await whName(warehouseToId) || 'Склад назначения';
+  const movements = await Promise.all(stockDocs.map(async (d) => {
+    const f = await whName(d.warehouse_id) || d.warehouse_id.slice(0, 8);
+    const t = await whName(d.warehouse_to_id) || d.warehouse_to_id.slice(0, 8);
     if (!warehouseFromId && d.warehouse_id) {
       warehouseFromId = d.warehouse_id;
       fromLabel = f || fromLabel;
@@ -1338,7 +1338,7 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
       warehouseToId = d.warehouse_to_id;
       toLabel = t;
     }
-    const docLines = stockDocLinesWithSerials(d.id);
+    const docLines = await stockDocLinesWithSerials(d.id);
     for (const l of docLines) {
       addLine(l.product_id, l.sku, l.name, l.qty, l.serials);
     }
@@ -1360,14 +1360,14 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
       posted: Boolean(d.posted),
       lines: docLines,
     };
-  });
+  }));
 
   if (!toLabel) {
     toLabel =
       String(req.source || '') === 'warehouse' && /курьер/i.test(String(req.comment || ''))
         ? 'Склад курьера'
         : warehouseToId
-          ? whName(warehouseToId) || 'СТО'
+          ? await whName(warehouseToId) || 'СТО'
           : 'СТО / курьер';
   }
 
@@ -1441,10 +1441,10 @@ function getStoTransferOrderDetail(idRaw: string): Record<string, unknown> | nul
 }
 
 /** Карточка заказа на перемещение для UI цепочки заказа. */
-export function getDealTransferOrderDetail(idRaw: string): Record<string, unknown> | null {
+export async function getDealTransferOrderDetail(idRaw: string): Promise<Record<string, unknown> | null> {
   const id = String(idRaw || '').trim();
   if (!id) return null;
-  const row = get<{
+  const row = await get<{
     id: string;
     number: string;
     doc_date: string;
@@ -1463,7 +1463,7 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
     [id]
   );
   if (!row) {
-    return getStoTransferOrderDetail(id);
+    return await getStoTransferOrderDetail(id);
   }
   const p = parsePayload(row.payload_json);
   const dealId = String(p.deal_id || '').trim();
@@ -1487,7 +1487,7 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
   } | null = null;
   if (stockDocId) {
     stockDoc =
-      get<{
+      await get<{
         id: string;
         number: string;
         posted: number;
@@ -1509,14 +1509,14 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
     warehouseToId = warehouseToId || stockDoc.warehouse_to_id;
   }
   if (warehouseFromId && !fromLabel) {
-    const w = get<{ code: string; name: string }>(
+    const w = await get<{ code: string; name: string }>(
       `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [warehouseFromId]
     );
     fromLabel = [w?.code, w?.name].filter(Boolean).join(' · ') || warehouseFromId.slice(0, 8);
   }
   if (warehouseToId && !toLabel) {
-    const w = get<{ code: string; name: string }>(
+    const w = await get<{ code: string; name: string }>(
       `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [warehouseToId]
     );
@@ -1524,7 +1524,7 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
   }
 
   if (!warehouseTaskId && stockDocId) {
-    const t = get<{ id: string; number: string }>(
+    const t = await get<{ id: string; number: string }>(
       `SELECT id, number FROM warehouse_tasks
        WHERE stock_doc_id = ? AND channel = 'transfer'
        ORDER BY datetime(created_at) DESC LIMIT 1`,
@@ -1565,7 +1565,7 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
   };
 
   const createdByName =
-    String(p.created_by_name || '').trim() || staffNameById(String(p.created_by || ''));
+    String(p.created_by_name || '').trim() || await staffNameById(String(p.created_by || ''));
 
   // 1) Создание заказа на перемещение
   activity.push({
@@ -1580,7 +1580,7 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
   });
 
   if (warehouseTaskId) {
-    const task = get<{
+    const task = await get<{
       status: string;
       number: string;
       created_at: string;
@@ -1610,7 +1610,7 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
       };
       taskStatusLabel = map[taskStatus] || taskStatus;
     }
-    const events = all<{
+    const events = await all<{
       actor_id: string;
       event: string;
       created_at: string;
@@ -1627,7 +1627,7 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
     const seenPicker = new Set<string>();
     for (const e of events) {
       const aid = String(e.actor_id || '').trim();
-      const who = aid ? staffNameById(aid) || aid.slice(0, 8) : '—';
+      const who = aid ? await staffNameById(aid) || aid.slice(0, 8) : '—';
       const action = transferEventAction(e.event);
       let detail = '';
       try {
@@ -1669,7 +1669,7 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
     });
   }
 
-  let lines = stockDocLinesWithSerials(stockDocId);
+  let lines = await stockDocLinesWithSerials(stockDocId);
   if (!lines.length && Array.isArray(p.line_details)) {
     lines = (p.line_details as Array<Record<string, unknown>>).map((l) => ({
       product_id: String(l.product_id || ''),
@@ -1687,7 +1687,7 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
       serials: [],
     }));
   }
-  lines = overlayWarehouseTaskSerials(lines, warehouseTaskId);
+  lines = await overlayWarehouseTaskSerials(lines, warehouseTaskId);
 
   const qtySum = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
   const serialCount = lines.reduce((s, l) => s + (l.serials?.length || 0), 0);
@@ -1735,15 +1735,19 @@ export function getDealTransferOrderDetail(idRaw: string): Record<string, unknow
 }
 
 /** Список заказов на перемещение по заказу покупателя. */
-export function listDealTransferOrdersDetailed(dealIdRaw: string): Record<string, unknown>[] {
+export async function listDealTransferOrdersDetailed(dealIdRaw: string): Promise<Record<string, unknown>[]> {
   const dealId = String(dealIdRaw || '').trim();
   if (!dealId) return [];
-  const thin = listTransferOrdersForDeal(dealId)
-    .map((row) => getDealTransferOrderDetail(row.id))
-    .filter((x): x is Record<string, unknown> => !!x);
-  const sto = listStoRequestsForDeal(dealId)
-    .map((row) => getStoTransferOrderDetail(row.id))
-    .filter((x): x is Record<string, unknown> => !!x);
+  const thin = (
+    await Promise.all(
+      (await listTransferOrdersForDeal(dealId)).map((row) => getDealTransferOrderDetail(row.id))
+    )
+  ).filter((x): x is Record<string, unknown> => !!x);
+  const sto = (
+    await Promise.all(
+      (await listStoRequestsForDeal(dealId)).map((row) => getStoTransferOrderDetail(row.id))
+    )
+  ).filter((x): x is Record<string, unknown> => !!x);
   const seen = new Set(thin.map((x) => String(x.id || '')));
   for (const s of sto) {
     if (!seen.has(String(s.id || ''))) thin.push(s);

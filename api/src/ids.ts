@@ -13,18 +13,18 @@ export function isGuid(id: string): boolean {
 }
 
 /** Человекочитаемый код: PREFIX-000001 (автоинкремент в meta). */
-export function nextCode(prefix: string, pad = 6): string {
+export async function nextCode(prefix: string, pad = 6): Promise<string> {
   const key = `seq_${prefix.toLowerCase()}`;
-  run('BEGIN');
+  await run('BEGIN');
   try {
-    const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
+    const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
     const n = (row ? Number(row.value) : 0) + 1;
-    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, String(n)]);
-    run('COMMIT');
+    await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, String(n)]);
+    await run('COMMIT');
     return `${prefix}-${String(n).padStart(pad, '0')}`;
   } catch (e) {
     try {
-      run('ROLLBACK');
+      await run('ROLLBACK');
     } catch {
       /* ignore */
     }
@@ -33,13 +33,13 @@ export function nextCode(prefix: string, pad = 6): string {
 }
 
 /** Поднять счётчик prefix, если в таблице уже есть большие номера PREFIX-000123. */
-export function ensureSeqAtLeast(prefix: string, minN: number): void {
+export async function ensureSeqAtLeast(prefix: string, minN: number): Promise<void> {
   const key = `seq_${prefix.toLowerCase()}`;
   const n = Math.max(0, Math.floor(Number(minN) || 0));
   if (n < 1) return;
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
   const cur = row ? Number(row.value) : 0;
   if (!Number.isFinite(cur) || cur < n) {
-    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, String(n)]);
+    await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, String(n)]);
   }
 }

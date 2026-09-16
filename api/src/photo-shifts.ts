@@ -60,8 +60,8 @@ export function canManagePhotoReport(
   return actor.role === 'photographer';
 }
 
-export function getOpenPhotoShift(staffId: string): PhotoShiftRow | null {
-  const row = get<Record<string, unknown>>(
+export async function getOpenPhotoShift(staffId: string): Promise<PhotoShiftRow | null> {
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM photo_shifts
      WHERE staff_id = ? AND ended_at = ''
      ORDER BY started_at DESC LIMIT 1`,
@@ -70,46 +70,46 @@ export function getOpenPhotoShift(staffId: string): PhotoShiftRow | null {
   return row ? mapShift(row) : null;
 }
 
-export function startPhotoShift(actor: Actor): PhotoShiftRow {
+export async function startPhotoShift(actor: Actor): Promise<PhotoShiftRow> {
   if (PHOTO_SHIFTS_UI_DISABLED) {
     throw new Error('Смены фотографа временно отключены');
   }
-  const open = getOpenPhotoShift(actor.id);
+  const open = await getOpenPhotoShift(actor.id);
   if (open) {
     throw new Error('Смена уже открыта — сначала завершите текущую');
   }
   const { day } = localParts(TZ);
   const now = new Date().toISOString();
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO photo_shifts (
       id, staff_id, staff_name, staff_login, day,
       started_at, ended_at, products_done, photos_uploaded, files_uploaded
     ) VALUES (?, ?, ?, ?, ?, ?, '', 0, 0, 0)`,
     [id, actor.id, actor.name, actor.login, day, now]
   );
-  return getOpenPhotoShift(actor.id)!;
+  return (await getOpenPhotoShift(actor.id))!;
 }
 
-export function endPhotoShift(actor: Actor): PhotoShiftRow | null {
-  const open = getOpenPhotoShift(actor.id);
+export async function endPhotoShift(actor: Actor): Promise<PhotoShiftRow | null> {
+  const open = await getOpenPhotoShift(actor.id);
   if (!open) return null;
   const now = new Date().toISOString();
-  run(`UPDATE photo_shifts SET ended_at = ? WHERE id = ?`, [now, open.id]);
+  await run(`UPDATE photo_shifts SET ended_at = ? WHERE id = ?`, [now, open.id]);
   return mapShift({ ...open, ended_at: now });
 }
 
 /** Учитывать загрузку в открытой смене. newFile=true — реально новый файл в S3. */
-export function recordPhotoShiftUpload(
+export async function recordPhotoShiftUpload(
   staffId: string,
   opts?: { newFile?: boolean; productCounted?: boolean }
-): PhotoShiftRow | null {
-  const open = getOpenPhotoShift(staffId);
+): Promise<PhotoShiftRow | null> {
+  const open = await getOpenPhotoShift(staffId);
   if (!open) return null;
   const products = opts?.productCounted === false ? 0 : 1;
   const photos = 1;
   const files = opts?.newFile === false ? 0 : 1;
-  run(
+  await run(
     `UPDATE photo_shifts SET
        products_done = products_done + ?,
        photos_uploaded = photos_uploaded + ?,
@@ -117,24 +117,24 @@ export function recordPhotoShiftUpload(
      WHERE id = ?`,
     [products, photos, files, open.id]
   );
-  return getOpenPhotoShift(staffId);
+  return await getOpenPhotoShift(staffId);
 }
 
-export function assertPhotoShiftForUpload(actor: Actor | null): void {
+export async function assertPhotoShiftForUpload(actor: Actor | null): Promise<void> {
   if (PHOTO_SHIFTS_UI_DISABLED) return;
   if (!actor) return;
   if (actor.isSystemAdmin || actor.role === 'admin' || actor.role === 'manager') {
     return;
   }
   if (actor.role !== 'photographer') return;
-  const open = getOpenPhotoShift(actor.id);
+  const open = await getOpenPhotoShift(actor.id);
   if (!open) {
     throw new Error('Начните смену фотографа, чтобы загружать фото');
   }
 }
 
-export function photoShiftStatusPayload(actor: Actor) {
-  const shift = getOpenPhotoShift(actor.id);
+export async function photoShiftStatusPayload(actor: Actor) {
+  const shift = await getOpenPhotoShift(actor.id);
   const { day, hm } = localParts(TZ);
   return {
     shifts_disabled: PHOTO_SHIFTS_UI_DISABLED,
@@ -160,12 +160,12 @@ export type PhotoShiftReportRow = {
   files_uploaded: number;
 };
 
-export function photoShiftsReport(opts?: {
+export async function photoShiftsReport(opts?: {
   from?: string;
   to?: string;
   staff_id?: string;
   limit?: number;
-}): {
+}): Promise<{
   items: PhotoShiftReportRow[];
   totals: {
     shifts_count: number;
@@ -174,7 +174,7 @@ export function photoShiftsReport(opts?: {
     files_uploaded: number;
   };
   local: { day: string; tz: string };
-} {
+}> {
   const limit = Math.min(500, Math.max(1, Number(opts?.limit) || 200));
   const where: string[] = [];
   const params: Array<string | number> = [];
@@ -205,7 +205,7 @@ export function photoShiftsReport(opts?: {
     ORDER BY day DESC, staff_name COLLATE NOCASE
     LIMIT ?`;
   params.push(limit);
-  const items = all<Record<string, unknown>>(sql, params).map((r) => ({
+  const items = (await all<Record<string, unknown>>(sql, params)).map((r) => ({
     staff_id: String(r.staff_id || ''),
     staff_name: String(r.staff_name || ''),
     staff_login: String(r.staff_login || ''),
@@ -229,11 +229,11 @@ export function photoShiftsReport(opts?: {
   return { items, totals, local: { day, tz: TZ } };
 }
 
-export function listPhotoShifts(opts?: {
+export async function listPhotoShifts(opts?: {
   day?: string;
   staff_id?: string;
   limit?: number;
-}): PhotoShiftRow[] {
+}): Promise<PhotoShiftRow[]> {
   const limit = Math.min(500, Math.max(1, Number(opts?.limit) || 100));
   const where: string[] = [];
   const params: Array<string | number> = [];
@@ -249,5 +249,5 @@ export function listPhotoShifts(opts?: {
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY started_at DESC LIMIT ?`;
   params.push(limit);
-  return all<Record<string, unknown>>(sql, params).map(mapShift);
+  return (await all<Record<string, unknown>>(sql, params)).map(mapShift);
 }

@@ -9,20 +9,20 @@ import { resolveOrganizationId, getOrganization } from '../organizations.js';
 import { ensureTaxSchema, orgTaxDir } from './schema.js';
 import { getTaxSettings } from './settings.js';
 
-export function rebuildKudir(
+export async function rebuildKudir(
   organizationId: string | null | undefined,
   year: number,
   quarter: number
-): { income: number; expense: number; lines: number } {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
+): Promise<{ income: number; expense: number; lines: number }> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
   const startM = (quarter - 1) * 3 + 1;
   const endM = quarter * 3;
   const from = `${year}-${String(startM).padStart(2, '0')}-01`;
   const toDay = new Date(year, endM, 0).getDate();
   const to = `${year}-${String(endM).padStart(2, '0')}-${String(toDay).padStart(2, '0')}`;
 
-  run(
+  await run(
     `DELETE FROM tax_kudir_lines WHERE organization_id=? AND period_year=? AND period_quarter=? AND manual=0 AND section='I'`,
     [oid, year, quarter]
   );
@@ -32,7 +32,7 @@ export function rebuildKudir(
   let expense = 0;
 
   // Доходы: продажи / поступления (sales_docs total)
-  const sales = all<{ id: string; number: string; doc_date: string; total: number; name: string }>(
+  const sales = await all<{ id: string; number: string; doc_date: string; total: number; name: string }>(
     `SELECT s.id, s.number, s.doc_date, s.total, IFNULL(c.name,'') AS name
      FROM sales_docs s
      LEFT JOIN counterparties c ON c.id = s.counterparty_id
@@ -48,7 +48,7 @@ export function rebuildKudir(
     if (amt <= 0) continue;
     line += 1;
     income += amt;
-    run(
+    await run(
       `INSERT INTO tax_kudir_lines (
          id, organization_id, period_year, period_quarter, section, line_no, op_date, doc_no, content, income, source_ref
        ) VALUES (?,?,?,?, 'I', ?,?,?,?,?,?)`,
@@ -68,9 +68,9 @@ export function rebuildKudir(
   }
 
   // Расходы: приходы склада (для УСН доходы-расходы)
-  const settings = getTaxSettings(oid);
+  const settings = await getTaxSettings(oid);
   if (settings.tax_system === 'usn_income_expense') {
-    const purch = all<{ id: string; number: string; doc_date: string; amount: number; name: string }>(
+    const purch = await all<{ id: string; number: string; doc_date: string; amount: number; name: string }>(
       `SELECT d.id, d.number, d.doc_date, IFNULL(d.amount,0) AS amount, IFNULL(c.name,'') AS name
        FROM stock_docs d
        LEFT JOIN counterparties c ON c.id = d.counterparty_id
@@ -84,7 +84,7 @@ export function rebuildKudir(
       if (amt <= 0) continue;
       line += 1;
       expense += amt;
-      run(
+      await run(
         `INSERT INTO tax_kudir_lines (
            id, organization_id, period_year, period_quarter, section, line_no, op_date, doc_no, content, expense, source_ref
          ) VALUES (?,?,?,?, 'I', ?,?,?,?,?,?)`,
@@ -111,16 +111,16 @@ export function rebuildKudir(
   };
 }
 
-export function kudirSummary(organizationId: string | null | undefined, year: number, quarter: number) {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
-  const row = get<{ income: number; expense: number; fee: number; c: number }>(
+export async function kudirSummary(organizationId: string | null | undefined, year: number, quarter: number) {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
+  const row = await get<{ income: number; expense: number; fee: number; c: number }>(
     `SELECT IFNULL(SUM(income),0) AS income, IFNULL(SUM(expense),0) AS expense,
             IFNULL(SUM(trade_fee),0) AS fee, COUNT(*) AS c
      FROM tax_kudir_lines WHERE organization_id=? AND period_year=? AND period_quarter=?`,
     [oid, year, quarter]
   );
-  const settings = getTaxSettings(oid);
+  const settings = await getTaxSettings(oid);
   const income = Number(row?.income) || 0;
   const expense = Number(row?.expense) || 0;
   const base =
@@ -137,25 +137,25 @@ export function kudirSummary(organizationId: string | null | undefined, year: nu
   };
 }
 
-export function listKudir(organizationId: string | null | undefined, year: number, quarter: number) {
-  const oid = resolveOrganizationId(organizationId);
-  return all(
+export async function listKudir(organizationId: string | null | undefined, year: number, quarter: number) {
+  const oid = await resolveOrganizationId(organizationId);
+  return await all(
     `SELECT * FROM tax_kudir_lines WHERE organization_id=? AND period_year=? AND period_quarter=? ORDER BY line_no`,
     [oid, year, quarter]
   );
 }
 
-export function buildUsnReport(
+export async function buildUsnReport(
   organizationId: string | null | undefined,
   year: number,
   quarter: number
-): { report_id: string; xml_path: string; amount: number } {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
-  rebuildKudir(oid, year, quarter);
-  const sum = kudirSummary(oid, year, quarter);
-  const org = getOrganization(oid);
-  const settings = getTaxSettings(oid);
+): Promise<{ report_id: string; xml_path: string; amount: number }> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
+  await rebuildKudir(oid, year, quarter);
+  const sum = await kudirSummary(oid, year, quarter);
+  const org = await getOrganization(oid);
+  const settings = await getTaxSettings(oid);
   const dir = orgTaxDir(oid, `${year}-Q${quarter}`);
   const xmlPath = path.join(dir, `USN_${year}_Q${quarter}.xml`);
   const xml = `<?xml version="1.0" encoding="windows-1251"?>
@@ -170,7 +170,7 @@ export function buildUsnReport(
 `;
   writeFileSync(xmlPath, xml, 'utf8');
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO tax_reports (id, organization_id, report_type, period_year, period_quarter, status, amount, xml_path, meta_json, built_at)
      VALUES (?,?,?,?,?,'ready',?,?,?, datetime('now'))`,
     [id, oid, quarter === 4 ? 'USN' : 'USN_ADV', year, quarter, sum.usn_tax, xmlPath, JSON.stringify(sum)]
@@ -178,16 +178,16 @@ export function buildUsnReport(
   return { report_id: id, xml_path: xmlPath, amount: sum.usn_tax };
 }
 
-export function buildTaxNotice(
+export async function buildTaxNotice(
   organizationId: string | null | undefined,
   year: number,
   month: number
-): { report_id: string; xml_path: string; amount: number } {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
+): Promise<{ report_id: string; xml_path: string; amount: number }> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
   const q = Math.ceil(month / 3);
-  const sum = kudirSummary(oid, year, q);
-  const org = getOrganization(oid);
+  const sum = await kudirSummary(oid, year, q);
+  const org = await getOrganization(oid);
   const dir = orgTaxDir(oid, `${year}-${String(month).padStart(2, '0')}`);
   const xmlPath = path.join(dir, `NOTICE_${year}_${String(month).padStart(2, '0')}.xml`);
   const amount = sum.usn_tax;
@@ -200,7 +200,7 @@ export function buildTaxNotice(
     'utf8'
   );
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO tax_reports (id, organization_id, report_type, period_year, period_month, period_quarter, status, amount, xml_path, built_at)
      VALUES (?,?,?,?,?,?, 'ready', ?, ?, datetime('now'))`,
     [id, oid, 'NOTICE', year, month, q, amount, xmlPath]

@@ -78,8 +78,8 @@ export type { OrgProfile };
 export { DEFAULT_ORG, getOrgProfile, saveOrgProfile, ensureOrganizationsSeeded };
 
 /** @deprecated use ensureOrganizationsSeeded — оставлено для server.ts */
-export function ensureOrgProfileSeeded(): void {
-  ensureOrganizationsSeeded();
+export async function ensureOrgProfileSeeded(): Promise<void> {
+  await ensureOrganizationsSeeded();
 }
 
 const TYPE_LABEL: Record<SalesDocType, string> = {
@@ -93,11 +93,11 @@ const TYPE_LABEL: Record<SalesDocType, string> = {
 /** На одну сделку — один счёт, один УПД, один договор; повтор = перегенерация. */
 const SINGLE_DEAL_DOC_TYPES: SalesDocType[] = ['invoice', 'upd', 'contract', 'workorder'];
 
-function latestDealSalesDoc(
+async function latestDealSalesDoc(
   dealId: string,
   docType: SalesDocType
-): { id: string; number: string } | null {
-  const row = get<{ id: string; number: string }>(
+): Promise<{ id: string; number: string } | null> {
+  const row = await get<{ id: string; number: string }>(
     `SELECT id, number FROM sales_docs
      WHERE deal_id = ? AND doc_type = ?
      ORDER BY datetime(created_at) DESC, number DESC LIMIT 1`,
@@ -130,10 +130,10 @@ export function formatWorkorderVehicleLine(doc: Record<string, unknown> | null |
 }
 
 /** Номер расходной (out) по заказу покупателя — для печати ЗН. */
-export function findDealOutStockNumber(dealId: string | null | undefined): string {
+export async function findDealOutStockNumber(dealId: string | null | undefined): Promise<string> {
   const id = String(dealId || '').trim();
   if (!id) return '';
-  const row = get<{ number: string }>(
+  const row = await get<{ number: string }>(
     `SELECT number FROM stock_docs
      WHERE doc_type = 'out'
        AND (IFNULL(deal_id,'') = ? OR IFNULL(basis_order_id,'') = ?)
@@ -164,17 +164,17 @@ export function formatWorkorderOutHeading(
   }`;
 }
 
-export function updateSalesDocStoChecklist(
+export async function updateSalesDocStoChecklist(
   docId: string,
   patch: {
     checks?: Record<string, boolean>;
     master_name?: string;
     admin_name?: string;
   }
-): ReturnType<typeof getSalesDoc> {
+): Promise<Awaited<ReturnType<typeof getSalesDoc>>> {
   const id = String(docId || '').trim();
   if (!id) throw new Error('doc_id required');
-  const row = get<{ id: string; doc_type: string; checklist_json?: string }>(
+  const row = await get<{ id: string; doc_type: string; checklist_json?: string }>(
     `SELECT id, doc_type, IFNULL(checklist_json,'') AS checklist_json FROM sales_docs WHERE id = ?`,
     [id]
   );
@@ -203,21 +203,21 @@ export function updateSalesDocStoChecklist(
         : prev.admin_name,
     updated_at: new Date().toISOString(),
   };
-  run(`UPDATE sales_docs SET checklist_json = ? WHERE id = ?`, [
+  await run(`UPDATE sales_docs SET checklist_json = ? WHERE id = ?`, [
     JSON.stringify(state),
     id,
   ]);
-  return getSalesDoc(id);
+  return await getSalesDoc(id);
 }
 
 /** Последний заказ-наряд сделки (для чек-листа приёма/выдачи). */
-export function findDealWorkorderForChecklist(
+export async function findDealWorkorderForChecklist(
   dealId: string
-): { id: string; number: string; checklist_json: string } | null {
+): Promise<{ id: string; number: string; checklist_json: string } | null> {
   const id = String(dealId || '').trim();
   if (!id) return null;
   return (
-    get<{ id: string; number: string; checklist_json: string }>(
+    await get<{ id: string; number: string; checklist_json: string }>(
       `SELECT id, IFNULL(number,'') AS number, IFNULL(checklist_json,'') AS checklist_json
        FROM sales_docs
        WHERE deal_id = ? AND doc_type = 'workorder'
@@ -228,7 +228,7 @@ export function findDealWorkorderForChecklist(
   );
 }
 
-export function updateSalesDocVehicle(
+export async function updateSalesDocVehicle(
   docId: string,
   vehicle: {
     car_plate?: string;
@@ -247,12 +247,12 @@ export function updateSalesDocVehicle(
     car_sts_date?: string;
     car_sts_number?: string;
   }
-): void {
+): Promise<void> {
   const id = String(docId || '').trim();
   if (!id) throw new Error('doc_id required');
-  const row = get('SELECT id, doc_type FROM sales_docs WHERE id = ?', [id]);
+  const row = await get('SELECT id, doc_type FROM sales_docs WHERE id = ?', [id]);
   if (!row) throw new Error('Документ не найден');
-  run(
+  await run(
     `UPDATE sales_docs
      SET car_plate = ?, car_vin = ?, car_year = ?, car_mileage = ?,
          car_brand = ?, car_model = ?, car_color = ?, car_category = ?, car_pts = ?,
@@ -281,10 +281,10 @@ export function updateSalesDocVehicle(
 }
 
 /** Госномер/СТС со сделки → все заказ-наряды этой сделки (после OCR / вкладки Документы). */
-export function syncDealVehicleOntoWorkorders(dealId: string): number {
+export async function syncDealVehicleOntoWorkorders(dealId: string): Promise<number> {
   const id = String(dealId || '').trim();
   if (!id) return 0;
-  const deal = getDeal(id) as Record<string, unknown> | null;
+  const deal = await getDeal(id) as Record<string, unknown> | null;
   if (!deal) return 0;
   const plate = String(deal.car_plate || '')
     .trim()
@@ -292,7 +292,7 @@ export function syncDealVehicleOntoWorkorders(dealId: string): number {
   const vin = String(deal.car_vin || '')
     .trim()
     .toUpperCase();
-  run(
+  await run(
     `UPDATE sales_docs
      SET car_plate = ?, car_vin = ?, car_year = ?, car_mileage = ?,
          car_brand = ?, car_model = ?, car_color = ?, car_category = ?, car_pts = ?,
@@ -318,7 +318,7 @@ export function syncDealVehicleOntoWorkorders(dealId: string): number {
       id,
     ]
   );
-  const n = get(
+  const n = await get(
     `SELECT COUNT(*) AS n FROM sales_docs WHERE deal_id = ? AND doc_type = 'workorder'`,
     [id]
   ) as { n?: number } | null;
@@ -329,17 +329,17 @@ export function syncDealVehicleOntoWorkorders(dealId: string): number {
  * Перед PDF ЗН: если на документе нет госномера, подтянуть со сделки.
  * @returns true если госномер есть (на ЗН или после sync со сделки)
  */
-export function ensureWorkorderCarPlate(docId: string): boolean {
-  const doc = getSalesDoc(docId) as Record<string, unknown> | null;
+export async function ensureWorkorderCarPlate(docId: string): Promise<boolean> {
+  const doc = await getSalesDoc(docId) as Record<string, unknown> | null;
   if (!doc) return false;
   if (String(doc.doc_type || '') !== 'workorder') return true;
   if (String(doc.car_plate || '').trim()) return true;
   const dealId = String(doc.deal_id || '').trim();
   if (!dealId) return false;
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!String(deal?.car_plate || '').trim()) return false;
-  syncDealVehicleOntoWorkorders(dealId);
-  const again = getSalesDoc(docId) as Record<string, unknown> | null;
+  await syncDealVehicleOntoWorkorders(dealId);
+  const again = await getSalesDoc(docId) as Record<string, unknown> | null;
   return Boolean(String(again?.car_plate || '').trim());
 }
 
@@ -351,10 +351,10 @@ export function ensureWorkorderCarPlate(docId: string): boolean {
  * Коммерческий заказ-наряд = бланк FOGEL / 1С (работы + расходная), не оферта СТО.
  * Оферта person/legal — только пакет «Шаблоны СТО», не подмена печати ЗН из документов.
  */
-export function ensureWorkorderTemplateId(docId: string): string {
+export async function ensureWorkorderTemplateId(docId: string): Promise<string> {
   const id = String(docId || '').trim();
   if (!id) return '';
-  const row = get<{ doc_type?: string; template_id?: string }>(
+  const row = await get<{ doc_type?: string; template_id?: string }>(
     `SELECT doc_type, IFNULL(template_id,'') AS template_id FROM sales_docs WHERE id = ?`,
     [id]
   );
@@ -364,7 +364,7 @@ export function ensureWorkorderTemplateId(docId: string): string {
   const cur = String(row.template_id || '').trim();
   // Раньше сюда писали sto-workorder-* → уходил длинный договор-оферта вместо бланка FOGEL.
   if (isStoWorkorderTemplateId(cur)) {
-    run(`UPDATE sales_docs SET template_id = '' WHERE id = ?`, [id]);
+    await run(`UPDATE sales_docs SET template_id = '' WHERE id = ?`, [id]);
     return '';
   }
   return cur;
@@ -388,12 +388,12 @@ export type ContractBuyerFields = {
   counterpartyId?: string;
 };
 
-function contractTemplateOpts(
+async function contractTemplateOpts(
   deal: Record<string, unknown> | null | undefined,
   buyer: ContractBuyerFields,
   organizationId?: string
 ) {
-  const cp = findCounterpartyForDeal(deal as Row | null);
+  const cp = await findCounterpartyForDeal(deal as Row | null);
   const inn = String(buyer.inn || '').replace(/\D/g, '');
   let partyKind = String((cp as { party_kind?: string } | null)?.party_kind || '').toLowerCase();
   if (partyKind !== 'ip' && partyKind !== 'legal') {
@@ -410,11 +410,11 @@ function contractTemplateOpts(
   };
 }
 
-function findCounterpartyByInn(inn: string): Row | null {
+async function findCounterpartyByInn(inn: string): Promise<Row | null> {
   const digits = String(inn || '').replace(/\D/g, '');
   if (digits.length !== 10 && digits.length !== 12) return null;
   return (
-    get(
+    await get(
       `SELECT * FROM counterparties
        WHERE replace(replace(replace(IFNULL(inn,''),' ',''),'-',''), char(9), '') = ?
        ORDER BY CASE WHEN IFNULL(ogrn,'') != '' THEN 0 ELSE 1 END,
@@ -426,7 +426,7 @@ function findCounterpartyByInn(inn: string): Row | null {
   );
 }
 
-function findCounterpartyForDeal(deal: Row | null | undefined): Row | null {
+async function findCounterpartyForDeal(deal: Row | null | undefined): Promise<Row | null> {
   if (!deal) return null;
   const companyId = String(deal.company_id || '').trim();
   const amoCo =
@@ -435,7 +435,7 @@ function findCounterpartyForDeal(deal: Row | null | undefined): Row | null {
 
   // Юрлицо из виджета «Документы»: брать карточку с «Полное наименование» (ОПФ), не ярлык Amo
   if (amoCo) {
-    const candidates = all(
+    const candidates = await all(
       `SELECT * FROM counterparties
        WHERE amo_company_id = ? OR id = ? OR id = ?`,
       [amoCo, amoCo, `amo:company:${amoCo}`]
@@ -462,12 +462,12 @@ function findCounterpartyForDeal(deal: Row | null | undefined): Row | null {
   }
 
   if (companyId) {
-    const byId = get('SELECT * FROM counterparties WHERE id = ?', [companyId]);
+    const byId = await get('SELECT * FROM counterparties WHERE id = ?', [companyId]);
     if (byId) {
       const nm = String((byId as { name?: string }).name || '').trim();
       const full = String((byId as { name_full?: string }).name_full || '').trim();
       if (nm && (!full || isWeakBuyerDocName(full) || !buyerDocNameHasOpf(full))) {
-        const richer = get(
+        const richer = await get(
           `SELECT * FROM counterparties
            WHERE name = ?
              AND IFNULL(TRIM(name_full),'') != ''
@@ -484,29 +484,29 @@ function findCounterpartyForDeal(deal: Row | null | undefined): Row | null {
   }
   const inn = String(deal.buyer_inn || '').replace(/\D/g, '');
   if (inn.length === 10 || inn.length === 12) {
-    return findCounterpartyByInn(inn);
+    return await findCounterpartyByInn(inn);
   }
   return null;
 }
 
 /** Реквизиты покупателя для договора: сделка + карточка контрагента. */
-export function resolveContractBuyerFromDeal(
+export async function resolveContractBuyerFromDeal(
   deal: Row | null | undefined,
   overrides: ContractBuyerFields = {}
-): ContractBuyerFields {
+): Promise<ContractBuyerFields> {
   const explicitCpId = String(overrides.counterpartyId || '').trim();
   let cp: Row | null = explicitCpId
-    ? ((get('SELECT * FROM counterparties WHERE id = ? LIMIT 1', [explicitCpId]) as Row | null) ||
+    ? ((await get('SELECT * FROM counterparties WHERE id = ? LIMIT 1', [explicitCpId]) as Row | null) ||
       null)
     : null;
   if (!cp) {
-    cp = findCounterpartyForDeal(deal);
+    cp = await findCounterpartyForDeal(deal);
   }
   const overrideInn = String(overrides.inn || '').replace(/\D/g, '');
   if (!cp && (overrideInn.length === 10 || overrideInn.length === 12)) {
-    cp = findCounterpartyByInn(overrideInn);
+    cp = await findCounterpartyByInn(overrideInn);
   } else if (cp && !String(cp.ogrn || '').trim() && (overrideInn.length === 10 || overrideInn.length === 12)) {
-    const richer = findCounterpartyByInn(overrideInn);
+    const richer = await findCounterpartyByInn(overrideInn);
     if (richer && String(richer.ogrn || '').trim()) cp = richer;
   }
   const companyName = String(deal?.company_name || '').trim();
@@ -534,7 +534,7 @@ export function resolveContractBuyerFromDeal(
   let pdnFio = '';
   if (!isLegal && dealId) {
     try {
-      const s = getLatestPdnSignForDeal(dealId);
+      const s = await getLatestPdnSignForDeal(dealId);
       const a = String(s?.identity?.fio || '').trim();
       const b = String(s?.buyer_name || '').trim();
       if (looksLikePersonFio(a)) pdnFio = a;
@@ -661,20 +661,20 @@ export function resolveContractBuyerFromDeal(
  * Переименовать покупателя: текущий документ + все docs сделки + сделка + карточка контрагента.
  * Возвращает deal_id / counterparty_id для пуша в Amo.
  */
-export function renameSalesDocBuyerName(
+export async function renameSalesDocBuyerName(
   docId: string,
   nameRaw: string
-): {
+): Promise<{
   name: string;
   deal_id: string;
   counterparty_id: string;
   docs_updated: number;
-} {
+}> {
   const id = String(docId || '').trim();
   if (!id) throw new Error('doc_id required');
   const name = String(nameRaw || '').trim();
   if (!name) throw new Error('Укажите наименование покупателя');
-  const doc = get<{ id: string; deal_id?: string; counterparty_name?: string }>(
+  const doc = await get<{ id: string; deal_id?: string; counterparty_name?: string }>(
     'SELECT id, deal_id, counterparty_name FROM sales_docs WHERE id = ?',
     [id]
   );
@@ -683,21 +683,21 @@ export function renameSalesDocBuyerName(
   const dealId = String(doc.deal_id || '').trim();
   let docsUpdated = 0;
   if (dealId) {
-    const before = all<{ id: string }>('SELECT id FROM sales_docs WHERE deal_id = ?', [dealId]);
-    run(`UPDATE sales_docs SET counterparty_name = ? WHERE deal_id = ?`, [name, dealId]);
+    const before = await all<{ id: string }>('SELECT id FROM sales_docs WHERE deal_id = ?', [dealId]);
+    await run(`UPDATE sales_docs SET counterparty_name = ? WHERE deal_id = ?`, [name, dealId]);
     docsUpdated = before.length;
   } else {
-    run(`UPDATE sales_docs SET counterparty_name = ? WHERE id = ?`, [name, id]);
+    await run(`UPDATE sales_docs SET counterparty_name = ? WHERE id = ?`, [name, id]);
     docsUpdated = 1;
   }
 
   let counterpartyId = '';
   if (dealId) {
-    const deal = getDeal(dealId) as Row | null;
+    const deal = await getDeal(dealId) as Row | null;
     if (deal) {
       const isLegal = dealIsLegalEntity(deal as Record<string, unknown>);
       if (isLegal) {
-        run(
+        await run(
           `UPDATE crm_deals
            SET company_name = ?, buyer_name = CASE WHEN IFNULL(buyer_name,'') = '' THEN ? ELSE buyer_name END,
                updated_at = datetime('now')
@@ -705,17 +705,17 @@ export function renameSalesDocBuyerName(
           [name, name, dealId]
         );
       } else {
-        run(
+        await run(
           `UPDATE crm_deals
            SET buyer_name = ?, updated_at = datetime('now')
            WHERE id = ?`,
           [name, dealId]
         );
       }
-      const cp = findCounterpartyForDeal(deal);
+      const cp = await findCounterpartyForDeal(deal);
       if (cp?.id) {
         counterpartyId = String(cp.id);
-        run(
+        await run(
           `UPDATE counterparties SET name = ? WHERE id = ?`,
           [name, counterpartyId]
         );
@@ -742,11 +742,11 @@ function pickSalesDocBuyerField(cur: unknown, next: string | undefined): string 
 }
 
 /** Записать реквизиты покупателя в sales_docs (любой тип). */
-function writeSalesDocBuyerFields(docId: string, buyer: ContractBuyerFields): void {
+async function writeSalesDocBuyerFields(docId: string, buyer: ContractBuyerFields): Promise<void> {
   const id = String(docId || '').trim();
   if (!id) throw new Error('doc_id required');
   const passport = String(buyer.passport ?? '').trim();
-  run(
+  await run(
     `UPDATE sales_docs SET
        counterparty_name = ?,
        counterparty_inn = ?,
@@ -781,10 +781,10 @@ function writeSalesDocBuyerFields(docId: string, buyer: ContractBuyerFields): vo
   );
 }
 
-export function updateSalesDocBuyer(docId: string, buyer: ContractBuyerFields): void {
+export async function updateSalesDocBuyer(docId: string, buyer: ContractBuyerFields): Promise<void> {
   const id = String(docId || '').trim();
   if (!id) throw new Error('doc_id required');
-  const row = get<{ doc_type?: string; template_id?: string; deal_id?: string }>(
+  const row = await get<{ doc_type?: string; template_id?: string; deal_id?: string }>(
     'SELECT id, doc_type, IFNULL(template_id,\'\') AS template_id, IFNULL(deal_id,\'\') AS deal_id FROM sales_docs WHERE id = ?',
     [id]
   );
@@ -792,11 +792,11 @@ export function updateSalesDocBuyer(docId: string, buyer: ContractBuyerFields): 
   if (String(row.doc_type) !== 'contract') {
     throw new Error('Реквизиты покупателя правятся в договоре');
   }
-  writeSalesDocBuyerFields(id, buyer);
+  await writeSalesDocBuyerFields(id, buyer);
   const passport = String(buyer.passport ?? '').trim();
   const dealId = String(row.deal_id || '').trim();
   if (dealId) {
-    run(
+    await run(
       `UPDATE crm_deals SET
          buyer_email = ?, buyer_address = ?, buyer_passport = ?,
          updated_at = datetime('now')
@@ -812,31 +812,31 @@ export function updateSalesDocBuyer(docId: string, buyer: ContractBuyerFields): 
   // подобрать шаблон по ИНН покупателя / каналу сделки
   const curTpl = String(row.template_id || '').trim();
   const inn = String(buyer.inn ?? '').replace(/\D/g, '');
-  const dealRow = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+  const dealRow = dealId ? (await getDeal(dealId) as Record<string, unknown> | null) : null;
   const orgId = String(
-    (get<{ organization_id?: string }>(
+    ((await get<{ organization_id?: string }>(
       `SELECT IFNULL(organization_id,'') AS organization_id FROM sales_docs WHERE id = ?`,
       [id]
-    )?.organization_id || '')
+    ))?.organization_id || '')
   );
-  const next = suggestContractTemplateId(
+  const next = await suggestContractTemplateId(
     dealRow || { buyer_inn: inn },
-    contractTemplateOpts(dealRow, { inn }, orgId)
+    await contractTemplateOpts(dealRow, { inn }, orgId)
   );
   if (curTpl !== next) {
-    updateSalesDocContractTemplate(id, next);
+    await updateSalesDocContractTemplate(id, next);
   }
 }
 
 /** Сменить шаблон договора (01 физ / 02 юр·ИП). */
-export function updateSalesDocContractTemplate(docId: string, templateId: string): void {
+export async function updateSalesDocContractTemplate(docId: string, templateId: string): Promise<void> {
   const id = String(docId || '').trim();
   const tpl = String(templateId || '').trim();
   if (!id) throw new Error('doc_id required');
   if (!isSaleContractTemplateId(tpl)) {
     throw new Error('Тип договора: физлицо (01), юрлицо СТО (02) или рамочный БМП');
   }
-  const row = get<{ doc_type?: string }>('SELECT id, doc_type FROM sales_docs WHERE id = ?', [id]);
+  const row = await get<{ doc_type?: string }>('SELECT id, doc_type FROM sales_docs WHERE id = ?', [id]);
   if (!row) throw new Error('Документ не найден');
   if (String(row.doc_type) !== 'contract') {
     throw new Error('Тип меняется только у договора');
@@ -845,7 +845,7 @@ export function updateSalesDocContractTemplate(docId: string, templateId: string
   const tplTitle =
     meta?.title ||
     (tpl === CONTRACT_TEMPLATE_ID ? 'Договор поставки и услуг (БМП)' : tpl);
-  run(
+  await run(
     `UPDATE sales_docs SET template_id = ?, comment = CASE
        WHEN IFNULL(comment,'') = '' OR comment LIKE 'Шаблон договора БМП%'
          OR comment LIKE 'Договор купли-продажи%'
@@ -859,14 +859,14 @@ export function updateSalesDocContractTemplate(docId: string, templateId: string
 }
 
 /** Дозаполнить пустые поля договора из сделки/контрагента. */
-export function fillContractBuyerFromDeal(docId: string): ReturnType<typeof getSalesDoc> {
+export async function fillContractBuyerFromDeal(docId: string): Promise<Awaited<ReturnType<typeof getSalesDoc>>> {
   const id = String(docId || '').trim();
-  const doc = get('SELECT * FROM sales_docs WHERE id = ?', [id]) as Row | undefined;
-  if (!doc || String(doc.doc_type) !== 'contract') return getSalesDoc(id);
+  const doc = await get('SELECT * FROM sales_docs WHERE id = ?', [id]) as Row | undefined;
+  if (!doc || String(doc.doc_type) !== 'contract') return await getSalesDoc(id);
   const dealId = String(doc.deal_id || '').trim();
-  if (!dealId) return getSalesDoc(id);
-  const deal = getDeal(dealId) as Row | null;
-  const resolved = resolveContractBuyerFromDeal(deal, {
+  if (!dealId) return await getSalesDoc(id);
+  const deal = await getDeal(dealId) as Row | null;
+  const resolved = await resolveContractBuyerFromDeal(deal, {
     name: String(doc.counterparty_name || ''),
     inn: String(doc.counterparty_inn || ''),
     address: String(doc.buyer_address || ''),
@@ -911,31 +911,31 @@ export function fillContractBuyerFromDeal(docId: string): ReturnType<typeof getS
     merged.bik !== String(doc.buyer_bik || '') ||
     merged.rs !== String(doc.buyer_rs || '') ||
     merged.ks !== String(doc.buyer_ks || '');
-  if (changed) updateSalesDocBuyer(id, merged);
+  if (changed) await updateSalesDocBuyer(id, merged);
   const curTpl = String(doc.template_id || '').trim();
-  const wantTpl = suggestContractTemplateId(
+  const wantTpl = await suggestContractTemplateId(
     deal as Record<string, unknown>,
-    contractTemplateOpts(deal as Record<string, unknown>, merged, String(doc.organization_id || ''))
+    await contractTemplateOpts(deal as Record<string, unknown>, merged, String(doc.organization_id || ''))
   );
   if (curTpl !== wantTpl) {
-    updateSalesDocContractTemplate(id, wantTpl);
+    await updateSalesDocContractTemplate(id, wantTpl);
   }
-  return getSalesDoc(id);
+  return await getSalesDoc(id);
 }
 
 /** Дозаполнить покупателя в счёте / УПД / СФ из карточки контрагента (виджет «Документы»). */
-export function fillSalesDocBuyerFromDeal(docId: string): ReturnType<typeof getSalesDoc> {
+export async function fillSalesDocBuyerFromDeal(docId: string): Promise<Awaited<ReturnType<typeof getSalesDoc>>> {
   const id = String(docId || '').trim();
-  const doc = get('SELECT * FROM sales_docs WHERE id = ?', [id]) as Row | undefined;
-  if (!doc) return getSalesDoc(id);
+  const doc = await get('SELECT * FROM sales_docs WHERE id = ?', [id]) as Row | undefined;
+  if (!doc) return await getSalesDoc(id);
   const type = String(doc.doc_type || '');
-  if (!['invoice', 'upd', 'sf'].includes(type)) return getSalesDoc(id);
+  if (!['invoice', 'upd', 'sf'].includes(type)) return await getSalesDoc(id);
   const dealId = String(doc.deal_id || '').trim();
-  if (!dealId) return getSalesDoc(id);
-  const deal = getDeal(dealId) as Row | null;
+  if (!dealId) return await getSalesDoc(id);
+  const deal = await getDeal(dealId) as Row | null;
   const storedName = String(doc.counterparty_name || '').trim();
   const storedInn = String(doc.counterparty_inn || '').replace(/\D/g, '');
-  const resolved = resolveContractBuyerFromDeal(deal, {
+  const resolved = await resolveContractBuyerFromDeal(deal, {
     // Не закреплять ярлык Amo без ОПФ — иначе fill никогда не обновит бланк
     name:
       buyerDocNameHasOpf(storedName) && !isWeakBuyerDocName(storedName) ? storedName : '',
@@ -973,8 +973,8 @@ export function fillSalesDocBuyerFromDeal(docId: string): ReturnType<typeof getS
     merged.address !== String(doc.buyer_address || '') ||
     merged.phone !== String(doc.buyer_phone || '') ||
     merged.email !== String(doc.buyer_email || '');
-  if (changed) writeSalesDocBuyerFields(id, merged);
-  return getSalesDoc(id);
+  if (changed) await writeSalesDocBuyerFields(id, merged);
+  return await getSalesDoc(id);
 }
 
 function salesDocConsigneeLine(doc: Row): string {
@@ -998,16 +998,16 @@ function splitVat(totalIncl: number, vatRate: number): { amount: number; vat: nu
   return { amount, vat, total };
 }
 
-function productItemKind(productGuid: string): 'service' | 'product' | null {
+async function productItemKind(productGuid: string): Promise<'service' | 'product' | null> {
   const id = String(productGuid || '').trim();
   if (!id) return null;
-  if (isServiceProduct(id)) return 'service';
-  const row = get<{ id: string }>('SELECT id FROM products WHERE id = ?', [id]);
+  if (await isServiceProduct(id)) return 'service';
+  const row = await get<{ id: string }>('SELECT id FROM products WHERE id = ?', [id]);
   return row ? 'product' : null;
 }
 
-function guessLineKind(sku: string, name: string, productGuid: string): 'work' | 'goods' {
-  const kind = productItemKind(productGuid);
+async function guessLineKind(sku: string, name: string, productGuid: string): Promise<'work' | 'goods'> {
+  const kind = await productItemKind(productGuid);
   if (kind === 'service') return 'work';
   if (kind === 'product') return 'goods';
   if (WORK_RE.test(name) && !sku) return 'work';
@@ -1161,21 +1161,21 @@ function formatDocDateShort(iso: string): string {
   return `${d}.${m}.${y}`;
 }
 
-function nextSalesNumber(
+async function nextSalesNumber(
   docType: SalesDocType,
   dealId?: string,
   organizationId?: string
-): string {
+): Promise<string> {
   const deal = String(dealId || '').trim();
   if (docType === 'upd') {
     const orgId = String(organizationId || '').trim();
-    if (orgId) return nextOrdinalUpdNumber(orgId);
+    if (orgId) return await nextOrdinalUpdNumber(orgId);
   }
-  if (deal) return salesNumberFromDeal(docType, deal);
-  if (docType === 'invoice') return nextInvoiceNumber();
-  if (docType === 'contract') return nextContractNumber();
+  if (deal) return await salesNumberFromDeal(docType, deal);
+  if (docType === 'invoice') return await nextInvoiceNumber();
+  if (docType === 'contract') return await nextContractNumber();
   // Без сделки — серия 1С 00НФ-
-  return nextOutNfNumber();
+  return await nextOutNfNumber();
 }
 
 function normalizeUpdNumberInput(raw: string): string {
@@ -1183,17 +1183,17 @@ function normalizeUpdNumberInput(raw: string): string {
 }
 
 /** Проверка уникальности № УПД в рамках юрлица продавца. */
-function assertUpdNumberAvailable(
+async function assertUpdNumberAvailable(
   number: string,
   organizationId: string,
   excludeDocId?: string
-): void {
+): Promise<void> {
   const n = normalizeUpdNumberInput(number);
   if (!n) throw new Error('Укажите номер УПД');
   const orgId = String(organizationId || '').trim();
   if (!orgId) return;
   const ex = String(excludeDocId || '').trim();
-  const hit = get<{ id: string; deal_id: string }>(
+  const hit = await get<{ id: string; deal_id: string }>(
     `SELECT id, IFNULL(deal_id,'') AS deal_id FROM sales_docs
      WHERE doc_type IN ('upd','sf') AND number = ? AND organization_id = ?
        ${ex ? 'AND id != ?' : ''}
@@ -1207,13 +1207,13 @@ function assertUpdNumberAvailable(
   }
 }
 
-export function updateSalesDocHeader(
+export async function updateSalesDocHeader(
   docId: string,
   patch: { number?: string; doc_date?: string }
-): ReturnType<typeof getSalesDoc> {
+): Promise<Awaited<ReturnType<typeof getSalesDoc>>> {
   const id = String(docId || '').trim();
   if (!id) throw new Error('doc_id required');
-  const row = get<{ id: string; doc_type: string; organization_id: string; number: string; doc_date: string }>(
+  const row = await get<{ id: string; doc_type: string; organization_id: string; number: string; doc_date: string }>(
     `SELECT id, doc_type, IFNULL(organization_id,'') AS organization_id,
             IFNULL(number,'') AS number, IFNULL(doc_date,'') AS doc_date
      FROM sales_docs WHERE id = ?`,
@@ -1232,15 +1232,15 @@ export function updateSalesDocHeader(
   if (!nextNumber) throw new Error('Укажите номер УПД');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) throw new Error('Некорректная дата УПД');
   if (nextNumber !== String(row.number || '').trim()) {
-    assertUpdNumberAvailable(nextNumber, row.organization_id, id);
+    await assertUpdNumberAvailable(nextNumber, row.organization_id, id);
   }
-  run(`UPDATE sales_docs SET number = ?, doc_date = ? WHERE id = ?`, [nextNumber, nextDate, id]);
-  const saved = getSalesDoc(id);
+  await run(`UPDATE sales_docs SET number = ?, doc_date = ? WHERE id = ?`, [nextNumber, nextDate, id]);
+  const saved = await getSalesDoc(id);
   if (!saved) throw new Error('Документ не найден после сохранения');
   return saved;
 }
 
-export function listSalesDocs(opts: {
+export async function listSalesDocs(opts: {
   type?: SalesDocType | '';
   q?: string;
   dealId?: string;
@@ -1308,13 +1308,13 @@ export function listSalesDocs(opts: {
        LEFT JOIN companies co ON co.id = o.company_id
        LEFT JOIN crm_deals d ON d.id = s.deal_id`;
   const total =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c
        ${fromJoins}
        ${sqlWhere}`,
       params
-    )?.c ?? 0;
-  const items = all(
+    ))?.c ?? 0;
+  const items = await all(
     `SELECT s.id, s.doc_type, s.number, s.doc_date, s.deal_id, s.counterparty_name, s.counterparty_inn,
             s.amount, s.vat_rate, s.vat_amount, s.total, s.status, s.comment, s.created_at,
             s.organization_id,
@@ -1403,12 +1403,12 @@ function buildUpdRegistryWhere(opts: {
 }
 
 /** Строки реестра УПД (все позиции) для PDF — без пагинации списка. */
-export function listUpdRegistryRows(opts: {
+export async function listUpdRegistryRows(opts: {
   q?: string;
   companyId?: string;
   companyIds?: string[];
   limit?: number;
-}): { rows: UpdRegistryRow[]; truncated: boolean } {
+}): Promise<{ rows: UpdRegistryRow[]; truncated: boolean }> {
   const limit = Math.min(10000, Math.max(1, opts.limit ?? 10000));
   const { sqlWhere, params } = buildUpdRegistryWhere(opts);
   const fromJoins = `FROM sales_docs s
@@ -1417,13 +1417,13 @@ export function listUpdRegistryRows(opts: {
        LEFT JOIN companies co ON co.id = o.company_id
        LEFT JOIN crm_deals d ON d.id = s.deal_id`;
   const total =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c
        ${fromJoins}
        ${sqlWhere}`,
       params
-    )?.c ?? 0;
-  const rows = all(
+    ))?.c ?? 0;
+  const rows = await all(
     `SELECT s.id AS doc_id, s.number, s.doc_date, IFNULL(s.deal_id,'') AS deal_id,
             IFNULL(s.counterparty_name,'') AS counterparty_name,
             IFNULL(s.counterparty_inn,'') AS counterparty_inn,
@@ -1552,12 +1552,12 @@ function sortUpdRegistryDocsByNumber(docs: UpdRegistryDoc[]): UpdRegistryDoc[] {
   });
 }
 
-export function listUpdRegistryDocs(opts: {
+export async function listUpdRegistryDocs(opts: {
   q?: string;
   companyId?: string;
   companyIds?: string[];
   limit?: number;
-}): { docs: UpdRegistryDoc[]; truncated: boolean } {
+}): Promise<{ docs: UpdRegistryDoc[]; truncated: boolean }> {
   const limit = Math.min(10000, Math.max(1, opts.limit ?? 10000));
   const { sqlWhere, params } = buildUpdRegistryWhere(opts);
   const fromJoins = `FROM sales_docs s
@@ -1565,13 +1565,13 @@ export function listUpdRegistryDocs(opts: {
        LEFT JOIN companies co ON co.id = o.company_id
        LEFT JOIN crm_deals d ON d.id = s.deal_id`;
   const total =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c
        ${fromJoins}
        ${sqlWhere}`,
       params
-    )?.c ?? 0;
-  const docs = all(
+    ))?.c ?? 0;
+  const docs = await all(
     `SELECT s.id AS doc_id, s.number, s.doc_date, IFNULL(s.deal_id,'') AS deal_id,
             IFNULL(s.counterparty_name,'') AS counterparty_name,
             IFNULL(s.counterparty_inn,'') AS counterparty_inn,
@@ -1594,7 +1594,7 @@ export function listUpdRegistryDocs(opts: {
 }
 
 /** Создать пакет: счёт + заказ-наряд + УПД (и опционально СФ). */
-export function createSalesDocPackFromDeal(input: {
+export async function createSalesDocPackFromDeal(input: {
   dealId: string;
   types?: SalesDocType[];
   vatRate?: number;
@@ -1604,7 +1604,7 @@ export function createSalesDocPackFromDeal(input: {
   createdBy?: string;
   organizationId?: string;
 }) {
-  const deal = getDeal(input.dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(input.dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
   let types = input.types?.length
     ? [...input.types]
@@ -1613,7 +1613,7 @@ export function createSalesDocPackFromDeal(input: {
   const docs = [];
   for (const docType of types) {
     docs.push(
-      createSalesDocFromDeal({
+      await createSalesDocFromDeal({
         dealId: input.dealId,
         docType,
         vatRate: input.vatRate,
@@ -1631,7 +1631,7 @@ export function createSalesDocPackFromDeal(input: {
 /**
  * Юр. отгрузка: УПД (товары + услуги) и проведённая расходная (только товары → склад).
  */
-export function createUpdAndWriteOffFromDeal(input: {
+export async function createUpdAndWriteOffFromDeal(input: {
   dealId: string;
   vatRate?: number;
   buyerName?: string;
@@ -1641,20 +1641,20 @@ export function createUpdAndWriteOffFromDeal(input: {
   preferredWarehouseId?: string;
   number?: string;
   doc_date?: string;
-}): {
+}): Promise<{
   upd: Row & { lines: Row[]; org: OrgProfile };
   stock_doc_id: string | null;
   stock_doc_number: string | null;
   stock_note: string;
   skipped_services: number;
-} {
+}> {
   const dealId = String(input.dealId || '').trim();
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
   const items = (deal.items as Array<Record<string, unknown>>) || [];
   if (!items.length) throw new Error('В заказе покупателя нет позиций');
 
-  const upd = createSalesDocFromDeal({
+  const upd = await createSalesDocFromDeal({
     dealId,
     docType: 'upd',
     vatRate: input.vatRate,
@@ -1667,16 +1667,16 @@ export function createUpdAndWriteOffFromDeal(input: {
   });
   if (!upd) throw new Error('Не удалось создать УПД');
 
-  const skippedServices = items.filter((it) => {
+  const skippedServices = items.filter(async (it) => {
     const guid = String(it.product_guid || it.product_id || '').trim();
     return (
-      productItemKind(guid) === 'service' ||
-      guessLineKind(String(it.sku || ''), String(it.name || ''), guid) === 'work'
+      await productItemKind(guid) === 'service' ||
+      await guessLineKind(String(it.sku || ''), String(it.name || ''), guid) === 'work'
     );
   }).length;
 
   const preferred = String(input.preferredWarehouseId || '').trim();
-  const { needs, missing } = planDealStockNeeds(deal, preferred);
+  const { needs, missing } = await planDealStockNeeds(deal, preferred);
   if (!needs.length) {
     return {
       upd,
@@ -1689,7 +1689,7 @@ export function createUpdAndWriteOffFromDeal(input: {
       skipped_services: skippedServices,
     };
   }
-  assertDealStockAvailable(dealId, preferred);
+  await assertDealStockAvailable(dealId, preferred);
 
   const byWh = new Map<
     string,
@@ -1698,8 +1698,8 @@ export function createUpdAndWriteOffFromDeal(input: {
   for (const it of items) {
     const guid = String(it.product_guid || it.product_id || '').trim();
     if (
-      productItemKind(guid) === 'service' ||
-      guessLineKind(String(it.sku || ''), String(it.name || ''), guid) === 'work'
+      await productItemKind(guid) === 'service' ||
+      await guessLineKind(String(it.sku || ''), String(it.name || ''), guid) === 'work'
     ) {
       continue;
     }
@@ -1759,7 +1759,7 @@ export function createUpdAndWriteOffFromDeal(input: {
   for (const [wh, rows] of byWh) {
     for (const r of rows) lines.push({ ...r, warehouse_id: wh });
   }
-  const stockDocId = createDocument({
+  const stockDocId = await createDocument({
     doc_type: 'out',
     comment: `Отгрузка · УПД ${upd.number} · заказ ${dealId}`,
     organization_id: input.organizationId,
@@ -1768,11 +1768,11 @@ export function createUpdAndWriteOffFromDeal(input: {
     lines,
     post: true,
   });
-  const stockDoc = get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [
+  const stockDoc = await get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [
     stockDocId,
   ]);
   try {
-    linkOutToOrderChain(dealId, stockDocId);
+    await linkOutToOrderChain(dealId, stockDocId);
   } catch {
     /* цепочка не блокирует отгрузку */
   }
@@ -1786,20 +1786,20 @@ export function createUpdAndWriteOffFromDeal(input: {
   };
 }
 
-export function getSalesDoc(
+export async function getSalesDoc(
   id: string
-): (Row & {
+): Promise<(Row & {
   lines: Row[];
   org: OrgProfile;
   company_id: string;
   company_name: string;
   organization_name: string;
   organization_short: string;
-  sts_photos?: ReturnType<typeof stsMediaInfo>;
-}) | null {
-  const doc = get('SELECT * FROM sales_docs WHERE id = ?', [id]);
+  sts_photos?: Awaited<ReturnType<typeof stsMediaInfo>>;
+}) | null> {
+  const doc = await get('SELECT * FROM sales_docs WHERE id = ?', [id]);
   if (!doc) return null;
-  const lines = all(
+  const lines = await Promise.all((await all(
     `SELECT l.*,
             IFNULL(p.code,'') AS product_code,
             IFNULL(p.barcode,'') AS product_barcode,
@@ -1810,7 +1810,7 @@ export function getSalesDoc(
      WHERE l.doc_id = ?
      ORDER BY l.line_no, l.name`,
     [id]
-  ).map((raw) => {
+  )).map(async (raw) => {
     const row = raw as Row;
     const lineSku = String(row.sku || '').trim();
     const art = catalogArticleOf({
@@ -1834,18 +1834,18 @@ export function getSalesDoc(
       ...rest,
       article,
       code: code || undefined,
-      name: salesDocLineDisplayName({
+      name: await salesDocLineDisplayName({
         ...(rest as Record<string, unknown>),
         name: String(row.name || ''),
         product_guid: String(row.product_guid || ''),
       }),
     };
-  });
+  }));
   const orgId = String((doc as { organization_id?: string }).organization_id || '');
-  const orgRow = (orgId ? getOrganization(orgId) : undefined) || getDefaultOrganization();
+  const orgRow = (orgId ? await getOrganization(orgId) : undefined) || await getDefaultOrganization();
   const org = orgToProfile(orgRow);
   const companyId = String(orgRow?.company_id || '');
-  const companyName = companyId ? String(getCompany(companyId)?.name || '').trim() : '';
+  const companyName = companyId ? String((await getCompany(companyId))?.name || '').trim() : '';
   const dealId = String((doc as { deal_id?: string }).deal_id || '').trim();
   let sts_photos = dealId ? stsMediaInfo(dealId) : undefined;
   // предпочитаем СТС выбранного авто гаража (не общие фото сделки)
@@ -1855,7 +1855,7 @@ export function getSalesDoc(
       .toUpperCase()
       .replace(/\s+/g, '');
     if (plateN) {
-      const match = garageForDeal(dealId).vehicles.find(
+      const match = (await garageForDeal(dealId)).vehicles.find(
         (v) =>
           String(v.car_plate || '')
             .trim()
@@ -1919,7 +1919,7 @@ export type SalesDocLineNameOverride = {
   client_name?: string;
 };
 
-export function createSalesDocFromDeal(input: {
+export async function createSalesDocFromDeal(input: {
   dealId: string;
   docType: SalesDocType;
   vatRate?: number;
@@ -1937,8 +1937,8 @@ export function createSalesDocFromDeal(input: {
   number?: string;
   /** Явная дата документа YYYY-MM-DD; при перегенерации без override — сохраняется старая. */
   doc_date?: string;
-}): Row & { lines: Row[]; org: OrgProfile; regenerated?: boolean } {
-  const deal = getDeal(input.dealId) as
+}): Promise<Row & { lines: Row[]; org: OrgProfile; regenerated?: boolean }> {
+  const deal = await getDeal(input.dealId) as
     | (Row & { items: Array<Record<string, unknown>>; documents: unknown[] })
     | null;
   if (!deal) throw new Error('Сделка не найдена');
@@ -1949,8 +1949,8 @@ export function createSalesDocFromDeal(input: {
 
   const dealIdStr = String(deal.id || input.dealId);
   // После первого счёта юрлицо заказа фиксируется; иначе — контур из филиала Amo.
-  const organizationId = organizationIdForDealRecord(deal as Record<string, unknown>, input.organizationId);
-  const org = getOrgProfile(organizationId);
+  const organizationId = await organizationIdForDealRecord(deal as Record<string, unknown>, input.organizationId);
+  const org = await getOrgProfile(organizationId);
   const vatRate = resolveVatRateForDeal(
     deal as Record<string, unknown>,
     Number(org.vat_rate) || 0,
@@ -1961,7 +1961,7 @@ export function createSalesDocFromDeal(input: {
   let existingDocDate = '';
   let regenerated = false;
   if (SINGLE_DEAL_DOC_TYPES.includes(input.docType)) {
-    const existing = get<{ id: string; number: string; doc_date: string }>(
+    const existing = await get<{ id: string; number: string; doc_date: string }>(
       `SELECT id, IFNULL(number,'') AS number, IFNULL(doc_date,'') AS doc_date
        FROM sales_docs
        WHERE deal_id = ? AND doc_type = ?
@@ -1978,21 +1978,21 @@ export function createSalesDocFromDeal(input: {
   const numberOverride = normalizeUpdNumberInput(String(input.number ?? ''));
   if (numberOverride) {
     if (input.docType === 'upd' || input.docType === 'sf') {
-      assertUpdNumberAvailable(numberOverride, organizationId, regenerated ? id : undefined);
+      await assertUpdNumberAvailable(numberOverride, organizationId, regenerated ? id : undefined);
     }
     number = numberOverride;
   } else if (input.docType === 'workorder') {
     // Всегда номер сделки; при перегенерации сбрасываем хвосты вроде «25904927-20».
     number = dealIdStr;
   } else if (!number) {
-    number = nextSalesNumber(input.docType, dealIdStr, organizationId);
+    number = await nextSalesNumber(input.docType, dealIdStr, organizationId);
   }
   const dateOverride = String(input.doc_date || '').trim().slice(0, 10);
   const docDate =
     dateOverride ||
     (regenerated && existingDocDate ? existingDocDate : '') ||
     new Date().toISOString().slice(0, 10);
-  const buyerResolved = resolveContractBuyerFromDeal(deal as Row, {
+  const buyerResolved = await resolveContractBuyerFromDeal(deal as Row, {
     name: (input.buyerName || '').trim(),
     inn: (input.buyerInn || '').trim(),
     address: (input.buyerAddress || '').trim(),
@@ -2069,7 +2069,7 @@ export function createSalesDocFromDeal(input: {
     if (s) overrideBySku.set(s, ov);
   }
 
-  items.forEach((it, idx) => {
+  items.forEach(async (it, idx) => {
     const qty = Number(it.qty) || 0;
     const price = Number(it.price) || 0;
     const lineTotal = Number(it.amount) || qty * price;
@@ -2082,7 +2082,7 @@ export function createSalesDocFromDeal(input: {
       (skuKey && overrideBySku.get(skuKey)) ||
       undefined;
     const savedKn = cpIdForNames
-      ? getDocClientName({
+      ? await getDocClientName({
           counterpartyId: cpIdForNames,
           productGuid,
           productSku: sku,
@@ -2094,7 +2094,7 @@ export function createSalesDocFromDeal(input: {
       overrideKn ||
       overrideName ||
       savedKn ||
-      salesDocLineDisplayName(it);
+      await salesDocLineDisplayName(it);
     lines.push({
       id: newGuid(),
       product_guid: productGuid,
@@ -2106,7 +2106,7 @@ export function createSalesDocFromDeal(input: {
       amount: split.amount,
       vat_amount: split.vat,
       line_no: idx + 1,
-      line_kind: guessLineKind(sku, name, productGuid),
+      line_kind: await guessLineKind(sku, name, productGuid),
     });
   });
 
@@ -2134,7 +2134,7 @@ export function createSalesDocFromDeal(input: {
   // template_id пустой = коммерческий бланк FOGEL (Excel 1С); оферта СТО — только sto-pack.
   const workorderTemplateId = '';
 
-  run('BEGIN');
+  await run('BEGIN');
   try {
     const comment = (input.comment || '').trim() || `Из заказа покупателя №${dealIdStr}`;
     const headParams = [
@@ -2179,7 +2179,7 @@ export function createSalesDocFromDeal(input: {
       workorderTemplateId,
     ];
     if (regenerated) {
-      run(
+      await run(
         `UPDATE sales_docs SET
            number = ?, doc_date = ?, deal_id = ?,
            counterparty_name = ?, counterparty_inn = ?, buyer_address = ?,
@@ -2195,9 +2195,9 @@ export function createSalesDocFromDeal(input: {
          WHERE id = ?`,
         [...headParams, id]
       );
-      run(`DELETE FROM sales_doc_lines WHERE doc_id = ?`, [id]);
+      await run(`DELETE FROM sales_doc_lines WHERE doc_id = ?`, [id]);
     } else {
-      run(
+      await run(
         `INSERT INTO sales_docs (
            id, doc_type, number, doc_date, deal_id,
            counterparty_name, counterparty_inn, buyer_address,
@@ -2218,7 +2218,7 @@ export function createSalesDocFromDeal(input: {
       );
     }
     for (const line of mergedLines) {
-      run(
+      await run(
         `INSERT INTO sales_doc_lines (
            id, doc_id, line_no, product_guid, sku, name, unit, qty, price, amount, vat_amount, line_kind
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2238,26 +2238,26 @@ export function createSalesDocFromDeal(input: {
         ]
       );
     }
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
     try {
-      run('ROLLBACK');
+      await run('ROLLBACK');
     } catch {
       /* ignore */
     }
     throw e;
   }
 
-  const saved = getSalesDoc(id);
+  const saved = await getSalesDoc(id);
   if (!saved) throw new Error('Документ не найден после сохранения');
   if (SINGLE_DEAL_DOC_TYPES.includes(input.docType)) {
-    purgeDuplicateDealSalesDocs(dealIdStr, input.docType, id);
+    await purgeDuplicateDealSalesDocs(dealIdStr, input.docType, id);
   }
   return Object.assign(saved, { regenerated });
 }
 
-function purgeDuplicateDealSalesDocs(dealId: string, docType: SalesDocType, keepId: string): void {
-  const dupes = all<{ id: string }>(
+async function purgeDuplicateDealSalesDocs(dealId: string, docType: SalesDocType, keepId: string): Promise<void> {
+  const dupes = await all<{ id: string }>(
     `SELECT id FROM sales_docs WHERE deal_id = ? AND doc_type = ? AND id != ?`,
     [dealId, docType, keepId]
   );
@@ -2265,8 +2265,8 @@ function purgeDuplicateDealSalesDocs(dealId: string, docType: SalesDocType, keep
   for (const row of dupes) {
     const did = String(row.id || '').trim();
     if (!did) continue;
-    run(`DELETE FROM sales_doc_lines WHERE doc_id = ?`, [did]);
-    run(`DELETE FROM sales_docs WHERE id = ?`, [did]);
+    await run(`DELETE FROM sales_doc_lines WHERE doc_id = ?`, [did]);
+    await run(`DELETE FROM sales_docs WHERE id = ?`, [did]);
   }
 }
 
@@ -2566,10 +2566,10 @@ function renderUpdHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
   return printShell(`УПД № ${doc.number}`, body, org.inn);
 }
 
-function renderWorkorderHtml(
+async function renderWorkorderHtml(
   doc: Row & { lines: Row[]; org: OrgProfile },
   opts?: { staffName?: string }
-): string {
+): Promise<string> {
   const templateId = String((doc as { template_id?: string }).template_id || '').trim();
   if (isStoWorkorderTemplateId(templateId)) {
     const allLines = (doc.lines || []) as Array<Record<string, unknown>>;
@@ -2581,11 +2581,11 @@ function renderWorkorderHtml(
       }))
     );
     const dealId = String((doc as { deal_id?: string }).deal_id || '').trim();
-    const dealRow = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+    const dealRow = dealId ? (await getDeal(dealId) as Record<string, unknown> | null) : null;
     const issuer =
       String(opts?.staffName || '').trim() ||
       String((doc as { created_by?: string }).created_by || '').trim();
-    const html = renderStoTemplateHtml(templateId, {
+    const html = await renderStoTemplateHtml(templateId, {
       number: String(doc.number || ''),
       docDate: String(doc.doc_date || new Date().toISOString().slice(0, 10)),
       org: doc.org,
@@ -2615,11 +2615,11 @@ function renderWorkorderHtml(
       ...contactFieldsFromDeal(dealRow, {
         docDate: String(doc.doc_date || new Date().toISOString().slice(0, 10)),
       }),
-      ...staffFieldsFromDeal(dealRow, {
+      ...await staffFieldsFromDeal(dealRow, {
         staffName: issuer,
         actorOnly: true,
       }),
-      ...handoverFieldsFromDeal(dealRow, {
+      ...await handoverFieldsFromDeal(dealRow, {
         workorderId: String(doc.id || ''),
       }),
     });
@@ -2739,7 +2739,7 @@ function renderWorkorderHtml(
   <div class="words">Всего по заказ-наряду: ${escHtml(amountInWordsRu(Number(doc.total) || 0))} в т.ч. НДС ${formatRuMoney(Number(doc.vat_amount) || 0)} руб</div>
 
   <div class="party" style="margin-top:14px;position:relative;min-height:14mm">
-    Мастер ________________________________ /${escHtml(resolveStaffDisplayName(opts?.staffName) || '')}/
+    Мастер ________________________________ /${escHtml(await resolveStaffDisplayName(opts?.staffName) || '')}/
     ${orgSignHtml(org.inn, { heightMm: 12 })}
   </div>
 
@@ -2855,33 +2855,33 @@ function renderSfHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
 }
 
 /** HTML-бланк для печати / «Сохранить как PDF». */
-export function renderSalesDocPrintHtml(
+export async function renderSalesDocPrintHtml(
   id: string,
   opts?: { staffName?: string }
-): string | null {
-  const typePeek = get<{ doc_type?: string }>(
+): Promise<string | null> {
+  const typePeek = await get<{ doc_type?: string }>(
     `SELECT doc_type FROM sales_docs WHERE id = ?`,
     [id]
   );
   if (String(typePeek?.doc_type || '') === 'workorder') {
-    ensureWorkorderTemplateId(id);
+    await ensureWorkorderTemplateId(id);
   }
-  let doc = getSalesDoc(id);
+  let doc = await getSalesDoc(id);
   if (!doc) return null;
   const type = String(doc.doc_type) as SalesDocType;
   if (type === 'contract') {
-    doc = fillContractBuyerFromDeal(id) || doc;
+    doc = await fillContractBuyerFromDeal(id) || doc;
   } else if (['invoice', 'upd', 'sf'].includes(type)) {
-    doc = fillSalesDocBuyerFromDeal(id) || doc;
+    doc = await fillSalesDocBuyerFromDeal(id) || doc;
   }
-  if (type === 'contract') return renderContractDocHtml(doc);
+  if (type === 'contract') return await renderContractDocHtml(doc);
   if (type === 'invoice') return renderInvoiceHtml(doc);
-  if (type === 'workorder') return renderWorkorderHtml(doc, opts);
+  if (type === 'workorder') return await renderWorkorderHtml(doc, opts);
   if (type === 'sf') return renderSfHtml(doc);
   return renderUpdHtml(doc);
 }
 
-function contractBuyerFromDoc(doc: Row): ContractBuyer {
+async function contractBuyerFromDoc(doc: Row): Promise<ContractBuyer> {
   const phoneStored = String(doc.buyer_phone || '').trim();
   const addrRaw = String(doc.buyer_address || '').trim();
   const phoneFromAddr = addrRaw.replace(/^тел\.\s*:?\s*/i, '').trim();
@@ -2892,9 +2892,9 @@ function contractBuyerFromDoc(doc: Row): ContractBuyer {
         ? ''
         : addrRaw;
   const dealId = String(doc.deal_id || '').trim();
-  const deal = dealId ? (getDeal(dealId) as Row | null) : null;
+  const deal = dealId ? (await getDeal(dealId) as Row | null) : null;
   const innFromDoc = String(doc.counterparty_inn || '').replace(/\D/g, '');
-  const cp = findCounterpartyForDeal(deal) || findCounterpartyByInn(innFromDoc);
+  const cp = await findCounterpartyForDeal(deal) || await findCounterpartyByInn(innFromDoc);
   const inn = innFromDoc || String(cp?.inn || '').replace(/\D/g, '');
   let partyKind = String((cp as { party_kind?: string } | null)?.party_kind || '').toLowerCase();
   if (!partyKind && inn.length === 12) partyKind = 'ip';
@@ -2922,13 +2922,13 @@ function contractBuyerFromDoc(doc: Row): ContractBuyer {
   };
 }
 
-function renderContractDocHtml(doc: Row & { lines: Row[]; org: OrgProfile }): string {
+async function renderContractDocHtml(doc: Row & { lines: Row[]; org: OrgProfile }): Promise<string> {
   const templateId = String((doc as { template_id?: string }).template_id || '').trim() || CONTRACT_TEMPLATE_ID;
   const number = String(doc.number || '');
   const docDate = String(doc.doc_date || new Date().toISOString().slice(0, 10));
   if (isStoContractTemplateId(templateId)) {
-    const buyer = contractBuyerFromDoc(doc);
-    const html = renderStoTemplateHtml(templateId, {
+    const buyer = await contractBuyerFromDoc(doc);
+    const html = await renderStoTemplateHtml(templateId, {
       number,
       docDate,
       org: doc.org,
@@ -2959,13 +2959,13 @@ function renderContractDocHtml(doc: Row & { lines: Row[]; org: OrgProfile }): st
     number,
     docDate,
     org: doc.org,
-    buyer: contractBuyerFromDoc(doc),
+    buyer: await contractBuyerFromDoc(doc),
     city: 'Краснодар',
   });
 }
 
 /** Договор без позиций сделки (из шаблонов / вручную). */
-export function createContractDoc(input: {
+export async function createContractDoc(input: {
   dealId?: string;
   organizationId?: string;
   templateId?: string;
@@ -2987,20 +2987,20 @@ export function createContractDoc(input: {
   const dealIdStr = String(input.dealId || '').trim();
   let dealRow: Row | null = null;
   if (dealIdStr) {
-    dealRow = getDeal(dealIdStr) as Row | null;
+    dealRow = await getDeal(dealIdStr) as Row | null;
     if (!dealRow) throw new Error('Сделка не найдена');
   }
   const organizationId = dealRow
-    ? organizationIdForDealRecord(dealRow as Record<string, unknown>, input.organizationId)
-    : resolveOrganizationId(input.organizationId);
-  const org = getOrgProfile(organizationId);
+    ? await organizationIdForDealRecord(dealRow as Record<string, unknown>, input.organizationId)
+    : await resolveOrganizationId(input.organizationId);
+  const org = await getOrgProfile(organizationId);
   let id = newGuid();
   let number = dealIdStr
-    ? salesNumberFromDeal('contract', dealIdStr)
-    : nextContractNumber();
+    ? await salesNumberFromDeal('contract', dealIdStr)
+    : await nextContractNumber();
   let regenerated = false;
   if (dealIdStr) {
-    const existing = latestDealSalesDoc(dealIdStr, 'contract');
+    const existing = await latestDealSalesDoc(dealIdStr, 'contract');
     if (existing) {
       id = existing.id;
       number = String(existing.number || number);
@@ -3032,7 +3032,7 @@ export function createContractDoc(input: {
 
   let templateId = String(input.templateId || '').trim();
   if (dealIdStr && dealRow) {
-    buyer = resolveContractBuyerFromDeal(dealRow, buyer);
+    buyer = await resolveContractBuyerFromDeal(dealRow, buyer);
     carPlate = String(dealRow.car_plate || '').trim().toUpperCase();
     carVin = String(dealRow.car_vin || '').trim().toUpperCase();
     carYear = String(dealRow.car_year || '').trim();
@@ -3041,16 +3041,16 @@ export function createContractDoc(input: {
     carModel = String(dealRow.car_model || '').trim();
     carColor = String(dealRow.car_color || '').trim();
     if (!templateId) {
-      templateId = suggestContractTemplateId(
+      templateId = await suggestContractTemplateId(
         dealRow as Record<string, unknown>,
-        contractTemplateOpts(dealRow as Record<string, unknown>, buyer, organizationId)
+        await contractTemplateOpts(dealRow as Record<string, unknown>, buyer, organizationId)
       );
     }
   }
   if (!templateId) {
-    templateId = suggestContractTemplateId(
+    templateId = await suggestContractTemplateId(
       null,
-      contractTemplateOpts(dealRow as Record<string, unknown> | null, buyer, organizationId)
+      await contractTemplateOpts(dealRow as Record<string, unknown> | null, buyer, organizationId)
     );
   }
   if (!isSaleContractTemplateId(templateId)) {
@@ -3102,7 +3102,7 @@ export function createContractDoc(input: {
   ];
 
   if (regenerated) {
-    run(
+    await run(
       `UPDATE sales_docs SET
          number = ?, doc_date = ?, deal_id = ?,
          counterparty_name = ?, counterparty_inn = ?, buyer_address = ?,
@@ -3116,7 +3116,7 @@ export function createContractDoc(input: {
       [...contractParams, id]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO sales_docs (
          id, doc_type, number, doc_date, deal_id,
          counterparty_name, counterparty_inn, buyer_address,
@@ -3128,7 +3128,7 @@ export function createContractDoc(input: {
       [id, ...contractParams]
     );
   }
-  const saved = getSalesDoc(id);
+  const saved = await getSalesDoc(id);
   if (!saved) throw new Error('Документ не найден после сохранения');
   return Object.assign(saved, { regenerated });
 }

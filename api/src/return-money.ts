@@ -11,58 +11,58 @@ export type LastSalePrice = {
 };
 
 /** Цена, по которой товар продавали последний раз (сделка / УПД / расход). */
-export function getLastSalePrice(opts: {
+export async function getLastSalePrice(opts: {
   productId: string;
   serial?: string;
   dealId?: string;
-}): LastSalePrice {
+}): Promise<LastSalePrice> {
   const productId = String(opts.productId || '').trim();
   const serial = String(opts.serial || '').trim();
   const dealHint = String(opts.dealId || '').trim();
   if (!productId) return { price: 0, source: '', deal_id: '' };
 
   if (serial) {
-    const unit = get<{ out_doc_id: string; out_line_id: string }>(
+    const unit = await get<{ out_doc_id: string; out_line_id: string }>(
       `SELECT IFNULL(out_doc_id,'') AS out_doc_id, IFNULL(out_line_id,'') AS out_line_id
        FROM product_units WHERE lower(serial) = lower(?) LIMIT 1`,
       [serial]
     );
     if (unit?.out_line_id) {
-      const line = get<{ price: number }>(
+      const line = await get<{ price: number }>(
         `SELECT IFNULL(price,0) AS price FROM stock_doc_lines WHERE id = ?`,
         [unit.out_line_id]
       );
       if (line && Number(line.price) > 0) {
         const dealId =
-          get<{ deal_id: string }>(
+          (await get<{ deal_id: string }>(
             `SELECT IFNULL(deal_id,'') AS deal_id FROM stock_docs WHERE id = ?`,
             [unit.out_doc_id]
-          )?.deal_id || '';
+          ))?.deal_id || '';
         return { price: Number(line.price), source: 'out_line', deal_id: dealId };
       }
     }
     if (unit?.out_doc_id) {
       const dealId =
-        get<{ deal_id: string }>(
+        (await get<{ deal_id: string }>(
           `SELECT IFNULL(deal_id,'') AS deal_id FROM stock_docs WHERE id = ?`,
           [unit.out_doc_id]
-        )?.deal_id || '';
+        ))?.deal_id || '';
       if (dealId) {
-        const fromDeal = priceFromDealItem(productId, dealId, serial);
+        const fromDeal = await priceFromDealItem(productId, dealId, serial);
         if (fromDeal.price > 0) return fromDeal;
       }
     }
   }
 
   if (dealHint) {
-    const fromDeal = priceFromDealItem(productId, dealHint, serial);
+    const fromDeal = await priceFromDealItem(productId, dealHint, serial);
     if (fromDeal.price > 0) return fromDeal;
-    const fromSales = priceFromSalesDoc(productId, dealHint);
+    const fromSales = await priceFromSalesDoc(productId, dealHint);
     if (fromSales.price > 0) return fromSales;
   }
 
   // последняя сделка с этим товаром
-  const lastDeal = get<{ price: number; deal_id: string }>(
+  const lastDeal = await get<{ price: number; deal_id: string }>(
     `SELECT IFNULL(i.price,0) AS price, i.deal_id AS deal_id
      FROM crm_deal_items i
      JOIN crm_deals d ON d.id = i.deal_id
@@ -80,7 +80,7 @@ export function getLastSalePrice(opts: {
     };
   }
 
-  const lastSales = get<{ price: number; deal_id: string }>(
+  const lastSales = await get<{ price: number; deal_id: string }>(
     `SELECT IFNULL(l.price,0) AS price, IFNULL(d.deal_id,'') AS deal_id
      FROM sales_doc_lines l
      JOIN sales_docs d ON d.id = l.doc_id
@@ -101,8 +101,8 @@ export function getLastSalePrice(opts: {
   return { price: 0, source: '', deal_id: dealHint };
 }
 
-function priceFromDealItem(productId: string, dealId: string, serial: string): LastSalePrice {
-  const items = all<{ price: number; serials_json: string }>(
+async function priceFromDealItem(productId: string, dealId: string, serial: string): Promise<LastSalePrice> {
+  const items = await all<{ price: number; serials_json: string }>(
     `SELECT IFNULL(price,0) AS price, IFNULL(serials_json,'') AS serials_json
      FROM crm_deal_items
      WHERE deal_id = ? AND IFNULL(product_guid,'') = ?`,
@@ -132,8 +132,8 @@ function priceFromDealItem(productId: string, dealId: string, serial: string): L
   return { price: 0, source: '', deal_id: dealId };
 }
 
-function priceFromSalesDoc(productId: string, dealId: string): LastSalePrice {
-  const row = get<{ price: number }>(
+async function priceFromSalesDoc(productId: string, dealId: string): Promise<LastSalePrice> {
+  const row = await get<{ price: number }>(
     `SELECT IFNULL(l.price,0) AS price
      FROM sales_doc_lines l
      JOIN sales_docs d ON d.id = l.doc_id
@@ -151,7 +151,7 @@ function priceFromSalesDoc(productId: string, dealId: string): LastSalePrice {
 }
 
 /** Черновик «Требование возврата денег» (ТВД) — по складскому возврату или по требованию на склад. */
-export function createMoneyRefundFromReturn(opts: {
+export async function createMoneyRefundFromReturn(opts: {
   stockDocId?: string;
   stockDocNumber?: string;
   warehouseTaskId?: string;
@@ -169,7 +169,7 @@ export function createMoneyRefundFromReturn(opts: {
     price?: number;
   }>;
   comment?: string;
-}): { id: string; number: string } | null {
+}): Promise<{ id: string; number: string } | null> {
   const stockDocId = String(opts.stockDocId || '').trim();
   const taskId = String(opts.warehouseTaskId || '').trim();
   const amount = Math.round(Number(opts.amount) || 0);
@@ -184,7 +184,7 @@ export function createMoneyRefundFromReturn(opts: {
         ? `%"warehouse_task_id":"${taskId.replace(/"/g, '')}"%`
         : '';
     if (key) {
-      const exists = get<{ id: string; number: string }>(
+      const exists = await get<{ id: string; number: string }>(
         `SELECT id, number FROM thin_journal_docs
          WHERE journal_key = 'money_refund_requests'
            AND IFNULL(payload_json,'') LIKE ?
@@ -202,7 +202,7 @@ export function createMoneyRefundFromReturn(opts: {
   const comment =
     String(opts.comment || '').trim() ||
     `основание:возврат ${basisLabel}`;
-  const row = createThinJournalDoc('money_refund_requests', {
+  const row = await createThinJournalDoc('money_refund_requests', {
     counterparty_name: String(opts.counterpartyName || '').trim(),
     amount,
     comment,
@@ -225,7 +225,7 @@ export function createMoneyRefundFromReturn(opts: {
 
   if (stockDocId) {
     try {
-      run(
+      await run(
         `UPDATE stock_docs
          SET comment = CASE
            WHEN IFNULL(comment,'') = '' THEN ?
@@ -247,10 +247,10 @@ export function createMoneyRefundFromReturn(opts: {
   return { id: String(row.id), number: String(row.number || '') };
 }
 
-function closeMoneyRefundRequestsForDeal(dealId: string) {
+async function closeMoneyRefundRequestsForDeal(dealId: string) {
   const id = String(dealId || '').trim();
   if (!id) return 0;
-  const rows = all<{ id: string; payload_json: string; status: string }>(
+  const rows = await all<{ id: string; payload_json: string; status: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json, IFNULL(status,'') AS status
      FROM thin_journal_docs
      WHERE journal_key = 'money_refund_requests'
@@ -266,7 +266,7 @@ function closeMoneyRefundRequestsForDeal(dealId: string) {
     } catch {
       continue;
     }
-    run(
+    await run(
       `UPDATE thin_journal_docs
        SET status = 'done', updated_at = datetime('now'),
            comment = CASE
@@ -283,27 +283,27 @@ function closeMoneyRefundRequestsForDeal(dealId: string) {
 }
 
 /** Отметка на заказе: деньги покупателю уже вернули (Точка/банк вручную). */
-export function markDealMoneyRefunded(
+export async function markDealMoneyRefunded(
   dealId: string,
   actor?: { id?: string; name?: string } | null
-): {
+): Promise<{
   deal_id: string;
   money_refunded_at: string;
   money_refunded_by: string;
   money_refunded_by_name: string;
   closed_tvd: number;
-} {
+}> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('Нет заказа');
-  const deal = get<{ id: string }>('SELECT id FROM crm_deals WHERE id = ?', [id]);
+  const deal = await get<{ id: string }>('SELECT id FROM crm_deals WHERE id = ?', [id]);
   if (!deal) throw new Error('Заказ не найден');
 
-  const existing = get<{ money_refunded_at: string }>(
+  const existing = await get<{ money_refunded_at: string }>(
     `SELECT IFNULL(money_refunded_at,'') AS money_refunded_at FROM crm_deals WHERE id = ?`,
     [id]
   );
   if (String(existing?.money_refunded_at || '').trim()) {
-    const row = get<{
+    const row = await get<{
       money_refunded_at: string;
       money_refunded_by: string;
       money_refunded_by_name: string;
@@ -325,7 +325,7 @@ export function markDealMoneyRefunded(
 
   const by = String(actor?.id || '').trim();
   const byName = String(actor?.name || '').trim();
-  run(
+  await run(
     `UPDATE crm_deals SET
        money_refunded_at = datetime('now'),
        money_refunded_by = ?,
@@ -334,8 +334,8 @@ export function markDealMoneyRefunded(
      WHERE id = ?`,
     [by, byName, id]
   );
-  const closed = closeMoneyRefundRequestsForDeal(id);
-  const row = get<{
+  const closed = await closeMoneyRefundRequestsForDeal(id);
+  const row = await get<{
     money_refunded_at: string;
     money_refunded_by: string;
     money_refunded_by_name: string;
@@ -355,12 +355,12 @@ export function markDealMoneyRefunded(
   };
 }
 
-export function clearDealMoneyRefunded(dealId: string): { deal_id: string; ok: boolean } {
+export async function clearDealMoneyRefunded(dealId: string): Promise<{ deal_id: string; ok: boolean }> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('Нет заказа');
-  const deal = get<{ id: string }>('SELECT id FROM crm_deals WHERE id = ?', [id]);
+  const deal = await get<{ id: string }>('SELECT id FROM crm_deals WHERE id = ?', [id]);
   if (!deal) throw new Error('Заказ не найден');
-  run(
+  await run(
     `UPDATE crm_deals SET
        money_refunded_at = '',
        money_refunded_by = '',

@@ -100,8 +100,8 @@ export function orgToProfile(row: Partial<OrganizationRow> | null | undefined): 
   return base;
 }
 
-function profileFromMeta(): OrgProfile | null {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['org_profile']);
+async function profileFromMeta(): Promise<OrgProfile | null> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['org_profile']);
   if (!row?.value) return null;
   try {
     return { ...DEFAULT_ORG, ...(JSON.parse(row.value) as Partial<OrgProfile>) };
@@ -110,33 +110,33 @@ function profileFromMeta(): OrgProfile | null {
   }
 }
 
-function syncMetaFromOrg(org: OrganizationRow): void {
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+async function syncMetaFromOrg(org: OrganizationRow): Promise<void> {
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'org_profile',
     JSON.stringify(orgToProfile(org)),
   ]);
 }
 
-export function ensureOrganizationsSeeded(): void {
-  ensureCompaniesSchema();
-  const count = get<{ c: number }>('SELECT COUNT(*) AS c FROM organizations')?.c ?? 0;
+export async function ensureOrganizationsSeeded(): Promise<void> {
+  await ensureCompaniesSchema();
+  const count = (await get<{ c: number }>('SELECT COUNT(*) AS c FROM organizations'))?.c ?? 0;
   if (count > 0) {
     // Не вызывать getDefaultOrganization() — там снова ensure → бесконечная рекурсия.
     const def =
-      (get(
+      (await get(
         `SELECT * FROM organizations WHERE is_default = 1 AND is_active = 1 LIMIT 1`
       ) as OrganizationRow | undefined) ||
-      (get(
+      (await get(
         `SELECT * FROM organizations WHERE is_active = 1 ORDER BY name LIMIT 1`
       ) as OrganizationRow | undefined);
-    if (def) syncMetaFromOrg(def);
+    if (def) await syncMetaFromOrg(def);
     return;
   }
-  const fromMeta = profileFromMeta();
+  const fromMeta = await profileFromMeta();
   const seed = fromMeta || DEFAULT_ORG;
   const id = newGuid();
-  const companyId = resolveCompanyId(null);
-  run(
+  const companyId = await resolveCompanyId(null);
+  await run(
     `INSERT INTO organizations (
        id, code, company_id, name, short_name, inn, kpp, ogrnip, address, site_address, work_hours,
        phone, email, bank, bik, rs, ks, director, accountant, master_title, vat_rate,
@@ -166,14 +166,14 @@ export function ensureOrganizationsSeeded(): void {
       seed.vat_rate,
     ]
   );
-  const created = getOrganization(id);
-  if (created) syncMetaFromOrg(created);
+  const created = await getOrganization(id);
+  if (created) await syncMetaFromOrg(created);
 }
 
-export function listOrganizations(
+export async function listOrganizations(
   opts: { activeOnly?: boolean; companyId?: string } = {}
-): OrganizationRow[] {
-  ensureOrganizationsSeeded();
+): Promise<OrganizationRow[]> {
+  await ensureOrganizationsSeeded();
   const companyId = String(opts.companyId || '').trim();
   const where: string[] = [];
   const params: string[] = [];
@@ -183,55 +183,55 @@ export function listOrganizations(
     params.push(companyId);
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  return all(
+  return await all(
     `SELECT * FROM organizations ${whereSql} ORDER BY is_default DESC, name COLLATE NOCASE`,
     params
   ) as OrganizationRow[];
 }
 
-export function getOrganization(id: string): OrganizationRow | undefined {
+export async function getOrganization(id: string): Promise<OrganizationRow | undefined> {
   if (!id) return undefined;
-  return get(`SELECT * FROM organizations WHERE id = ?`, [id]) as OrganizationRow | undefined;
+  return await get(`SELECT * FROM organizations WHERE id = ?`, [id]) as OrganizationRow | undefined;
 }
 
-export function getDefaultOrganization(): OrganizationRow | undefined {
-  ensureOrganizationsSeeded();
+export async function getDefaultOrganization(): Promise<OrganizationRow | undefined> {
+  await ensureOrganizationsSeeded();
   return (
-    (get(
+    (await get(
       `SELECT * FROM organizations WHERE is_default = 1 AND is_active = 1 LIMIT 1`
     ) as OrganizationRow | undefined) ||
-    (get(
+    (await get(
       `SELECT * FROM organizations WHERE is_active = 1 ORDER BY name LIMIT 1`
     ) as OrganizationRow | undefined)
   );
 }
 
-export function resolveOrganizationId(organizationId?: string | null): string {
+export async function resolveOrganizationId(organizationId?: string | null): Promise<string> {
   const id = String(organizationId || '').trim();
   if (id) {
-    const row = getOrganization(id);
+    const row = await getOrganization(id);
     if (row && row.is_active) return row.id;
   }
-  const def = getDefaultOrganization();
+  const def = await getDefaultOrganization();
   if (!def) throw new Error('Нет активной организации — создайте в Компания → Организации');
   return def.id;
 }
 
 /** Юрлицо контура (companies.id) — ★ по умолчанию или первое активное. */
-export function resolveOrganizationForCompany(
+export async function resolveOrganizationForCompany(
   companyId?: string | null,
   preferredId?: string | null
-): string {
+): Promise<string> {
   const co = String(companyId || '').trim();
   if (!co) return '';
   const prefer = String(preferredId || '').trim();
   if (prefer) {
-    const row = getOrganization(prefer);
+    const row = await getOrganization(prefer);
     if (row && row.is_active && String(row.company_id || '') === co) {
       return row.id;
     }
   }
-  const row = get<OrganizationRow>(
+  const row = await get<OrganizationRow>(
     `SELECT * FROM organizations
      WHERE company_id = ? AND is_active = 1
      ORDER BY is_default DESC, name COLLATE NOCASE
@@ -241,26 +241,26 @@ export function resolveOrganizationForCompany(
   return row ? row.id : '';
 }
 
-export function getOrgProfile(organizationId?: string | null): OrgProfile {
-  ensureOrganizationsSeeded();
+export async function getOrgProfile(organizationId?: string | null): Promise<OrgProfile> {
+  await ensureOrganizationsSeeded();
   const id = String(organizationId || '').trim();
   if (id) {
-    const row = getOrganization(id);
+    const row = await getOrganization(id);
     if (row) return orgToProfile(row);
   }
-  const def = getDefaultOrganization();
+  const def = await getDefaultOrganization();
   return orgToProfile(def);
 }
 
-export function saveOrgProfile(patch: Partial<OrgProfile> & Record<string, unknown>): OrgProfile {
-  ensureOrganizationsSeeded();
-  const def = getDefaultOrganization();
+export async function saveOrgProfile(patch: Partial<OrgProfile> & Record<string, unknown>): Promise<OrgProfile> {
+  await ensureOrganizationsSeeded();
+  const def = await getDefaultOrganization();
   if (!def) throw new Error('Нет организации по умолчанию');
-  const next = upsertOrganization({ id: def.id, ...patch, is_default: 1 });
+  const next = await upsertOrganization({ id: def.id, ...patch, is_default: 1 });
   return orgToProfile(next);
 }
 
-export function upsertOrganization(input: {
+export async function upsertOrganization(input: {
   id?: string;
   code?: string;
   company_id?: string;
@@ -285,12 +285,12 @@ export function upsertOrganization(input: {
   is_default?: number | boolean;
   is_active?: number | boolean;
   source?: string;
-}): OrganizationRow {
-  ensureOrganizationsSeeded();
-  const existing = input.id ? getOrganization(input.id) : undefined;
+}): Promise<OrganizationRow> {
+  await ensureOrganizationsSeeded();
+  const existing = input.id ? await getOrganization(input.id) : undefined;
   const id = existing?.id || input.id || newGuid();
   const cur = existing ? orgToProfile(existing) : { ...DEFAULT_ORG };
-  const companyId = resolveCompanyId(
+  const companyId = await resolveCompanyId(
     input.company_id != null ? input.company_id : existing?.company_id
   );
   const name = String(input.name != null ? input.name : cur.name).trim();
@@ -331,7 +331,7 @@ export function upsertOrganization(input: {
     input.is_default == null
       ? existing
         ? !!existing.is_default
-        : !(get<{ c: number }>('SELECT COUNT(*) AS c FROM organizations')?.c)
+        : !((await get<{ c: number }>('SELECT COUNT(*) AS c FROM organizations'))?.c)
       : Boolean(input.is_default);
   const active =
     input.is_active == null
@@ -346,10 +346,10 @@ export function upsertOrganization(input: {
   const source = String(input.source || existing?.source || 'local').trim() || 'local';
 
   if (makeDefault) {
-    run(`UPDATE organizations SET is_default = 0 WHERE id != ?`, [id]);
+    await run(`UPDATE organizations SET is_default = 0 WHERE id != ?`, [id]);
   }
 
-  run(
+  await run(
     `INSERT INTO organizations (
        id, code, company_id, name, short_name, inn, kpp, ogrnip, address, site_address, work_hours,
        phone, email, bank, bik, rs, ks, director, accountant, master_title, vat_rate,
@@ -393,47 +393,47 @@ export function upsertOrganization(input: {
     ]
   );
 
-  const row = getOrganization(id);
+  const row = await getOrganization(id);
   if (!row) throw new Error('organization save failed');
-  if (row.is_default) syncMetaFromOrg(row);
+  if (row.is_default) await syncMetaFromOrg(row);
   return row;
 }
 
-export function deactivateOrganization(id: string): OrganizationRow {
-  const row = getOrganization(id);
+export async function deactivateOrganization(id: string): Promise<OrganizationRow> {
+  const row = await getOrganization(id);
   if (!row) throw new Error('Организация не найдена');
   if (row.is_default) throw new Error('Нельзя деактивировать организацию по умолчанию');
-  run(
+  await run(
     `UPDATE organizations SET is_active = 0, updated_at = datetime('now') WHERE id = ?`,
     [id]
   );
-  const next = getOrganization(id);
+  const next = await getOrganization(id);
   if (!next) throw new Error('Организация не найдена');
   return next;
 }
 
-export function setDefaultOrganization(id: string): OrganizationRow {
-  const row = getOrganization(id);
+export async function setDefaultOrganization(id: string): Promise<OrganizationRow> {
+  const row = await getOrganization(id);
   if (!row) throw new Error('Организация не найдена');
   if (!row.is_active) throw new Error('Организация неактивна');
-  run(`UPDATE organizations SET is_default = 0`);
-  run(
+  await run(`UPDATE organizations SET is_default = 0`);
+  await run(
     `UPDATE organizations SET is_default = 1, updated_at = datetime('now') WHERE id = ?`,
     [id]
   );
-  const next = getOrganization(id);
+  const next = await getOrganization(id);
   if (!next) throw new Error('Организация не найдена');
-  syncMetaFromOrg(next);
+  await syncMetaFromOrg(next);
   return next;
 }
 
-export function companyOrganizationsPayload() {
-  ensureCompaniesSchema();
-  const items = listOrganizations({ activeOnly: false });
+export async function companyOrganizationsPayload() {
+  await ensureCompaniesSchema();
+  const items = await listOrganizations({ activeOnly: false });
   return {
     note: 'Юрлица / ИП. Принадлежат организации (контуру). Документы хранят organization_id. Удаление при связях — только архив.',
-    items: items.map((r) => {
-      const links = organizationLinkInfo(r.id);
+    items: await Promise.all(items.map(async (r) => {
+      const links = await organizationLinkInfo(r.id);
       return {
         id: r.id,
         code: r.code,
@@ -450,8 +450,8 @@ export function companyOrganizationsPayload() {
         can_delete: !links.linked && !r.is_default,
         link_counts: links.counts,
       };
-    }),
-    default_id: getDefaultOrganization()?.id || '',
+    })),
+    default_id: (await getDefaultOrganization())?.id || '',
   };
 }
 
@@ -485,18 +485,18 @@ function pickPrimaryRs(
   return pool[0]?.rs || accounts[0]?.rs || '';
 }
 
-function findOrgForTochkaCustomer(c: TochkaCustomerRow): OrganizationRow | undefined {
+async function findOrgForTochkaCustomer(c: TochkaCustomerRow): Promise<OrganizationRow | undefined> {
   const cc = String(c.customer_code || '').trim();
   const inn = String(c.inn || '').replace(/\D/g, '');
   if (cc) {
-    const byCode = get(
+    const byCode = await get(
       `SELECT * FROM organizations WHERE code = ? LIMIT 1`,
       [cc]
     ) as OrganizationRow | undefined;
     if (byCode) return byCode;
   }
   if (inn) {
-    const byInn = get(
+    const byInn = await get(
       `SELECT * FROM organizations WHERE inn = ? ORDER BY is_default DESC, is_active DESC LIMIT 1`,
       [inn]
     ) as OrganizationRow | undefined;
@@ -535,7 +535,7 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
     );
   }
 
-  ensureOrganizationsSeeded();
+  await ensureOrganizationsSeeded();
   const byCustomer = new Map<string, TochkaAccountRow[]>();
   for (const a of accounts) {
     const cc = String(a.customer_code || '').trim();
@@ -578,10 +578,10 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
       fioShortFromFullName(fullName);
     const director = fioShortFromFullName(fullName);
     const custAccounts = byCustomer.get(cc) || [];
-    const existing = findOrgForTochkaCustomer(c);
+    const existing = await findOrgForTochkaCustomer(c);
     const rs = pickPrimaryRs(custAccounts, existing?.rs);
 
-    const row = upsertOrganization({
+    const row = await upsertOrganization({
       id: existing?.id,
       code: cc,
       name: fullName,
@@ -608,12 +608,12 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
     syncedCodes.add(String(row.code || cc));
     if (inn) {
       // старые дубли по ИНН с другим code — погасить
-      const dups = all(
+      const dups = await all(
         `SELECT id, code FROM organizations WHERE inn = ? AND id != ?`,
         [inn, row.id]
       ) as Array<{ id: string; code: string }>;
       for (const d of dups) {
-        run(
+        await run(
           `UPDATE organizations SET is_active = 0, is_default = 0, updated_at = datetime('now') WHERE id = ?`,
           [d.id]
         );
@@ -635,7 +635,7 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
 
   // Выключить чужие юрлица из Точки (не в актуальном customers), не трогая локальные контуры Стрела/Фогель
   if (syncedCodes.size) {
-    const extras = all(
+    const extras = await all(
       `SELECT id, code FROM organizations
        WHERE IFNULL(is_active,1)=1
          AND IFNULL(source,'') = 'tochka'
@@ -644,7 +644,7 @@ export async function syncOrganizationsFromTochka(): Promise<TochkaOrgSyncResult
       [...syncedCodes]
     ) as Array<{ id: string; code: string }>;
     for (const e of extras) {
-      run(
+      await run(
         `UPDATE organizations SET is_active = 0, is_default = 0, updated_at = datetime('now') WHERE id = ?`,
         [e.id]
       );
@@ -696,20 +696,20 @@ export async function syncOrganizationsFromOdata(cfg: OdataConfig): Promise<numb
     throw e;
   }
 
-  ensureOrganizationsSeeded();
+  await ensureOrganizationsSeeded();
   let n = 0;
   for (const row of data.value || []) {
     const id = String(row.Ref_Key || '').trim();
     if (!id) continue;
     const name = String(row.Description || '').trim();
     if (!name) continue;
-    const existing = getOrganization(id);
+    const existing = await getOrganization(id);
     const byInn = String(row['ИНН'] || '').trim();
     // не затирать локальные реквизиты печати у совпадающего по ИНН сида
     const localSameInn =
       !existing &&
       byInn &&
-      (get(
+      (await get(
         `SELECT id FROM organizations WHERE inn = ? AND source != '1c' LIMIT 1`,
         [byInn]
       ) as { id: string } | undefined);
@@ -717,7 +717,7 @@ export async function syncOrganizationsFromOdata(cfg: OdataConfig): Promise<numb
       // привяжем 1С-GUID как отдельную запись только если имя другое
       continue;
     }
-    upsertOrganization({
+    await upsertOrganization({
       id,
       code: String(row.Code || row['Префикс'] || '').trim(),
       name,

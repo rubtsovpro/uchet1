@@ -46,30 +46,30 @@ export type MediaSyncResult = {
   seconds: number;
 };
 
-export function mediaSyncMeta() {
+export async function mediaSyncMeta() {
   return {
     configured: Boolean(hsConfigured() && s3ConfigFromEnv()),
-    files: get<{ c: number }>('SELECT COUNT(*) AS c FROM product_media')?.c ?? 0,
+    files: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM product_media'))?.c ?? 0,
     images:
-      get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_media WHERE kind = 'image'`)?.c ?? 0,
+      (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_media WHERE kind = 'image'`))?.c ?? 0,
     documents:
-      get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_media WHERE kind = 'document'`)?.c ??
+      (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_media WHERE kind = 'document'`))?.c ??
       0,
     empty:
-      get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_media WHERE kind = 'empty'`)?.c ?? 0,
+      (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_media WHERE kind = 'empty'`))?.c ?? 0,
     withOrientation:
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM product_media WHERE kind = 'image' AND orientation != ''`
-      )?.c ?? 0,
+      ))?.c ?? 0,
     lastSync:
-      get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['media_synced_at'])?.value ??
+      (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['media_synced_at']))?.value ??
       null,
   };
 }
 
-function applyOrientation(id: string, dims: ImageSize | null): void {
+async function applyOrientation(id: string, dims: ImageSize | null): Promise<void> {
   if (!dims) return;
-  run(
+  await run(
     `UPDATE product_media SET width = ?, height = ?, orientation = ? WHERE id = ?`,
     [dims.width, dims.height, dims.orientation, id]
   );
@@ -89,7 +89,7 @@ export async function uploadManualProductPhoto(
 }> {
   const rawId = String(productId || '').trim();
   if (!isMediaProductId(rawId)) throw new Error('Некорректный id товара');
-  const product = get<{ id: string }>(
+  const product = await get<{ id: string }>(
     'SELECT id FROM products WHERE id = ? OR lower(id) = lower(?) LIMIT 1',
     [rawId, rawId]
   );
@@ -106,14 +106,14 @@ export async function uploadManualProductPhoto(
 
   const sha = createHash('sha256').update(buf).digest('hex');
   const dims = readImageSize(buf);
-  const existing = get<{ id: string; url: string; size: number; mime: string; orientation: string }>(
+  const existing = await get<{ id: string; url: string; size: number; mime: string; orientation: string }>(
     'SELECT id, url, size, mime, orientation FROM product_media WHERE product_id = ? AND sha256 = ?',
     [pid, sha]
   );
   if (existing) {
-    if (!existing.orientation && dims) applyOrientation(existing.id, dims);
+    if (!existing.orientation && dims) await applyOrientation(existing.id, dims);
     // убрать маркер «пусто в 1С», если был
-    run(`DELETE FROM product_media WHERE product_id = ? AND kind = 'empty'`, [pid]);
+    await run(`DELETE FROM product_media WHERE product_id = ? AND kind = 'empty'`, [pid]);
     return {
       id: existing.id,
       url: existing.url,
@@ -125,15 +125,15 @@ export async function uploadManualProductPhoto(
   }
 
   const maxSort =
-    get<{ m: number }>(
+    (await get<{ m: number }>(
       `SELECT COALESCE(MAX(sort_order), -1) AS m FROM product_media WHERE product_id = ? AND kind = 'image'`,
       [pid]
-    )?.m ?? -1;
+    ))?.m ?? -1;
   const sortOrder = Number(maxSort) + 1;
   const key = `wms/products/${pid}/${String(sortOrder).padStart(2, '0')}_${sha.slice(0, 10)}.${ext}`;
   const url = await s3PutObject(cfg, key, buf, mime, true);
   const id = `${pid}|${sha}`;
-  run(
+  await run(
     `INSERT INTO product_media (id, product_id, kind, mime, ext, s3_key, url, size, sha256, sort_order, width, height, orientation)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
@@ -156,7 +156,7 @@ export async function uploadManualProductPhoto(
       dims?.orientation || '',
     ]
   );
-  run(`DELETE FROM product_media WHERE product_id = ? AND kind = 'empty'`, [pid]);
+  await run(`DELETE FROM product_media WHERE product_id = ? AND kind = 'empty'`, [pid]);
   return {
     id,
     url,
@@ -191,14 +191,14 @@ export function normalizeProductVideoUrl(raw: string): string {
 }
 
 /** Ссылка на видео в карточке товара (без файла в S3). */
-export function addProductVideoLink(
+export async function addProductVideoLink(
   productId: string,
   rawUrl: string,
   title = ''
-): { id: string; url: string; title: string; kind: 'video' } {
+): Promise<{ id: string; url: string; title: string; kind: 'video' }> {
   const rawId = String(productId || '').trim();
   if (!isMediaProductId(rawId)) throw new Error('Некорректный id товара');
-  const product = get<{ id: string }>(
+  const product = await get<{ id: string }>(
     'SELECT id FROM products WHERE id = ? OR lower(id) = lower(?) LIMIT 1',
     [rawId, rawId]
   );
@@ -207,7 +207,7 @@ export function addProductVideoLink(
   const url = normalizeProductVideoUrl(rawUrl);
   const label = String(title || '').trim().slice(0, 200);
   const sha = createHash('sha256').update(`video|${url}`).digest('hex');
-  const existing = get<{ id: string; url: string }>(
+  const existing = await get<{ id: string; url: string }>(
     `SELECT id, url FROM product_media WHERE product_id = ? AND kind = 'video' AND sha256 = ?`,
     [pid, sha]
   );
@@ -215,12 +215,12 @@ export function addProductVideoLink(
     return { id: existing.id, url: existing.url, title: label, kind: 'video' };
   }
   const maxSort =
-    get<{ m: number }>(
+    (await get<{ m: number }>(
       `SELECT COALESCE(MAX(sort_order), -1) AS m FROM product_media WHERE product_id = ?`,
       [pid]
-    )?.m ?? -1;
+    ))?.m ?? -1;
   const id = `${pid}|video|${sha.slice(0, 16)}`;
-  run(
+  await run(
     `INSERT INTO product_media (id, product_id, kind, mime, ext, s3_key, url, size, sha256, sort_order)
      VALUES (?, ?, 'video', 'text/uri-list', 'url', '', ?, 0, ?, ?)
      ON CONFLICT(id) DO UPDATE SET url=excluded.url, synced_at=datetime('now')`,
@@ -228,54 +228,54 @@ export function addProductVideoLink(
   );
   if (label) {
     try {
-      run(`UPDATE product_media SET orientation = ? WHERE id = ?`, [label, id]);
+      await run(`UPDATE product_media SET orientation = ? WHERE id = ?`, [label, id]);
     } catch {
       /* orientation reused as title for video links */
     }
   }
-  run(`DELETE FROM product_media WHERE product_id = ? AND kind = 'empty'`, [pid]);
+  await run(`DELETE FROM product_media WHERE product_id = ? AND kind = 'empty'`, [pid]);
   return { id, url, title: label, kind: 'video' };
 }
 
-function findProductMediaRow(
+async function findProductMediaRow(
   productId: string,
   mediaId: string
-): { id: string; kind: string } | null {
+): Promise<{ id: string; kind: string } | null> {
   const pid = String(productId || '').trim();
   const mid = String(mediaId || '').trim();
   if (!pid || !mid) return null;
-  const row = get<{ id: string; kind: string }>(
+  const row = await get<{ id: string; kind: string }>(
     `SELECT id, kind FROM product_media WHERE id = ? AND product_id = ?`,
     [mid, pid]
   );
   if (row) return row;
   return (
-    get<{ id: string; kind: string }>(
+    await get<{ id: string; kind: string }>(
       `SELECT id, kind FROM product_media WHERE id = ? AND lower(product_id) = lower(?)`,
       [mid, pid]
     ) || null
   );
 }
 
-export function deleteProductMediaItem(productId: string, mediaId: string): boolean {
-  const row = findProductMediaRow(productId, mediaId);
+export async function deleteProductMediaItem(productId: string, mediaId: string): Promise<boolean> {
+  const row = await findProductMediaRow(productId, mediaId);
   if (!row) return false;
-  run(`DELETE FROM product_media WHERE id = ?`, [row.id]);
+  await run(`DELETE FROM product_media WHERE id = ?`, [row.id]);
   return true;
 }
 
 /** Удаление пачки медиа; возвращает удалённые id и виды. */
-export function deleteProductMediaBatch(
+export async function deleteProductMediaBatch(
   productId: string,
   mediaIds: string[]
-): { deleted: number; ids: string[]; kinds: Record<string, number> } {
+): Promise<{ deleted: number; ids: string[]; kinds: Record<string, number> }> {
   const ids = [...new Set((mediaIds || []).map((x) => String(x || '').trim()).filter(Boolean))];
   const kinds: Record<string, number> = {};
   const deletedIds: string[] = [];
   for (const mid of ids.slice(0, 100)) {
-    const row = findProductMediaRow(productId, mid);
+    const row = await findProductMediaRow(productId, mid);
     if (!row) continue;
-    run(`DELETE FROM product_media WHERE id = ?`, [row.id]);
+    await run(`DELETE FROM product_media WHERE id = ?`, [row.id]);
     deletedIds.push(row.id);
     const k = String(row.kind || 'image') || 'image';
     kinds[k] = (kinds[k] || 0) + 1;
@@ -287,10 +287,10 @@ export function deleteProductMediaBatch(
  * Порядок фото карточки: ids слева направо, первое = титульное (sort_order 0).
  * Не принадлежащие товару / не image — пропускаем; остальные image сдвигаем в хвост.
  */
-export function reorderProductMediaImages(
+export async function reorderProductMediaImages(
   productId: string,
   mediaIds: string[]
-): { ok: boolean; ordered: string[]; title_id: string | null } {
+): Promise<{ ok: boolean; ordered: string[]; title_id: string | null }> {
   const pid = String(productId || '').trim();
   if (!pid) throw new Error('Товар не указан');
   const wanted = [
@@ -298,12 +298,12 @@ export function reorderProductMediaImages(
   ].slice(0, 200);
   if (wanted.length < 2) throw new Error('Нужно минимум 2 фото для смены порядка');
 
-  const existing = all<{ id: string }>(
+  const existing = (await all<{ id: string }>(
     `SELECT id FROM product_media
      WHERE product_id = ? AND kind = 'image'
      ORDER BY sort_order, synced_at`,
     [pid]
-  ).map((r) => String(r.id));
+  )).map((r) => String(r.id));
   if (existing.length < 2) throw new Error('На карточке меньше двух своих фото');
 
   const own = new Set(existing);
@@ -318,8 +318,8 @@ export function reorderProductMediaImages(
   if (ordered.length < 2) throw new Error('Не удалось сопоставить фото карточки');
 
   const upd = `UPDATE product_media SET sort_order = ? WHERE id = ? AND product_id = ?`;
-  ordered.forEach((id, idx) => {
-    run(upd, [idx, id, pid]);
+  ordered.forEach(async (id, idx) => {
+    await run(upd, [idx, id, pid]);
   });
   return { ok: true, ordered, title_id: ordered[0] || null };
 }
@@ -331,7 +331,7 @@ async function uploadProductImages(
   replace: boolean
 ): Promise<{ uploaded: number; skipped: number }> {
   if (replace) {
-    run('DELETE FROM product_media WHERE product_id = ?', [productId]);
+    await run('DELETE FROM product_media WHERE product_id = ?', [productId]);
   }
 
   let uploaded = 0;
@@ -352,12 +352,12 @@ async function uploadProductImages(
 
     const sha = createHash('sha256').update(buf).digest('hex');
     const dims = readImageSize(buf);
-    const existing = get<{ id: string; orientation: string }>(
+    const existing = await get<{ id: string; orientation: string }>(
       'SELECT id, orientation FROM product_media WHERE product_id = ? AND sha256 = ?',
       [productId, sha]
     );
     if (existing) {
-      if (!existing.orientation && dims) applyOrientation(existing.id, dims);
+      if (!existing.orientation && dims) await applyOrientation(existing.id, dims);
       skipped += 1;
       idx += 1;
       continue;
@@ -368,7 +368,7 @@ async function uploadProductImages(
     const key = `wms/products/${productId}/${String(sortOrder).padStart(2, '0')}_${sha.slice(0, 10)}.${ext}`;
     const url = await s3PutObject(cfg, key, buf, mime, true);
     const id = `${productId}|${sha}`;
-    run(
+    await run(
       `INSERT INTO product_media (id, product_id, kind, mime, ext, s3_key, url, size, sha256, sort_order, width, height, orientation)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
@@ -413,11 +413,11 @@ async function fetchImagesForGuids(guids: string[]): Promise<Map<string, ImgRow>
   return byGuid;
 }
 
-function markProductMediaChecked(productId: string, empty: boolean): void {
+async function markProductMediaChecked(productId: string, empty: boolean): Promise<void> {
   if (!empty) return;
   // чтобы onlyMissing не крутил товары без фото снова и снова
   const id = `${productId}|empty`;
-  run(
+  await run(
     `INSERT OR IGNORE INTO product_media (
        id, product_id, kind, mime, ext, s3_key, url, size, sha256, sort_order
      ) VALUES (?, ?, 'empty', '', '', '', '', 0, '', 0)`,
@@ -451,7 +451,7 @@ async function syncGuidList(
       if (!images.length) {
         empty += 1;
         productsDone += 1;
-        markProductMediaChecked(pid, true);
+        await markProductMediaChecked(pid, true);
         continue;
       }
       const r = await uploadProductImages(cfg, pid, images, replace);
@@ -466,7 +466,7 @@ async function syncGuidList(
       // HS Get/image >220MB: skip + mark empty so onlyMissing не крутит вечно
       if (/response too large/i.test(msg)) {
         console.warn('media skip oversized', pid, msg);
-        markProductMediaChecked(pid, true);
+        await markProductMediaChecked(pid, true);
         empty += 1;
       } else {
         errors += 1;
@@ -502,7 +502,7 @@ export async function syncMediaFrom1c(opts: {
   if (opts.productIds?.length) {
     const ids = opts.productIds.filter(isMediaProductId).slice(0, limit);
     const r = await syncGuidList(cfg, ids, replace);
-    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
       'media_synced_at',
       new Date().toISOString(),
     ]);
@@ -510,7 +510,7 @@ export async function syncMediaFrom1c(opts: {
   }
 
   const candidates = onlyMissing
-    ? all<{ id: string }>(
+    ? await all<{ id: string }>(
         `SELECT p.id FROM products p
          LEFT JOIN categories c ON c.id = COALESCE(p.hs_category_id, p.category_id)
          LEFT JOIN (
@@ -536,7 +536,7 @@ export async function syncMediaFrom1c(opts: {
          LIMIT ?`,
         [limit]
       )
-    : all<{ id: string }>(
+    : await all<{ id: string }>(
         `SELECT id FROM products WHERE is_active = 1 ORDER BY name LIMIT ?`,
         [limit]
       );
@@ -545,7 +545,7 @@ export async function syncMediaFrom1c(opts: {
   console.log(`media from local products queue=${productIds.length} limit=${limit}`);
   const r = await syncGuidList(cfg, productIds, replace);
 
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'media_synced_at',
     new Date().toISOString(),
   ]);
@@ -574,7 +574,7 @@ export async function backfillMediaOrientation(opts: {
     where += ` AND product_id = ?`;
     params.push(opts.productId);
   }
-  const rows = all<{ id: string; url: string }>(
+  const rows = await all<{ id: string; url: string }>(
     `SELECT id, url FROM product_media ${where} ORDER BY synced_at DESC LIMIT ?`,
     [...params, limit]
   );
@@ -596,17 +596,17 @@ export async function backfillMediaOrientation(opts: {
         failed += 1;
         continue;
       }
-      applyOrientation(row.id, dims);
+      await applyOrientation(row.id, dims);
       updated += 1;
     } catch {
       failed += 1;
     }
   }
   const left =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM product_media
        WHERE kind = 'image' AND (IFNULL(orientation,'') = '' OR IFNULL(width,0) = 0)`
-    )?.c ?? 0;
+    ))?.c ?? 0;
   return {
     checked: rows.length,
     updated,
@@ -643,10 +643,10 @@ function normalizeWarehouseSkuTokens(warehouseSku: string): string[] {
  * Id карточек, с которых берём фото для мастера:
  * сам мастер + любые товары с sku = факт / факт@… / факт:… из warehouse_sku и лотов.
  */
-export function photoSourceProductIds(productId: string): string[] {
+export async function photoSourceProductIds(productId: string): Promise<string[]> {
   const id = String(productId || '').trim();
   if (!id) return [];
-  const row = get<{ id: string; sku: string; warehouse_sku: string }>(
+  const row = await get<{ id: string; sku: string; warehouse_sku: string }>(
     `SELECT id, sku, IFNULL(warehouse_sku,'') AS warehouse_sku FROM products WHERE id = ?`,
     [id]
   );
@@ -654,7 +654,7 @@ export function photoSourceProductIds(productId: string): string[] {
   const ids = new Set<string>([row.id]);
   const facts = new Set<string>(normalizeWarehouseSkuTokens(row.warehouse_sku));
   try {
-    const lots = all<{ fact_sku: string }>(
+    const lots = await all<{ fact_sku: string }>(
       `SELECT DISTINCT fact_sku FROM product_supplier_lots
        WHERE product_id = ? OR master_sku = ? COLLATE NOCASE`,
       [row.id, row.sku]
@@ -667,7 +667,7 @@ export function photoSourceProductIds(productId: string): string[] {
     /* таблицы лотов может не быть */
   }
   for (const fact of facts) {
-    const hits = all<{ id: string }>(
+    const hits = await all<{ id: string }>(
       `SELECT id FROM products
        WHERE upper(replace(sku,' ','')) = ?
           OR upper(replace(sku,' ','')) LIKE (? || '@%')
@@ -684,10 +684,10 @@ export function photoSourceProductIds(productId: string): string[] {
 /**
  * Медиа для карточки: свои; если картинок нет — с фактов (Номер на складе).
  */
-export function listProductMediaForDisplay(productId: string): Array<Record<string, unknown>> {
+export async function listProductMediaForDisplay(productId: string): Promise<Array<Record<string, unknown>>> {
   const id = String(productId || '').trim();
   if (!id) return [];
-  const own = all<Record<string, unknown>>(
+  const own = await all<Record<string, unknown>>(
     `SELECT id, kind, mime, ext, url, size, sort_order, width, height, orientation, product_id
      FROM product_media WHERE product_id = ?
      ORDER BY sort_order, synced_at`,
@@ -696,17 +696,17 @@ export function listProductMediaForDisplay(productId: string): Array<Record<stri
   const ownImages = own.filter((m) => String(m.kind || '') === 'image');
   if (ownImages.length > 0) return own;
 
-  const sourceIds = photoSourceProductIds(id).filter((x) => x !== id);
+  const sourceIds = (await photoSourceProductIds(id)).filter((x) => x !== id);
   if (!sourceIds.length) return own;
 
   // Предпочитаем карточку с точным fact sku (без @/:), иначе первую с фото.
-  const ranked = all<{ id: string; sku: string; c: number }>(
+  const ranked = (await all<{ id: string; sku: string; c: number }>(
     `SELECT p.id, p.sku,
             (SELECT COUNT(*) FROM product_media m WHERE m.product_id = p.id AND m.kind = 'image') AS c
      FROM products p
      WHERE p.id IN (${sourceIds.map(() => '?').join(',')})`,
     sourceIds
-  )
+  ))
     .filter((r) => (Number(r.c) || 0) > 0)
     .sort((a, b) => {
       const aExact = productSkuBase(a.sku).toUpperCase() === String(a.sku || '').toUpperCase() ? 1 : 0;
@@ -717,13 +717,13 @@ export function listProductMediaForDisplay(productId: string): Array<Record<stri
   const bestId = ranked[0]?.id;
   if (!bestId) return own;
 
-  const inherited = all<Record<string, unknown>>(
+  const inherited = (await all<Record<string, unknown>>(
     `SELECT id, kind, mime, ext, url, size, sort_order, width, height, orientation, product_id
      FROM product_media
      WHERE product_id = ? AND kind = 'image'
      ORDER BY sort_order, synced_at`,
     [bestId]
-  ).map((m) => ({ ...m, inherited_from_fact: 1 }));
+  )).map((m) => ({ ...m, inherited_from_fact: 1 }));
 
   return [...own.filter((m) => String(m.kind || '') !== 'image'), ...inherited];
 }
@@ -746,7 +746,7 @@ export function sqlMasterThumbUrlExpr(alias = 'p'): string {
  * Для строк списка без своих фото — подставить счётчик и thumb с карточек
  * «Номер на складе (факт)» / лотов. Один-два запроса на страницу.
  */
-export function enrichMasterListPhotos<T extends Record<string, unknown>>(items: T[]): T[] {
+export async function enrichMasterListPhotos<T extends Record<string, unknown>>(items: T[]): Promise<T[]> {
   if (!items.length) return items;
   const factToItemIdx = new Map<string, number[]>();
   const needMeta: Array<{ idx: number; id: string; sku: string }> = [];
@@ -765,7 +765,7 @@ export function enrichMasterListPhotos<T extends Record<string, unknown>>(items:
   }
   if (!needMeta.length) return items;
 
-  if (supplierLotsTableReady()) {
+  if (await supplierLotsTableReady()) {
     const ids = needMeta.map((x) => x.id).filter(Boolean);
     const skus = needMeta.map((x) => x.sku).filter(Boolean);
     const byId = new Map(needMeta.map((x) => [x.id, x.idx]));
@@ -773,7 +773,7 @@ export function enrichMasterListPhotos<T extends Record<string, unknown>>(items:
     try {
       if (ids.length) {
         const ph = ids.map(() => '?').join(',');
-        const lots = all<{ product_id: string; master_sku: string; fact_sku: string }>(
+        const lots = await all<{ product_id: string; master_sku: string; fact_sku: string }>(
           `SELECT product_id, master_sku, fact_sku FROM product_supplier_lots
            WHERE product_id IN (${ph})`,
           ids
@@ -789,7 +789,7 @@ export function enrichMasterListPhotos<T extends Record<string, unknown>>(items:
       }
       if (skus.length) {
         const ph = skus.map(() => '?').join(',');
-        const lots = all<{ master_sku: string; fact_sku: string }>(
+        const lots = await all<{ master_sku: string; fact_sku: string }>(
           `SELECT master_sku, fact_sku FROM product_supplier_lots
            WHERE master_sku IN (${ph})`,
           skus
@@ -811,7 +811,7 @@ export function enrichMasterListPhotos<T extends Record<string, unknown>>(items:
 
   const facts = [...factToItemIdx.keys()];
   const placeholders = facts.map(() => '?').join(',');
-  const factProducts = all<{ id: string; sku: string; base: string }>(
+  const factProducts = await all<{ id: string; sku: string; base: string }>(
     `SELECT id, sku,
             UPPER(REPLACE(
               CASE
@@ -847,7 +847,7 @@ export function enrichMasterListPhotos<T extends Record<string, unknown>>(items:
     }
   }
   const ph2 = pids.map(() => '?').join(',');
-  const mediaAgg = all<{ product_id: string; c: number; thumb: string }>(
+  const mediaAgg = await all<{ product_id: string; c: number; thumb: string }>(
     `SELECT product_id,
             COUNT(*) AS c,
             (SELECT m2.url FROM product_media m2

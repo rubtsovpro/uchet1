@@ -157,10 +157,10 @@ const LIST_SQL = `
   LEFT JOIN staff s ON s.id = k.staff_id
 `;
 
-export function listIntegrationApiKeys(opts?: {
+export async function listIntegrationApiKeys(opts?: {
   staffId?: string;
   activeOnly?: boolean;
-}): IntegrationApiKey[] {
+}): Promise<IntegrationApiKey[]> {
   const where: string[] = [];
   const params: string[] = [];
   if (opts?.staffId) {
@@ -174,34 +174,34 @@ export function listIntegrationApiKeys(opts?: {
     LIST_SQL +
     (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
     ` ORDER BY CASE WHEN k.is_active = 1 THEN 0 ELSE 1 END, datetime(k.created_at) DESC`;
-  return all<Record<string, unknown>>(sql, params).map(rowToKey);
+  return (await all<Record<string, unknown>>(sql, params)).map(rowToKey);
 }
 
-export function countActiveIntegrationApiKeys(): number {
+export async function countActiveIntegrationApiKeys(): Promise<number> {
   return (
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM integration_api_keys WHERE is_active = 1`
-    )?.c ?? 0
+    ))?.c ?? 0
   );
 }
 
-export function hasAnyMachineApiKey(): boolean {
-  if (countActiveIntegrationApiKeys() > 0) return true;
+export async function hasAnyMachineApiKey(): Promise<boolean> {
+  if (await countActiveIntegrationApiKeys() > 0) return true;
   return Boolean(
     String(process.env.WMS_INGEST_KEY || process.env.WMS_JSON_KEY || '').trim()
   );
 }
 
-export function createIntegrationApiKey(opts: {
+export async function createIntegrationApiKey(opts: {
   staffId: string;
   name?: string;
   scopes?: unknown;
   note?: string;
   createdBy?: string;
-}): { key: IntegrationApiKey; secret: string } {
+}): Promise<{ key: IntegrationApiKey; secret: string }> {
   const staffId = String(opts.staffId || '').trim();
   if (!staffId) throw new Error('Укажите сотрудника');
-  const staff = get<{ id: string; name: string; login: string }>(
+  const staff = await get<{ id: string; name: string; login: string }>(
     `SELECT id, IFNULL(name,'') AS name, IFNULL(login,'') AS login
      FROM staff WHERE id = ? AND is_active = 1 LIMIT 1`,
     [staffId]
@@ -218,7 +218,7 @@ export function createIntegrationApiKey(opts: {
   const keyPrefix = secret.slice(0, 8);
   const keyHint = '••••' + secret.slice(-4);
 
-  run(
+  await run(
     `INSERT INTO integration_api_keys
      (id, staff_id, name, key_hash, key_prefix, key_hint, scopes, is_active, created_by, note)
      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
@@ -234,7 +234,7 @@ export function createIntegrationApiKey(opts: {
       String(opts.note || '').trim(),
     ]
   );
-  const row = get<Record<string, unknown>>(
+  const row = await get<Record<string, unknown>>(
     `${LIST_SQL} WHERE k.id = ?`,
     [id]
   );
@@ -242,24 +242,24 @@ export function createIntegrationApiKey(opts: {
   return { key: rowToKey(row), secret };
 }
 
-export function revokeIntegrationApiKey(id: string): IntegrationApiKey | null {
+export async function revokeIntegrationApiKey(id: string): Promise<IntegrationApiKey | null> {
   const kid = String(id || '').trim();
   if (!kid) return null;
-  const before = get<Record<string, unknown>>(`${LIST_SQL} WHERE k.id = ?`, [kid]);
+  const before = await get<Record<string, unknown>>(`${LIST_SQL} WHERE k.id = ?`, [kid]);
   if (!before) return null;
-  run(
+  await run(
     `UPDATE integration_api_keys
      SET is_active = 0, revoked_at = datetime('now')
      WHERE id = ?`,
     [kid]
   );
-  const after = get<Record<string, unknown>>(`${LIST_SQL} WHERE k.id = ?`, [kid]);
+  const after = await get<Record<string, unknown>>(`${LIST_SQL} WHERE k.id = ?`, [kid]);
   return after ? rowToKey(after) : rowToKey(before);
 }
 
-function touchLastUsed(id: string): void {
+async function touchLastUsed(id: string): Promise<void> {
   try {
-    run(
+    await run(
       `UPDATE integration_api_keys SET last_used_at = datetime('now') WHERE id = ?`,
       [id]
     );
@@ -323,22 +323,22 @@ function matchEnvKey(raw: string, need: ApiKeyScope): VerifiedApiKey | null {
   return null;
 }
 
-export function verifyMachineApiKey(
+export async function verifyMachineApiKey(
   raw: string,
   need: ApiKeyScope = 'all'
-): VerifiedApiKey | null {
+): Promise<VerifiedApiKey | null> {
   const key = String(raw || '').trim();
   if (!key) return null;
 
   const keyHash = hashKey(key);
-  const row = get<Record<string, unknown>>(
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM integration_api_keys WHERE key_hash = ? AND is_active = 1 LIMIT 1`,
     [keyHash]
   );
   if (row) {
     const scopes = parseScopesCol(String(row.scopes || 'all'));
     if (!scopesAllow(scopes, need)) return null;
-    touchLastUsed(String(row.id));
+    await touchLastUsed(String(row.id));
     return {
       source: 'db',
       id: String(row.id),
@@ -351,16 +351,16 @@ export function verifyMachineApiKey(
   return matchEnvKey(key, need);
 }
 
-export function verifyAnyMachineApiKey(raw: string): VerifiedApiKey | null {
+export async function verifyAnyMachineApiKey(raw: string): Promise<VerifiedApiKey | null> {
   const key = String(raw || '').trim();
   if (!key) return null;
   const keyHash = hashKey(key);
-  const row = get<Record<string, unknown>>(
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM integration_api_keys WHERE key_hash = ? AND is_active = 1 LIMIT 1`,
     [keyHash]
   );
   if (row) {
-    touchLastUsed(String(row.id));
+    await touchLastUsed(String(row.id));
     return {
       source: 'db',
       id: String(row.id),
@@ -394,7 +394,7 @@ export function extractMachineApiKey(c: {
   );
 }
 
-export function machineApiKeyOk(
+export async function machineApiKeyOk(
   c: {
     req: {
       query: (k: string) => string | undefined;
@@ -402,8 +402,8 @@ export function machineApiKeyOk(
     };
   },
   need: ApiKeyScope = 'all'
-): VerifiedApiKey | null {
-  return verifyMachineApiKey(extractMachineApiKey(c), need);
+): Promise<VerifiedApiKey | null> {
+  return await verifyMachineApiKey(extractMachineApiKey(c), need);
 }
 
 /**
@@ -496,17 +496,17 @@ export function machineScopeForApiPath(pathRaw: string): ApiKeyScope | null {
   return null;
 }
 
-export function machineApiKeyOkForPath(c: {
+export async function machineApiKeyOkForPath(c: {
   req: {
     query: (k: string) => string | undefined;
     header: (n: string) => string | undefined;
     method: string;
     path: string;
   };
-}): VerifiedApiKey | null {
+}): Promise<VerifiedApiKey | null> {
   const need = machineScopeForApiPath(c.req.path);
   if (!need) return null;
-  return machineApiKeyOk(c, need);
+  return await machineApiKeyOk(c, need);
 }
 
 /** Каталог методов для справки (Swagger-ориентир). */

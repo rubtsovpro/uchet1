@@ -165,12 +165,12 @@ export function ensureDealClientStockReserve(
 }
 
 /** Пометить активные резервы сделки как sold (товар ушёл в отправку). */
-export function markDealStockReservesSold(dealId: string): number {
+export async function markDealStockReservesSold(dealId: string): Promise<number> {
   const id = String(dealId || '').trim();
   if (!id) return 0;
-  const before = all(`SELECT id FROM stock_reserves WHERE deal_id = ? AND status = 'active'`, [id]);
+  const before = await all(`SELECT id FROM stock_reserves WHERE deal_id = ? AND status = 'active'`, [id]);
   if (!before.length) return 0;
-  run(
+  await run(
     `UPDATE stock_reserves SET status = 'sold', released_at = datetime('now')
      WHERE deal_id = ? AND status = 'active'`,
     [id]
@@ -179,13 +179,13 @@ export function markDealStockReservesSold(dealId: string): number {
 }
 
 /** Вернуть товар с WAIT-PAY на исходный склад и снять резерв (отмена наложки / задания). */
-export function releaseDealStockReserves(
+export async function releaseDealStockReserves(
   dealId: string,
   reason = 'cancelled'
-): { released: number; docs: string[] } {
+): Promise<{ released: number; docs: string[] }> {
   const id = String(dealId || '').trim();
   if (!id) return { released: 0, docs: [] };
-  const reserves = all(
+  const reserves = await all(
     `SELECT * FROM stock_reserves WHERE deal_id = ? AND status = 'active'`,
     [id]
   ) as Array<{
@@ -215,7 +215,7 @@ export function releaseDealStockReserves(
     }
     let docId = '';
     try {
-      docId = createDocument({
+      docId = await createDocument({
         doc_type: 'transfer',
         warehouse_id: waitId,
         warehouse_to_id: sourceWh,
@@ -228,14 +228,14 @@ export function releaseDealStockReserves(
       console.warn('[stock-reserve] releaseDealStockReserves failed', e);
     }
     for (const l of lines) {
-      run(
+      await run(
         `UPDATE stock_reserves SET status = 'released', return_doc_id = ?, released_at = datetime('now')
          WHERE id = ?`,
         [docId || '', l.id]
       );
     }
   }
-  writeAudit({
+  await writeAudit({
     action: 'deal.release_reserve',
     entity: 'crm_deal',
     entityId: id,

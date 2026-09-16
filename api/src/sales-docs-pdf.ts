@@ -929,7 +929,7 @@ async function buildWorkorderPdf(
   const printNumber =
     workorderPrintNumber(String(docData.deal_id || ''), String(docData.number || '')) ||
     String(docData.number || '');
-  const masterName = resolveStaffDisplayName(opts?.staffName);
+  const masterName = await resolveStaffDisplayName(opts?.staffName);
   const phone = String(docData.buyer_phone || '').trim();
   const addr = String(docData.buyer_address || '').trim();
   const sumLines = (arr: Row[]) =>
@@ -1280,7 +1280,7 @@ export async function renderUpdRegistryPdf(opts: {
   companyId?: string;
   companyIds?: string[];
 }): Promise<{ buffer: Buffer; filename: string; title: string; rowCount: number }> {
-  const { docs, truncated } = listUpdRegistryDocs({
+  const { docs, truncated } = await listUpdRegistryDocs({
     q: opts.q,
     companyId: opts.companyId,
     companyIds: opts.companyIds,
@@ -1324,17 +1324,17 @@ export async function renderSalesDocPdf(
             sign: facsimile.sign !== false,
           };
 
-  return runWithOrgFacsimileAsync(facsimile, async () => {
-    let doc = getSalesDoc(id);
+  return await runWithOrgFacsimileAsync(facsimile, async () => {
+    let doc = await getSalesDoc(id);
     if (!doc) return null;
     if (String(doc.doc_type) === 'workorder') {
-      ensureWorkorderTemplateId(id);
-      doc = getSalesDoc(id) || doc;
+      await ensureWorkorderTemplateId(id);
+      doc = await getSalesDoc(id) || doc;
     }
     if (String(doc.doc_type) === 'contract') {
-      doc = fillContractBuyerFromDeal(id) || doc;
+      doc = await fillContractBuyerFromDeal(id) || doc;
     } else if (['invoice', 'upd', 'sf'].includes(String(doc.doc_type))) {
-      doc = fillSalesDocBuyerFromDeal(id) || doc;
+      doc = await fillSalesDocBuyerFromDeal(id) || doc;
     }
     const type = String(doc.doc_type);
     const label = salesDocTypeLabel(type);
@@ -1502,7 +1502,7 @@ async function buildContractFullPdf(doc: Row & { lines: Row[]; org: OrgProfile }
   const font = findFont('DejaVuSans.ttf');
   const fontBold = findFont('DejaVuSans-Bold.ttf');
   const org = doc.org;
-  const html = renderSalesDocPrintHtml(String(doc.id)) || '';
+  const html = await renderSalesDocPrintHtml(String(doc.id)) || '';
   const blocks = parseContractPrintHtml(html);
 
   return new Promise((resolve, reject) => {

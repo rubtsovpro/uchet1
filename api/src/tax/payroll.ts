@@ -21,15 +21,15 @@ function workdaysInMonth(year: number, month: number): number {
   return n || 21;
 }
 
-export function createOrRebuildPayrollRun(
+export async function createOrRebuildPayrollRun(
   organizationId: string | null | undefined,
   year: number,
   month: number,
   createdBy = ''
-): { run_id: string; lines: number } {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
-  const existing = get<{ id: string; status: string }>(
+): Promise<{ run_id: string; lines: number }> {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
+  const existing = await get<{ id: string; status: string }>(
     `SELECT id, status FROM payroll_runs WHERE organization_id=? AND year=? AND month=?`,
     [oid, year, month]
   );
@@ -38,17 +38,17 @@ export function createOrRebuildPayrollRun(
   }
   let runId = existing?.id;
   if (runId) {
-    run(`DELETE FROM payroll_lines WHERE run_id=?`, [runId]);
+    await run(`DELETE FROM payroll_lines WHERE run_id=?`, [runId]);
   } else {
     runId = newGuid();
-    run(
+    await run(
       `INSERT INTO payroll_runs (id, organization_id, year, month, status, created_by)
        VALUES (?,?,?,?, 'draft', ?)`,
       [runId, oid, year, month, createdBy]
     );
   }
 
-  const staff = all<{
+  const staff = await all<{
     id: string;
     name: string;
     department: string;
@@ -81,7 +81,7 @@ export function createOrRebuildPayrollRun(
     const contrib = Math.round((pfr + foms + fss) * 100) / 100;
     const net = Math.round((accrued - ndfl) * 100) / 100;
     n += 1;
-    run(
+    await run(
       `INSERT INTO payroll_lines (
          id, run_id, staff_id, person_name, position, salary_base, days_worked, days_norm,
          accrued, ndfl, contrib_pfr, contrib_foms, contrib_fss, contrib_total, net_pay
@@ -110,7 +110,7 @@ export function createOrRebuildPayrollRun(
     net_total += net;
   }
 
-  run(
+  await run(
     `UPDATE payroll_runs SET accrued_total=?, ndfl_total=?, contrib_total=?, net_total=? WHERE id=?`,
     [
       Math.round(accrued_total * 100) / 100,
@@ -123,25 +123,25 @@ export function createOrRebuildPayrollRun(
   return { run_id: runId!, lines: n };
 }
 
-export function postPayrollRun(runId: string) {
-  const runRow = get<{ id: string; status: string }>(`SELECT id, status FROM payroll_runs WHERE id=?`, [
+export async function postPayrollRun(runId: string) {
+  const runRow = await get<{ id: string; status: string }>(`SELECT id, status FROM payroll_runs WHERE id=?`, [
     runId,
   ]);
   if (!runRow) throw new Error('run not found');
   if (runRow.status === 'posted') return;
-  run(`UPDATE payroll_runs SET status='posted', posted_at=datetime('now') WHERE id=?`, [runId]);
+  await run(`UPDATE payroll_runs SET status='posted', posted_at=datetime('now') WHERE id=?`, [runId]);
 }
 
-export function getPayrollRun(runId: string): (Record<string, unknown> & { lines: unknown[] }) | null {
-  const runRow = get<Record<string, unknown>>(`SELECT * FROM payroll_runs WHERE id=?`, [runId]);
+export async function getPayrollRun(runId: string): Promise<(Record<string, unknown> & { lines: unknown[] }) | null> {
+  const runRow = await get<Record<string, unknown>>(`SELECT * FROM payroll_runs WHERE id=?`, [runId]);
   if (!runRow) return null;
-  const lines = all(`SELECT * FROM payroll_lines WHERE run_id=? ORDER BY person_name`, [runId]);
+  const lines = await all(`SELECT * FROM payroll_lines WHERE run_id=? ORDER BY person_name`, [runId]);
   return { ...runRow, lines };
 }
 
-export function listPayrollRuns(organizationId: string | null | undefined) {
-  const oid = resolveOrganizationId(organizationId);
-  return all(
+export async function listPayrollRuns(organizationId: string | null | undefined) {
+  const oid = await resolveOrganizationId(organizationId);
+  return await all(
     `SELECT * FROM payroll_runs WHERE organization_id=? ORDER BY year DESC, month DESC LIMIT 36`,
     [oid]
   );

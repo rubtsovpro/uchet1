@@ -47,12 +47,12 @@ function normText(s: unknown): string {
 /** Куда в итоге уходит товар по каналу / способу отправки.
  * СДЭК / автобус / прочие ТК — это точки сдачи курьером;
  * на остатках товар сидит на «Складе курьера», пока курьер не отвёз. */
-export function resolveDealXferDestination(deal: Record<string, unknown> | null | undefined): {
+export async function resolveDealXferDestination(deal: Record<string, unknown> | null | undefined): Promise<{
   code: StoXferDestCode;
   label: string;
   warehouse_id: string;
   hint: string;
-} {
+}> {
   const channel = normText(deal?.amo_channel);
   const ship = normText(deal?.amo_shipment || deal?.ship_channel);
   // Самовывоз / Автосервис → склад автосервиса (СТО), без склада курьера
@@ -60,7 +60,7 @@ export function resolveDealXferDestination(deal: Record<string, unknown> | null 
     return {
       code: 'STO',
       label: 'Автосервис (СТО)',
-      warehouse_id: stoWarehouseId(),
+      warehouse_id: await stoWarehouseId(),
       hint: 'Самовывоз — товар на складе автосервиса',
     };
   }
@@ -68,7 +68,7 @@ export function resolveDealXferDestination(deal: Record<string, unknown> | null 
     return {
       code: 'STO',
       label: 'Автосервис (СТО)',
-      warehouse_id: stoWarehouseId(),
+      warehouse_id: await stoWarehouseId(),
       hint: 'Канал автосервис — товар на СТО',
     };
   }
@@ -77,7 +77,7 @@ export function resolveDealXferDestination(deal: Record<string, unknown> | null 
     return {
       code: 'COURIER',
       label: 'Склад курьера',
-      warehouse_id: courierWarehouseId(),
+      warehouse_id: await courierWarehouseId(),
       hint: 'СДЭК: товар на складе курьера → курьер везёт в СДЭК',
     };
   }
@@ -85,7 +85,7 @@ export function resolveDealXferDestination(deal: Record<string, unknown> | null 
     return {
       code: 'COURIER',
       label: 'Склад курьера',
-      warehouse_id: courierWarehouseId(),
+      warehouse_id: await courierWarehouseId(),
       hint: 'Автобус: товар на складе курьера → курьер везёт на автобус',
     };
   }
@@ -96,35 +96,35 @@ export function resolveDealXferDestination(deal: Record<string, unknown> | null 
     return {
       code: 'COURIER',
       label: 'Склад курьера',
-      warehouse_id: courierWarehouseId(),
+      warehouse_id: await courierWarehouseId(),
       hint: 'Отправка: товар на складе курьера; списание — когда отвёз',
     };
   }
   return {
     code: 'STO',
     label: 'Автосервис (СТО)',
-    warehouse_id: stoWarehouseId(),
+    warehouse_id: await stoWarehouseId(),
     hint: 'По умолчанию — склад автосервиса',
   };
 }
 
-export function listStoXferDestOptions(): Array<{ code: StoXferDestCode; label: string; warehouse_id: string }> {
+export async function listStoXferDestOptions(): Promise<Array<{ code: StoXferDestCode; label: string; warehouse_id: string }>> {
   return [
-    { code: 'STO', label: 'Автосервис (СТО)', warehouse_id: stoWarehouseId() },
-    { code: 'COURIER', label: 'Склад курьера', warehouse_id: courierWarehouseId() },
+    { code: 'STO', label: 'Автосервис (СТО)', warehouse_id: await stoWarehouseId() },
+    { code: 'COURIER', label: 'Склад курьера', warehouse_id: await courierWarehouseId() },
   ];
 }
 
-function resolveDestWarehouseId(
+async function resolveDestWarehouseId(
   deal: Record<string, unknown> | null | undefined,
   destCodeOrId?: string
-): { warehouse_id: string; code: string; label: string } {
+): Promise<{ warehouse_id: string; code: string; label: string }> {
   const raw = String(destCodeOrId || '').trim();
-  const opts = listStoXferDestOptions();
+  const opts = await listStoXferDestOptions();
   const byCode = opts.find((o) => o.code === raw || o.warehouse_id === raw);
   if (byCode) return { warehouse_id: byCode.warehouse_id, code: byCode.code, label: byCode.label };
   if (raw) {
-    const row = get<{ id: string; code: string; name: string }>(
+    const row = await get<{ id: string; code: string; name: string }>(
       `SELECT id, code, name FROM warehouses WHERE id = ? OR code = ? LIMIT 1`,
       [raw, raw]
     );
@@ -136,19 +136,19 @@ function resolveDestWarehouseId(
       };
     }
   }
-  const auto = resolveDealXferDestination(deal);
+  const auto = await resolveDealXferDestination(deal);
   return { warehouse_id: auto.warehouse_id, code: auto.code, label: auto.label };
 }
 
 /** Куда курьер сдаёт привоз: ребрендинг → Основной, иначе → Автосервис. */
-export function resolveCourierDropWarehouse(needsRebrand: boolean): {
+export async function resolveCourierDropWarehouse(needsRebrand: boolean): Promise<{
   warehouse_id: string;
   label: string;
-} {
+}> {
   if (needsRebrand) {
-    return { warehouse_id: mainWarehouseId(), label: 'Основной склад (ребрендинг)' };
+    return { warehouse_id: await mainWarehouseId(), label: 'Основной склад (ребрендинг)' };
   }
-  return { warehouse_id: stoWarehouseId(), label: 'Автосервис (СТО)' };
+  return { warehouse_id: await stoWarehouseId(), label: 'Автосервис (СТО)' };
 }
 
 function publicBaseUrl(): string {
@@ -160,7 +160,7 @@ function publicBaseUrl(): string {
   );
 }
 
-function warehouseTgChatIds(): string[] {
+async function warehouseTgChatIds(): Promise<string[]> {
   const envChat = (
     process.env.TELEGRAM_WAREHOUSE_CHAT_ID ||
     process.env.WMS_TELEGRAM_WAREHOUSE_CHAT_ID ||
@@ -168,7 +168,7 @@ function warehouseTgChatIds(): string[] {
   ).trim();
   const ids = new Set<string>();
   if (envChat) ids.add(envChat);
-  const staffRows = all<{ telegram_chat_id: string }>(
+  const staffRows = await all<{ telegram_chat_id: string }>(
     `SELECT DISTINCT telegram_chat_id FROM staff
      WHERE IFNULL(is_active,1)=1
        AND IFNULL(telegram_chat_id,'') != ''
@@ -181,46 +181,46 @@ function warehouseTgChatIds(): string[] {
   return [...ids];
 }
 
-export function ensureStoPartsSchema() {
-  const cols = all<{ name: string }>('PRAGMA table_info(sto_transfer_requests)').map((c) =>
+export async function ensureStoPartsSchema() {
+  const cols = (await all<{ name: string }>('PRAGMA table_info(sto_transfer_requests)')).map((c) =>
     String(c.name || '')
   );
-  const add = (name: string, ddl: string) => {
+  const add = async (name: string, ddl: string) => {
     if (cols.includes(name)) return;
     try {
-      run(`ALTER TABLE sto_transfer_requests ADD COLUMN ${ddl}`);
+      await run(`ALTER TABLE sto_transfer_requests ADD COLUMN ${ddl}`);
       cols.push(name);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!/already exists/i.test(msg)) throw e;
     }
   };
-  add('source', `source TEXT NOT NULL DEFAULT 'warehouse'`);
-  add('needs_rebrand', `needs_rebrand INTEGER NOT NULL DEFAULT 0`);
-  add('telegram_notified_at', `telegram_notified_at TEXT NOT NULL DEFAULT ''`);
-  add('courier_status', `courier_status TEXT NOT NULL DEFAULT ''`);
-  add('courier_staff_id', `courier_staff_id TEXT NOT NULL DEFAULT ''`);
-  add('market_cash_doc_id', `market_cash_doc_id TEXT NOT NULL DEFAULT ''`);
-  add('market_stock_doc_id', `market_stock_doc_id TEXT NOT NULL DEFAULT ''`);
-  add('amount', `amount REAL NOT NULL DEFAULT 0`);
-  add('transfer_doc_id', `transfer_doc_id TEXT NOT NULL DEFAULT ''`);
-  add('out_doc_id', `out_doc_id TEXT NOT NULL DEFAULT ''`);
-  add('rebrand_done', `rebrand_done INTEGER NOT NULL DEFAULT 0`);
-  add('approve_status', `approve_status TEXT NOT NULL DEFAULT ''`);
-  add('approve_mgr_at', `approve_mgr_at TEXT NOT NULL DEFAULT ''`);
-  add('approve_dir_at', `approve_dir_at TEXT NOT NULL DEFAULT ''`);
-  add('approve_by', `approve_by TEXT NOT NULL DEFAULT ''`);
-  add('dest_warehouse_id', `dest_warehouse_id TEXT NOT NULL DEFAULT ''`);
-  add('courier_drop_warehouse_id', `courier_drop_warehouse_id TEXT NOT NULL DEFAULT ''`);
+  await add('source', `source TEXT NOT NULL DEFAULT 'warehouse'`);
+  await add('needs_rebrand', `needs_rebrand INTEGER NOT NULL DEFAULT 0`);
+  await add('telegram_notified_at', `telegram_notified_at TEXT NOT NULL DEFAULT ''`);
+  await add('courier_status', `courier_status TEXT NOT NULL DEFAULT ''`);
+  await add('courier_staff_id', `courier_staff_id TEXT NOT NULL DEFAULT ''`);
+  await add('market_cash_doc_id', `market_cash_doc_id TEXT NOT NULL DEFAULT ''`);
+  await add('market_stock_doc_id', `market_stock_doc_id TEXT NOT NULL DEFAULT ''`);
+  await add('amount', `amount REAL NOT NULL DEFAULT 0`);
+  await add('transfer_doc_id', `transfer_doc_id TEXT NOT NULL DEFAULT ''`);
+  await add('out_doc_id', `out_doc_id TEXT NOT NULL DEFAULT ''`);
+  await add('rebrand_done', `rebrand_done INTEGER NOT NULL DEFAULT 0`);
+  await add('approve_status', `approve_status TEXT NOT NULL DEFAULT ''`);
+  await add('approve_mgr_at', `approve_mgr_at TEXT NOT NULL DEFAULT ''`);
+  await add('approve_dir_at', `approve_dir_at TEXT NOT NULL DEFAULT ''`);
+  await add('approve_by', `approve_by TEXT NOT NULL DEFAULT ''`);
+  await add('dest_warehouse_id', `dest_warehouse_id TEXT NOT NULL DEFAULT ''`);
+  await add('courier_drop_warehouse_id', `courier_drop_warehouse_id TEXT NOT NULL DEFAULT ''`);
   // Склад курьера — единственная точка для отправки; BUS/CDEK не используем
   try {
-    courierWarehouseId();
+    await courierWarehouseId();
     archiveObsoleteLogisticsWarehouses();
   } catch {
     /* ignore */
   }
 
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS courier_runs (
       id TEXT PRIMARY KEY,
       sto_request_id TEXT NOT NULL DEFAULT '',
@@ -240,29 +240,29 @@ export function ensureStoPartsSchema() {
     CREATE INDEX IF NOT EXISTS idx_courier_runs_courier ON courier_runs(courier_staff_id);
   `);
   try {
-    run(`ALTER TABLE courier_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'pickup'`);
+    await run(`ALTER TABLE courier_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'pickup'`);
   } catch {
     /* already */
   }
   try {
-    run(`ALTER TABLE courier_runs ADD COLUMN deal_id TEXT NOT NULL DEFAULT ''`);
+    await run(`ALTER TABLE courier_runs ADD COLUMN deal_id TEXT NOT NULL DEFAULT ''`);
   } catch {
     /* already */
   }
   try {
-    run(`ALTER TABLE courier_runs ADD COLUMN stock_doc_id TEXT NOT NULL DEFAULT ''`);
+    await run(`ALTER TABLE courier_runs ADD COLUMN stock_doc_id TEXT NOT NULL DEFAULT ''`);
   } catch {
     /* already */
   }
   try {
-    run(`CREATE INDEX IF NOT EXISTS idx_courier_runs_deal ON courier_runs(deal_id)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_courier_runs_deal ON courier_runs(deal_id)`);
   } catch {
     /* already */
   }
 }
 
-function ensureMarketCounterparty(): string {
-  const existing = get<{ id: string }>(
+async function ensureMarketCounterparty(): Promise<string> {
+  const existing = await get<{ id: string }>(
     `SELECT id FROM counterparties
      WHERE lower(name) IN ('рынок', 'рынок (нал)', 'market')
         OR IFNULL(source,'') = 'market'
@@ -270,7 +270,7 @@ function ensureMarketCounterparty(): string {
   );
   if (existing?.id) return existing.id;
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO counterparties (id, name, kind, is_active, source)
      VALUES (?, 'Рынок', 'supplier', 1, 'market')`,
     [id]
@@ -304,7 +304,7 @@ export async function createStoPartsAssignment(input: {
   dest_warehouse_id?: string;
   lines: Array<{ product_id: string; qty?: number; serial?: string; name?: string; sku?: string }>;
 }) {
-  ensureStoPartsSchema();
+  await ensureStoPartsSchema();
   const source = normalizeSource(input.source);
   const needsRebrand = !!input.needs_rebrand || source === 'pneumo';
   const lines = (input.lines || []).filter((l) => l.product_id);
@@ -314,18 +314,18 @@ export async function createStoPartsAssignment(input: {
   if (input.deal_id) {
     try {
       const { getDeal } = await import('./deals.js');
-      dealSnap = getDeal(String(input.deal_id)) as Record<string, unknown> | null;
+      dealSnap = await getDeal(String(input.deal_id)) as Record<string, unknown> | null;
     } catch {
       dealSnap = null;
     }
   }
-  const dest = resolveDestWarehouseId(dealSnap, input.dest_warehouse_id);
+  const dest = await resolveDestWarehouseId(dealSnap, input.dest_warehouse_id);
   const courierDrop =
     source === 'courier' || source === 'market' || source === 'nonpneumo' || source === 'pneumo'
-      ? resolveCourierDropWarehouse(needsRebrand)
+      ? await resolveCourierDropWarehouse(needsRebrand)
       : null;
 
-  const reqRaw = createStoTransferRequest({
+  const reqRaw = await createStoTransferRequest({
     deal_id: input.deal_id,
     comment: input.comment,
     created_by: input.created_by,
@@ -339,7 +339,7 @@ export async function createStoPartsAssignment(input: {
   const req = reqRaw;
 
   const approveStatus = source === 'pneumo' ? 'pending' : '';
-  run(
+  await run(
     `UPDATE sto_transfer_requests
      SET source = ?, needs_rebrand = ?, amount = ?, approve_status = ?,
          dest_warehouse_id = ?, courier_drop_warehouse_id = ?,
@@ -367,7 +367,7 @@ export async function createStoPartsAssignment(input: {
       linesCount: lines.length,
     });
     return {
-      ...(getStoTransferRequest(String(req.id)) as Record<string, unknown>),
+      ...(await getStoTransferRequest(String(req.id)) as Record<string, unknown>),
       warehouse_task: null,
       courier_run: null,
       market_cash: null,
@@ -385,7 +385,7 @@ export async function createStoPartsAssignment(input: {
     source === 'market' ||
     source === 'nonpneumo'
   ) {
-    warehouse_task = createTaskFromStoParts({
+    warehouse_task = await createTaskFromStoParts({
       sto_request_id: String(req.id),
       sto_request_number: String(req.number || ''),
       deal_id: input.deal_id,
@@ -412,7 +412,7 @@ export async function createStoPartsAssignment(input: {
       })),
     }) as Record<string, unknown> | null;
     if (warehouse_task?.id) {
-      run(
+      await run(
         `UPDATE sto_transfer_requests
          SET warehouse_task_id = ?, updated_at = datetime('now')
          WHERE id = ?`,
@@ -427,8 +427,8 @@ export async function createStoPartsAssignment(input: {
     const amount = Math.max(0, Number(input.amount) || 0);
     if (source === 'market' && !(amount > 0)) throw new Error('Укажите ориентировочную сумму нал');
     if (amount > 0) {
-      const marketId = ensureMarketCounterparty();
-      const cashDoc = createCashDoc({
+      const marketId = await ensureMarketCounterparty();
+      const cashDoc = await createCashDoc({
         doc_type: 'out',
         amount,
         counterparty_id: marketId,
@@ -440,7 +440,7 @@ export async function createStoPartsAssignment(input: {
         cashDoc && typeof cashDoc === 'object'
           ? (cashDoc as Record<string, unknown>)
           : null;
-      run(
+      await run(
         `UPDATE sto_transfer_requests
          SET market_cash_doc_id = ?, updated_at = datetime('now')
          WHERE id = ?`,
@@ -459,7 +459,7 @@ export async function createStoPartsAssignment(input: {
         : source === 'nonpneumo'
           ? `Непневмо · ${req.number}`
           : `Курьер · ${req.number}`;
-    run(
+    await run(
       `INSERT INTO courier_runs
         (id, sto_request_id, warehouse_task_id, status, kind, title, comment, created_by, created_at, updated_at)
        VALUES (?, ?, ?, 'new', 'pickup', ?, ?, ?, datetime('now'), datetime('now'))`,
@@ -472,7 +472,7 @@ export async function createStoPartsAssignment(input: {
         String(input.created_by || ''),
       ]
     );
-    courier_run = (get(`SELECT * FROM courier_runs WHERE id = ?`, [runId]) || null) as Record<
+    courier_run = (await get(`SELECT * FROM courier_runs WHERE id = ?`, [runId]) || null) as Record<
       string,
       unknown
     > | null;
@@ -489,7 +489,7 @@ export async function createStoPartsAssignment(input: {
   });
 
   return {
-    ...(getStoTransferRequest(String(req.id)) as Record<string, unknown>),
+    ...(await getStoTransferRequest(String(req.id)) as Record<string, unknown>),
     warehouse_task,
     courier_run,
     market_cash,
@@ -500,18 +500,18 @@ export async function createStoPartsAssignment(input: {
 }
 
 /** Статус заданий на СТО по заказу: что уже переместили, что в очереди, что досоздать. */
-export function getDealStoPartsStatus(dealIdRaw: string) {
-  ensureStoPartsSchema();
+export async function getDealStoPartsStatus(dealIdRaw: string) {
+  await ensureStoPartsSchema();
   const dealId = String(dealIdRaw || '').trim();
   if (!dealId) throw new Error('Не указан заказ');
 
-  const deal = get<{ id: string; name?: string }>(
+  const deal = await get<{ id: string; name?: string }>(
     `SELECT id, name FROM crm_deals WHERE id = ?`,
     [dealId]
   );
   if (!deal) throw new Error('Заказ покупателя не найден');
 
-  const goods = all<{
+  const goods = (await all<{
     product_id: string;
     qty: number;
     sku: string;
@@ -532,7 +532,7 @@ export function getDealStoPartsStatus(dealIdRaw: string) {
      WHERE i.deal_id = ?
      ORDER BY i.line_no, i.name`,
     [dealId]
-  )
+  ))
     .filter((g) => g.product_id && g.item_kind !== 'service' && Number(g.qty) > 0)
     .map((g) => ({
       product_id: g.product_id,
@@ -541,15 +541,15 @@ export function getDealStoPartsStatus(dealIdRaw: string) {
       name: String(g.name || ''),
     }));
 
-  const reqRows = listStoTransferRequests({ deal_id: dealId, limit: 40 }) as Array<
+  const reqRows = await listStoTransferRequests({ deal_id: dealId, limit: 40 }) as Array<
     Record<string, unknown>
   >;
-  const requests: Array<Record<string, unknown>> = reqRows.map((r) => {
-    const detail = getStoTransferRequest(String(r.id)) as Record<string, unknown> | null;
+  const requests: Array<Record<string, unknown>> = await Promise.all(reqRows.map(async (r) => {
+    const detail = await getStoTransferRequest(String(r.id)) as Record<string, unknown> | null;
     const base = (detail || r) as Record<string, unknown>;
     const taskId = String(base.warehouse_task_id || '').trim();
     const task = taskId
-      ? (get<{ id: string; number: string; status: string }>(
+      ? (await get<{ id: string; number: string; status: string }>(
           `SELECT id, number, status FROM warehouse_tasks WHERE id = ?`,
           [taskId]
         ) as { id: string; number: string; status: string } | null)
@@ -558,7 +558,7 @@ export function getDealStoPartsStatus(dealIdRaw: string) {
       ...base,
       warehouse_task: task,
     };
-  });
+  }));
 
   const doneBy = new Map<string, number>();
   const pendingBy = new Map<string, number>();
@@ -576,9 +576,9 @@ export function getDealStoPartsStatus(dealIdRaw: string) {
       const qty = Math.max(1, Math.round(Number(l.qty) || 1));
       const st = String(l.status || 'new').toLowerCase();
       if (reqDone || st === 'done' || st === 'transferred' || st === 'closed') {
-        add(doneBy, pid, qty);
+        await add(doneBy, pid, qty);
       } else {
-        add(pendingBy, pid, qty);
+        await add(pendingBy, pid, qty);
       }
     }
   }
@@ -612,9 +612,9 @@ export function getDealStoPartsStatus(dealIdRaw: string) {
   const has_task = requests.length > 0;
   const items_changed = to_create > 1e-9 && has_task;
 
-  let dest = resolveDealXferDestination(null);
+  let dest = await resolveDealXferDestination(null);
   try {
-    const full = get<{
+    const full = await get<{
       id: string;
       name?: string;
       amo_channel?: string;
@@ -624,7 +624,7 @@ export function getDealStoPartsStatus(dealIdRaw: string) {
       `SELECT id, name, amo_channel, amo_shipment, ship_channel FROM crm_deals WHERE id = ?`,
       [dealId]
     );
-    dest = resolveDealXferDestination(full || null);
+    dest = await resolveDealXferDestination(full || null);
   } catch {
     /* keep default */
   }
@@ -632,7 +632,7 @@ export function getDealStoPartsStatus(dealIdRaw: string) {
   const taskStatus = latestTask ? String(latestTask.status || '').trim() : '';
   const courierStatus = latest ? String(latest.courier_status || '').trim() : '';
   const courierRun = latest
-    ? (get<{
+    ? (await get<{
         id: string;
         status: string;
         kind: string;
@@ -723,7 +723,7 @@ export function getDealStoPartsStatus(dealIdRaw: string) {
     requests,
     lines,
     dest,
-    dest_options: listStoXferDestOptions().map((o) => ({
+    dest_options: (await listStoXferDestOptions()).map((o) => ({
       code: o.code,
       label: o.label,
       warehouse_id: o.warehouse_id,
@@ -764,10 +764,10 @@ export async function createStoPartsFromDeal(input: {
   const dealId = String(input.deal_id || '').trim();
   if (!dealId) throw new Error('Не указан заказ');
   const { getDeal } = await import('./deals.js');
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Заказ покупателя не найден');
 
-  const status = getDealStoPartsStatus(dealId);
+  const status = await getDealStoPartsStatus(dealId);
   if (status.summary.all_moved) {
     throw new Error('Все товары уже перемещены — новое задание не нужно');
   }
@@ -811,7 +811,7 @@ export async function createStoPartsFromDeal(input: {
   const comment =
     String(input.comment || '').trim() ||
     `Из заказа №${String(deal.number || deal.amo_id || dealId).trim()}${suffix}`;
-  return createStoPartsAssignment({
+  return await createStoPartsAssignment({
     deal_id: dealId,
     source,
     needs_rebrand: input.needs_rebrand,
@@ -825,11 +825,11 @@ export async function createStoPartsFromDeal(input: {
 }
 
 /** Оприходовать после «Сдал»: приход на основной, поставщик «Рынок». */
-export function postInboundOnCourierDelivered(stoRequestId: string) {
-  ensureStoPartsSchema();
+export async function postInboundOnCourierDelivered(stoRequestId: string) {
+  await ensureStoPartsSchema();
   const reqId = String(stoRequestId || '').trim();
   if (!reqId) throw new Error('Нет задания на СТО');
-  const req = getStoTransferRequest(reqId) as Record<string, unknown> | null;
+  const req = await getStoTransferRequest(reqId) as Record<string, unknown> | null;
   if (!req) throw new Error('Задание на СТО не найдено');
   const existingDoc = String(req.market_stock_doc_id || '').trim();
   if (existingDoc) {
@@ -845,13 +845,13 @@ export function postInboundOnCourierDelivered(stoRequestId: string) {
     .filter((l) => l.product_id && l.qty > 0);
   if (!stockLines.length) throw new Error('Нет позиций для прихода');
 
-  const marketId = ensureMarketCounterparty();
+  const marketId = await ensureMarketCounterparty();
   const source = String(req.source || 'warehouse');
   // Непневмо остаётся на СТО; остальное — приход на основной (потом перемещение при закрытии задания)
-  const whId = source === 'nonpneumo' ? stoWarehouseId() : mainWarehouseId();
+  const whId = source === 'nonpneumo' ? await stoWarehouseId() : await mainWarehouseId();
   const number = String(req.number || reqId);
   const dealId = String(req.deal_id || '').trim();
-  const stockDocId = createDocument({
+  const stockDocId = await createDocument({
     doc_type: 'in',
     warehouse_id: whId,
     counterparty_id: marketId,
@@ -864,7 +864,7 @@ export function postInboundOnCourierDelivered(stoRequestId: string) {
     lines: stockLines,
     post: true,
   });
-  run(
+  await run(
     `UPDATE sto_transfer_requests
      SET market_stock_doc_id = ?,
          status = 'done',
@@ -872,7 +872,7 @@ export function postInboundOnCourierDelivered(stoRequestId: string) {
      WHERE id = ?`,
     [stockDocId, reqId]
   );
-  run(
+  await run(
     `UPDATE sto_transfer_request_lines
      SET status = 'done'
      WHERE request_id = ? AND status = 'new'`,
@@ -892,7 +892,7 @@ export async function createMarketCashPurchase(input: {
   lines: Array<{ product_id: string; qty?: number; price?: number; name?: string; sku?: string }>;
   needs_rebrand?: boolean;
 }) {
-  return createStoPartsAssignment({
+  return await createStoPartsAssignment({
     deal_id: input.deal_id,
     source: 'market',
     needs_rebrand: input.needs_rebrand,
@@ -910,14 +910,14 @@ export async function createMarketCashPurchase(input: {
   });
 }
 
-export function listCourierRuns(opts?: {
+export async function listCourierRuns(opts?: {
   status?: string;
   scope?: 'active' | 'closed' | 'all';
   q?: string;
   courier_staff_id?: string;
   limit?: number;
 }) {
-  ensureStoPartsSchema();
+  await ensureStoPartsSchema();
   const where: string[] = ['1=1'];
   const params: Array<string | number> = [];
   if (opts?.status) {
@@ -944,7 +944,7 @@ export function listCourierRuns(opts?: {
     for (let i = 0; i < 9; i++) params.push(like);
   }
   const limit = Math.min(200, Math.max(1, Number(opts?.limit) || (opts?.scope === 'closed' ? 80 : 50)));
-  const rows = all(
+  const rows = await all(
     `SELECT cr.*,
        IFNULL(cr.kind,'pickup') AS kind,
        IFNULL(NULLIF(TRIM(cr.deal_id),''), IFNULL(r.deal_id,'')) AS deal_id,
@@ -991,7 +991,7 @@ export function listCourierRuns(opts?: {
   const respNames = new Map<string, string>();
   if (respIds.length) {
     const placeholders = respIds.map(() => '?').join(',');
-    const staffRows = all<{ amo_id: string; name: string }>(
+    const staffRows = await all<{ amo_id: string; name: string }>(
       `SELECT IFNULL(amo_id,'') AS amo_id, IFNULL(name,'') AS name
        FROM staff
        WHERE IFNULL(amo_id,'') IN (${placeholders})`,
@@ -1004,17 +1004,17 @@ export function listCourierRuns(opts?: {
   }
 
   const activeCount = Number(
-    get<{ n: number }>(
+    (await get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM courier_runs WHERE status IN ('new','accepted','picked_up')`
-    )?.n || 0
+    ))?.n || 0
   );
   const closedCount = Number(
-    get<{ n: number }>(
+    (await get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM courier_runs WHERE status IN ('delivered','cancelled')`
-    )?.n || 0
+    ))?.n || 0
   );
 
-  const mapped = rows.map((r) => {
+  const mapped = await Promise.all(rows.map(async (r) => {
     const kind = String(r.kind || 'pickup');
     const ship = String(r.amo_shipment || '').trim();
     const dealId = String(r.deal_id || '').trim();
@@ -1023,7 +1023,7 @@ export function listCourierRuns(opts?: {
       String(r.sto_number || '').trim() ||
       String(r.ship_doc_number || '').trim();
     const sNum = String(r.task_number || '').trim();
-    const paid = dealId ? dealIsPaid(dealId) : false;
+    const paid = dealId ? await dealIsPaid(dealId) : false;
     const respId = String(r.responsible_user_id || '').trim();
     const humanizeComment = (raw: string) => {
       let s = String(raw || '').trim();
@@ -1099,14 +1099,14 @@ export function listCourierRuns(opts?: {
           ? 'Доставил = списание по продаже со склада «Курьер» + примечание в сделку'
           : '«Сдал» = приход «Рынок». Номенклатуру забивает приёмщик.',
     };
-  });
+  }));
 
   // Закрытые «не реализовано» не должны висеть у курьера в активных
   if (opts?.scope !== 'closed' && opts?.scope !== 'all' && !opts?.status) {
     for (const it of mapped) {
       if (it.deal_closed_failed && ['new', 'accepted', 'picked_up'].includes(String(it.status))) {
         try {
-          cancelActiveCourierRunsForDeal(
+          await cancelActiveCourierRunsForDeal(
             String(it.deal_id || ''),
             'Авто: сделка закрыта и не реализована'
           );
@@ -1130,14 +1130,14 @@ export function listCourierRuns(opts?: {
  * Снять активные задания курьера по сделке (возврат на основной / отказ / закрытие).
  * Иначе заказ остаётся в «К доставке» у курьера.
  */
-export function cancelActiveCourierRunsForDeal(
+export async function cancelActiveCourierRunsForDeal(
   dealId: string,
   reason?: string
-): { cancelled: number; ids: string[] } {
-  ensureStoPartsSchema();
+): Promise<{ cancelled: number; ids: string[] }> {
+  await ensureStoPartsSchema();
   const id = String(dealId || '').trim();
   if (!id) return { cancelled: 0, ids: [] };
-  const rows = all<{ id: string }>(
+  const rows = await all<{ id: string }>(
     `SELECT id FROM courier_runs
      WHERE deal_id = ?
        AND status IN ('new','accepted','picked_up')`,
@@ -1146,7 +1146,7 @@ export function cancelActiveCourierRunsForDeal(
   const ids: string[] = [];
   const note = String(reason || 'Сделка закрыта / возврат на основной').trim();
   for (const r of rows) {
-    run(
+    await run(
       `UPDATE courier_runs
        SET status = 'cancelled',
            comment = CASE
@@ -1162,14 +1162,14 @@ export function cancelActiveCourierRunsForDeal(
   return { cancelled: ids.length, ids };
 }
 
-export function setCourierRunStatus(input: {
+export async function setCourierRunStatus(input: {
   id: string;
   status: 'accepted' | 'picked_up' | 'delivered' | 'cancelled';
   courier_staff_id?: string;
   actor_name?: string;
 }) {
-  ensureStoPartsSchema();
-  const row = get<{
+  await ensureStoPartsSchema();
+  const row = await get<{
     id: string;
     status: string;
     warehouse_task_id: string;
@@ -1192,7 +1192,7 @@ export function setCourierRunStatus(input: {
   // (только для рынка / привоза; handoff — товар уже на складе курьера)
   let inbound: { stock_doc_id: string; already: boolean } | null = null;
   if (status === 'delivered' && row.sto_request_id && !isHandoff) {
-    inbound = postInboundOnCourierDelivered(row.sto_request_id);
+    inbound = await postInboundOnCourierDelivered(row.sto_request_id);
   }
 
   const stampCol =
@@ -1203,7 +1203,7 @@ export function setCourierRunStatus(input: {
         : status === 'delivered'
           ? 'delivered_at'
           : '';
-  run(
+  await run(
     `UPDATE courier_runs
      SET status = ?,
          courier_staff_id = CASE WHEN ? != '' THEN ? ELSE courier_staff_id END,
@@ -1213,7 +1213,7 @@ export function setCourierRunStatus(input: {
     [status, staffId, staffId, input.id]
   );
   if (row.sto_request_id) {
-    run(
+    await run(
       `UPDATE sto_transfer_requests
        SET courier_status = ?, courier_staff_id = ?, updated_at = datetime('now')
        WHERE id = ?`,
@@ -1224,7 +1224,7 @@ export function setCourierRunStatus(input: {
     try {
       // handoff: склад уже переместил → «Сделано»; не возвращать в «К выдаче»
       // рынок/привоз: после сдачи курьером задание ждёт приёмку склада
-      setTaskStatus({
+      await setTaskStatus({
         id: row.warehouse_task_id,
         status: isHandoff ? 'handed' : 'ready',
         actor_id: staffId || undefined,
@@ -1234,20 +1234,20 @@ export function setCourierRunStatus(input: {
     }
   }
 
-  let writeoff: ReturnType<typeof writeOffCourierOnDelivered> | null = null;
+  let writeoff: Awaited<ReturnType<typeof writeOffCourierOnDelivered>> | null = null;
   if (status === 'delivered' && isHandoff) {
     let dealId = String(row.deal_id || '').trim();
     if (!dealId && row.sto_request_id) {
       dealId = String(
-        get<{ deal_id: string }>(
+        (await get<{ deal_id: string }>(
           `SELECT IFNULL(deal_id,'') AS deal_id FROM sto_transfer_requests WHERE id = ?`,
           [row.sto_request_id]
-        )?.deal_id || ''
+        ))?.deal_id || ''
       ).trim();
     }
     if (dealId) {
       try {
-        writeoff = writeOffCourierOnDelivered(dealId, {
+        writeoff = await writeOffCourierOnDelivered(dealId, {
           createdBy: staffId,
           actor_name: String(input.actor_name || ''),
         });
@@ -1258,17 +1258,17 @@ export function setCourierRunStatus(input: {
         };
       }
       // Реестр «отправки Склад»: обычная строка (не оранжевая); столбец I не трогаем.
-      enqueueCourierShipmentSheetAppend(dealId);
+      await enqueueCourierShipmentSheetAppend(dealId);
     }
   }
 
-  const out = get(`SELECT * FROM courier_runs WHERE id = ?`, [input.id]) as Record<string, unknown>;
+  const out = await get(`SELECT * FROM courier_runs WHERE id = ?`, [input.id]) as Record<string, unknown>;
   if (inbound) out.stock_doc_id = inbound.stock_doc_id;
   if (writeoff) out.writeoff = writeoff;
   if (row.sto_request_id) {
     const num = String(
       (
-        get<{ number: string }>(`SELECT IFNULL(number,'') AS number FROM sto_transfer_requests WHERE id = ?`, [
+        await get<{ number: string }>(`SELECT IFNULL(number,'') AS number FROM sto_transfer_requests WHERE id = ?`, [
           row.sto_request_id,
         ]) as { number?: string } | undefined
       )?.number || ''
@@ -1288,7 +1288,7 @@ export function setCourierRunStatus(input: {
           delivered: `${n} · курьер сдал на склад (приход)`,
           cancelled: `${n} · отмена у курьера`,
         };
-    logStoTransferEvent({
+    await logStoTransferEvent({
       request_id: row.sto_request_id,
       event: `courier_${status}`,
       summary: labels[status] || status,
@@ -1300,20 +1300,20 @@ export function setCourierRunStatus(input: {
   return out;
 }
 
-export function listStoPartsAssignments(opts?: { status?: string; source?: string; limit?: number }) {
-  ensureStoPartsSchema();
-  const items = listStoTransferRequests({ status: opts?.status, limit: opts?.limit });
+export async function listStoPartsAssignments(opts?: { status?: string; source?: string; limit?: number }) {
+  await ensureStoPartsSchema();
+  const items = await listStoTransferRequests({ status: opts?.status, limit: opts?.limit });
   if (!opts?.source) return items;
   return items.filter((r) => String((r as { source?: string }).source || 'warehouse') === opts.source);
 }
 
-export function completeStoPartsBySerial(input: {
+export async function completeStoPartsBySerial(input: {
   serial: string;
   request_id?: string;
   deal_id?: string;
   actor_name?: string;
 }) {
-  return transferSerialToSto(input);
+  return await transferSerialToSto(input);
 }
 
 /** Согласование пневмы: mgr → dir; после dir_ok — курьер + задание складу. */
@@ -1324,25 +1324,25 @@ export async function approvePneumoAssignment(input: {
   actor_name?: string;
   actor_id?: string;
 }) {
-  ensureStoPartsSchema();
+  await ensureStoPartsSchema();
   const id = String(input.id || '').trim();
-  const req = getStoTransferRequest(id) as Record<string, unknown> | null;
+  const req = await getStoTransferRequest(id) as Record<string, unknown> | null;
   if (!req) throw new Error('Задание не найдено');
   if (String(req.source) !== 'pneumo') throw new Error('Согласование только для ветки «пневма»');
   const st = String(req.approve_status || 'pending');
   const ok = input.ok !== false;
   if (!ok) {
-    run(
+    await run(
       `UPDATE sto_transfer_requests
        SET approve_status = 'rejected', approve_by = ?, updated_at = datetime('now')
        WHERE id = ?`,
       [String(input.actor_name || ''), id]
     );
-    return getStoTransferRequest(id);
+    return await getStoTransferRequest(id);
   }
   if (input.step === 'mgr') {
     if (st !== 'pending' && st !== '') throw new Error(`Уже согласовано менеджером (${st})`);
-    run(
+    await run(
       `UPDATE sto_transfer_requests
        SET approve_status = 'mgr_ok',
            approve_mgr_at = datetime('now'),
@@ -1351,10 +1351,10 @@ export async function approvePneumoAssignment(input: {
        WHERE id = ?`,
       [String(input.actor_name || ''), id]
     );
-    return getStoTransferRequest(id);
+    return await getStoTransferRequest(id);
   }
   if (st !== 'mgr_ok') throw new Error('Сначала согласование менеджера');
-  run(
+  await run(
     `UPDATE sto_transfer_requests
      SET approve_status = 'dir_ok',
          approve_dir_at = datetime('now'),
@@ -1379,36 +1379,36 @@ export async function approvePneumoAssignment(input: {
       name: String(l.product_name || l.name || ''),
     })),
   });
-  run(
+  await run(
     `UPDATE sto_transfer_requests
      SET status = 'done', updated_at = datetime('now')
      WHERE id = ?`,
     [id]
   );
-  return { approved: getStoTransferRequest(id), spawned };
+  return { approved: await getStoTransferRequest(id), spawned };
 }
 
-export function markStoRebrandDone(input: { id: string; actor_name?: string }) {
-  ensureStoPartsSchema();
+export async function markStoRebrandDone(input: { id: string; actor_name?: string }) {
+  await ensureStoPartsSchema();
   const id = String(input.id || '').trim();
-  const req = get(`SELECT id FROM sto_transfer_requests WHERE id = ?`, [id]);
+  const req = await get(`SELECT id FROM sto_transfer_requests WHERE id = ?`, [id]);
   if (!req) throw new Error('Задание не найдено');
-  run(
+  await run(
     `UPDATE sto_transfer_requests
      SET rebrand_done = 1, updated_at = datetime('now')
      WHERE id = ?`,
     [id]
   );
-  return getStoTransferRequest(id);
+  return await getStoTransferRequest(id);
 }
 
-export function getStoPartsBoard() {
-  ensureStoPartsSchema();
-  const open = listStoTransferRequests({ limit: 60 }).filter((r) => {
+export async function getStoPartsBoard() {
+  await ensureStoPartsSchema();
+  const open = (await listStoTransferRequests({ limit: 60 })).filter((r) => {
     const st = String((r as { status?: string }).status || '');
     return st === 'new' || st === 'picking';
   });
-  const courier = listCourierRuns({ scope: 'active', limit: 40 }).items;
+  const courier = (await listCourierRuns({ scope: 'active', limit: 40 })).items;
   return {
     open_assignments: open,
     courier_active: courier,
@@ -1451,10 +1451,10 @@ function courierRegistryToLabel(row: Record<string, unknown>): string {
 }
 
 /** Строки заказа для реестра курьера (без ячеек). */
-function courierDealItemLines(dealId: string): Array<{ sku: string; name: string; qty: number }> {
+async function courierDealItemLines(dealId: string): Promise<Array<{ sku: string; name: string; qty: number }>> {
   const id = String(dealId || '').trim();
   if (!id) return [];
-  return all<{ sku: string; name: string; qty: number }>(
+  return (await all<{ sku: string; name: string; qty: number }>(
     `SELECT
        IFNULL(NULLIF(TRIM(i.sku),''), IFNULL(p.sku,'')) AS sku,
        IFNULL(NULLIF(TRIM(i.name),''), IFNULL(p.name,'')) AS name,
@@ -1465,7 +1465,7 @@ function courierDealItemLines(dealId: string): Array<{ sku: string; name: string
        AND IFNULL(p.item_kind,'product') != 'service'
      ORDER BY i.line_no ASC`,
     [id]
-  ).map((r) => ({
+  )).map((r) => ({
     sku: String(r.sku || '').trim(),
     name: String(r.name || '').trim(),
     qty: Number(r.qty) || 0,
@@ -1473,13 +1473,13 @@ function courierDealItemLines(dealId: string): Array<{ sku: string; name: string
 }
 
 /** HTML-реестр курьера: группа по маршруту «куда», строки заказа по сделкам. */
-export function renderCourierRunsRegistryHtml(opts?: {
+export async function renderCourierRunsRegistryHtml(opts?: {
   actor_name?: string;
   autoprint?: boolean;
   /** id заданий courier_runs; пусто = все активные */
   run_ids?: string[];
-}): string {
-  let items = listCourierRuns({ scope: 'active', limit: 200 }).items;
+}): Promise<string> {
+  let items = (await listCourierRuns({ scope: 'active', limit: 200 })).items;
   const want = (opts?.run_ids || []).map((x) => String(x || '').trim()).filter(Boolean);
   if (want.length) {
     const set = new Set(want);
@@ -1517,7 +1517,7 @@ export function renderCourierRunsRegistryHtml(opts?: {
     const buyer = String(row.buyer_name || '').trim() || '—';
     const phone = String(row.buyer_phone || '').trim() || '—';
     const pay = String(row.payment_label || '').trim() || '—';
-    const lines = courierDealItemLines(dealId);
+    const lines = await courierDealItemLines(dealId);
     const base = { deal_id: dealId, from, to, buyer, phone, pay };
     const rows: RegistryRow[] = lines.length
       ? lines.map((l) => ({

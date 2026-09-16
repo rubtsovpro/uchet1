@@ -21,16 +21,16 @@ export { getDealBasketTotals, getDealPaymentSplit, syncDealPaidStatus } from './
 
 const PAID_STATUSES = new Set(['paid', 'confirmed', 'success', 'accepted']);
 
-function bankSbpUrl(): string {
-  return getTochkaBridgeSettings().sbp_create_url;
+async function bankSbpUrl(): Promise<string> {
+  return (await getTochkaBridgeSettings()).sbp_create_url;
 }
 
-function bankSbpStatusUrl(): string {
-  return getTochkaBridgeSettings().sbp_status_url;
+async function bankSbpStatusUrl(): Promise<string> {
+  return (await getTochkaBridgeSettings()).sbp_status_url;
 }
 
-function bankSbpKey(): string {
-  return getTochkaBridgeSettings().bank_sbp_key;
+async function bankSbpKey(): Promise<string> {
+  return (await getTochkaBridgeSettings()).bank_sbp_key;
 }
 
 /** Назначение СБП под regex Точки (без · / ё / «» и пр.). */
@@ -69,8 +69,8 @@ function humanizeBankError(err: string): string {
   return s;
 }
 
-export function listDealPayments(dealId: string) {
-  return all(
+export async function listDealPayments(dealId: string) {
+  return await all(
     `SELECT id, kind, amount, status, qrc_id, payload, account, purpose, created_at,
             CASE WHEN length(image_png_base64)>0 THEN 1 ELSE 0 END AS has_image
      FROM deal_payments WHERE deal_id = ? ORDER BY datetime(created_at) DESC`,
@@ -78,15 +78,15 @@ export function listDealPayments(dealId: string) {
   );
 }
 
-export function getDealPayment(id: string) {
-  return get('SELECT * FROM deal_payments WHERE id = ?', [id]) || null;
+export async function getDealPayment(id: string) {
+  return await get('SELECT * FROM deal_payments WHERE id = ?', [id]) || null;
 }
 
 /** Удалить запись QR/оплаты со сделки (локальная история; QR в банке не отменяется). */
-export function deleteDealPayment(id: string) {
-  const row = getDealPayment(id);
+export async function deleteDealPayment(id: string) {
+  const row = await getDealPayment(id);
   if (!row) return null;
-  run('DELETE FROM deal_payments WHERE id = ?', [id]);
+  await run('DELETE FROM deal_payments WHERE id = ?', [id]);
   return row;
 }
 
@@ -99,7 +99,7 @@ export async function createDealSbpQr(input: {
   organizationId?: string;
   ttlSec?: number;
 }) {
-  const deal = getDeal(input.dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(input.dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
   // Юрлицо / компания в карточке — не блокер QR: партнёры часто платят как физлица по ссылке.
 
@@ -112,8 +112,8 @@ export async function createDealSbpQr(input: {
   }
 
   const orgId = String(input.organizationId || '').trim();
-  const org = getOrgProfile(orgId || undefined);
-  const orgRow = orgId ? getOrganization(orgId) : undefined;
+  const org = await getOrgProfile(orgId || undefined);
+  const orgRow = orgId ? await getOrganization(orgId) : undefined;
   const account =
     (input.account || '').replace(/\D/g, '') ||
     String(org.rs || '').replace(/\D/g, '') ||
@@ -126,12 +126,12 @@ export async function createDealSbpQr(input: {
         (deal.name ? ` - ${String(deal.name).slice(0, 80)}` : '')
   );
 
-  const key = bankSbpKey();
+  const key = await bankSbpKey();
   if (!key) {
     throw new Error('Не задан ключ Точка (Настройки → Интеграции → Точка Банк)');
   }
 
-  const res = await fetch(bankSbpUrl(), {
+  const res = await fetch(await bankSbpUrl(), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -158,7 +158,7 @@ export async function createDealSbpQr(input: {
   }
 
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO deal_payments (
        id, deal_id, kind, amount, status, qrc_id, payload, image_png_base64, account, purpose, meta_json
      ) VALUES (?, ?, 'sbp_qr', ?, 'created', ?, ?, ?, ?, ?, ?)`,
@@ -175,26 +175,26 @@ export async function createDealSbpQr(input: {
     ]
   );
 
-  return getDealPayment(id);
+  return await getDealPayment(id);
 }
 
 /** Пометить оплату / сделку как оплаченную (ручной статус или webhook банка). */
-export function markDealPaymentPaid(input: {
+export async function markDealPaymentPaid(input: {
   paymentId?: string;
   dealId?: string;
   qrcId?: string;
   source?: string;
 }) {
-  let payment = input.paymentId ? getDealPayment(input.paymentId) : null;
+  let payment = input.paymentId ? await getDealPayment(input.paymentId) : null;
   if (!payment && input.qrcId) {
     payment =
-      get(`SELECT * FROM deal_payments WHERE qrc_id = ? ORDER BY datetime(created_at) DESC LIMIT 1`, [
+      await get(`SELECT * FROM deal_payments WHERE qrc_id = ? ORDER BY datetime(created_at) DESC LIMIT 1`, [
         String(input.qrcId),
       ]) || null;
   }
   if (!payment && input.dealId) {
     payment =
-      get(
+      await get(
         `SELECT * FROM deal_payments WHERE deal_id = ? AND status NOT IN ('paid','confirmed','success')
          ORDER BY datetime(created_at) DESC LIMIT 1`,
         [String(input.dealId)]
@@ -205,18 +205,18 @@ export function markDealPaymentPaid(input: {
 
   if (payment) {
     const paymentId = String((payment as { id: string }).id);
-    run(`UPDATE deal_payments SET status = 'paid' WHERE id = ?`, [paymentId]);
+    await run(`UPDATE deal_payments SET status = 'paid' WHERE id = ?`, [paymentId]);
     try {
-      const link = get<{ id: string }>(
+      const link = await get<{ id: string }>(
         `SELECT id FROM payment_links WHERE payment_id = ? AND status = 'pending' LIMIT 1`,
         [paymentId]
       );
       if (link?.id) {
-        run(
+        await run(
           `UPDATE payment_links SET status = 'paid', paid_at = datetime('now') WHERE id = ?`,
           [link.id]
         );
-        run(
+        await run(
           `UPDATE stock_reserves SET status = 'sold', released_at = datetime('now')
            WHERE payment_link_id = ? AND status = 'active'`,
           [link.id]
@@ -227,12 +227,12 @@ export function markDealPaymentPaid(input: {
     }
   } else if (dealId) {
     try {
-      run(
+      await run(
         `UPDATE payment_links SET status = 'paid', paid_at = datetime('now')
          WHERE deal_id = ? AND status = 'pending'`,
         [dealId]
       );
-      run(
+      await run(
         `UPDATE stock_reserves SET status = 'sold', released_at = datetime('now')
          WHERE deal_id = ? AND status = 'active'`,
         [dealId]
@@ -244,19 +244,19 @@ export function markDealPaymentPaid(input: {
 
   // Не слепо paid=1: учитываем корзины товар/услуги и частичные оплаты
   const synced = dealId
-    ? syncDealPaidStatus(dealId)
+    ? await syncDealPaidStatus(dealId)
     : { split: null, paid: false, payment_status: '' };
 
   let warehouseTask: { created: boolean; task: Record<string, unknown> | null; reason?: string } | null =
     null;
   if (dealId && synced.paid) {
     try {
-      warehouseTask = ensureWarehouseTaskAfterPaid({ dealId });
+      warehouseTask = await ensureWarehouseTaskAfterPaid({ dealId });
     } catch {
       warehouseTask = null;
     }
     try {
-      ensureOrderDocChain(dealId);
+      await ensureOrderDocChain(dealId);
     } catch {
       /* дерево */
     }
@@ -265,7 +265,7 @@ export function markDealPaymentPaid(input: {
   return {
     ok: true,
     deal_id: dealId,
-    payment: payment ? getDealPayment(String((payment as { id: string }).id)) : null,
+    payment: payment ? await getDealPayment(String((payment as { id: string }).id)) : null,
     source: input.source || 'manual',
     warehouse_task: warehouseTask,
     payment_split: synced.split,
@@ -279,7 +279,7 @@ export function markDealPaymentPaid(input: {
  * covers: goods | services | all — за товар / услуги / всё оставшееся.
  * Можно несколько раз (услуги, потом второй баллон и т.п.).
  */
-export function acceptDealCashPayment(input: {
+export async function acceptDealCashPayment(input: {
   dealId: string;
   amount?: number;
   covers?: PaymentCovers | string;
@@ -290,7 +290,7 @@ export function acceptDealCashPayment(input: {
 }) {
   const dealId = String(input.dealId || '').trim();
   if (!dealId) throw new Error('deal_id обязателен');
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) throw new Error('Сделка не найдена');
   // ЗН не блокирует приём наличных (физ / юр / самовывоз / СТО).
 
@@ -302,7 +302,7 @@ export function acceptDealCashPayment(input: {
         ? 'services'
         : 'all';
 
-  const split = getDealPaymentSplit(dealId);
+  const split = await getDealPaymentSplit(dealId);
   if (split.fully_paid) {
     throw new Error('Заказ уже полностью оплачен');
   }
@@ -353,25 +353,25 @@ export function acceptDealCashPayment(input: {
     sto: Number(deal.is_sto) === 1 || Boolean(deal.amo_sto),
   };
 
-  run(
+  await run(
     `INSERT INTO deal_payments (
        id, deal_id, kind, amount, status, qrc_id, payload, image_png_base64, account, purpose, meta_json
      ) VALUES (?, ?, 'cash', ?, 'paid', '', '', '', '', ?, ?)`,
     [id, dealId, amount, purpose, JSON.stringify(meta)]
   );
 
-  const synced = syncDealPaidStatus(dealId);
+  const synced = await syncDealPaidStatus(dealId);
   let warehouseTask: { created: boolean; task: Record<string, unknown> | null; reason?: string } | null =
     null;
   let orderChain: { created: string[] } | null = null;
   if (synced.paid) {
     try {
-      run(
+      await run(
         `UPDATE payment_links SET status = 'paid', paid_at = datetime('now')
          WHERE deal_id = ? AND status = 'pending'`,
         [dealId]
       );
-      run(
+      await run(
         `UPDATE stock_reserves SET status = 'sold', released_at = datetime('now')
          WHERE deal_id = ? AND status = 'active'`,
         [dealId]
@@ -380,12 +380,12 @@ export function acceptDealCashPayment(input: {
       /* ignore */
     }
     try {
-      warehouseTask = ensureWarehouseTaskAfterPaid({ dealId });
+      warehouseTask = await ensureWarehouseTaskAfterPaid({ dealId });
     } catch {
       warehouseTask = null;
     }
     try {
-      orderChain = ensureOrderDocChain(dealId);
+      orderChain = await ensureOrderDocChain(dealId);
     } catch {
       orderChain = null;
     }
@@ -398,7 +398,7 @@ export function acceptDealCashPayment(input: {
       const cpId = String(
         deal.counterparty_id || deal.buyer_counterparty_id || deal.company_counterparty_id || ''
       ).trim();
-      cashDoc = createCashDoc({
+      cashDoc = await createCashDoc({
         doc_type: 'in',
         amount,
         counterparty_id: cpId || undefined,
@@ -406,7 +406,7 @@ export function acceptDealCashPayment(input: {
         comment: `Наличные · ${coversLabel} · сделка ${dealId}${actor ? ' · принял ' + actor : ''}`,
       }) as Record<string, unknown>;
       if (cashDoc?.id) {
-        run(`UPDATE deal_payments SET meta_json = ? WHERE id = ?`, [
+        await run(`UPDATE deal_payments SET meta_json = ? WHERE id = ?`, [
           JSON.stringify({
             ...meta,
             cash_doc_id: String(cashDoc.id),
@@ -419,7 +419,7 @@ export function acceptDealCashPayment(input: {
     }
   }
 
-  const payment = getDealPayment(id) as Record<string, unknown> | null;
+  const payment = await getDealPayment(id) as Record<string, unknown> | null;
   if (payment) {
     payment.accepted_by = actor || null;
     payment.covers = covers;
@@ -459,10 +459,10 @@ type PendingPaymentRow = {
 };
 
 /** Неоплаченные СБП QR с qrc_id (для poll Точки). */
-export function listPendingSbpPayments(opts?: { dealId?: string; limit?: number }): PendingPaymentRow[] {
+export async function listPendingSbpPayments(opts?: { dealId?: string; limit?: number }): Promise<PendingPaymentRow[]> {
   const limit = Math.min(Math.max(Number(opts?.limit) || 40, 1), 100);
   if (opts?.dealId) {
-    return all(
+    return await all(
       `SELECT id, deal_id, qrc_id, status, amount FROM deal_payments
        WHERE deal_id = ? AND kind = 'sbp_qr' AND qrc_id != ''
          AND lower(status) NOT IN ('paid','confirmed','success','accepted','cancelled','canceled','superseded')
@@ -470,7 +470,7 @@ export function listPendingSbpPayments(opts?: { dealId?: string; limit?: number 
       [String(opts.dealId), limit]
     ) as PendingPaymentRow[];
   }
-  return all(
+  return await all(
     `SELECT id, deal_id, qrc_id, status, amount FROM deal_payments
      WHERE kind = 'sbp_qr' AND qrc_id != ''
        AND lower(status) NOT IN ('paid','confirmed','success','accepted','cancelled','canceled','superseded')
@@ -509,18 +509,18 @@ export async function pollPendingSbpPayments(opts?: {
   error?: string;
   warehouse_task?: unknown;
 }> {
-  const key = bankSbpKey();
+  const key = await bankSbpKey();
   if (!key) {
     return { ok: false, checked: 0, marked: 0, items: [], error: 'Не задан BANK_SBP_KEY' };
   }
 
-  const pending = listPendingSbpPayments(opts);
+  const pending = await listPendingSbpPayments(opts);
   if (!pending.length) {
     return { ok: true, checked: 0, marked: 0, items: [] };
   }
 
   const qrcIds = pending.map((p) => p.qrc_id).filter(Boolean);
-  const res = await fetch(bankSbpStatusUrl(), {
+  const res = await fetch(await bankSbpStatusUrl(), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -587,7 +587,7 @@ export async function pollPendingSbpPayments(opts?: {
       ).trim();
       if (trxId) {
         try {
-          const cur = get<{ meta_json: string }>(
+          const cur = await get<{ meta_json: string }>(
             `SELECT IFNULL(meta_json,'') AS meta_json FROM deal_payments WHERE id = ?`,
             [p.id]
           );
@@ -600,7 +600,7 @@ export async function pollPendingSbpPayments(opts?: {
             meta = {};
           }
           meta.trx_id = trxId;
-          run(`UPDATE deal_payments SET meta_json = ? WHERE id = ?`, [
+          await run(`UPDATE deal_payments SET meta_json = ? WHERE id = ?`, [
             JSON.stringify(meta),
             p.id,
           ]);
@@ -608,13 +608,13 @@ export async function pollPendingSbpPayments(opts?: {
           /* ignore */
         }
       }
-      const mr = markDealPaymentPaid({ paymentId: p.id, qrcId: p.qrc_id, source: 'tochka_poll' });
+      const mr = await markDealPaymentPaid({ paymentId: p.id, qrcId: p.qrc_id, source: 'tochka_poll' });
       lastWarehouseTask = mr.warehouse_task || lastWarehouseTask;
       didMark = true;
       marked += 1;
     } else if (bankStatus && bankStatus !== 'Unknown' && bankStatus !== String(p.status)) {
       // зеркалим промежуточный статус Точки (NotStarted / InProgress / Rejected)
-      run(`UPDATE deal_payments SET status = ? WHERE id = ? AND lower(status) NOT IN ('paid','confirmed','success','accepted')`, [
+      await run(`UPDATE deal_payments SET status = ? WHERE id = ? AND lower(status) NOT IN ('paid','confirmed','success','accepted')`, [
         bankStatus,
         p.id,
       ]);

@@ -270,8 +270,8 @@ function defaults(): AmoSaleRulesConfig {
   };
 }
 
-function readJson<T>(key: string): T | null {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
+async function readJson<T>(key: string): Promise<T | null> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
   if (!row?.value) return null;
   try {
     return JSON.parse(row.value) as T;
@@ -280,8 +280,8 @@ function readJson<T>(key: string): T | null {
   }
 }
 
-function writeJson(key: string, value: unknown): void {
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, JSON.stringify(value)]);
+async function writeJson(key: string, value: unknown): Promise<void> {
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, JSON.stringify(value)]);
 }
 
 function normVal(v: unknown): string {
@@ -301,7 +301,7 @@ function obsoleteNormSet(fieldId: string): Set<string> {
 }
 
 /** Убрать устаревшие enum из сохранённого списка правил. */
-function stripObsoleteFieldValues(cfg: AmoSaleRulesConfig): AmoSaleRulesConfig {
+async function stripObsoleteFieldValues(cfg: AmoSaleRulesConfig): Promise<AmoSaleRulesConfig> {
   let changed = false;
   const fields = cfg.fields.map((sf) => {
     const gone = obsoleteNormSet(sf.id);
@@ -317,12 +317,12 @@ function stripObsoleteFieldValues(cfg: AmoSaleRulesConfig): AmoSaleRulesConfig {
     fields,
     updated_at: new Date().toISOString(),
   };
-  writeJson(META_CFG, next);
+  await writeJson(META_CFG, next);
   return next;
 }
 
 /** Дополнить сохранённый список enum значениями из defaults (новые каналы вроде Озон/Авито). */
-function mergeDefaultFieldValues(cfg: AmoSaleRulesConfig): AmoSaleRulesConfig {
+async function mergeDefaultFieldValues(cfg: AmoSaleRulesConfig): Promise<AmoSaleRulesConfig> {
   const base = defaults();
   let changed = false;
   const fields = cfg.fields.map((sf) => {
@@ -344,13 +344,13 @@ function mergeDefaultFieldValues(cfg: AmoSaleRulesConfig): AmoSaleRulesConfig {
     fields,
     updated_at: new Date().toISOString(),
   };
-  writeJson(META_CFG, next);
+  await writeJson(META_CFG, next);
   return next;
 }
 
 /** Скрыть алерты, у которых все «лишние» значения уже внесены в список. */
-function pruneResolvedAmoAlerts(cfg: AmoSaleRulesConfig): void {
-  const list = readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
+async function pruneResolvedAmoAlerts(cfg: AmoSaleRulesConfig): Promise<void> {
+  const list = await readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
   if (!list.length) return;
   let changed = false;
   const next = list.map((a) => {
@@ -379,18 +379,18 @@ function pruneResolvedAmoAlerts(cfg: AmoSaleRulesConfig): void {
     }
     return a;
   });
-  if (changed) writeJson(META_ALERTS, next);
+  if (changed) await writeJson(META_ALERTS, next);
 }
 
-export function getAmoSaleRulesConfig(): AmoSaleRulesConfig {
-  const stored = readJson<Partial<AmoSaleRulesConfig>>(META_CFG);
+export async function getAmoSaleRulesConfig(): Promise<AmoSaleRulesConfig> {
+  const stored = await readJson<Partial<AmoSaleRulesConfig>>(META_CFG);
   const base = defaults();
   if (!stored || typeof stored !== 'object') {
-    pruneResolvedAmoAlerts(base);
+    await pruneResolvedAmoAlerts(base);
     return base;
   }
-  const merged = stripObsoleteFieldValues(
-    mergeDefaultFieldValues({
+  const merged = await stripObsoleteFieldValues(
+    await mergeDefaultFieldValues({
       updated_at: String(stored.updated_at || ''),
       lock_fields: stored.lock_fields !== false,
       fields: Array.isArray(stored.fields) && stored.fields.length ? stored.fields : base.fields,
@@ -404,14 +404,14 @@ export function getAmoSaleRulesConfig(): AmoSaleRulesConfig {
           : base.scenarios,
     })
   );
-  pruneResolvedAmoAlerts(merged);
+  await pruneResolvedAmoAlerts(merged);
   return merged;
 }
 
-export function saveAmoSaleRulesConfig(
+export async function saveAmoSaleRulesConfig(
   patch: Partial<AmoSaleRulesConfig>
-): AmoSaleRulesConfig {
-  const cur = getAmoSaleRulesConfig();
+): Promise<AmoSaleRulesConfig> {
+  const cur = await getAmoSaleRulesConfig();
   const rawScenarios = Array.isArray(patch.scenarios) ? patch.scenarios : cur.scenarios;
   const scenarios = rawScenarios.map((s) => {
     const desc = describeSaleDocPack({ who: s.who, channel: s.channel });
@@ -424,18 +424,18 @@ export function saveAmoSaleRulesConfig(
     buyer_roles: Array.isArray(patch.buyer_roles) ? patch.buyer_roles : cur.buyer_roles,
     scenarios,
   };
-  writeJson(META_CFG, next);
+  await writeJson(META_CFG, next);
   return next;
 }
 
-export function listAmoIntegrationAlerts(opts?: { includeSeen?: boolean }): AmoIntegrationAlert[] {
-  const allAlerts = readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
+export async function listAmoIntegrationAlerts(opts?: { includeSeen?: boolean }): Promise<AmoIntegrationAlert[]> {
+  const allAlerts = await readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
   if (opts?.includeSeen) return allAlerts;
   return allAlerts.filter((a) => !a.seen);
 }
 
-function pushAlert(alert: Omit<AmoIntegrationAlert, 'id' | 'at' | 'seen'>): AmoIntegrationAlert {
-  const list = readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
+async function pushAlert(alert: Omit<AmoIntegrationAlert, 'id' | 'at' | 'seen'>): Promise<AmoIntegrationAlert> {
+  const list = await readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
   // дедуп: тот же field_id (непрочит.) или title+detail за сутки
   const dayAgo = Date.now() - 24 * 3600 * 1000;
   const fid = String(alert.field_id || '').trim();
@@ -456,9 +456,9 @@ function pushAlert(alert: Omit<AmoIntegrationAlert, 'id' | 'at' | 'seen'>): AmoI
     ...alert,
   };
   list.unshift(row);
-  writeJson(META_ALERTS, list.slice(0, 200));
+  await writeJson(META_ALERTS, list.slice(0, 200));
   try {
-    run(
+    await run(
       `INSERT INTO crm_events (id, kind, title, deal_id, counterparty_id, event_at, comment)
        VALUES (?, 'amo_integration', ?, NULL, NULL, ?, ?)`,
       [row.id, row.title, row.at, row.detail]
@@ -473,10 +473,10 @@ function pushAlert(alert: Omit<AmoIntegrationAlert, 'id' | 'at' | 'seen'>): AmoI
  * Ответственные Amo без активного сотрудника в Учёте → уведомления.
  * Уже привязанные (или архив «кикнут») — помечаем прочитанными.
  */
-export function syncUnmappedAmoUserAlerts(
+export async function syncUnmappedAmoUserAlerts(
   unmapped: Array<{ amo_id: string; deals?: number; name?: string }>
-): AmoIntegrationAlert[] {
-  const list = readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
+): Promise<AmoIntegrationAlert[]> {
+  const list = await readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
   const open = new Set(
     (unmapped || [])
       .map((u) => String(u.amo_id || '').trim())
@@ -491,7 +491,7 @@ export function syncUnmappedAmoUserAlerts(
     changed = true;
     return { ...a, seen: true };
   });
-  if (changed) writeJson(META_ALERTS, next);
+  if (changed) await writeJson(META_ALERTS, next);
 
   const created: AmoIntegrationAlert[] = [];
   for (const u of unmapped || []) {
@@ -501,7 +501,7 @@ export function syncUnmappedAmoUserAlerts(
     const name = String(u.name || '').trim();
     const who = name ? `${name} (id ${id})` : `Amo id ${id}`;
     created.push(
-      pushAlert({
+      await pushAlert({
         severity: 'warn',
         title: 'Пользователь Amo без сотрудника в Учёте',
         detail: `${who}${deals ? ` · ${deals} сделок` : ''}. Присвойте в Настройки → AmoCRM → Пользователи.`,
@@ -514,19 +514,19 @@ export function syncUnmappedAmoUserAlerts(
 }
 
 /** Ответственные по сделкам без активного сотрудника с этим amo_id. */
-export function listUnmappedAmoUsers(): Array<{
+export async function listUnmappedAmoUsers(): Promise<Array<{
   amo_id: string;
   name: string;
   deals: number;
-}> {
+}>> {
   const mapped = new Set(
-    all<{ amo_id: string }>(
+    (await all<{ amo_id: string }>(
       `SELECT amo_id FROM staff
        WHERE is_active = 1 AND IFNULL(amo_id,'') != ''`
-    ).map((r) => String(r.amo_id))
+    )).map((r) => String(r.amo_id))
   );
-  const dir = getAmoUserDirectory();
-  const fromDeals = all<{ amo_id: string; c: number }>(
+  const dir = await getAmoUserDirectory();
+  const fromDeals = await all<{ amo_id: string; c: number }>(
     `SELECT responsible_user_id AS amo_id, COUNT(*) AS c
      FROM crm_deals
      WHERE IFNULL(responsible_user_id,'') != ''
@@ -534,54 +534,54 @@ export function listUnmappedAmoUsers(): Array<{
      ORDER BY c DESC
      LIMIT 200`
   );
-  return fromDeals
+  return await Promise.all(fromDeals
     .filter((r) => !mapped.has(String(r.amo_id)))
-    .map((r) => {
+    .map(async (r) => {
       const id = String(r.amo_id);
       const fromDir = dir[id]?.name || '';
       const fromStaff =
         fromDir ||
         String(
-          get<{ name: string }>(
+          (await get<{ name: string }>(
             `SELECT name FROM staff WHERE amo_id = ? AND IFNULL(name,'') != '' LIMIT 1`,
             [id]
-          )?.name || ''
+          ))?.name || ''
         );
       return {
         amo_id: id,
         name: fromStaff,
         deals: Number(r.c) || 0,
       };
-    });
+    }));
 }
 
 /** Алерты по непривязанным. Вызывать после синка сделок. */
-export function syncAmoUnmappedStaffAlerts(): number {
-  const unmapped = listUnmappedAmoUsers();
+export async function syncAmoUnmappedStaffAlerts(): Promise<number> {
+  const unmapped = await listUnmappedAmoUsers();
   try {
-    syncUnmappedAmoUserAlerts(unmapped);
+    await syncUnmappedAmoUserAlerts(unmapped);
   } catch {
     /* не блокируем */
   }
   return unmapped.length;
 }
 
-export function markAmoIntegrationAlertSeen(id: string): void {
-  const list = readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
+export async function markAmoIntegrationAlertSeen(id: string): Promise<void> {
+  const list = await readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
   const next = list.map((a) => (a.id === id ? { ...a, seen: true } : a));
-  writeJson(META_ALERTS, next);
+  await writeJson(META_ALERTS, next);
 }
 
-export function markAllAmoIntegrationAlertsSeen(): void {
-  const list = readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
-  writeJson(
+export async function markAllAmoIntegrationAlertsSeen(): Promise<void> {
+  const list = await readJson<AmoIntegrationAlert[]>(META_ALERTS) || [];
+  await writeJson(
     META_ALERTS,
     list.map((a) => ({ ...a, seen: true }))
   );
 }
 
 /** Сверка фактических значений в сделках с зафиксированными селектами. */
-export function checkAmoSaleConfigDrift(): {
+export async function checkAmoSaleConfigDrift(): Promise<{
   ok: boolean;
   checked_at: string;
   issues: Array<{
@@ -591,8 +591,8 @@ export function checkAmoSaleConfigDrift(): {
     unexpected: string[];
   }>;
   alerts: AmoIntegrationAlert[];
-} {
-  const cfg = getAmoSaleRulesConfig();
+}> {
+  const cfg = await getAmoSaleRulesConfig();
   const issues: Array<{
     field_id: string;
     field_name: string;
@@ -612,7 +612,7 @@ export function checkAmoSaleConfigDrift(): {
     if (!col) continue;
     let rows: Array<{ v: string }> = [];
     try {
-      rows = all<{ v: string }>(
+      rows = await all<{ v: string }>(
         `SELECT DISTINCT TRIM(IFNULL(${col},'')) AS v FROM crm_deals
          WHERE TRIM(IFNULL(${col},'')) != ''
          LIMIT 200`
@@ -654,7 +654,7 @@ export function checkAmoSaleConfigDrift(): {
         unexpected: uniq,
       });
       if (cfg.lock_fields) {
-        const alert = pushAlert({
+        const alert = await pushAlert({
           severity: 'warn',
           title: `Изменилась интеграция AmoCRM: поле «${f.name}»`,
           detail:
@@ -677,12 +677,12 @@ export function checkAmoSaleConfigDrift(): {
   };
 }
 
-export function amoSaleRulesPublic(extra?: {
+export async function amoSaleRulesPublic(extra?: {
   unmapped_users_count?: number;
   unmapped_amo_users?: Array<{ amo_id: string; deals?: number; name?: string }>;
 }) {
-  const cfg = getAmoSaleRulesConfig();
-  const alerts = listAmoIntegrationAlerts({ includeSeen: false }).filter(
+  const cfg = await getAmoSaleRulesConfig();
+  const alerts = (await listAmoIntegrationAlerts({ includeSeen: false })).filter(
     (a) => !String(a.field_id || '').startsWith('amo_user:')
   );
   const unmappedN = Math.max(0, Number(extra?.unmapped_users_count) || 0);
@@ -712,17 +712,17 @@ export function amoSaleRulesPublic(extra?: {
 }
 
 /** Варианты селекта Amo по колонке crm_deals (канал / СТО…). */
-export function amoSaleFieldOptions(dealColumn: string): string[] {
+export async function amoSaleFieldOptions(dealColumn: string): Promise<string[]> {
   const col = String(dealColumn || '').trim();
   if (!col) return [];
-  const cfg = getAmoSaleRulesConfig();
+  const cfg = await getAmoSaleRulesConfig();
   const f = cfg.fields.find((x) => String(x.deal_column || '') === col);
   return Array.isArray(f?.values) ? f!.values.map((v) => String(v)) : [];
 }
 
 /** Field id map for exporters / sync (lead/company CF). */
-export function amoFieldIdMap(): Record<string, string> {
-  const cfg = getAmoSaleRulesConfig();
+export async function amoFieldIdMap(): Promise<Record<string, string>> {
+  const cfg = await getAmoSaleRulesConfig();
   const byName: Record<string, string> = {};
   for (const f of cfg.fields) {
     if (!f.id || f.id === '—') continue;

@@ -355,7 +355,7 @@ if (!function_exists('parseProgrammaticApplicability')) {
 
 if (!function_exists('parseSheetApplicabilityColumn')) {
     /**
-     * Колонка Y «ПРИМЕНИМОСТЬ (все машины)» (и G «программная»):
+     * Колонка Y «ПРИМЕНИМОСТЬ (все машины)»:
      *   марка | модель | поколение | годы ‖ …
      * Иначе — свободный текст через parseApplicabilityAllCars.
      *

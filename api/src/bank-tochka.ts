@@ -3,16 +3,16 @@
  */
 import { getTochkaBridgeSettings } from './integration-settings.js';
 
-function bankOverviewUrl(): string {
-  return getTochkaBridgeSettings().overview_url;
+async function bankOverviewUrl(): Promise<string> {
+  return (await getTochkaBridgeSettings()).overview_url;
 }
 
-function bankApiKey(): string {
-  return getTochkaBridgeSettings().bank_sbp_key;
+async function bankApiKey(): Promise<string> {
+  return (await getTochkaBridgeSettings()).bank_sbp_key;
 }
 
-export function bankSettingsApiUrl(): string {
-  const overview = bankOverviewUrl();
+export async function bankSettingsApiUrl(): Promise<string> {
+  const overview = await bankOverviewUrl();
   try {
     const u = new URL(overview);
     u.pathname = u.pathname.replace(/tochka_overview\.php$/i, 'tochka_settings.php');
@@ -80,11 +80,11 @@ export type TochkaOverview = {
 };
 
 export async function fetchTochkaOverview(): Promise<TochkaOverview> {
-  const key = bankApiKey();
+  const key = await bankApiKey();
   if (!key) {
     throw new Error('Не задан ключ Точка (Настройки → Интеграции → Точка Банк)');
   }
-  const res = await fetch(bankOverviewUrl(), {
+  const res = await fetch(await bankOverviewUrl(), {
     headers: { Accept: 'application/json', 'X-Wms-Key': key },
     signal: AbortSignal.timeout(90_000),
   });
@@ -121,14 +121,14 @@ async function callBankSettings(
   method: 'GET' | 'POST',
   body?: Record<string, unknown>
 ): Promise<TochkaBankAppSettings> {
-  const key = bankApiKey();
+  const key = await bankApiKey();
   if (!key) {
     return {
       ok: false,
       error: 'Не задан ключ X-Wms-Key (мост Учёт №1 → bank)',
     };
   }
-  const res = await fetch(bankSettingsApiUrl(), {
+  const res = await fetch(await bankSettingsApiUrl(), {
     method,
     headers: {
       Accept: 'application/json',
@@ -159,18 +159,18 @@ async function callBankSettings(
 }
 
 export async function fetchTochkaBankAppSettings(): Promise<TochkaBankAppSettings> {
-  return callBankSettings('GET');
+  return await callBankSettings('GET');
 }
 
 export async function saveTochkaBankAppSettings(
   body: Record<string, unknown>
 ): Promise<TochkaBankAppSettings> {
-  return callBankSettings('POST', body);
+  return await callBankSettings('POST', body);
 }
 
-export function bankApiUrlFromOverview(phpFile: string): string {
+export async function bankApiUrlFromOverview(phpFile: string): Promise<string> {
   const file = String(phpFile || '').replace(/^\//, '');
-  const overview = bankOverviewUrl();
+  const overview = await bankOverviewUrl();
   try {
     const u = new URL(overview);
     u.pathname = u.pathname.replace(/[^/]+$/, file);
@@ -187,11 +187,11 @@ async function postBankJson(
   phpFile: string,
   body: Record<string, unknown>
 ): Promise<{ ok: boolean; error?: string; [k: string]: unknown }> {
-  const key = bankApiKey();
+  const key = await bankApiKey();
   if (!key) {
     return { ok: false, error: 'Не задан ключ Точка (Настройки → Интеграции → Точка Банк)' };
   }
-  const res = await fetch(bankApiUrlFromOverview(phpFile), {
+  const res = await fetch(await bankApiUrlFromOverview(phpFile), {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -239,7 +239,7 @@ export async function createTochkaPaymentForSign(input: {
   request_id?: string;
   raw?: unknown;
 }> {
-  return postBankJson('tochka_payment_for_sign.php', {
+  return await postBankJson('tochka_payment_for_sign.php', {
     account_code: input.account_code,
     bank_code: input.bank_code || '044525104',
     counterparty_bank_bic: input.counterparty_bank_bic,
@@ -273,7 +273,7 @@ export async function createTochkaRefund(input: {
   raw?: unknown;
   [k: string]: unknown;
 }> {
-  return postBankJson('tochka_refund.php', {
+  return await postBankJson('tochka_refund.php', {
     channel: input.channel,
     operation_id: input.operation_id || '',
     qrc_id: input.qrc_id || '',

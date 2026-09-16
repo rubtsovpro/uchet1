@@ -88,16 +88,16 @@ export function parseSerialsJson(json: string | null | undefined): string[] {
   }
 }
 
-export function productRequiresSerials(productId: string): boolean {
-  const row = get<{ serial_tracked: number }>(
+export async function productRequiresSerials(productId: string): Promise<boolean> {
+  const row = await get<{ serial_tracked: number }>(
     'SELECT IFNULL(serial_tracked, 0) AS serial_tracked FROM products WHERE id = ?',
     [productId]
   );
   return Number(row?.serial_tracked) === 1;
 }
 
-function assertSerialFree(productId: string, serial: string, excludeId?: string): void {
-  const clash = get<{ id: string; status: string }>(
+async function assertSerialFree(productId: string, serial: string, excludeId?: string): Promise<void> {
+  const clash = await get<{ id: string; status: string }>(
     `SELECT id, status FROM product_units
      WHERE product_id = ? AND lower(serial) = lower(?) ${excludeId ? 'AND id != ?' : ''}
      LIMIT 1`,
@@ -109,8 +109,8 @@ function assertSerialFree(productId: string, serial: string, excludeId?: string)
 }
 
 /** Глобально уникальный код Data Matrix (префикс поставщика + номер). */
-export function assertSerialGloballyFree(serial: string, excludeId?: string): void {
-  const clash = get<{ id: string; product_id: string; status: string }>(
+export async function assertSerialGloballyFree(serial: string, excludeId?: string): Promise<void> {
+  const clash = await get<{ id: string; product_id: string; status: string }>(
     `SELECT id, product_id, status FROM product_units
      WHERE lower(serial) = lower(?) ${excludeId ? 'AND id != ?' : ''}
      LIMIT 1`,
@@ -122,20 +122,20 @@ export function assertSerialGloballyFree(serial: string, excludeId?: string): vo
 }
 
 /** Создать экземпляры «в пути» (ещё не на остатке основного склада). */
-export function createInTransitUnits(input: {
+export async function createInTransitUnits(input: {
   productId: string;
   warehouseId: string;
   serials: string[];
   comment?: string;
-}): string[] {
+}): Promise<string[]> {
   const serials = normalizeSerials(input.serials);
   if (!serials.length) return [];
   const now = new Date().toISOString();
   const ids: string[] = [];
   for (const serial of serials) {
-    assertSerialGloballyFree(serial);
+    await assertSerialGloballyFree(serial);
     const id = newGuid();
-    run(
+    await run(
       `INSERT INTO product_units
         (id, product_id, serial, warehouse_id, status, in_doc_id, in_line_id, out_doc_id, out_line_id, comment, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'in_transit', '', '', '', '', ?, ?, ?)`,
@@ -147,13 +147,13 @@ export function createInTransitUnits(input: {
 }
 
 /** Оприходовать экземпляр из «в пути» на склад. */
-export function promoteInTransitUnit(input: {
+export async function promoteInTransitUnit(input: {
   serial: string;
   warehouseId: string;
   docId: string;
   lineId: string;
-}): ProductUnit {
-  const unit = get<ProductUnit>(
+}): Promise<ProductUnit> {
+  const unit = await get<ProductUnit>(
     `SELECT * FROM product_units WHERE lower(serial) = lower(?) LIMIT 1`,
     [input.serial]
   );
@@ -162,7 +162,7 @@ export function promoteInTransitUnit(input: {
     throw new Error(`Data Matrix «${input.serial}» в статусе ${unit.status} — нельзя оприходовать`);
   }
   const now = new Date().toISOString();
-  run(
+  await run(
     `UPDATE product_units
      SET status = 'in_stock', warehouse_id = ?, in_doc_id = ?, in_line_id = ?, updated_at = ?
      WHERE id = ?`,
@@ -172,14 +172,14 @@ export function promoteInTransitUnit(input: {
 }
 
 /** Возврат от клиента на основной склад. */
-export function returnUnitFromClient(input: {
+export async function returnUnitFromClient(input: {
   serial: string;
   warehouseId: string;
   docId: string;
   lineId: string;
   comment?: string;
-}): ProductUnit {
-  const unit = get<ProductUnit>(
+}): Promise<ProductUnit> {
+  const unit = await get<ProductUnit>(
     `SELECT * FROM product_units WHERE lower(serial) = lower(?) LIMIT 1`,
     [input.serial]
   );
@@ -189,7 +189,7 @@ export function returnUnitFromClient(input: {
   }
   const now = new Date().toISOString();
   const note = String(input.comment || '').trim();
-  run(
+  await run(
     `UPDATE product_units
      SET status = 'in_stock', warehouse_id = ?, in_doc_id = ?, in_line_id = ?,
          out_doc_id = '', out_line_id = '',
@@ -207,10 +207,10 @@ export function returnUnitFromClient(input: {
   };
 }
 
-export function findUnitBySerial(serial: string): ProductUnit | undefined {
+export async function findUnitBySerial(serial: string): Promise<ProductUnit | undefined> {
   const code = String(serial || '').trim();
   if (!code) return undefined;
-  const row = get<ProductUnit>(
+  const row = await get<ProductUnit>(
     `SELECT u.*, p.sku AS sku, p.name AS product_name, w.name AS warehouse_name
      FROM product_units u
      LEFT JOIN products p ON p.id = u.product_id
@@ -232,10 +232,10 @@ export function filterRealSerials(serials: string[]): string[] {
 }
 
 /** Следующий свободный экземпляр товара на остатке (FIFO по дате прихода). */
-export function findNextInStockUnitForProduct(
+export async function findNextInStockUnitForProduct(
   productId: string,
   opts?: { warehouseId?: string; excludeSerials?: string[] }
-): ProductUnit | undefined {
+): Promise<ProductUnit | undefined> {
   const pid = String(productId || '').trim();
   if (!pid) return undefined;
   const exclude = new Set(
@@ -248,7 +248,7 @@ export function findNextInStockUnitForProduct(
     whSql = ' AND u.warehouse_id = ?';
     params.push(wh);
   }
-  const rows = all<ProductUnit>(
+  const rows = await all<ProductUnit>(
     `SELECT u.*, p.sku AS sku, p.name AS product_name, w.name AS warehouse_name
      FROM product_units u
      LEFT JOIN products p ON p.id = u.product_id
@@ -265,13 +265,13 @@ export function findNextInStockUnitForProduct(
   }
   if (wh) {
     // На указанном складе пусто — любой другой склад
-    return findNextInStockUnitForProduct(pid, { excludeSerials: opts?.excludeSerials });
+    return await findNextInStockUnitForProduct(pid, { excludeSerials: opts?.excludeSerials });
   }
   return undefined;
 }
 
 /** Приход / возврат: создать экземпляры на складе. */
-export function receiveUnits(input: {
+export async function receiveUnits(input: {
   productId: string;
   warehouseId: string;
   serials: string[];
@@ -280,19 +280,19 @@ export function receiveUnits(input: {
   /** Применимость партии; иначе дефолт поставщика / пусто (= каталог). */
   apps?: AppVehicle[] | string | null;
   supplierId?: string;
-}): void {
+}): Promise<void> {
   const serials = normalizeSerials(input.serials);
   if (!serials.length) return;
   const now = new Date().toISOString();
-  const apps = resolveAppsForReceive({
+  const apps = await resolveAppsForReceive({
     productId: input.productId,
     supplierId: input.supplierId,
     lineApps: input.apps,
   });
   const appsJson = appsToJson(apps);
   for (const serial of serials) {
-    assertSerialFree(input.productId, serial);
-    run(
+    await assertSerialFree(input.productId, serial);
+    await run(
       `INSERT INTO product_units
         (id, product_id, serial, warehouse_id, status, in_doc_id, in_line_id, out_doc_id, out_line_id, comment, apps_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'in_stock', ?, ?, '', '', '', ?, ?, ?)`,
@@ -312,18 +312,18 @@ export function receiveUnits(input: {
 }
 
 /** Расход: списать экземпляры со склада. */
-export function shipUnits(input: {
+export async function shipUnits(input: {
   productId: string;
   warehouseId: string;
   serials: string[];
   docId: string;
   lineId: string;
-}): void {
+}): Promise<void> {
   const serials = normalizeSerials(input.serials);
   if (!serials.length) return;
   const now = new Date().toISOString();
   for (const serial of serials) {
-    const unit = get<ProductUnit>(
+    const unit = await get<ProductUnit>(
       `SELECT * FROM product_units
        WHERE product_id = ? AND lower(serial) = lower(?) AND status = 'in_stock'
        LIMIT 1`,
@@ -337,7 +337,7 @@ export function shipUnits(input: {
         `Экземпляр «${serial}» на другом складе — сначала переместите`
       );
     }
-    run(
+    await run(
       `UPDATE product_units
        SET status = 'sold', out_doc_id = ?, out_line_id = ?, warehouse_id = '', updated_at = ?
        WHERE id = ?`,
@@ -347,19 +347,19 @@ export function shipUnits(input: {
 }
 
 /** Перемещение: сменить склад у экземпляров. */
-export function transferUnits(input: {
+export async function transferUnits(input: {
   productId: string;
   warehouseFrom: string;
   warehouseTo: string;
   serials: string[];
   docId: string;
   lineId: string;
-}): void {
+}): Promise<void> {
   const serials = normalizeSerials(input.serials);
   if (!serials.length) return;
   const now = new Date().toISOString();
   for (const serial of serials) {
-    const unit = get<ProductUnit>(
+    const unit = await get<ProductUnit>(
       `SELECT * FROM product_units
        WHERE product_id = ? AND lower(serial) = lower(?) AND status = 'in_stock'
          AND warehouse_id = ?
@@ -369,7 +369,7 @@ export function transferUnits(input: {
     if (!unit) {
       throw new Error(`Экземпляр «${serial}» не найден на складе-источнике`);
     }
-    run(
+    await run(
       `UPDATE product_units
        SET warehouse_id = ?, updated_at = ?, comment = CASE
          WHEN comment = '' THEN ?
@@ -387,7 +387,7 @@ export function transferUnits(input: {
   }
 }
 
-export function listProductUnits(opts: {
+export async function listProductUnits(opts: {
   productId?: string;
   warehouseId?: string;
   status?: string;
@@ -396,7 +396,7 @@ export function listProductUnits(opts: {
   q?: string;
   limit?: number;
   offset?: number;
-}): { items: ProductUnit[]; total: number } {
+}): Promise<{ items: ProductUnit[]; total: number }> {
   const where: string[] = ['1=1'];
   const params: Array<string | number> = [];
   if (opts.productId) {
@@ -436,10 +436,10 @@ export function listProductUnits(opts: {
      LEFT JOIN stock_doc_lines inl ON inl.id = u.in_line_id
      LEFT JOIN stock_docs dout ON dout.id = u.out_doc_id`;
   const total =
-    get<{ c: number }>(`SELECT COUNT(*) AS c ${fromSql} WHERE ${whereSql}`, params)?.c ?? 0;
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c ${fromSql} WHERE ${whereSql}`, params))?.c ?? 0;
   const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 500);
   const offset = Math.max(Number(opts.offset) || 0, 0);
-  const items = all<ProductUnit>(
+  const items = (await all<ProductUnit>(
     `SELECT u.*, p.sku, p.name AS product_name, IFNULL(w.name,'') AS warehouse_name,
             IFNULL(d.counterparty_id,'') AS supplier_id,
             IFNULL(cp.name,'') AS supplier_name,
@@ -460,15 +460,15 @@ export function listProductUnits(opts: {
      ORDER BY datetime(u.created_at) DESC, u.serial
      LIMIT ? OFFSET ?`,
     [...params, limit, offset]
-  ).map((u) => enrichUnitApps(u)!);
+  )).map((u) => enrichUnitApps(u)!);
   return { items, total };
 }
 
 /** Поставщики и приходы, с которых ещё есть экземпляры на складе. */
-export function listUnitSources(opts: {
+export async function listUnitSources(opts: {
   productId: string;
   warehouseId?: string;
-}): {
+}): Promise<{
   suppliers: Array<{ id: string; name: string; units: number }>;
   deliveries: Array<{
     id: string;
@@ -478,7 +478,7 @@ export function listUnitSources(opts: {
     supplier_name: string;
     units: number;
   }>;
-} {
+}> {
   const where: string[] = [`u.status = 'in_stock'`, 'u.product_id = ?'];
   const params: Array<string | number> = [opts.productId];
   if (opts.warehouseId) {
@@ -486,7 +486,7 @@ export function listUnitSources(opts: {
     params.push(opts.warehouseId);
   }
   const whereSql = where.join(' AND ');
-  const suppliers = all<{ id: string; name: string; units: number }>(
+  const suppliers = await all<{ id: string; name: string; units: number }>(
     `SELECT IFNULL(d.counterparty_id,'') AS id,
             CASE
               WHEN IFNULL(d.counterparty_id,'') = '' THEN 'Без поставщика'
@@ -501,7 +501,7 @@ export function listUnitSources(opts: {
      ORDER BY name`,
     params
   );
-  const deliveries = all<{
+  const deliveries = await Promise.all((await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -525,8 +525,8 @@ export function listUnitSources(opts: {
      GROUP BY u.in_doc_id, d.number, d.doc_date, d.counterparty_id, supplier_name
      ORDER BY d.doc_date DESC, d.number DESC`,
     params
-  ).map((d) => {
-    const appsRows = all<{ apps_json: string }>(
+  )).map(async (d) => {
+    const appsRows = await all<{ apps_json: string }>(
       `SELECT DISTINCT IFNULL(apps_json,'[]') AS apps_json FROM product_units
        WHERE product_id = ? AND status = 'in_stock' AND IFNULL(in_doc_id,'') = ?
          ${opts.warehouseId ? 'AND warehouse_id = ?' : ''}`,
@@ -542,7 +542,7 @@ export function listUnitSources(opts: {
       apps_short: appsShortLabel(uniq),
       apps_label: uniq.length ? appsHumanLabel(uniq) : '',
     };
-  });
+  }));
   return { suppliers, deliveries };
 }
 
@@ -550,10 +550,10 @@ export function listUnitSources(opts: {
  * Источники для строки сделки: сначала экземпляры (серийники),
  * иначе — приходные накладные по артикулу (партия = документ прихода).
  */
-export function listDealLineSources(opts: {
+export async function listDealLineSources(opts: {
   productId: string;
   warehouseId?: string;
-}): {
+}): Promise<{
   mode: 'units' | 'purchases';
   suppliers: Array<{ id: string; name: string; units: number }>;
   deliveries: Array<{
@@ -567,9 +567,9 @@ export function listDealLineSources(opts: {
     warehouse_name?: string;
   }>;
   warehouses: Array<{ id: string; name: string; qty: number }>;
-} {
-  const unitSrc = listUnitSources(opts);
-  const warehouses = all<{ id: string; name: string; qty: number }>(
+}> {
+  const unitSrc = await listUnitSources(opts);
+  const warehouses = await all<{ id: string; name: string; qty: number }>(
     `SELECT w.id, w.name, IFNULL(r.qty, 0) AS qty
      FROM product_store_rests r
      JOIN warehouses w ON w.id = r.warehouse_id
@@ -587,7 +587,7 @@ export function listDealLineSources(opts: {
   const params: Array<string | number> = [opts.productId];
   if (opts.warehouseId) params.push(opts.warehouseId, opts.warehouseId);
 
-  const deliveries = all<{
+  const deliveries = await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -638,8 +638,8 @@ export function listDealLineSources(opts: {
   };
 }
 
-export function unitsForDoc(docId: string): ProductUnit[] {
-  return all<ProductUnit>(
+export async function unitsForDoc(docId: string): Promise<ProductUnit[]> {
+  return (await all<ProductUnit>(
     `SELECT u.*, p.sku, p.name AS product_name, IFNULL(w.name,'') AS warehouse_name,
             IFNULL(d.counterparty_id,'') AS supplier_id,
             IFNULL(cp.name,'') AS supplier_name,
@@ -653,7 +653,7 @@ export function unitsForDoc(docId: string): ProductUnit[] {
      WHERE u.in_doc_id = ? OR u.out_doc_id = ?
      ORDER BY u.serial`,
     [docId, docId]
-  ).map((u) => enrichUnitApps(u)!);
+  )).map((u) => enrichUnitApps(u)!);
 }
 
 export const UNIT_STATUS_RU: Record<string, string> = {
@@ -695,24 +695,24 @@ export type SerialTraceEvent = {
 };
 
 /** Полная история экземпляра по коду Data Matrix / серийнику. */
-export function traceSerial(serialRaw: string): {
+export async function traceSerial(serialRaw: string): Promise<{
   serial: string;
   found: boolean;
   unit: ProductUnit | null;
   status_label: string;
   deal: { deal_id: string; deal_name: string; buyer_name: string; source: string } | null;
   events: SerialTraceEvent[];
-} {
+}> {
   const serial = String(serialRaw || '').trim();
   if (!serial) {
     return { serial: '', found: false, unit: null, status_label: '', deal: null, events: [] };
   }
-  const unit = findUnitBySerial(serial) || null;
+  const unit = await findUnitBySerial(serial) || null;
   const events: SerialTraceEvent[] = [];
   const like = serialLikePattern(serial);
 
   // 1) Заказ поставщику / выделение кода
-  const sou = get<{
+  const sou = await get<{
     id: string;
     order_id: string;
     product_id: string;
@@ -767,7 +767,7 @@ export function traceSerial(serialRaw: string): {
 
   // 2) Тонкий журнал (заказ поставщику в parity) — код в payload
   try {
-    const thinHits = all<{
+    const thinHits = await all<{
       id: string;
       journal_key: string;
       number: string;
@@ -822,7 +822,7 @@ export function traceSerial(serialRaw: string): {
   }
 
   // 3) Все складские документы, где код в serials_json
-  const docHits = all<{
+  const docHits = await all<{
     id: string;
     doc_type: string;
     number: string;
@@ -892,7 +892,7 @@ export function traceSerial(serialRaw: string): {
   // 4) Текущее состояние экземпляра (если есть, но документов не нашли — покажем in/out ссылки)
   if (unit) {
     if (unit.in_doc_id && !events.some((e) => e.doc_id === unit.in_doc_id)) {
-      const din = get<{
+      const din = await get<{
         number: string;
         doc_date: string;
         created_at: string;
@@ -922,7 +922,7 @@ export function traceSerial(serialRaw: string): {
       });
     }
     if (unit.out_doc_id && !events.some((e) => e.doc_id === unit.out_doc_id)) {
-      const dout = get<{
+      const dout = await get<{
         number: string;
         doc_date: string;
         created_at: string;
@@ -960,7 +960,7 @@ export function traceSerial(serialRaw: string): {
 
   // 5) СТО-заявки
   try {
-    const sto = all<{
+    const sto = await all<{
       request_id: string;
       number: string;
       deal_id: string;
@@ -1005,7 +1005,7 @@ export function traceSerial(serialRaw: string): {
 
   // 6) datamatrix_codes (маркировка ЦРПТ)
   try {
-    const dm = get<{
+    const dm = await get<{
       code: string;
       status: string;
       warehouse_id: string;
@@ -1053,7 +1053,7 @@ export function traceSerial(serialRaw: string): {
   let deal: { deal_id: string; deal_name: string; buyer_name: string; source: string } | null = null;
   const dealFromEvent = events.map((e) => e.deal_id).find(Boolean);
   if (dealFromEvent) {
-    const d = get<{ id: string; name: string }>(
+    const d = await get<{ id: string; name: string }>(
       `SELECT id, IFNULL(name,'') AS name FROM crm_deals WHERE id = ?`,
       [dealFromEvent]
     );
@@ -1096,15 +1096,15 @@ export function traceSerial(serialRaw: string): {
 }
 
 /** Data Matrix коды на остатке (product × warehouse) для страницы балансов. */
-export function dmCodesForBalanceRows(
+export async function dmCodesForBalanceRows(
   rows: Array<{ product_id: string; warehouse_id: string }>
-): Map<string, { codes: string[]; total: number }> {
+): Promise<Map<string, { codes: string[]; total: number }>> {
   const out = new Map<string, { codes: string[]; total: number }>();
   if (!rows.length) return out;
   const productIds = [...new Set(rows.map((r) => String(r.product_id || '')).filter(Boolean))];
   if (!productIds.length) return out;
   const placeholders = productIds.map(() => '?').join(',');
-  const units = all<{ product_id: string; warehouse_id: string; serial: string }>(
+  const units = await all<{ product_id: string; warehouse_id: string; serial: string }>(
     `SELECT product_id, warehouse_id, serial
      FROM product_units
      WHERE status IN ('in_stock', 'reserved')

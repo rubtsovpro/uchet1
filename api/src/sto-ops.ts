@@ -66,8 +66,8 @@ export function canAccessReceptionScreen(
   return canAccessSection(actor, 'reception') || canAccessSection(actor, 'works');
 }
 
-export function getOpenLiftShift(staffId: string): StoLiftShiftRow | null {
-  const row = get<Record<string, unknown>>(
+export async function getOpenLiftShift(staffId: string): Promise<StoLiftShiftRow | null> {
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM sto_lift_shifts
      WHERE staff_id = ? AND ended_at = ''
      ORDER BY started_at DESC LIMIT 1`,
@@ -76,31 +76,31 @@ export function getOpenLiftShift(staffId: string): StoLiftShiftRow | null {
   return row ? mapShift(row) : null;
 }
 
-export function startLiftShift(
+export async function startLiftShift(
   actor: Actor,
   opts: { pin?: string; password?: string }
-): StoLiftShiftRow {
-  const open = getOpenLiftShift(actor.id);
+): Promise<StoLiftShiftRow> {
+  const open = await getOpenLiftShift(actor.id);
   if (open) throw new Error('Смена уже открыта — сначала завершите текущую');
-  verifyShiftIdentity(actor, opts);
+  await verifyShiftIdentity(actor, opts);
   const day = today();
   const now = new Date().toISOString();
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO sto_lift_shifts (
       id, staff_id, staff_name, staff_login, day,
       started_at, ended_at, pin_verified_at, last_activity_at
     ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)`,
     [id, actor.id, actor.name, actor.login, day, now, now, now]
   );
-  return getOpenLiftShift(actor.id)!;
+  return (await getOpenLiftShift(actor.id))!;
 }
 
-export function endLiftShift(actor: Actor): StoLiftShiftRow | null {
-  const open = getOpenLiftShift(actor.id);
+export async function endLiftShift(actor: Actor): Promise<StoLiftShiftRow | null> {
+  const open = await getOpenLiftShift(actor.id);
   if (!open) return null;
   const now = new Date().toISOString();
-  run(`UPDATE sto_lift_shifts SET ended_at = ?, last_activity_at = ? WHERE id = ?`, [
+  await run(`UPDATE sto_lift_shifts SET ended_at = ?, last_activity_at = ? WHERE id = ?`, [
     now,
     now,
     open.id,
@@ -108,28 +108,28 @@ export function endLiftShift(actor: Actor): StoLiftShiftRow | null {
   return mapShift({ ...open, ended_at: now, last_activity_at: now });
 }
 
-export function touchLiftShift(staffId: string): void {
-  const open = getOpenLiftShift(staffId);
+export async function touchLiftShift(staffId: string): Promise<void> {
+  const open = await getOpenLiftShift(staffId);
   if (!open) return;
-  run(`UPDATE sto_lift_shifts SET last_activity_at = ? WHERE id = ?`, [
+  await run(`UPDATE sto_lift_shifts SET last_activity_at = ? WHERE id = ?`, [
     new Date().toISOString(),
     open.id,
   ]);
 }
 
 /** Для операций на подъёмнике нужна открытая смена (кроме admin/manager). */
-export function assertLiftShiftForOps(actor: Actor | null): void {
+export async function assertLiftShiftForOps(actor: Actor | null): Promise<void> {
   if (!actor) throw new Error('Нужна авторизация');
   if (actor.isSystemAdmin || actor.role === 'admin' || actor.role === 'manager') return;
-  const open = getOpenLiftShift(actor.id);
+  const open = await getOpenLiftShift(actor.id);
   if (!open) {
     throw new Error('Начните смену мастера (PIN), чтобы работать на подъёмнике');
   }
 }
 
-export function liftShiftStatusPayload(actor: Actor) {
-  const shift = getOpenLiftShift(actor.id);
-  const has_pin = staffHasPin(actor.id);
+export async function liftShiftStatusPayload(actor: Actor) {
+  const shift = await getOpenLiftShift(actor.id);
+  const has_pin = await staffHasPin(actor.id);
   const { day, hm } = localParts(TZ);
   return {
     shift,
@@ -155,16 +155,16 @@ function normalizePlate(p: string): string {
     .replace(/[^\p{L}\p{N}]/gu, '');
 }
 
-export function listAppointments(day?: string) {
+export async function listAppointments(day?: string) {
   const d = (day || today()).slice(0, 10);
-  const items = all<Record<string, unknown>>(
+  const items = await all<Record<string, unknown>>(
     `SELECT * FROM sto_appointments WHERE day = ? ORDER BY time_hm, created_at`,
     [d]
   );
   return { day: d, items };
 }
 
-export function createAppointment(input: {
+export async function createAppointment(input: {
   day?: string;
   time_hm?: string;
   plate?: string;
@@ -181,7 +181,7 @@ export function createAppointment(input: {
     ? String(input.status)
     : 'expected';
   const now = new Date().toISOString();
-  run(
+  await run(
     `INSERT INTO sto_appointments (
       id, day, time_hm, plate, vin, model, client_name, phone, status, note, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -200,10 +200,10 @@ export function createAppointment(input: {
       now,
     ]
   );
-  return get('SELECT * FROM sto_appointments WHERE id = ?', [id]);
+  return await get('SELECT * FROM sto_appointments WHERE id = ?', [id]);
 }
 
-export function patchAppointment(
+export async function patchAppointment(
   id: string,
   patch: {
     status?: string;
@@ -217,7 +217,7 @@ export function patchAppointment(
     work_order_id?: string;
   }
 ) {
-  const row = get('SELECT * FROM sto_appointments WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM sto_appointments WHERE id = ?', [id]);
   if (!row) return null;
   const sets: string[] = [`updated_at = datetime('now')`];
   const params: Array<string | number> = [];
@@ -239,17 +239,17 @@ export function patchAppointment(
     params.push(normalizePlate(patch.plate));
   }
   params.push(id);
-  run(`UPDATE sto_appointments SET ${sets.join(', ')} WHERE id = ?`, params);
-  return get('SELECT * FROM sto_appointments WHERE id = ?', [id]);
+  await run(`UPDATE sto_appointments SET ${sets.join(', ')} WHERE id = ?`, params);
+  return await get('SELECT * FROM sto_appointments WHERE id = ?', [id]);
 }
 
 /** Прибытие → создать ЗН если ещё нет. */
-export function markAppointmentArrived(id: string) {
-  const row = get<Record<string, unknown>>('SELECT * FROM sto_appointments WHERE id = ?', [id]);
+export async function markAppointmentArrived(id: string) {
+  const row = await get<Record<string, unknown>>('SELECT * FROM sto_appointments WHERE id = ?', [id]);
   if (!row) throw new Error('Запись не найдена');
   let woId = String(row.work_order_id || '');
   if (!woId) {
-    const wo = ensureWorkOrder({
+    const wo = await ensureWorkOrder({
       customer_name: String(row.client_name || ''),
       plate: String(row.plate || ''),
       vin: String(row.vin || ''),
@@ -260,15 +260,15 @@ export function markAppointmentArrived(id: string) {
     });
     woId = String(wo.id);
   }
-  run(
+  await run(
     `UPDATE sto_appointments SET status = 'arrived', work_order_id = ?, updated_at = datetime('now')
      WHERE id = ?`,
     [woId, id]
   );
-  return get('SELECT * FROM sto_appointments WHERE id = ?', [id]);
+  return await get('SELECT * FROM sto_appointments WHERE id = ?', [id]);
 }
 
-function ensureWorkOrder(input: {
+async function ensureWorkOrder(input: {
   customer_name?: string;
   plate?: string;
   vin?: string;
@@ -279,10 +279,10 @@ function ensureWorkOrder(input: {
   doc_date?: string;
 }) {
   const id = newGuid();
-  const number = nextCode('ЗН', 5);
+  const number = await nextCode('ЗН', 5);
   const docDate = (input.doc_date || today()).slice(0, 10);
   const status = String(input.status || 'booked');
-  run(
+  await run(
     `INSERT INTO sto_work_orders
       (id, number, doc_date, customer_name, vehicle, status, total, comment, plate, vin, model)
      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
@@ -299,17 +299,17 @@ function ensureWorkOrder(input: {
       String(input.model || '').trim(),
     ]
   );
-  return get<Record<string, unknown>>('SELECT * FROM sto_work_orders WHERE id = ?', [id])!;
+  return (await get<Record<string, unknown>>('SELECT * FROM sto_work_orders WHERE id = ?', [id]))!;
 }
 
-export function searchStoVehicles(q: string, limit = 20) {
+export async function searchStoVehicles(q: string, limit = 20) {
   const query = String(q || '').trim();
   if (!query) return { items: [] as Record<string, unknown>[] };
   const like = `%${query}%`;
   const plateQ = normalizePlate(query);
   const plateLike = plateQ ? `%${plateQ}%` : like;
   const lim = Math.min(50, Math.max(1, limit));
-  const appts = all<Record<string, unknown>>(
+  const appts = await all<Record<string, unknown>>(
     `SELECT id, day, time_hm, plate, vin, model, client_name, status, work_order_id, 'appointment' AS source
      FROM sto_appointments
      WHERE day = ? AND (
@@ -318,7 +318,7 @@ export function searchStoVehicles(q: string, limit = 20) {
      ORDER BY time_hm LIMIT ?`,
     [today(), plateLike, like, like, like, lim]
   );
-  const orders = all<Record<string, unknown>>(
+  const orders = await all<Record<string, unknown>>(
     `SELECT id AS work_order_id, number, doc_date, customer_name AS client_name,
             plate, vin, model, vehicle, status, lift_id, 'work_order' AS source
      FROM sto_work_orders
@@ -330,16 +330,16 @@ export function searchStoVehicles(q: string, limit = 20) {
   return { items: [...appts, ...orders] };
 }
 
-function enrichWorkOrder(wo: Record<string, unknown>) {
+async function enrichWorkOrder(wo: Record<string, unknown>) {
   const id = String(wo.id);
-  const works = all(`SELECT * FROM sto_wo_works WHERE work_order_id = ? ORDER BY sort_order, created_at`, [
+  const works = await all(`SELECT * FROM sto_wo_works WHERE work_order_id = ? ORDER BY sort_order, created_at`, [
     id,
   ]);
-  const materials = all(
+  const materials = await all(
     `SELECT * FROM sto_wo_materials WHERE work_order_id = ? ORDER BY created_at DESC`,
     [id]
   );
-  const work_logs = all(
+  const work_logs = await all(
     `SELECT * FROM sto_work_logs WHERE work_order_id = ? ORDER BY created_at DESC`,
     [id]
   );
@@ -347,7 +347,7 @@ function enrichWorkOrder(wo: Record<string, unknown>) {
   const liftId = String(wo.lift_id || '');
   if (liftId) {
     lift_name = String(
-      get<{ name: string }>('SELECT name FROM sto_resources WHERE id = ?', [liftId])?.name || ''
+      (await get<{ name: string }>('SELECT name FROM sto_resources WHERE id = ?', [liftId]))?.name || ''
     );
   }
   const started = String(wo.lift_started_at || '');
@@ -366,19 +366,19 @@ function enrichWorkOrder(wo: Record<string, unknown>) {
   };
 }
 
-export function getWorkOrderDetail(id: string) {
-  const wo = get<Record<string, unknown>>('SELECT * FROM sto_work_orders WHERE id = ?', [id]);
+export async function getWorkOrderDetail(id: string) {
+  const wo = await get<Record<string, unknown>>('SELECT * FROM sto_work_orders WHERE id = ?', [id]);
   if (!wo) return null;
-  return enrichWorkOrder(wo);
+  return await enrichWorkOrder(wo);
 }
 
-export function listLiftsBoard() {
-  const lifts = all<Record<string, unknown>>(
+export async function listLiftsBoard() {
+  const lifts = await all<Record<string, unknown>>(
     `SELECT * FROM sto_resources WHERE kind = 'lift' AND is_active = 1 ORDER BY name`
   );
-  const items = lifts.map((lift) => {
+  const items = await Promise.all(lifts.map(async (lift) => {
     const liftId = String(lift.id);
-    const wo = get<Record<string, unknown>>(
+    const wo = await get<Record<string, unknown>>(
       `SELECT * FROM sto_work_orders
        WHERE lift_id = ? AND IFNULL(lift_started_at,'') != ''
          AND status NOT IN ('handed', 'cancelled', 'done')
@@ -390,13 +390,13 @@ export function listLiftsBoard() {
       name: String(lift.name),
       kind: 'lift',
       busy: !!wo,
-      work_order: wo ? enrichWorkOrder(wo) : null,
+      work_order: wo ? await enrichWorkOrder(wo) : null,
     };
-  });
+  }));
   return { items, day: today() };
 }
 
-export function assignToLift(
+export async function assignToLift(
   actor: Actor,
   opts: {
     lift_id: string;
@@ -409,14 +409,14 @@ export function assignToLift(
     works?: Array<{ name: string; qty?: number }>;
   }
 ) {
-  assertLiftShiftForOps(actor);
-  const lift = get<{ id: string; name: string; kind: string; is_active: number }>(
+  await assertLiftShiftForOps(actor);
+  const lift = await get<{ id: string; name: string; kind: string; is_active: number }>(
     `SELECT * FROM sto_resources WHERE id = ? AND kind = 'lift'`,
     [opts.lift_id]
   );
   if (!lift || !lift.is_active) throw new Error('Подъёмник не найден');
 
-  const occupied = get<{ id: string }>(
+  const occupied = await get<{ id: string }>(
     `SELECT id FROM sto_work_orders
      WHERE lift_id = ? AND IFNULL(lift_started_at,'') != ''
        AND status NOT IN ('handed', 'cancelled', 'done')
@@ -427,14 +427,14 @@ export function assignToLift(
 
   let woId = String(opts.work_order_id || '').trim();
   if (!woId && opts.appointment_id) {
-    const ap = markAppointmentArrived(opts.appointment_id) as Record<string, unknown>;
+    const ap = await markAppointmentArrived(opts.appointment_id) as Record<string, unknown>;
     woId = String(ap.work_order_id || '');
   }
   if (!woId) {
     if (!opts.plate && !opts.client_name) {
       throw new Error('Укажите госномер или выберите запись / заказ-наряд');
     }
-    const wo = ensureWorkOrder({
+    const wo = await ensureWorkOrder({
       customer_name: opts.client_name,
       plate: opts.plate,
       vin: opts.vin,
@@ -446,7 +446,7 @@ export function assignToLift(
   }
 
   const now = new Date().toISOString();
-  run(
+  await run(
     `UPDATE sto_work_orders SET
        lift_id = ?, lift_started_at = ?, master_staff_id = ?, master_staff_name = ?,
        status = CASE WHEN status IN ('draft','booked') THEN 'in_progress' ELSE status END,
@@ -473,7 +473,7 @@ export function assignToLift(
   );
 
   if (opts.appointment_id) {
-    run(
+    await run(
       `UPDATE sto_appointments SET status = 'on_lift', work_order_id = ?, updated_at = datetime('now')
        WHERE id = ?`,
       [woId, opts.appointment_id]
@@ -484,20 +484,20 @@ export function assignToLift(
     for (const [i, w] of opts.works.entries()) {
       const name = String(w.name || '').trim();
       if (!name) continue;
-      run(
+      await run(
         `INSERT INTO sto_wo_works (id, work_order_id, name, qty, sort_order) VALUES (?, ?, ?, ?, ?)`,
         [newGuid(), woId, name, Number(w.qty) > 0 ? Number(w.qty) : 1, i + 1]
       );
     }
   }
 
-  touchLiftShift(actor.id);
-  return getWorkOrderDetail(woId);
+  await touchLiftShift(actor.id);
+  return await getWorkOrderDetail(woId);
 }
 
-export function freeLift(actor: Actor, liftId: string, markDone = false) {
-  assertLiftShiftForOps(actor);
-  const wo = get<Record<string, unknown>>(
+export async function freeLift(actor: Actor, liftId: string, markDone = false) {
+  await assertLiftShiftForOps(actor);
+  const wo = await get<Record<string, unknown>>(
     `SELECT * FROM sto_work_orders
      WHERE lift_id = ? AND IFNULL(lift_started_at,'') != ''
        AND status NOT IN ('handed', 'cancelled')
@@ -506,46 +506,46 @@ export function freeLift(actor: Actor, liftId: string, markDone = false) {
   );
   if (!wo) throw new Error('На подъёмнике нет авто');
   const nextStatus = markDone ? 'ready' : String(wo.status || 'in_progress');
-  run(
+  await run(
     `UPDATE sto_work_orders SET lift_id = '', lift_started_at = '', status = ? WHERE id = ?`,
     [nextStatus, String(wo.id)]
   );
-  run(
+  await run(
     `UPDATE sto_appointments SET status = CASE WHEN status = 'on_lift' THEN 'arrived' ELSE status END,
        updated_at = datetime('now')
      WHERE work_order_id = ?`,
     [String(wo.id)]
   );
-  touchLiftShift(actor.id);
+  await touchLiftShift(actor.id);
   return { ok: true, work_order_id: String(wo.id), status: nextStatus };
 }
 
-export function addWoWork(actor: Actor, workOrderId: string, name: string, qty = 1) {
-  assertLiftShiftForOps(actor);
-  const wo = get('SELECT id FROM sto_work_orders WHERE id = ?', [workOrderId]);
+export async function addWoWork(actor: Actor, workOrderId: string, name: string, qty = 1) {
+  await assertLiftShiftForOps(actor);
+  const wo = await get('SELECT id FROM sto_work_orders WHERE id = ?', [workOrderId]);
   if (!wo) throw new Error('Заказ-наряд не найден');
   const n = String(name || '').trim();
   if (!n) throw new Error('Укажите название работы');
   const id = newGuid();
-  run(`INSERT INTO sto_wo_works (id, work_order_id, name, qty, sort_order) VALUES (?, ?, ?, ?, 0)`, [
+  await run(`INSERT INTO sto_wo_works (id, work_order_id, name, qty, sort_order) VALUES (?, ?, ?, ?, 0)`, [
     id,
     workOrderId,
     n,
     Number(qty) > 0 ? Number(qty) : 1,
   ]);
-  touchLiftShift(actor.id);
-  return get('SELECT * FROM sto_wo_works WHERE id = ?', [id]);
+  await touchLiftShift(actor.id);
+  return await get('SELECT * FROM sto_wo_works WHERE id = ?', [id]);
 }
 
-function defaultWarehouseId(): string | null {
+async function defaultWarehouseId(): Promise<string | null> {
   return (
-    get<{ id: string }>(
+    (await get<{ id: string }>(
       `SELECT id FROM warehouses WHERE is_active = 1 ORDER BY name LIMIT 1`
-    )?.id || null
+    ))?.id || null
   );
 }
 
-export function addMaterial(
+export async function addMaterial(
   actor: Actor,
   opts: {
     work_order_id: string;
@@ -555,12 +555,12 @@ export function addMaterial(
     write_off?: boolean;
   }
 ) {
-  assertLiftShiftForOps(actor);
-  const wo = get('SELECT id, number FROM sto_work_orders WHERE id = ?', [opts.work_order_id]);
+  await assertLiftShiftForOps(actor);
+  const wo = await get('SELECT id, number FROM sto_work_orders WHERE id = ?', [opts.work_order_id]);
   if (!wo) throw new Error('Заказ-наряд не найден');
   const qty = Number(opts.qty);
   if (!(qty > 0)) throw new Error('Количество должно быть > 0');
-  const product = get<{
+  const product = await get<{
     id: string;
     sku: string;
     name: string;
@@ -568,7 +568,7 @@ export function addMaterial(
   }>('SELECT id, sku, name, unit_id FROM products WHERE id = ?', [opts.product_id]);
   if (!product) throw new Error('Товар не найден');
   const unit =
-    get<{ short_name: string }>('SELECT short_name FROM units WHERE id = ?', [product.unit_id])
+    (await get<{ short_name: string }>('SELECT short_name FROM units WHERE id = ?', [product.unit_id]))
       ?.short_name || '';
 
   let stockDocId = '';
@@ -578,15 +578,15 @@ export function addMaterial(
   if (doWriteOff) {
     let wh = '';
     try {
-      wh = stoWarehouseId();
+      wh = await stoWarehouseId();
     } catch {
-      wh = defaultWarehouseId() || '';
+      wh = await defaultWarehouseId() || '';
     }
     if (!wh) {
       stockNote = 'Нет активного склада — только привязка к наряду';
     } else {
       try {
-        stockDocId = createDocument({
+        stockDocId = await createDocument({
           doc_type: 'out',
           warehouse_id: wh,
           comment: `СТО ЗН ${String((wo as { number?: string }).number || '')} · ${actor.name}`,
@@ -604,7 +604,7 @@ export function addMaterial(
   }
 
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO sto_wo_materials (
       id, work_order_id, product_id, sku, name, qty, unit,
       staff_id, staff_name, work_log_id, stock_doc_id, wrote_off, stock_note
@@ -625,19 +625,19 @@ export function addMaterial(
       stockNote,
     ]
   );
-  touchLiftShift(actor.id);
-  return get('SELECT * FROM sto_wo_materials WHERE id = ?', [id]);
+  await touchLiftShift(actor.id);
+  return await get('SELECT * FROM sto_wo_materials WHERE id = ?', [id]);
 }
 
-export function listWorkCatalog() {
+export async function listWorkCatalog() {
   return {
-    items: all(
+    items: await all(
       `SELECT * FROM sto_work_catalog WHERE is_active = 1 ORDER BY sort_order, name`
     ),
   };
 }
 
-export function createWorkLog(
+export async function createWorkLog(
   actor: Actor,
   opts: {
     work_order_id: string;
@@ -650,8 +650,8 @@ export function createWorkLog(
     note?: string;
   }
 ) {
-  assertLiftShiftForOps(actor);
-  const wo = get<Record<string, unknown>>(
+  await assertLiftShiftForOps(actor);
+  const wo = await get<Record<string, unknown>>(
     'SELECT * FROM sto_work_orders WHERE id = ?',
     [opts.work_order_id]
   );
@@ -661,7 +661,7 @@ export function createWorkLog(
   let catalogId = String(opts.catalog_id || '').trim();
   let hours = Number(opts.hours) || 0;
   if (catalogId) {
-    const cat = get<{ name: string; hours_default: number }>(
+    const cat = await get<{ name: string; hours_default: number }>(
       'SELECT name, hours_default FROM sto_work_catalog WHERE id = ?',
       [catalogId]
     );
@@ -677,7 +677,7 @@ export function createWorkLog(
   const now = new Date().toISOString();
   const id = newGuid();
   const liftId = String(opts.lift_id || wo.lift_id || '');
-  run(
+  await run(
     `INSERT INTO sto_work_logs (
       id, work_order_id, lift_id, appointment_id, staff_id, staff_name,
       work_name, catalog_id, qty, hours, status, note, started_at, finished_at
@@ -700,28 +700,28 @@ export function createWorkLog(
   );
 
   // Зеркало в список работ наряда (если ещё нет такой строки)
-  const exists = get<{ c: number }>(
+  const exists = (await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM sto_wo_works WHERE work_order_id = ? AND name = ?`,
     [opts.work_order_id, workName]
-  )?.c;
+  ))?.c;
   if (!exists) {
-    run(
+    await run(
       `INSERT INTO sto_wo_works (id, work_order_id, name, qty, sort_order) VALUES (?, ?, ?, ?, 0)`,
       [newGuid(), opts.work_order_id, workName, Number(opts.qty) > 0 ? Number(opts.qty) : 1]
     );
   }
 
-  touchLiftShift(actor.id);
-  return get('SELECT * FROM sto_work_logs WHERE id = ?', [id]);
+  await touchLiftShift(actor.id);
+  return await get('SELECT * FROM sto_work_logs WHERE id = ?', [id]);
 }
 
-export function patchWorkLog(
+export async function patchWorkLog(
   actor: Actor,
   id: string,
   patch: { status?: string; hours?: number; qty?: number; note?: string; work_name?: string }
 ) {
-  assertLiftShiftForOps(actor);
-  const row = get<Record<string, unknown>>('SELECT * FROM sto_work_logs WHERE id = ?', [id]);
+  await assertLiftShiftForOps(actor);
+  const row = await get<Record<string, unknown>>('SELECT * FROM sto_work_logs WHERE id = ?', [id]);
   if (!row) return null;
   if (
     String(row.staff_id) !== actor.id &&
@@ -763,13 +763,13 @@ export function patchWorkLog(
   }
   if (!sets.length) return row;
   params.push(id);
-  run(`UPDATE sto_work_logs SET ${sets.join(', ')} WHERE id = ?`, params);
-  touchLiftShift(actor.id);
-  return get('SELECT * FROM sto_work_logs WHERE id = ?', [id]);
+  await run(`UPDATE sto_work_logs SET ${sets.join(', ')} WHERE id = ?`, params);
+  await touchLiftShift(actor.id);
+  return await get('SELECT * FROM sto_work_logs WHERE id = ?', [id]);
 }
 
 /** Отчёт / список работ слесаря за день или по наряду. */
-export function listWorkLogs(opts?: {
+export async function listWorkLogs(opts?: {
   day?: string;
   staff_id?: string;
   work_order_id?: string;
@@ -791,7 +791,7 @@ export function listWorkLogs(opts?: {
     params.push(opts.day.slice(0, 10));
   }
   params.push(limit);
-  const items = all<Record<string, unknown>>(
+  const items = await all<Record<string, unknown>>(
     `SELECT l.*,
             wo.number AS order_number,
             wo.plate AS order_plate,
@@ -818,11 +818,11 @@ export function listWorkLogs(opts?: {
   };
 }
 
-export function todayArrivedQueue() {
+export async function todayArrivedQueue() {
   const d = today();
   return {
     day: d,
-    items: all(
+    items: await all(
       `SELECT a.*, wo.number AS order_number, wo.status AS order_status, wo.lift_id
        FROM sto_appointments a
        LEFT JOIN sto_work_orders wo ON wo.id = a.work_order_id

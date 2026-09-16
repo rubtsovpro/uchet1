@@ -40,13 +40,13 @@ function aggregateByProduct(lines: BaselineLine[]): Map<string, number> {
 }
 
 /** Эталон: сначала снимок baseline, затем заказ (native / thin), затем строки документа. */
-export function resolveInboundBaseline(docId: string): {
+export async function resolveInboundBaseline(docId: string): Promise<{
   source: 'supplier_order' | 'baseline' | 'lines' | 'thin_order';
   supplier_order_id: string;
   supply_number: string;
   lines: BaselineLine[];
-} {
-  const doc = get<{
+}> {
+  const doc = await get<{
     source_supplier_order_id: string;
     supply_number: string;
     inbound_baseline_json: string;
@@ -87,7 +87,7 @@ export function resolveInboundBaseline(docId: string): {
   }
 
   if (orderId) {
-    const orderLines = all<{ product_id: string; qty: number; price: number }>(
+    const orderLines = await all<{ product_id: string; qty: number; price: number }>(
       `SELECT IFNULL(product_id,'') AS product_id, qty, IFNULL(price,0) AS price
        FROM supplier_order_lines WHERE order_id = ? ORDER BY sort_order, rowid`,
       [orderId]
@@ -104,7 +104,7 @@ export function resolveInboundBaseline(docId: string): {
         })),
       };
     }
-    const thin = get<{ payload_json: string }>(
+    const thin = await get<{ payload_json: string }>(
       `SELECT IFNULL(payload_json,'') AS payload_json
        FROM thin_journal_docs WHERE id = ? AND journal_key = 'supplier_orders'`,
       [orderId]
@@ -134,7 +134,7 @@ export function resolveInboundBaseline(docId: string): {
     }
   }
 
-  const dbLines = all<{ product_id: string; qty: number; price: number }>(
+  const dbLines = await all<{ product_id: string; qty: number; price: number }>(
     `SELECT IFNULL(product_id,'') AS product_id, qty, IFNULL(price,0) AS price
      FROM stock_doc_lines WHERE doc_id = ? ORDER BY rowid`,
     [docId]
@@ -187,9 +187,9 @@ export function compareSupplyVsInbound(
   return out.sort((a, b) => a.product_id.localeCompare(b.product_id));
 }
 
-function enrichDiscrepancyLines(lines: DiscrepancyLine[]): DiscrepancyLine[] {
-  return lines.map((l) => {
-    const p = get<{ name: string; sku: string; code: string }>(
+async function enrichDiscrepancyLines(lines: DiscrepancyLine[]): Promise<DiscrepancyLine[]> {
+  return await Promise.all(lines.map(async (l) => {
+    const p = await get<{ name: string; sku: string; code: string }>(
       `SELECT IFNULL(name,'') AS name, IFNULL(sku,'') AS sku, IFNULL(code,'') AS code
        FROM products WHERE id = ?`,
       [l.product_id]
@@ -200,12 +200,12 @@ function enrichDiscrepancyLines(lines: DiscrepancyLine[]): DiscrepancyLine[] {
       sku: String(p?.sku || ''),
       code: String(p?.code || ''),
     };
-  });
+  }));
 }
 
 /** Записать эталон, если ещё пуст. */
-export function ensureInboundBaseline(docId: string, fallbackLines?: BaselineLine[]): void {
-  const row = get<{ inbound_baseline_json: string; source_supplier_order_id: string }>(
+export async function ensureInboundBaseline(docId: string, fallbackLines?: BaselineLine[]): Promise<void> {
+  const row = await get<{ inbound_baseline_json: string; source_supplier_order_id: string }>(
     `SELECT IFNULL(inbound_baseline_json,'') AS inbound_baseline_json,
             IFNULL(source_supplier_order_id,'') AS source_supplier_order_id
      FROM stock_docs WHERE id = ?`,
@@ -217,17 +217,17 @@ export function ensureInboundBaseline(docId: string, fallbackLines?: BaselineLin
   const orderId = String(row.source_supplier_order_id || '').trim();
   let lines: BaselineLine[] = [];
   if (orderId) {
-    lines = all<{ product_id: string; qty: number; price: number }>(
+    lines = (await all<{ product_id: string; qty: number; price: number }>(
       `SELECT IFNULL(product_id,'') AS product_id, qty, IFNULL(price,0) AS price
        FROM supplier_order_lines WHERE order_id = ?`,
       [orderId]
-    ).map((r) => ({
+    )).map((r) => ({
       product_id: String(r.product_id),
       qty: Number(r.qty) || 0,
       price: Number(r.price) || 0,
     }));
     if (!lines.length) {
-      const thin = get<{ payload_json: string }>(
+      const thin = await get<{ payload_json: string }>(
         `SELECT IFNULL(payload_json,'') AS payload_json
          FROM thin_journal_docs WHERE id = ? AND journal_key = 'supplier_orders'`,
         [orderId]
@@ -254,42 +254,42 @@ export function ensureInboundBaseline(docId: string, fallbackLines?: BaselineLin
     lines = fallbackLines;
   }
   if (!lines.length) {
-    lines = all<{ product_id: string; qty: number; price: number }>(
+    lines = (await all<{ product_id: string; qty: number; price: number }>(
       `SELECT IFNULL(product_id,'') AS product_id, qty, IFNULL(price,0) AS price
        FROM stock_doc_lines WHERE doc_id = ?`,
       [docId]
-    ).map((r) => ({
+    )).map((r) => ({
       product_id: String(r.product_id),
       qty: Number(r.qty) || 0,
       price: Number(r.price) || 0,
     }));
   }
   if (!lines.length) return;
-  run(`UPDATE stock_docs SET inbound_baseline_json = ? WHERE id = ?`, [
+  await run(`UPDATE stock_docs SET inbound_baseline_json = ? WHERE id = ?`, [
     JSON.stringify({ lines, saved_at: new Date().toISOString() }),
     docId,
   ]);
 }
 
-export function previewDiscrepancyForInbound(docId: string): {
+export async function previewDiscrepancyForInbound(docId: string): Promise<{
   source: string;
   supplier_order_id: string;
   supply_number: string;
   lines: DiscrepancyLine[];
   act: Record<string, unknown> | null;
-} {
-  const base = resolveInboundBaseline(docId);
-  const inbound = all<{ product_id: string; qty: number; price: number }>(
+}> {
+  const base = await resolveInboundBaseline(docId);
+  const inbound = (await all<{ product_id: string; qty: number; price: number }>(
     `SELECT IFNULL(product_id,'') AS product_id, qty, IFNULL(price,0) AS price
      FROM stock_doc_lines WHERE doc_id = ?`,
     [docId]
-  ).map((r) => ({
+  )).map((r) => ({
     product_id: String(r.product_id),
     qty: Number(r.qty) || 0,
     price: Number(r.price) || 0,
   }));
-  const diffs = enrichDiscrepancyLines(compareSupplyVsInbound(base.lines, inbound));
-  const act = get<Record<string, unknown>>(
+  const diffs = await enrichDiscrepancyLines(compareSupplyVsInbound(base.lines, inbound));
+  const act = await get<Record<string, unknown>>(
     `SELECT * FROM purchase_discrepancy_acts WHERE inbound_doc_id = ? ORDER BY datetime(created_at) DESC LIMIT 1`,
     [docId]
   );
@@ -303,12 +303,12 @@ export function previewDiscrepancyForInbound(docId: string): {
 }
 
 /** После оприходования: создать/обновить акт, если есть расхождения. */
-export function ensureDiscrepancyAct(docId: string): {
+export async function ensureDiscrepancyAct(docId: string): Promise<{
   created: boolean;
   act: Record<string, unknown> | null;
   lines: DiscrepancyLine[];
-} {
-  const preview = previewDiscrepancyForInbound(docId);
+}> {
+  const preview = await previewDiscrepancyForInbound(docId);
   if (!preview.lines.length) {
     return { created: false, act: preview.act, lines: [] };
   }
@@ -317,8 +317,8 @@ export function ensureDiscrepancyAct(docId: string): {
   let created = false;
   if (!actId) {
     actId = newGuid();
-    const number = nextCode('АРЗ', 5);
-    run(
+    const number = await nextCode('АРЗ', 5);
+    await run(
       `INSERT INTO purchase_discrepancy_acts
         (id, number, inbound_doc_id, supplier_order_id, supply_number, status, comment)
        VALUES (?, ?, ?, ?, ?, 'open', ?)`,
@@ -333,17 +333,17 @@ export function ensureDiscrepancyAct(docId: string): {
     );
     created = true;
   } else {
-    run(
+    await run(
       `UPDATE purchase_discrepancy_acts
        SET supplier_order_id = ?, supply_number = ?, updated_at = datetime('now'), status = 'open'
        WHERE id = ?`,
       [preview.supplier_order_id, preview.supply_number, actId]
     );
-    run(`DELETE FROM purchase_discrepancy_lines WHERE act_id = ?`, [actId]);
+    await run(`DELETE FROM purchase_discrepancy_lines WHERE act_id = ?`, [actId]);
   }
 
-  preview.lines.forEach((l, i) => {
-    run(
+  preview.lines.forEach(async (l, i) => {
+    await run(
       `INSERT INTO purchase_discrepancy_lines
         (id, act_id, product_id, kind, qty_supply, qty_inbound, qty_diff, note, sort_order)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -361,23 +361,23 @@ export function ensureDiscrepancyAct(docId: string): {
     );
   });
 
-  const act = get<Record<string, unknown>>(
+  const act = await get<Record<string, unknown>>(
     `SELECT * FROM purchase_discrepancy_acts WHERE id = ?`,
     [actId]
   );
   return { created, act: act || null, lines: preview.lines };
 }
 
-export function getDiscrepancyAct(actId: string): {
+export async function getDiscrepancyAct(actId: string): Promise<{
   act: Record<string, unknown>;
   lines: DiscrepancyLine[];
-} | null {
-  const act = get<Record<string, unknown>>(
+} | null> {
+  const act = await get<Record<string, unknown>>(
     `SELECT * FROM purchase_discrepancy_acts WHERE id = ?`,
     [actId]
   );
   if (!act) return null;
-  const rows = all<{
+  const rows = await all<{
     product_id: string;
     kind: string;
     qty_supply: number;
@@ -391,7 +391,7 @@ export function getDiscrepancyAct(actId: string): {
   );
   return {
     act,
-    lines: enrichDiscrepancyLines(
+    lines: await enrichDiscrepancyLines(
       rows.map((r) => ({
         product_id: String(r.product_id),
         kind: (r.kind as DiscrepancyKind) || 'qty_diff',
@@ -404,8 +404,8 @@ export function getDiscrepancyAct(actId: string): {
   };
 }
 
-export function listDiscrepancyActs(limit = 50): Array<Record<string, unknown>> {
-  return all<Record<string, unknown>>(
+export async function listDiscrepancyActs(limit = 50): Promise<Array<Record<string, unknown>>> {
+  return await all<Record<string, unknown>>(
     `SELECT a.*,
             (SELECT COUNT(*) FROM purchase_discrepancy_lines l WHERE l.act_id = a.id) AS lines_count,
             IFNULL(d.number,'') AS inbound_number

@@ -66,7 +66,7 @@ export function crptConfigured(): boolean {
   );
 }
 
-export function markingMeta() {
+export async function markingMeta() {
   return {
     ready: true,
     stage: 'foundation', // foundation → stage4_lots → stage5_crpt
@@ -79,28 +79,28 @@ export function markingMeta() {
     lot_statuses: LOT_STATUSES,
     label_format: 'sku;factory;lot;date', // формат наклейки из ТЗ
     counts: {
-      lots: get<{ c: number }>('SELECT COUNT(*) AS c FROM product_lots')?.c ?? 0,
-      codes: get<{ c: number }>('SELECT COUNT(*) AS c FROM datamatrix_codes')?.c ?? 0,
+      lots: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM product_lots'))?.c ?? 0,
+      codes: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM datamatrix_codes'))?.c ?? 0,
       in_stock:
-        get<{ c: number }>(
+        (await get<{ c: number }>(
           `SELECT COUNT(*) AS c FROM datamatrix_codes WHERE status IN ('in_stock','received')`
-        )?.c ?? 0,
+        ))?.c ?? 0,
       withdrawn:
-        get<{ c: number }>(
+        (await get<{ c: number }>(
           `SELECT COUNT(*) AS c FROM datamatrix_codes WHERE status IN ('sold','withdrawn')`
-        )?.c ?? 0,
+        ))?.c ?? 0,
     },
   };
 }
 
-function logEvent(opts: {
+async function logEvent(opts: {
   code_id?: string | null;
   lot_id?: string | null;
   event: string;
   actor_id?: string;
   payload?: Record<string, unknown>;
-}): void {
-  run(
+}): Promise<void> {
+  await run(
     `INSERT INTO marking_events (id, code_id, lot_id, event, actor_id, payload_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
     [
@@ -146,13 +146,13 @@ export function parseDatamatrixPayload(raw: string): { gtin: string; serial: str
   };
 }
 
-export function listLots(opts: {
+export async function listLots(opts: {
   product_id?: string;
   warehouse_id?: string;
   status?: string;
   q?: string;
   limit?: number;
-}): Array<ProductLot & { product_sku?: string; product_name?: string; warehouse_name?: string }> {
+}): Promise<Array<ProductLot & { product_sku?: string; product_name?: string; warehouse_name?: string }>> {
   const where: string[] = [];
   const params: Array<string | number> = [];
   if (opts.product_id) {
@@ -183,12 +183,12 @@ export function listLots(opts: {
     ORDER BY l.arrived_at DESC, l.created_at DESC
     LIMIT ?`;
   params.push(limit);
-  return all(sql, params) as Array<
+  return await all(sql, params) as Array<
     ProductLot & { product_sku?: string; product_name?: string; warehouse_name?: string }
   >;
 }
 
-export function createLot(input: {
+export async function createLot(input: {
   product_id: string;
   lot_number: string;
   factory?: string;
@@ -200,14 +200,14 @@ export function createLot(input: {
   status?: LotStatus;
   comment?: string;
   actor_id?: string;
-}): ProductLot {
-  const product = get('SELECT id FROM products WHERE id = ?', [input.product_id]);
+}): Promise<ProductLot> {
+  const product = await get('SELECT id FROM products WHERE id = ?', [input.product_id]);
   if (!product) throw new Error('product not found');
   const lotNumber = String(input.lot_number || '').trim();
   if (!lotNumber) throw new Error('lot_number required');
   const id = newGuid();
   const status: LotStatus = input.status && LOT_STATUSES.includes(input.status) ? input.status : 'draft';
-  run(
+  await run(
     `INSERT INTO product_lots
       (id, product_id, lot_number, factory, production_date, arrived_at, warehouse_id, gtin,
        qty_planned, qty_received, status, comment)
@@ -226,23 +226,23 @@ export function createLot(input: {
       String(input.comment || '').trim(),
     ]
   );
-  logEvent({
+  await logEvent({
     lot_id: id,
     event: 'lot.created',
     actor_id: input.actor_id,
     payload: { lot_number: lotNumber, product_id: input.product_id },
   });
-  return get('SELECT * FROM product_lots WHERE id = ?', [id]) as unknown as ProductLot;
+  return await get('SELECT * FROM product_lots WHERE id = ?', [id]) as unknown as ProductLot;
 }
 
-export function listCodes(opts: {
+export async function listCodes(opts: {
   product_id?: string;
   lot_id?: string;
   status?: string;
   deal_id?: string;
   q?: string;
   limit?: number;
-}): Array<DatamatrixCode & { product_sku?: string; product_name?: string }> {
+}): Promise<Array<DatamatrixCode & { product_sku?: string; product_name?: string }>> {
   const where: string[] = [];
   const params: Array<string | number> = [];
   if (opts.product_id) {
@@ -268,7 +268,7 @@ export function listCodes(opts: {
   }
   const limit = Math.min(1000, Math.max(1, opts.limit || 100));
   params.push(limit);
-  return all(
+  return await all(
     `SELECT d.*, p.sku AS product_sku, p.name AS product_name
      FROM datamatrix_codes d
      LEFT JOIN products p ON p.id = d.product_id
@@ -279,25 +279,25 @@ export function listCodes(opts: {
   ) as unknown as Array<DatamatrixCode & { product_sku?: string; product_name?: string }>;
 }
 
-export function registerCode(input: {
+export async function registerCode(input: {
   code: string;
   product_id: string;
   lot_id?: string;
   warehouse_id?: string;
   status?: DmStatus;
   actor_id?: string;
-}): DatamatrixCode {
+}): Promise<DatamatrixCode> {
   const code = String(input.code || '').trim();
   if (!code) throw new Error('code required');
-  const existing = get('SELECT id FROM datamatrix_codes WHERE code = ?', [code]);
+  const existing = await get('SELECT id FROM datamatrix_codes WHERE code = ?', [code]);
   if (existing) throw new Error('code already registered');
-  const product = get('SELECT id, gtin FROM products WHERE id = ?', [input.product_id]);
+  const product = await get('SELECT id, gtin FROM products WHERE id = ?', [input.product_id]);
   if (!product) throw new Error('product not found');
   const parsed = parseDatamatrixPayload(code);
   const id = newGuid();
   const status: DmStatus =
     input.status && DM_STATUSES.includes(input.status) ? input.status : 'received';
-  run(
+  await run(
     `INSERT INTO datamatrix_codes
       (id, code, product_id, lot_id, gtin, serial, status, aggregate_id, warehouse_id,
        deal_id, stock_doc_id, scanned_at, withdrawn_at, meta_json)
@@ -315,28 +315,28 @@ export function registerCode(input: {
     ]
   );
   if (input.lot_id) {
-    run(
+    await run(
       `UPDATE product_lots SET qty_received = qty_received + 1,
          status = CASE WHEN status = 'draft' THEN 'received' ELSE status END
        WHERE id = ?`,
       [input.lot_id]
     );
   }
-  logEvent({
+  await logEvent({
     code_id: id,
     lot_id: input.lot_id || null,
     event: 'code.registered',
     actor_id: input.actor_id,
     payload: { status, code: code.slice(0, 64) },
   });
-  return get('SELECT * FROM datamatrix_codes WHERE id = ?', [id]) as unknown as DatamatrixCode;
+  return await get('SELECT * FROM datamatrix_codes WHERE id = ?', [id]) as unknown as DatamatrixCode;
 }
 
 /**
  * Скан при приёмке / продаже / выводе.
  * action: receive | sale | withdraw | return | defect
  */
-export function scanCode(input: {
+export async function scanCode(input: {
   code: string;
   action: 'receive' | 'sale' | 'withdraw' | 'return' | 'defect';
   product_id?: string;
@@ -345,11 +345,11 @@ export function scanCode(input: {
   deal_id?: string;
   stock_doc_id?: string;
   actor_id?: string;
-}): { code: DatamatrixCode; created: boolean } {
+}): Promise<{ code: DatamatrixCode; created: boolean }> {
   const codeStr = String(input.code || '').trim();
   if (!codeStr) throw new Error('code required');
 
-  let row = get<DatamatrixCode>('SELECT * FROM datamatrix_codes WHERE code = ?', [codeStr]) as
+  let row = await get<DatamatrixCode>('SELECT * FROM datamatrix_codes WHERE code = ?', [codeStr]) as
     | DatamatrixCode
     | undefined;
   let created = false;
@@ -359,7 +359,7 @@ export function scanCode(input: {
       throw new Error('Код не найден в базе. Сначала приёмка (receive) или регистрация.');
     }
     if (!input.product_id) throw new Error('product_id required for first receive');
-    row = registerCode({
+    row = await registerCode({
       code: codeStr,
       product_id: input.product_id,
       lot_id: input.lot_id,
@@ -419,9 +419,9 @@ export function scanCode(input: {
   }
 
   params.push(id);
-  run(`UPDATE datamatrix_codes SET ${patch.join(', ')} WHERE id = ?`, params);
+  await run(`UPDATE datamatrix_codes SET ${patch.join(', ')} WHERE id = ?`, params);
 
-  logEvent({
+  await logEvent({
     code_id: id,
     lot_id: row.lot_id || input.lot_id || null,
     event: `code.scan.${input.action}`,
@@ -435,7 +435,7 @@ export function scanCode(input: {
 
   // Заготовка под ЦРПТ: при sale/withdraw — очередь на вывод из оборота
   if (input.action === 'sale' || input.action === 'withdraw') {
-    run(
+    await run(
       `INSERT INTO crpt_outbox (id, code_id, operation, status, payload_json, created_at)
        VALUES (?, ?, 'withdraw', 'pending', ?, datetime('now'))`,
       [
@@ -452,35 +452,35 @@ export function scanCode(input: {
   }
 
   return {
-    code: get('SELECT * FROM datamatrix_codes WHERE id = ?', [id]) as unknown as DatamatrixCode,
+    code: await get('SELECT * FROM datamatrix_codes WHERE id = ?', [id]) as unknown as DatamatrixCode,
     created,
   };
 }
 
-export function createAggregate(input: {
+export async function createAggregate(input: {
   codes: string[];
   parent_code?: string;
   actor_id?: string;
-}): { aggregate_id: string; linked: number } {
+}): Promise<{ aggregate_id: string; linked: number }> {
   const codes = (input.codes || []).map((c) => String(c).trim()).filter(Boolean);
   if (codes.length < 2) throw new Error('Нужно минимум 2 кода для агрегации');
   const aggId = newGuid();
   const parent = String(input.parent_code || '').trim();
-  run(
+  await run(
     `INSERT INTO datamatrix_aggregates (id, parent_code, status, codes_count, created_at)
      VALUES (?, ?, 'active', ?, datetime('now'))`,
     [aggId, parent, codes.length]
   );
   let linked = 0;
   for (const code of codes) {
-    const row = get<{ id: string }>('SELECT id FROM datamatrix_codes WHERE code = ?', [code]);
+    const row = await get<{ id: string }>('SELECT id FROM datamatrix_codes WHERE code = ?', [code]);
     if (!row) continue;
-    run(
+    await run(
       `UPDATE datamatrix_codes SET aggregate_id = ?, status = 'aggregated' WHERE id = ?`,
       [aggId, row.id]
     );
     linked += 1;
-    logEvent({
+    await logEvent({
       code_id: row.id,
       event: 'code.aggregated',
       actor_id: input.actor_id,
@@ -490,14 +490,14 @@ export function createAggregate(input: {
   return { aggregate_id: aggId, linked };
 }
 
-export function productMarkingSummary(productId: string) {
-  const lots = listLots({ product_id: productId, limit: 50 });
-  const codes = listCodes({ product_id: productId, limit: 50 });
-  const byStatus = all<{ status: string; c: number }>(
+export async function productMarkingSummary(productId: string) {
+  const lots = await listLots({ product_id: productId, limit: 50 });
+  const codes = await listCodes({ product_id: productId, limit: 50 });
+  const byStatus = await all<{ status: string; c: number }>(
     `SELECT status, COUNT(*) AS c FROM datamatrix_codes WHERE product_id = ? GROUP BY status`,
     [productId]
   );
-  const product = get<{ id: string; sku: string; name: string; gtin: string; requires_marking: number }>(
+  const product = await get<{ id: string; sku: string; name: string; gtin: string; requires_marking: number }>(
     `SELECT id, sku, name, IFNULL(gtin,'') AS gtin, IFNULL(requires_marking,0) AS requires_marking
      FROM products WHERE id = ?`,
     [productId]

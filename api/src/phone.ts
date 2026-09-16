@@ -62,9 +62,9 @@ function defaultsUi(): UiSettings {
   };
 }
 
-export function getUiSettings(): UiSettings {
+export async function getUiSettings(): Promise<UiSettings> {
   const base = defaultsUi();
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
   if (!row?.value) return base;
   try {
     const parsed = JSON.parse(row.value) as Partial<UiSettings>;
@@ -84,8 +84,8 @@ export function getUiSettings(): UiSettings {
   }
 }
 
-export function saveUiSettings(patch: Partial<UiSettings>): UiSettings {
-  const next: UiSettings = { ...getUiSettings() };
+export async function saveUiSettings(patch: Partial<UiSettings>): Promise<UiSettings> {
+  const next: UiSettings = { ...await getUiSettings() };
   if (patch.phone_format != null) {
     next.phone_format = asPhoneFormat(patch.phone_format);
   }
@@ -106,12 +106,12 @@ export function saveUiSettings(patch: Partial<UiSettings>): UiSettings {
       patch.payment_link_default_organization_id || ''
     );
   }
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(next)]);
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(next)]);
   return next;
 }
 
-export function getPhoneFormat(): PhoneFormat {
-  return getUiSettings().phone_format;
+export async function getPhoneFormat(): Promise<PhoneFormat> {
+  return (await getUiSettings()).phone_format;
 }
 
 /** Только цифры. */
@@ -182,9 +182,9 @@ export function formatPhoneField(
 }
 
 /** Нормализация при сохранении (тот же format, если style ≠ off). */
-export function normalizePhoneForStorage(
+export async function normalizePhoneForStorage(
   raw: unknown,
   style?: PhoneFormat
-): string {
-  return formatPhoneField(raw, style ?? getPhoneFormat());
+): Promise<string> {
+  return formatPhoneField(raw, style ?? await getPhoneFormat());
 }

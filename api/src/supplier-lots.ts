@@ -15,10 +15,10 @@ export type SupplierLotHint = {
 
 let lotsTableReady: boolean | null = null;
 
-export function supplierLotsTableReady(): boolean {
+export async function supplierLotsTableReady(): Promise<boolean> {
   if (lotsTableReady != null) return lotsTableReady;
   try {
-    const hit = get<{ c: number }>(
+    const hit = await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='product_supplier_lots'`
     );
     lotsTableReady = Number(hit?.c || 0) > 0;
@@ -42,12 +42,12 @@ function parseFactFromNote(note: string): string {
  * Подсказка лота по карточке + опционально ячейке документа.
  * Если ячейка задана — берём лот с этой ячейкой; иначе — с наибольшим qty.
  */
-export function resolveProductSupplierLotHint(
+export async function resolveProductSupplierLotHint(
   productId: string,
   opts?: { preferCell?: string; dealId?: string }
-): SupplierLotHint | null {
+): Promise<SupplierLotHint | null> {
   const pid = String(productId || '').trim();
-  if (!pid || !supplierLotsTableReady()) return null;
+  if (!pid || !await supplierLotsTableReady()) return null;
 
   const preferCell = String(opts?.preferCell || '').trim().toUpperCase();
   const dealId = String(opts?.dealId || '').trim();
@@ -55,7 +55,7 @@ export function resolveProductSupplierLotHint(
   let noteSupplier = '';
   let noteFact = '';
   if (dealId) {
-    const noteRow = get<{ note: string }>(
+    const noteRow = await get<{ note: string }>(
       `SELECT IFNULL(note,'') AS note FROM crm_deal_items
        WHERE deal_id = ? AND product_guid = ?
        ORDER BY line_no ASC LIMIT 1`,
@@ -66,13 +66,13 @@ export function resolveProductSupplierLotHint(
     noteFact = parseFactFromNote(note);
   }
 
-  const prod = get<{ sku: string }>(
+  const prod = await get<{ sku: string }>(
     `SELECT IFNULL(sku,'') AS sku FROM products WHERE id = ?`,
     [pid]
   );
   const sku = String(prod?.sku || '').trim();
 
-  const lots = all<{
+  const lots = await all<{
     master_sku: string;
     fact_sku: string;
     supplier: string;
@@ -135,17 +135,17 @@ export function resolveProductSupplierLotHint(
 }
 
 /** Поля для API строк /pick. */
-export function supplierLotFieldsForLine(
+export async function supplierLotFieldsForLine(
   productId: string,
   opts?: { preferCell?: string; dealId?: string }
-): {
+): Promise<{
   master_sku?: string;
   fact_sku?: string;
   supplier?: string;
   lot_cell_code?: string;
   lot_warehouse_name?: string;
-} {
-  const hint = resolveProductSupplierLotHint(productId, opts);
+}> {
+  const hint = await resolveProductSupplierLotHint(productId, opts);
   if (!hint) return {};
   return {
     ...(hint.master_sku ? { master_sku: hint.master_sku } : {}),

@@ -126,21 +126,21 @@ async function fetchLines(
   return data.value || [];
 }
 
-function ensureWarehouse(id: string): string {
+async function ensureWarehouse(id: string): Promise<string> {
   if (!id || id === EMPTY) {
     const fallback = '00000000-0000-0000-0000-000000000001';
-    if (!get('SELECT id FROM warehouses WHERE id = ?', [fallback])) {
-      run(
+    if (!await get('SELECT id FROM warehouses WHERE id = ?', [fallback])) {
+      await run(
         `INSERT OR IGNORE INTO warehouses (id, name, code, is_active) VALUES (?, 'Склад не указан (1С)', '1C-NONE', 0)`,
         [fallback]
       );
     } else {
-      run(`UPDATE warehouses SET is_active = 0 WHERE id = ? AND code = '1C-NONE'`, [fallback]);
+      await run(`UPDATE warehouses SET is_active = 0 WHERE id = ? AND code = '1C-NONE'`, [fallback]);
     }
     return fallback;
   }
-  if (!get('SELECT id FROM warehouses WHERE id = ?', [id])) {
-    run(
+  if (!await get('SELECT id FROM warehouses WHERE id = ?', [id])) {
+    await run(
       `INSERT OR IGNORE INTO warehouses (id, name, code, is_active) VALUES (?, ?, ?, 1)`,
       [id, `Склад 1С ${id.slice(0, 8)}`, `1C-${id.slice(0, 8)}`]
     );
@@ -148,10 +148,10 @@ function ensureWarehouse(id: string): string {
   return id;
 }
 
-function ensureCounterparty(id: string): string | null {
+async function ensureCounterparty(id: string): Promise<string | null> {
   if (!id || id === EMPTY) return null;
-  if (!get('SELECT id FROM counterparties WHERE id = ?', [id])) {
-    run(
+  if (!await get('SELECT id FROM counterparties WHERE id = ?', [id])) {
+    await run(
       `INSERT OR IGNORE INTO counterparties (id, name, inn, phone, kind) VALUES (?, ?, '', '', 'supplier')`,
       [id, `Контрагент 1С ${id.slice(0, 8)}`]
     );
@@ -193,10 +193,10 @@ export async function syncDocsFromOdata(
       if (!id) continue;
       const number = String(h.Number || id).trim();
       const docDate = String(h.Date || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
-      const wh = ensureWarehouse(String(h['СтруктурнаяЕдиница_Key'] || ''));
-      const cp = ensureCounterparty(String(h['Контрагент_Key'] || ''));
+      const wh = await ensureWarehouse(String(h['СтруктурнаяЕдиница_Key'] || ''));
+      const cp = await ensureCounterparty(String(h['Контрагент_Key'] || ''));
       const amount = Number(h['СуммаДокумента'] || 0) || 0;
-      const prev = get<{ comment: string }>('SELECT IFNULL(comment,\'\') AS comment FROM stock_docs WHERE id = ?', [
+      const prev = await get<{ comment: string }>('SELECT IFNULL(comment,\'\') AS comment FROM stock_docs WHERE id = ?', [
         id,
       ]);
       const comment = mergeDocComment(prev?.comment, String(h['Комментарий'] || ''));
@@ -204,7 +204,7 @@ export async function syncDocsFromOdata(
       const basis =
         kind === 'out' ? parseOutBasisFromOdata(h) : { deal_id: '', basis_order_id: '' };
 
-      run(
+      await run(
         `INSERT INTO stock_docs
           (id, doc_type, number, doc_date, warehouse_id, warehouse_to_id, counterparty_id, comment, posted, amount, source, deal_id, basis_order_id)
          VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, '1c', ?, ?)
@@ -242,7 +242,7 @@ export async function syncDocsFromOdata(
       if (kind === 'in') inHeaders += 1;
       else outHeaders += 1;
 
-      run('DELETE FROM stock_doc_lines WHERE doc_id = ?', [id]);
+      await run('DELETE FROM stock_doc_lines WHERE doc_id = ?', [id]);
       let lines: Record<string, unknown>[] = [];
       try {
         lines = await fetchLines(cfg, spec.header, id, spec.linesNav);
@@ -257,12 +257,12 @@ export async function syncDocsFromOdata(
           skippedLines += 1;
           continue;
         }
-        if (!get('SELECT id FROM products WHERE id = ?', [productId])) {
+        if (!await get('SELECT id FROM products WHERE id = ?', [productId])) {
           skippedLines += 1;
           continue;
         }
         // Расходные — только товары; услуги остаются в заказах / УПД
-        if (kind === 'out' && isServiceProduct(productId)) {
+        if (kind === 'out' && await isServiceProduct(productId)) {
           skippedLines += 1;
           continue;
         }
@@ -274,11 +274,11 @@ export async function syncDocsFromOdata(
         let gtdCode = '';
         if (gtdKey && gtdKey !== EMPTY) {
           // Catalog_НомераГТД в OData не опубликован — храним ключ + локальный код.
-          upsertGtdFromSync(gtdKey);
-          const g = get<{ code: string }>('SELECT code FROM gtd_numbers WHERE id = ?', [gtdKey]);
+          await upsertGtdFromSync(gtdKey);
+          const g = await get<{ code: string }>('SELECT code FROM gtd_numbers WHERE id = ?', [gtdKey]);
           gtdCode = g?.code || gtdKey.slice(0, 8);
         }
-        run(
+        await run(
           `INSERT INTO stock_doc_lines
             (id, doc_id, product_id, qty, price, amount, line_no, gtd_key, gtd_code, country_key)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -306,7 +306,7 @@ export async function syncDocsFromOdata(
     }
   }
 
-  run(
+  await run(
     `INSERT INTO meta (key, value) VALUES ('docs_synced_at', ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     [new Date().toISOString()]
@@ -322,29 +322,29 @@ export async function syncDocsFromOdata(
   };
 }
 
-export function docsSyncMeta() {
+export async function docsSyncMeta() {
   return {
-    docs: get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE source = '1c'`)?.c ?? 0,
+    docs: (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE source = '1c'`))?.c ?? 0,
     inDocs:
-      get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE source = '1c' AND doc_type = 'in'`)
+      (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE source = '1c' AND doc_type = 'in'`))
         ?.c ?? 0,
     outDocs:
-      get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE source = '1c' AND doc_type = 'out'`)
+      (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE source = '1c' AND doc_type = 'out'`))
         ?.c ?? 0,
-    lines: get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_doc_lines`)?.c ?? 0,
-    lastSync: get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['docs_synced_at'])
+    lines: (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_doc_lines`))?.c ?? 0,
+    lastSync: (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['docs_synced_at']))
       ?.value ?? null,
   };
 }
 
-function saveOutBasis(
+async function saveOutBasis(
   docId: string,
   dealId: string,
   basisOrderId: string
-): { deal_id: string; basis_order_id: string } {
+): Promise<{ deal_id: string; basis_order_id: string }> {
   const deal = String(dealId || '').trim();
   const basis = String(basisOrderId || '').trim() || deal;
-  run(`UPDATE stock_docs SET deal_id = ?, basis_order_id = ? WHERE id = ?`, [
+  await run(`UPDATE stock_docs SET deal_id = ?, basis_order_id = ? WHERE id = ?`, [
     deal,
     basis,
     docId,
@@ -353,10 +353,10 @@ function saveOutBasis(
 }
 
 /** Достать номер сделки Amo / заказ из комментария или связанных УПД/марок. */
-export function recoverOutDealLocally(
+export async function recoverOutDealLocally(
   docId: string,
   commentRaw: string
-): { deal_id: string; basis_order_id: string; from: 'comment' | 'upd' | 'serial' | 'sales' } | null {
+): Promise<{ deal_id: string; basis_order_id: string; from: 'comment' | 'upd' | 'serial' | 'sales' } | null> {
   const comment = String(commentRaw || '');
 
   const fromComment =
@@ -369,7 +369,7 @@ export function recoverOutDealLocally(
 
   const updNum = comment.match(/УПД\s+([0-9A-Za-zА-Яа-я.\-]+)/i)?.[1]?.trim() || '';
   if (updNum) {
-    const sd = get<{ deal_id: string }>(
+    const sd = await get<{ deal_id: string }>(
       `SELECT IFNULL(deal_id,'') AS deal_id FROM sales_docs
        WHERE number = ? AND IFNULL(deal_id,'') != '' LIMIT 1`,
       [updNum]
@@ -380,12 +380,12 @@ export function recoverOutDealLocally(
   }
 
   // УПД/СФ по этому stock_doc в комментарии sales_docs или по номеру расходной
-  const doc = get<{ number: string }>(`SELECT IFNULL(number,'') AS number FROM stock_docs WHERE id = ?`, [
+  const doc = await get<{ number: string }>(`SELECT IFNULL(number,'') AS number FROM stock_docs WHERE id = ?`, [
     docId,
   ]);
   const docNum = String(doc?.number || '').trim();
   if (docNum) {
-    const bySales = get<{ deal_id: string }>(
+    const bySales = await get<{ deal_id: string }>(
       `SELECT IFNULL(deal_id,'') AS deal_id FROM sales_docs
        WHERE IFNULL(deal_id,'') != ''
          AND (comment LIKE ? OR comment LIKE ?)
@@ -398,7 +398,7 @@ export function recoverOutDealLocally(
   }
 
   // Марки в строках расхода ↔ позиции заказа покупателя
-  const lineSerialJson = all<{ serials_json: string }>(
+  const lineSerialJson = await all<{ serials_json: string }>(
     `SELECT IFNULL(serials_json,'[]') AS serials_json FROM stock_doc_lines WHERE doc_id = ?`,
     [docId]
   );
@@ -416,7 +416,7 @@ export function recoverOutDealLocally(
       /* ignore */
     }
   }
-  const unitSerials = all<{ serial: string }>(
+  const unitSerials = await all<{ serial: string }>(
     `SELECT IFNULL(serial,'') AS serial FROM product_units
      WHERE out_doc_id = ? AND IFNULL(serial,'') != '' LIMIT 80`,
     [docId]
@@ -425,7 +425,7 @@ export function recoverOutDealLocally(
     if (u.serial) serials.add(u.serial);
   }
   for (const serial of serials) {
-    const hit = get<{ deal_id: string }>(
+    const hit = await get<{ deal_id: string }>(
       `SELECT deal_id FROM crm_deal_items
        WHERE IFNULL(serials_json,'') LIKE ? ESCAPE '\\'
        LIMIT 1`,
@@ -450,7 +450,7 @@ export async function enrichOutDocBasis(docId: string): Promise<{
   basis_order_id: string;
   from: 'self' | 'sale' | 'cached' | 'comment' | 'upd' | 'serial' | 'sales' | 'none';
 }> {
-  const doc = get<{
+  const doc = await get<{
     id: string;
     doc_type: string;
     source: string;
@@ -471,9 +471,9 @@ export async function enrichOutDocBasis(docId: string): Promise<{
     return { deal_id: doc.deal_id, basis_order_id: doc.basis_order_id, from: 'cached' };
   }
 
-  const local = recoverOutDealLocally(docId, doc.comment);
+  const local = await recoverOutDealLocally(docId, doc.comment);
   if (local?.deal_id) {
-    const saved = saveOutBasis(docId, local.deal_id, local.basis_order_id || doc.basis_order_id);
+    const saved = await saveOutBasis(docId, local.deal_id, local.basis_order_id || doc.basis_order_id);
     return { ...saved, from: local.from };
   }
 
@@ -486,7 +486,7 @@ export async function enrichOutDocBasis(docId: string): Promise<{
       const h = (await odataGet(cfg, path)) as Record<string, unknown>;
       const basis = parseOutBasisFromOdata(h);
       if (basis.deal_id || basis.basis_order_id) {
-        const saved = saveOutBasis(
+        const saved = await saveOutBasis(
           docId,
           basis.deal_id || doc.deal_id,
           basis.basis_order_id || doc.basis_order_id
@@ -505,7 +505,7 @@ export async function enrichOutDocBasis(docId: string): Promise<{
   // Складской: взять сделку с парной продажи
   const saleNum = String(doc.comment || '').match(/продажа:([^\s·]+)/)?.[1];
   if (saleNum) {
-    const sale = get<{ id: string; deal_id: string; basis_order_id: string }>(
+    const sale = await get<{ id: string; deal_id: string; basis_order_id: string }>(
       `SELECT id, IFNULL(deal_id,'') AS deal_id, IFNULL(basis_order_id,'') AS basis_order_id
        FROM stock_docs
        WHERE number = ? AND doc_type = 'out'
@@ -515,17 +515,17 @@ export async function enrichOutDocBasis(docId: string): Promise<{
     );
     if (sale && !sale.deal_id) {
       await enrichOutDocBasis(sale.id);
-      const again = get<{ deal_id: string; basis_order_id: string }>(
+      const again = await get<{ deal_id: string; basis_order_id: string }>(
         `SELECT IFNULL(deal_id,'') AS deal_id, IFNULL(basis_order_id,'') AS basis_order_id
          FROM stock_docs WHERE id = ?`,
         [sale.id]
       );
       if (again?.deal_id) {
-        const saved = saveOutBasis(docId, again.deal_id, again.basis_order_id || doc.basis_order_id);
+        const saved = await saveOutBasis(docId, again.deal_id, again.basis_order_id || doc.basis_order_id);
         return { ...saved, from: 'sale' };
       }
     } else if (sale?.deal_id) {
-      const saved = saveOutBasis(docId, sale.deal_id, sale.basis_order_id || doc.basis_order_id);
+      const saved = await saveOutBasis(docId, sale.deal_id, sale.basis_order_id || doc.basis_order_id);
       return { ...saved, from: 'sale' };
     }
   }
@@ -539,25 +539,25 @@ export async function enrichOutDocBasis(docId: string): Promise<{
 }
 
 /** Ручная привязка заказа покупателя (сделки) к расходной. */
-export function setOutDocDeal(
+export async function setOutDocDeal(
   docId: string,
   dealIdRaw: string
-): { ok: true; deal_id: string; basis_order_id: string } {
+): Promise<{ ok: true; deal_id: string; basis_order_id: string }> {
   const id = String(docId || '').trim();
   const dealId = String(dealIdRaw || '')
     .trim()
     .replace(/\D/g, '');
   if (!id) throw new Error('doc_id required');
   if (!dealId) throw new Error('Укажите номер заказа покупателя (сделки Amo)');
-  const doc = get<{ doc_type: string }>(`SELECT doc_type FROM stock_docs WHERE id = ?`, [id]);
+  const doc = await get<{ doc_type: string }>(`SELECT doc_type FROM stock_docs WHERE id = ?`, [id]);
   if (!doc) throw new Error('Документ не найден');
   if (doc.doc_type !== 'out') throw new Error('Привязка заказа — только для расходной');
-  const saved = saveOutBasis(id, dealId, dealId);
+  const saved = await saveOutBasis(id, dealId, dealId);
   return { ok: true, ...saved };
 }
 
-export function listImportedDocs(limit = 200) {
-  return all(
+export async function listImportedDocs(limit = 200) {
+  return await all(
     `SELECT d.*, w.name AS warehouse, c.name AS counterparty
      FROM stock_docs d
      LEFT JOIN warehouses w ON w.id = d.warehouse_id

@@ -83,12 +83,12 @@ export function dealSalesDocPackTypes(
   return resolveDocPack(deal);
 }
 
-export function setDealIsSto(dealId: string, isSto: boolean): void {
+export async function setDealIsSto(dealId: string, isSto: boolean): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('deal_id required');
-  const row = get('SELECT id FROM crm_deals WHERE id = ?', [id]);
+  const row = await get('SELECT id FROM crm_deals WHERE id = ?', [id]);
   if (!row) throw new Error('Заказ покупателя не найден');
-  run(
+  await run(
     `UPDATE crm_deals
      SET is_sto = ?, is_sto_manual = 1, updated_at = datetime('now')
      WHERE id = ?`,
@@ -98,7 +98,7 @@ export function setDealIsSto(dealId: string, isSto: boolean): void {
 }
 
 /** Канал реализации / СТО из Учёта (локально; пуш в Amo — отдельно). */
-export function setDealAmoSaleFields(
+export async function setDealAmoSaleFields(
   dealId: string,
   patch: {
     amo_channel?: string;
@@ -108,10 +108,10 @@ export function setDealAmoSaleFields(
     amo_payment_type?: string;
     amo_pay_method?: string;
   }
-): void {
+): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('deal_id required');
-  const row = get<Record<string, unknown>>('SELECT * FROM crm_deals WHERE id = ?', [id]);
+  const row = await get<Record<string, unknown>>('SELECT * FROM crm_deals WHERE id = ?', [id]);
   if (!row) throw new Error('Заказ покупателя не найден');
 
   const amoChannel =
@@ -174,7 +174,7 @@ export function setDealAmoSaleFields(
 
   let orgCompanyId = String(row.org_company_id || '').trim();
   if (patch.amo_branch !== undefined) {
-    const fromBranch = orgCompanyIdForBranch(amoBranch);
+    const fromBranch = await orgCompanyIdForBranch(amoBranch);
     if (fromBranch) orgCompanyId = fromBranch;
   }
 
@@ -194,7 +194,7 @@ export function setDealAmoSaleFields(
   const guessedSto = guessDealIsSto(dealForRules as Record<string, unknown>);
 
   // Смена канала/СТО сбрасывает ручной override галочки — снова из Amo-полей
-  run(
+  await run(
     `UPDATE crm_deals
      SET amo_channel = ?, amo_sto = ?, amo_shipment = ?, amo_branch = ?,
          amo_payment_type = ?, amo_pay_method = ?,
@@ -380,10 +380,10 @@ function pushDealTextSearch(
   );
 }
 
-export function setDealVehicle(dealId: string, vehicle: DealVehicleFields): void {
+export async function setDealVehicle(dealId: string, vehicle: DealVehicleFields): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('deal_id required');
-  const row = get('SELECT id FROM crm_deals WHERE id = ?', [id]);
+  const row = await get('SELECT id FROM crm_deals WHERE id = ?', [id]);
   if (!row) throw new Error('Заказ покупателя не найден');
   const plate = normPlate(vehicle.car_plate);
   const vin = String(vehicle.car_vin ?? '')
@@ -483,11 +483,11 @@ export function setDealVehicle(dealId: string, vehicle: DealVehicleFields): void
   }
   sets.push(`updated_at = datetime('now')`);
   params.push(id);
-  run(`UPDATE crm_deals SET ${sets.join(', ')} WHERE id = ?`, params);
+  await run(`UPDATE crm_deals SET ${sets.join(', ')} WHERE id = ?`, params);
 }
 
 /** Покупатель заказа: ФИО/название, ИНН, признак юрлица — для УПД и документов. */
-export function updateDealBuyer(
+export async function updateDealBuyer(
   dealId: string,
   fields: {
     buyer_name?: string;
@@ -513,10 +513,10 @@ export function updateDealBuyer(
     is_partner?: boolean | number;
     client_role?: string;
   }
-): void {
+): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('deal_id required');
-  const row = get('SELECT id FROM crm_deals WHERE id = ?', [id]);
+  const row = await get('SELECT id FROM crm_deals WHERE id = ?', [id]);
   if (!row) throw new Error('Заказ покупателя не найден');
 
   const name = fields.buyer_name != null ? String(fields.buyer_name).trim() : null;
@@ -585,7 +585,7 @@ export function updateDealBuyer(
 
   if (kind === 'partner' || kind === 'partner_delay') {
     if (!clientRole) clientRole = kind === 'partner_delay' ? 'partner_delay' : 'partner';
-    const existing = get<Record<string, unknown>>(
+    const existing = await get<Record<string, unknown>>(
       `SELECT buyer_inn, buyer_kind, is_legal_entity, company_name FROM crm_deals WHERE id = ?`,
       [id]
     );
@@ -721,7 +721,7 @@ export function updateDealBuyer(
   if (!sets.length) return;
   sets.push(`updated_at = datetime('now')`);
   params.push(id);
-  run(`UPDATE crm_deals SET ${sets.join(', ')} WHERE id = ?`, params);
+  await run(`UPDATE crm_deals SET ${sets.join(', ')} WHERE id = ?`, params);
 
   // подтянуть в документы сделки
   const docSets: string[] = [];
@@ -788,15 +788,15 @@ export function updateDealBuyer(
   }
   if (docSets.length) {
     docParams.push(id);
-    run(`UPDATE sales_docs SET ${docSets.join(', ')} WHERE deal_id = ?`, docParams);
+    await run(`UPDATE sales_docs SET ${docSets.join(', ')} WHERE deal_id = ?`, docParams);
   }
 }
 
 /** Юрлицо с первого счёта по заказу — после выписки менять организацию нельзя. */
-export function dealInvoiceOrganizationId(dealId: string): string {
+export async function dealInvoiceOrganizationId(dealId: string): Promise<string> {
   const id = String(dealId || '').trim();
   if (!id) return '';
-  const row = get<{ organization_id: string }>(
+  const row = await get<{ organization_id: string }>(
     `SELECT IFNULL(organization_id,'') AS organization_id
      FROM sales_docs
      WHERE deal_id = ? AND doc_type = 'invoice'
@@ -808,16 +808,16 @@ export function dealInvoiceOrganizationId(dealId: string): string {
 }
 
 /** Организация для нового документа: счёт фиксирует; иначе контур заказа (филиал Amo). */
-export function organizationIdForDealRecord(
+export async function organizationIdForDealRecord(
   deal: Record<string, unknown>,
   inputOrganizationId?: string
-): string {
+): Promise<string> {
   const dealIdStr = String(deal.id || '').trim();
-  const lockedOrg = dealIdStr ? dealInvoiceOrganizationId(dealIdStr) : '';
-  const orgFromContour = resolveOrganizationForCompany(String(deal.org_company_id || ''));
+  const lockedOrg = dealIdStr ? await dealInvoiceOrganizationId(dealIdStr) : '';
+  const orgFromContour = await resolveOrganizationForCompany(String(deal.org_company_id || ''));
   let orgId = lockedOrg || String(inputOrganizationId || '').trim() || orgFromContour;
   if (lockedOrg && orgFromContour && lockedOrg !== orgFromContour) {
-    const lockedRow = getOrganization(lockedOrg);
+    const lockedRow = await getOrganization(lockedOrg);
     const dealCo = String(deal.org_company_id || '').trim();
     if (
       lockedRow &&
@@ -827,33 +827,33 @@ export function organizationIdForDealRecord(
       orgId = orgFromContour;
     }
   }
-  return resolveOrganizationId(orgId);
+  return await resolveOrganizationId(orgId);
 }
 
 /** Контур (филиал) на заказе — только до выписки счёта. Синхронизирует amo_branch по маппингу. */
-export function setDealOrgCompany(
+export async function setDealOrgCompany(
   dealId: string,
   orgCompanyId: string
-): { org_company_id: string; amo_branch: string } {
+): Promise<{ org_company_id: string; amo_branch: string }> {
   const id = String(dealId || '').trim();
   if (!id) throw new Error('deal_id required');
-  const row = get<{ amo_branch?: string }>('SELECT id, amo_branch FROM crm_deals WHERE id = ?', [
+  const row = await get<{ amo_branch?: string }>('SELECT id, amo_branch FROM crm_deals WHERE id = ?', [
     id,
   ]);
   if (!row) throw new Error('Заказ покупателя не найден');
-  if (dealInvoiceOrganizationId(id)) {
+  if (await dealInvoiceOrganizationId(id)) {
     throw new Error('После выписки счёта организацию и юрлицо менять нельзя');
   }
   const co = String(orgCompanyId || '').trim();
   const branch = co
-    ? amoBranchForOrgCompany(co, String(row.amo_branch || ''))
+    ? await amoBranchForOrgCompany(co, String(row.amo_branch || ''))
     : '';
   if (co && !branch) {
     throw new Error(
       'Для этого филиала нет маппинга в Amo (Настройки → Amo → Филиалы). Сначала сопоставьте филиал с контуром.'
     );
   }
-  run(
+  await run(
     `UPDATE crm_deals
      SET org_company_id = ?, amo_branch = ?, updated_at = datetime('now')
      WHERE id = ?`,
@@ -938,12 +938,12 @@ export function sanitizeAmoShipFields(input: {
 }
 
 /** Имя ответственного из staff / справочника Amo по amo_id. */
-function responsibleNameMap(amoIds: string[]): Map<string, string> {
+async function responsibleNameMap(amoIds: string[]): Promise<Map<string, string>> {
   const ids = [...new Set(amoIds.map(String).filter((id) => id && id !== '0'))];
   const map = new Map<string, string>();
   if (!ids.length) return map;
   const ph = ids.map(() => '?').join(',');
-  const rows = all<{ amo_id: string; name: string }>(
+  const rows = await all<{ amo_id: string; name: string }>(
     `SELECT amo_id, name FROM staff WHERE amo_id IN (${ph})`,
     ids
   );
@@ -978,17 +978,17 @@ function withResponsibleName<T extends Record<string, unknown>>(row: T, names: M
   };
 }
 
-function attachResponsibleNames<T extends Record<string, unknown>>(
+async function attachResponsibleNames<T extends Record<string, unknown>>(
   items: T[]
-): Array<T & { responsible_name: string }> {
-  const names = responsibleNameMap(items.map((d) => String(d.responsible_user_id || '')));
+): Promise<Array<T & { responsible_name: string }>> {
+  const names = await responsibleNameMap(items.map((d) => String(d.responsible_user_id || '')));
   return items.map((d) => withResponsibleName(d, names));
 }
 
-function attachOrgCompanyNames<T extends Record<string, unknown>>(
+async function attachOrgCompanyNames<T extends Record<string, unknown>>(
   items: T[]
-): Array<T & { org_company_name: string }> {
-  const rows = all<{ id: string; name: string }>(`SELECT id, name FROM companies`);
+): Promise<Array<T & { org_company_name: string }>> {
+  const rows = await all<{ id: string; name: string }>(`SELECT id, name FROM companies`);
   const map = new Map(rows.map((r) => [String(r.id), String(r.name || '')]));
   return items.map((d) => ({
     ...d,
@@ -1035,29 +1035,29 @@ async function loadExportAsync(
   return JSON.parse(String(stdout || '{}')) as DealExport;
 }
 
-export function dealsMeta() {
+export async function dealsMeta() {
   return {
-    pipelines: get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_pipelines')?.c ?? 0,
-    statuses: get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_pipeline_statuses')?.c ?? 0,
-    deals: get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_deals')?.c ?? 0,
+    pipelines: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_pipelines'))?.c ?? 0,
+    statuses: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_pipeline_statuses'))?.c ?? 0,
+    deals: (await get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_deals'))?.c ?? 0,
     withItems:
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(DISTINCT deal_id) AS c FROM crm_deal_items`
-      )?.c ?? 0,
+      ))?.c ?? 0,
     queued:
-      get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_deals WHERE queued_to_1c = 1')?.c ?? 0,
+      (await get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_deals WHERE queued_to_1c = 1'))?.c ?? 0,
     lastSync:
-      get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['deals_synced_at'])?.value
+      (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['deals_synced_at']))?.value
       ?? null,
   };
 }
 
 /** Ответственные по сделкам — для фильтра в журнале / канбане. */
-export function listDealResponsibles(opts?: {
+export async function listDealResponsibles(opts?: {
   pipelineId?: string;
   queuedTo1c?: boolean;
   orgCompanyId?: string;
-}): { items: Array<{ amo_id: string; name: string; deals: number }>; none: number } {
+}): Promise<{ items: Array<{ amo_id: string; name: string; deals: number }>; none: number }> {
   const where: string[] = [];
   const params: Array<string | number> = [];
   if (opts?.pipelineId) {
@@ -1073,7 +1073,7 @@ export function listDealResponsibles(opts?: {
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const andSql = where.length ? `AND ${where.join(' AND ')}` : '';
-  const rows = all<{ amo_id: string; c: number }>(
+  const rows = await all<{ amo_id: string; c: number }>(
     `SELECT responsible_user_id AS amo_id, COUNT(*) AS c
      FROM crm_deals
      ${whereSql}${whereSql ? ' AND' : ' WHERE'} IFNULL(responsible_user_id,'') != ''
@@ -1083,12 +1083,12 @@ export function listDealResponsibles(opts?: {
     params
   );
   const none =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM crm_deals
        WHERE IFNULL(responsible_user_id,'') = '' ${andSql}`,
       params
-    )?.c ?? 0;
-  const names = responsibleNameMap(rows.map((r) => String(r.amo_id)));
+    ))?.c ?? 0;
+  const names = await responsibleNameMap(rows.map((r) => String(r.amo_id)));
   const items = rows
     .map((r) => {
       const id = String(r.amo_id || '').trim();
@@ -1106,14 +1106,14 @@ export function listDealResponsibles(opts?: {
   return { items, none: Number(none) || 0 };
 }
 
-function upsertPipeline(pl: {
+async function upsertPipeline(pl: {
   id: string;
   name: string;
   sort?: number;
   is_archive?: boolean;
   statuses?: Array<{ id: string; name: string; sort?: number; color?: string }>;
-}): void {
-  run(
+}): Promise<void> {
+  await run(
     `INSERT INTO crm_pipelines (id, name, sort, is_archive)
      VALUES (?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
@@ -1121,7 +1121,7 @@ function upsertPipeline(pl: {
     [pl.id, pl.name || pl.id, pl.sort ?? 0, pl.is_archive ? 1 : 0]
   );
   for (const st of pl.statuses || []) {
-    run(
+    await run(
       `INSERT INTO crm_pipeline_statuses (id, pipeline_id, name, sort, color)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
@@ -1139,10 +1139,10 @@ function upsertPipeline(pl: {
 }
 
 /** Контур из маппинга филиала (meta integration_amo.branch_company). */
-function orgCompanyIdForBranch(branch: string): string {
+async function orgCompanyIdForBranch(branch: string): Promise<string> {
   const b = String(branch || '').trim();
   if (!b) return '';
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['integration_amo']);
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['integration_amo']);
   if (!row?.value) return '';
   try {
     const parsed = JSON.parse(row.value) as { branch_company?: Record<string, string> };
@@ -1157,10 +1157,10 @@ function orgCompanyIdForBranch(branch: string): string {
 }
 
 /** Обратный маппинг: контур → значение CF «Филиал» в Amo. */
-function amoBranchForOrgCompany(orgCompanyId: string, preferBranch = ''): string {
+async function amoBranchForOrgCompany(orgCompanyId: string, preferBranch = ''): Promise<string> {
   const co = String(orgCompanyId || '').trim();
   if (!co) return '';
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['integration_amo']);
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['integration_amo']);
   let map: Record<string, string> = {};
   if (row?.value) {
     try {
@@ -1179,11 +1179,11 @@ function amoBranchForOrgCompany(orgCompanyId: string, preferBranch = ''): string
   if (!labels.length) {
     // fallback: опции Amo + угадывание по имени контура
     const coName = String(
-      get<{ name: string }>('SELECT name FROM companies WHERE id = ?', [co])?.name || ''
+      (await get<{ name: string }>('SELECT name FROM companies WHERE id = ?', [co]))?.name || ''
     )
       .toLowerCase()
       .replace(/ё/g, 'е');
-    for (const label of amoSaleFieldOptions('amo_branch')) {
+    for (const label of await amoSaleFieldOptions('amo_branch')) {
       const n = label.toLowerCase().replace(/ё/g, 'е');
       if (coName && /стрела/.test(coName) && /стрела/.test(n)) return label;
       if (coName && /фогель|fogel/.test(coName) && /фогель|fogel/.test(n)) return label;
@@ -1223,7 +1223,7 @@ function parseAmoContactIdsFromExport(d: Record<string, unknown>): string[] {
 }
 
 /** Дозаполнить реквизиты покупателя из Amo (контакты сделки), не затирая ручные правки. */
-function mergeAmoBuyerRequisitesFromSync(dealId: string, d: Record<string, unknown>): void {
+async function mergeAmoBuyerRequisitesFromSync(dealId: string, d: Record<string, unknown>): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id) return;
   const digitCols = new Set(['buyer_kpp', 'buyer_ogrn', 'buyer_bik', 'buyer_rs', 'buyer_ks']);
@@ -1264,16 +1264,16 @@ function mergeAmoBuyerRequisitesFromSync(dealId: string, d: Record<string, unkno
   }
   if (sets.length) {
     params.push(id);
-    run(
+    await run(
       `UPDATE crm_deals SET ${sets.join(', ')}, updated_at = datetime('now') WHERE id = ?`,
       params
     );
   }
   if (!contactIds.length) return;
-  const deal = getDeal(id) as Record<string, unknown> | null;
-  const cpId = resolveCounterpartyIdForDeal(deal);
+  const deal = await getDeal(id) as Record<string, unknown> | null;
+  const cpId = await resolveCounterpartyIdForDeal(deal);
   if (!cpId) return;
-  run(
+  await run(
     `UPDATE counterparties
      SET amo_contact_id = CASE WHEN IFNULL(amo_contact_id,'') = '' THEN ? ELSE amo_contact_id END
      WHERE id = ?`,
@@ -1281,18 +1281,18 @@ function mergeAmoBuyerRequisitesFromSync(dealId: string, d: Record<string, unkno
   );
 }
 
-export function upsertDealRecord(d: Record<string, unknown>): void {
+export async function upsertDealRecord(d: Record<string, unknown>): Promise<void> {
   const id = String(d.id || '').trim();
   if (!id) return;
   const items = Array.isArray(d.items) ? d.items : [];
   const prevStatusId = String(
-    get<{ status_id: string }>(
+    (await get<{ status_id: string }>(
       `SELECT IFNULL(status_id,'') AS status_id FROM crm_deals WHERE id = ?`,
       [id]
-    )?.status_id || ''
+    ))?.status_id || ''
   );
   const nextStatusId = String(d.status_id || '');
-  const existingDealRow = get<{
+  const existingDealRow = await get<{
     buyer_name: string;
     buyer_inn: string;
     is_partner: number;
@@ -1365,7 +1365,7 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
     String(d.client_role || '').toLowerCase() === 'partner' ||
     String(d.client_role || '').toLowerCase() === 'partner_delay';
   if (!partnerFromAmo && !isPartnerFlag && companyId) {
-    const cpPartner = get<{ is_partner: number }>(
+    const cpPartner = await get<{ is_partner: number }>(
       `SELECT IFNULL(is_partner,0) AS is_partner FROM counterparties
        WHERE amo_company_id = ? LIMIT 1`,
       [companyId]
@@ -1415,9 +1415,9 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
   const guessedSto = guessDealIsSto(dealForRules as Record<string, unknown>);
   const pipelineId = String(d.pipeline_id || '');
   // Контур организации — только из «Филиал», не из воронки
-  const fromBranch = orgCompanyIdForBranch(amoBranch);
+  const fromBranch = await orgCompanyIdForBranch(amoBranch);
   const orgCompanyId = fromBranch || String(d.org_company_id || '').trim();
-  run(
+  await run(
     `INSERT INTO crm_deals (
        id, name, price, pipeline_id, pipeline_name, status_id, status_name,
        responsible_user_id, department, queued_to_1c, queue_status, queued_by, queued_at,
@@ -1540,7 +1540,7 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
     ]
   );
 
-  run('DELETE FROM crm_deal_items WHERE deal_id = ?', [id]);
+  await run('DELETE FROM crm_deal_items WHERE deal_id = ?', [id]);
   let lineNo = 0;
   for (const raw of items) {
     const it = raw as Record<string, unknown>;
@@ -1553,7 +1553,7 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
       Number.isFinite(amountRaw) && amountRaw > 0
         ? roundMoney(amountRaw)
         : roundMoney(qty * price);
-    run(
+    await run(
       `INSERT INTO crm_deal_items (
          id, deal_id, product_guid, sku, code, name, brand, price, qty, amount, unit, department, note, line_no,
          name_1c, applicability_key, mark, model, generation
@@ -1581,10 +1581,10 @@ export function upsertDealRecord(d: Record<string, unknown>): void {
       ]
     );
   }
-  persistAmoClientComplaint(id, d);
-  mergeAmoBuyerRequisitesFromSync(id, d);
+  await persistAmoClientComplaint(id, d);
+  await mergeAmoBuyerRequisitesFromSync(id, d);
   // Бюджет Amo часто 0 при amount=0 в строках — сумма из qty×price
-  recalcDealTotals(id);
+  await recalcDealTotals(id);
 
   if (rawStatusId(prevStatusId) !== rawStatusId(nextStatusId)) {
     void import('./deal-stock-flow.js')
@@ -1641,7 +1641,7 @@ export async function ensureDealBuyerContactFromAmo(dealId: string): Promise<{
   const id = String(dealId || '').trim();
   if (!id) return { deal: null, phone: '', email: '' };
 
-  let deal = getDeal(id) as Record<string, unknown> | null;
+  let deal = await getDeal(id) as Record<string, unknown> | null;
   let phone = normalizeDealPhone(String(deal?.buyer_phone || ''));
   let email = String(deal?.buyer_email || '').trim();
   if (deal && phone) return { deal, phone, email };
@@ -1652,7 +1652,7 @@ export async function ensureDealBuyerContactFromAmo(dealId: string): Promise<{
     /* сделка могла уже быть в WMS */
   }
 
-  deal = getDeal(id) as Record<string, unknown> | null;
+  deal = await getDeal(id) as Record<string, unknown> | null;
   phone = normalizeDealPhone(String(deal?.buyer_phone || ''));
   email = String(deal?.buyer_email || '').trim();
 
@@ -1665,7 +1665,7 @@ export async function ensureDealBuyerContactFromAmo(dealId: string): Promise<{
       const rawPhone = String(row?.buyer_phone || '').trim();
       const rawEmail = String(row?.buyer_email || '').trim();
       if (rawPhone) {
-        run(
+        await run(
           `UPDATE crm_deals SET buyer_phone = ?,
              buyer_email = CASE WHEN ? != '' THEN ? ELSE IFNULL(buyer_email,'') END,
              synced_at = datetime('now')
@@ -1674,7 +1674,7 @@ export async function ensureDealBuyerContactFromAmo(dealId: string): Promise<{
         );
         phone = normalizeDealPhone(rawPhone);
         if (rawEmail) email = rawEmail;
-        deal = getDeal(id) as Record<string, unknown> | null;
+        deal = await getDeal(id) as Record<string, unknown> | null;
       }
     } catch {
       /* export недоступен */
@@ -1685,15 +1685,15 @@ export async function ensureDealBuyerContactFromAmo(dealId: string): Promise<{
 }
 
 /** Фоновый полный export (очередь в том же процессе, без второго SQLite). */
-export function syncDealFromAmo1cBackground(dealId: string): void {
-  enqueueSyncDealFromAmo1c(dealId);
+export async function syncDealFromAmo1cBackground(dealId: string): Promise<void> {
+  await enqueueSyncDealFromAmo1c(dealId);
 }
 
-function statusNameForPipeline(pipelineId: string, statusId: string): string {
+async function statusNameForPipeline(pipelineId: string, statusId: string): Promise<string> {
   const pid = String(pipelineId || '').trim();
   const sid = String(statusId || '').trim();
   if (!pid || !sid) return '';
-  const row = get<{ name: string }>(
+  const row = await get<{ name: string }>(
     `SELECT name FROM crm_pipeline_statuses
      WHERE pipeline_id = ? AND (id = ? OR id = ?)
      LIMIT 1`,
@@ -1706,7 +1706,7 @@ function statusNameForPipeline(pipelineId: string, statusId: string): string {
  * Применить изменения сделки прямо из тела хука Amo (без PHP export).
  * Возвращает id, для которых нужен полный export (новая сделка / нет в WMS).
  */
-export function applyAmoDealWebhookPatches(
+export async function applyAmoDealWebhookPatches(
   patches: Array<{
     id: string;
     status_id?: string;
@@ -1717,7 +1717,7 @@ export function applyAmoDealWebhookPatches(
     amo_branch?: string;
     event?: string;
   }>
-): string[] {
+): Promise<string[]> {
   const needFull: string[] = [];
   for (const p of patches) {
     const id = String(p.id || '').replace(/\D/g, '').trim();
@@ -1726,7 +1726,7 @@ export function applyAmoDealWebhookPatches(
       needFull.push(id);
       continue;
     }
-    const exists = get<{ id: string }>('SELECT id FROM crm_deals WHERE id = ?', [id]);
+    const exists = await get<{ id: string }>('SELECT id FROM crm_deals WHERE id = ?', [id]);
     if (!exists) {
       needFull.push(id);
       continue;
@@ -1738,9 +1738,9 @@ export function applyAmoDealWebhookPatches(
     if (pipelineId) {
       sets.push('pipeline_id = ?');
       params.push(pipelineId);
-      const plName = get<{ name: string }>('SELECT name FROM crm_pipelines WHERE id = ?', [
+      const plName = (await get<{ name: string }>('SELECT name FROM crm_pipelines WHERE id = ?', [
         pipelineId,
-      ])?.name;
+      ]))?.name;
       if (plName) {
         sets.push('pipeline_name = ?');
         params.push(String(plName));
@@ -1749,8 +1749,8 @@ export function applyAmoDealWebhookPatches(
     if (statusId) {
       sets.push('status_id = ?');
       params.push(statusId);
-      const stName = statusNameForPipeline(pipelineId || String(
-        get<{ pipeline_id: string }>('SELECT pipeline_id FROM crm_deals WHERE id = ?', [id])
+      const stName = await statusNameForPipeline(pipelineId || String(
+        (await get<{ pipeline_id: string }>('SELECT pipeline_id FROM crm_deals WHERE id = ?', [id]))
           ?.pipeline_id || ''
       ), statusId);
       if (stName) {
@@ -1781,7 +1781,7 @@ export function applyAmoDealWebhookPatches(
     const branch = String(p.amo_branch || '').trim();
     if (branch) {
       try {
-        persistAmoBranch(id, branch);
+        await persistAmoBranch(id, branch);
       } catch {
         /* колонка / meta могут отсутствовать на старом процессе */
       }
@@ -1789,22 +1789,22 @@ export function applyAmoDealWebhookPatches(
     if (!sets.length) continue;
     sets.push("updated_at = datetime('now')", "synced_at = datetime('now')");
     params.push(id);
-    run(`UPDATE crm_deals SET ${sets.join(', ')} WHERE id = ?`, params);
+    await run(`UPDATE crm_deals SET ${sets.join(', ')} WHERE id = ?`, params);
   }
   return needFull;
 }
 
-export function syncDealsFromAmo1c(opts: {
+export async function syncDealsFromAmo1c(opts: {
   days?: number;
   limit?: number;
   dealId?: string;
   scriptPath?: string;
-} = {}): {
+} = {}): Promise<{
   pipelines: number;
   deals: number;
   withAmo: number;
   seconds: number;
-} {
+}> {
   const t0 = Date.now();
   const args: string[] = [];
   if (opts.days) args.push(`--days=${opts.days}`);
@@ -1813,26 +1813,26 @@ export function syncDealsFromAmo1c(opts: {
   const exp = loadExport(opts.scriptPath || DEFAULT_EXPORT, args);
 
   for (const pl of exp.pipelines || []) {
-    upsertPipeline(pl);
+    await upsertPipeline(pl);
   }
   for (const d of exp.deals || []) {
-    upsertDealRecord(d);
+    await upsertDealRecord(d);
     const did = String((d as { id?: string }).id || '').trim();
     if (did) softEnsureClientStockReserve(did);
   }
 
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'deals_synced_at',
     new Date().toISOString(),
   ]);
 
   try {
-    checkAmoSaleConfigDrift();
+    await checkAmoSaleConfigDrift();
   } catch {
     /* не блокируем синк */
   }
   try {
-    syncAmoUnmappedStaffAlerts();
+    await syncAmoUnmappedStaffAlerts();
   } catch {
     /* не блокируем синк */
   }
@@ -1868,26 +1868,26 @@ export async function syncDealsFromAmo1cAsync(
   const exp = await loadExportAsync(opts.scriptPath || DEFAULT_EXPORT, args, timeoutMs);
 
   for (const pl of exp.pipelines || []) {
-    upsertPipeline(pl);
+    await upsertPipeline(pl);
   }
   for (const d of exp.deals || []) {
-    upsertDealRecord(d);
+    await upsertDealRecord(d);
     const did = String((d as { id?: string }).id || '').trim();
     if (did) softEnsureClientStockReserve(did);
   }
 
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'deals_synced_at',
     new Date().toISOString(),
   ]);
 
   try {
-    checkAmoSaleConfigDrift();
+    await checkAmoSaleConfigDrift();
   } catch {
     /* не блокируем синк */
   }
   try {
-    syncAmoUnmappedStaffAlerts();
+    await syncAmoUnmappedStaffAlerts();
   } catch {
     /* не блокируем синк */
   }
@@ -1908,11 +1908,11 @@ export function rawStatusId(id: string): string {
 }
 
 /** Локальная воронка, если ещё не было синка Amo. */
-export function ensureDefaultLocalFunnels(): void {
-  const n = get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_pipelines')?.c ?? 0;
+export async function ensureDefaultLocalFunnels(): Promise<void> {
+  const n = (await get<{ c: number }>('SELECT COUNT(*) AS c FROM crm_pipelines'))?.c ?? 0;
   if (n > 0) return;
   const pipeId = 'local';
-  upsertPipeline({
+  await upsertPipeline({
     id: pipeId,
     name: 'Продажи',
     sort: 0,
@@ -1927,12 +1927,12 @@ export function ensureDefaultLocalFunnels(): void {
   });
 }
 
-export function listPipelines() {
-  ensureDefaultLocalFunnels();
-  const pipes = all<{ id: string; name: string; sort: number; is_archive: number }>(
+export async function listPipelines() {
+  await ensureDefaultLocalFunnels();
+  const pipes = await all<{ id: string; name: string; sort: number; is_archive: number }>(
     `SELECT id, name, sort, is_archive FROM crm_pipelines ORDER BY sort, name`
   );
-  const statuses = all<{
+  const statuses = await all<{
     id: string;
     pipeline_id: string;
     name: string;
@@ -1946,7 +1946,7 @@ export function listPipelines() {
     list.push(st);
     byPipe.set(pid, list);
   }
-  const dealCounts = all<{ pipeline_id: string; c: number; q: number }>(
+  const dealCounts = await all<{ pipeline_id: string; c: number; q: number }>(
     `SELECT pipeline_id,
             COUNT(*) AS c,
             SUM(CASE WHEN queued_to_1c = 1 THEN 1 ELSE 0 END) AS q
@@ -1981,7 +1981,7 @@ export type BoardColumn = {
 };
 
 /** Канбан: колонки = этапы выбранной воронки, карточки = сделки. */
-export function listDealsBoard(opts: {
+export async function listDealsBoard(opts: {
   pipelineId: string;
   q?: string;
   orgCompanyId?: string;
@@ -1998,19 +1998,19 @@ export function listDealsBoard(opts: {
   /** Уточнение: '0' = в очереди, '1' = успешно ушло в 1С. */
   queueStatus?: string;
 }) {
-  ensureDefaultLocalFunnels();
+  await ensureDefaultLocalFunnels();
   const pipelineId = String(opts.pipelineId || '').trim();
   if (!pipelineId) {
     return { pipeline: null, columns: [] as BoardColumn[], total: 0, unmatched: 0 };
   }
-  const pipe = get<{ id: string; name: string; sort: number; is_archive: number }>(
+  const pipe = await get<{ id: string; name: string; sort: number; is_archive: number }>(
     `SELECT id, name, sort, is_archive FROM crm_pipelines WHERE id = ?`,
     [pipelineId]
   );
   if (!pipe) {
     return { pipeline: null, columns: [] as BoardColumn[], total: 0, unmatched: 0 };
   }
-  const statuses = all<{
+  const statuses = await all<{
     id: string;
     pipeline_id: string;
     name: string;
@@ -2047,7 +2047,7 @@ export function listDealsBoard(opts: {
   if (opts.q) {
     pushDealTextSearch(where, params, String(opts.q));
   }
-  const dealRows = all(
+  const dealRows = await all(
     `SELECT id, name, price, pipeline_id, pipeline_name, status_id, status_name,
             responsible_user_id, department,
             buyer_name, company_name, buyer_phone, buyer_kind, is_legal_entity,
@@ -2059,7 +2059,7 @@ export function listDealsBoard(opts: {
     params
   );
 
-  const deals = attachResponsibleNames(dealRows as Array<Record<string, unknown>>);
+  const deals = await attachResponsibleNames(dealRows as Array<Record<string, unknown>>);
 
   const byStatus = new Map<string, Array<Record<string, unknown>>>();
   for (const d of deals) {
@@ -2119,7 +2119,7 @@ export async function pushDealStageToAmo(opts: {
   | { ok: false; error: string; http?: number }
 > {
   const { amoPushToAmoEnabled } = await import('./amo-settings.js');
-  if (!amoPushToAmoEnabled()) {
+  if (!await amoPushToAmoEnabled()) {
     return { ok: true, http: 0, skipped: true };
   }
   const dealId = String(opts.dealId || '').replace(/\D/g, '');
@@ -2162,11 +2162,11 @@ export async function pushDealStageToAmo(opts: {
   }
 }
 
-export function updateDealStage(
+export async function updateDealStage(
   dealId: string,
   opts: { statusId: string; statusName?: string; pipelineId?: string }
-): { ok: true; deal: Record<string, unknown> } | { ok: false; error: string } {
-  const deal = get('SELECT * FROM crm_deals WHERE id = ?', [dealId]);
+): Promise<{ ok: true; deal: Record<string, unknown> } | { ok: false; error: string }> {
+  const deal = await get('SELECT * FROM crm_deals WHERE id = ?', [dealId]);
   if (!deal) return { ok: false, error: 'not found' };
 
   const pipelineId = String(opts.pipelineId || deal.pipeline_id || '').trim();
@@ -2177,17 +2177,17 @@ export function updateDealStage(
   let pipelineName = String(deal.pipeline_name || '');
 
   if (pipelineId) {
-    const pipe = get<{ name: string }>('SELECT name FROM crm_pipelines WHERE id = ?', [
+    const pipe = await get<{ name: string }>('SELECT name FROM crm_pipelines WHERE id = ?', [
       pipelineId,
     ]);
     if (pipe) pipelineName = String(pipe.name);
     const st =
-      get<{ name: string }>(
+      await get<{ name: string }>(
         `SELECT name FROM crm_pipeline_statuses
          WHERE pipeline_id = ? AND (id = ? OR id = ?)`,
         [pipelineId, statusIdRaw, `${pipelineId}:${statusIdRaw}`]
       ) ||
-      get<{ name: string }>(
+      await get<{ name: string }>(
         `SELECT name FROM crm_pipeline_statuses WHERE id = ?`,
         [`${pipelineId}:${statusIdRaw}`]
       );
@@ -2195,7 +2195,7 @@ export function updateDealStage(
   }
   if (!statusName) statusName = statusIdRaw;
 
-  run(
+  await run(
     `UPDATE crm_deals SET
        status_id = ?, status_name = ?,
        pipeline_id = ?, pipeline_name = ?,
@@ -2203,7 +2203,7 @@ export function updateDealStage(
      WHERE id = ?`,
     [statusIdRaw, statusName, pipelineId, pipelineName, dealId]
   );
-  const updated = get('SELECT * FROM crm_deals WHERE id = ?', [dealId]);
+  const updated = await get('SELECT * FROM crm_deals WHERE id = ?', [dealId]);
   return { ok: true, deal: updated || {} };
 }
 
@@ -2332,7 +2332,7 @@ function pushClientRoleFilter(
   }
 }
 
-export function listDeals(opts: {
+export async function listDeals(opts: {
   q?: string;
   pipelineId?: string;
   statusId?: string;
@@ -2425,10 +2425,10 @@ export function listDeals(opts: {
   const orderExpr = sortMap[sortKey] || sortMap.queued_at;
   const dir = opts.dir === 'asc' ? 'ASC' : 'DESC';
   const total =
-    get<{ c: number }>(`SELECT COUNT(*) AS c FROM crm_deals ${whereSql}`, params)?.c ?? 0;
-  const items = attachOrgCompanyNames(
-    attachResponsibleNames(
-      all(
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM crm_deals ${whereSql}`, params))?.c ?? 0;
+  const items = await attachOrgCompanyNames(
+    await attachResponsibleNames(
+      await all(
         `SELECT * FROM crm_deals ${whereSql}
      ORDER BY ${orderExpr} ${dir}
      LIMIT ? OFFSET ?`,
@@ -2467,9 +2467,9 @@ function isPickableStockWarehouse(code: string, name: string): boolean {
 }
 
 /** Остатки по складам для позиций заказа (для колонки «Остаток»). */
-function attachDealItemsStock(
+async function attachDealItemsStock(
   items: Array<Record<string, unknown>>
-): Array<Record<string, unknown>> {
+): Promise<Array<Record<string, unknown>>> {
   const productIds = [
     ...new Set(
       items
@@ -2489,7 +2489,7 @@ function attachDealItemsStock(
     }));
   }
   const ph = productIds.map(() => '?').join(',');
-  const rows = all<{
+  const rows = await all<{
     product_id: string;
     warehouse_id: string;
     qty: number;
@@ -2560,16 +2560,16 @@ function itItemKind(it: Record<string, unknown>): string {
   return String(it.item_kind || '').toLowerCase();
 }
 
-export function getDeal(id: string) {
-  const deal = get('SELECT * FROM crm_deals WHERE id = ?', [id]);
+export async function getDeal(id: string) {
+  const deal = await get('SELECT * FROM crm_deals WHERE id = ?', [id]);
   if (!deal) return null;
-  normalizeDealItemIntegers(id);
+  await normalizeDealItemIntegers(id);
   const withName = withResponsibleName(
     deal as Record<string, unknown>,
-    responsibleNameMap([String((deal as { responsible_user_id?: string }).responsible_user_id || '')])
+    await responsibleNameMap([String((deal as { responsible_user_id?: string }).responsible_user_id || '')])
   );
-  const items = attachDealItemsStock(
-    all(
+  const items = await attachDealItemsStock(
+    await Promise.all((await all(
       `SELECT i.*,
             IFNULL(p.id,'') AS catalog_product_id,
             IFNULL(p.is_active,0) AS product_is_active,
@@ -2596,7 +2596,7 @@ export function getDeal(id: string) {
      WHERE i.deal_id = ?
      ORDER BY i.line_no, i.name`,
       [id]
-    ).map((it) => {
+    )).map(async (it) => {
       const row = it as Record<string, unknown>;
       const widgetName = String(row.name || '').trim();
       const catalogName = warehouseCatalogName({
@@ -2615,7 +2615,7 @@ export function getDeal(id: string) {
             name_1c: catalogName || lineName,
             has_applicability: false,
           }
-        : customerOrderLineDisplayName({
+        : await customerOrderLineDisplayName({
             applicability_name: widgetName,
             name_1c: String(row.name_1c || ''),
             product_name_1c: String(row.product_name_1c || ''),
@@ -2645,14 +2645,14 @@ export function getDeal(id: string) {
         amount,
         serials: parseSerialsJson(String(row.serials_json || '[]')),
       } as Record<string, unknown>;
-    })
+    }))
   );
   // PDF / docs from product_media for line products
   const docs: Array<Record<string, unknown>> = [];
   for (const it of items) {
     const guid = String(it.product_guid || '');
     if (!guid) continue;
-    const media = all(
+    const media = await all(
       `SELECT id, kind, mime, ext, url, size, orientation, width, height
        FROM product_media WHERE product_id = ? AND kind = 'document'
        ORDER BY sort_order`,
@@ -2682,7 +2682,7 @@ export function getDeal(id: string) {
     ship_channel: mapAmoShipChannel(withName as Record<string, unknown>),
     items,
     documents: docs,
-    sales_docs: all(
+    sales_docs: await all(
       `SELECT s.id, s.doc_type, s.number, s.doc_date, s.total, s.status, s.created_at,
               IFNULL(s.organization_id,'') AS organization_id,
               IFNULL(o.short_name,'') AS organization_short,
@@ -2694,25 +2694,25 @@ export function getDeal(id: string) {
        ORDER BY datetime(s.created_at) DESC`,
       [id]
     ),
-    payments: all(
+    payments: await all(
       `SELECT id, kind, amount, status, qrc_id, payload, account, purpose, created_at,
               IFNULL(meta_json,'{}') AS meta_json,
               CASE WHEN length(image_png_base64)>0 THEN 1 ELSE 0 END AS has_image
        FROM deal_payments WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 20`,
       [id]
     ),
-    payment_split: getDealPaymentSplit(id),
-    fiscal_receipts: all(
+    payment_split: await getDealPaymentSplit(id),
+    fiscal_receipts: await all(
       `SELECT id, kind, status, amount, atol_uuid, external_id, error, created_at, updated_at
        FROM fiscal_receipts WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 20`,
       [id]
     ),
-    pay_questions: all(
+    pay_questions: await all(
       `SELECT * FROM crm_events WHERE deal_id = ? AND kind = 'pay_question'
        ORDER BY datetime(event_at) DESC LIMIT 30`,
       [id]
     ),
-    crm_tasks: all(
+    crm_tasks: await all(
       `SELECT * FROM crm_tasks WHERE deal_id = ?
        ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, datetime(created_at) DESC
        LIMIT 50`,
@@ -2723,15 +2723,15 @@ export function getDeal(id: string) {
     client_role: resolveClientRole(withName as Record<string, unknown>),
     buyer_form: resolveBuyerForm(withName as Record<string, unknown>),
     amo_field_options: {
-      amo_channel: amoSaleFieldOptions('amo_channel'),
-      amo_sto: amoSaleFieldOptions('amo_sto'),
-      amo_shipment: amoSaleFieldOptions('amo_shipment'),
-      amo_branch: amoSaleFieldOptions('amo_branch'),
-      amo_payment_type: amoSaleFieldOptions('amo_payment_type'),
-      amo_pay_method: amoSaleFieldOptions('amo_pay_method'),
+      amo_channel: await amoSaleFieldOptions('amo_channel'),
+      amo_sto: await amoSaleFieldOptions('amo_sto'),
+      amo_shipment: await amoSaleFieldOptions('amo_shipment'),
+      amo_branch: await amoSaleFieldOptions('amo_branch'),
+      amo_payment_type: await amoSaleFieldOptions('amo_payment_type'),
+      amo_pay_method: await amoSaleFieldOptions('amo_pay_method'),
     },
-    sale_rules: (() => {
-      const payments = all(
+    sale_rules: (async () => {
+      const payments = await all(
         `SELECT id, kind, amount, status FROM deal_payments WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 20`,
         [id]
       );
@@ -2743,30 +2743,30 @@ export function getDeal(id: string) {
       };
       return {
         ...buildDealSaleRules(dealForRules),
-        workorder_gate: getDealWorkorderGate(dealForRules),
+        workorder_gate: await getDealWorkorderGate(dealForRules),
       };
     })(),
-    next_hints: (() => {
-      const payments = all(
+    next_hints: (async () => {
+      const payments = await all(
         `SELECT id, kind, amount, status FROM deal_payments WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 20`,
         [id]
       );
-      const salesDocs = all(
+      const salesDocs = await all(
         `SELECT id, doc_type, number, total, car_plate, printed_at FROM sales_docs WHERE deal_id = ?`,
         [id]
       ) as Array<Record<string, unknown>>;
-      const fiscal = all(
+      const fiscal = await all(
         `SELECT id, kind, status FROM fiscal_receipts WHERE deal_id = ? ORDER BY datetime(created_at) DESC LIMIT 20`,
         [id]
       ) as Array<Record<string, unknown>>;
-      const stockOuts = all(
+      const stockOuts = await all(
         `SELECT id, number FROM stock_docs
          WHERE doc_type = 'out' AND (IFNULL(deal_id,'') = ? OR IFNULL(basis_order_id,'') = ?)
          LIMIT 20`,
         [id, id]
       ) as Array<Record<string, unknown>>;
-      const split = getDealPaymentSplit(id);
-      const tree = buildOrderDocTree(id);
+      const split = await getDealPaymentSplit(id);
+      const tree = await buildOrderDocTree(id);
       const hasTransferOrder = !!(
         tree &&
         Array.isArray(tree.root?.children) &&
@@ -2798,15 +2798,15 @@ export function getDeal(id: string) {
         }
       );
     })(),
-    ...(() => {
-      const lock = dealCompositionLocked(id);
+    ...(async () => {
+      const lock = await dealCompositionLocked(id);
       return {
         composition_locked: lock.locked,
         composition_locked_reason: lock.reason,
       };
     })(),
-    doc_tree: (() => {
-      const tree = buildOrderDocTree(id);
+    doc_tree: (async () => {
+      const tree = await buildOrderDocTree(id);
       return tree;
     })(),
     sts_photos: stsMediaInfo(id),
@@ -2817,9 +2817,9 @@ export function getDeal(id: string) {
         return { items: [], count: 0, scans_ok: false };
       }
     })(),
-    pdn_sms: (() => {
+    pdn_sms: (async () => {
       try {
-        return pdnSmsSummary(id);
+        return await pdnSmsSummary(id);
       } catch {
         return { signed: false, status: '', signed_at: '', phone_masked: '', link_url: '', sender: '' };
       }
@@ -2838,10 +2838,10 @@ export function getDeal(id: string) {
         return { items: [], count: 0, min_required: 12, photos_ok: false, sides: [], first_at: '' };
       }
     })(),
-    pending_service_suggestions: (() => {
+    pending_service_suggestions: (async () => {
       try {
         if (!isSto) return [];
-        return listPendingServiceSuggestionsForDeal(id);
+        return await listPendingServiceSuggestionsForDeal(id);
       } catch (e) {
         console.warn('[deal] pending services:', e instanceof Error ? e.message : e);
         return [];
@@ -2856,10 +2856,10 @@ function roundMoney(n: number): number {
 }
 
 /** Подтянуть дробные qty/price/amount в целые (Amo мог отдать 1.001 / 0.01). */
-function normalizeDealItemIntegers(dealId: string): void {
+async function normalizeDealItemIntegers(dealId: string): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id) return;
-  run(
+  await run(
     `UPDATE crm_deal_items
      SET qty = ROUND(IFNULL(qty, 0)),
          price = ROUND(IFNULL(price, 0)),
@@ -2870,17 +2870,17 @@ function normalizeDealItemIntegers(dealId: string): void {
 }
 
 /** После полной оплаты состав заказа нельзя менять. Частичная (товар предоплачен, услуги/доп. товар ещё нет) — можно добавлять. */
-export function dealCompositionLocked(dealId: string): { locked: boolean; reason: string } {
+export async function dealCompositionLocked(dealId: string): Promise<{ locked: boolean; reason: string }> {
   const id = String(dealId || '').trim();
   if (!id) return { locked: false, reason: '' };
-  const deal = get<{ paid?: number; payment_status?: string; amount_locked?: number }>(
+  const deal = await get<{ paid?: number; payment_status?: string; amount_locked?: number }>(
     `SELECT IFNULL(paid,0) AS paid, IFNULL(payment_status,'') AS payment_status,
             IFNULL(amount_locked,0) AS amount_locked
      FROM crm_deals WHERE id = ?`,
     [id]
   );
   if (!deal) return { locked: false, reason: '' };
-  const split = getDealPaymentSplit(id);
+  const split = await getDealPaymentSplit(id);
   if (split.due_total > 0.009) {
     return { locked: false, reason: '' };
   }
@@ -2893,7 +2893,7 @@ export function dealCompositionLocked(dealId: string): { locked: boolean; reason
       reason: 'Сумма заказа зафиксирована — добавлять и удалять позиции нельзя',
     };
   }
-  const paidPay = get<{ c: number }>(
+  const paidPay = await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM deal_payments
      WHERE deal_id = ?
        AND lower(IFNULL(status,'')) IN ('paid','confirmed','success','accepted')`,
@@ -2903,7 +2903,7 @@ export function dealCompositionLocked(dealId: string): { locked: boolean; reason
     return { locked: true, reason: 'Заказ оплачен — добавлять и удалять позиции нельзя' };
   }
   try {
-    const paidLink = get<{ c: number }>(
+    const paidLink = await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM payment_links
        WHERE deal_id = ? AND lower(IFNULL(status,'')) = 'paid'`,
       [id]
@@ -2914,7 +2914,7 @@ export function dealCompositionLocked(dealId: string): { locked: boolean; reason
   } catch {
     /* table may be absent in old DBs */
   }
-  const paidInv = get<{ c: number }>(
+  const paidInv = await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM sales_docs
      WHERE deal_id = ? AND doc_type = 'invoice'
        AND lower(IFNULL(status,'')) IN ('paid','оплачен','оплачено')`,
@@ -2927,10 +2927,10 @@ export function dealCompositionLocked(dealId: string): { locked: boolean; reason
 }
 
 /** Пересчитать сумму сделки по строкам позиций. */
-export function recalcDealTotals(dealId: string): { items_count: number; price: number } {
-  normalizeDealItemIntegers(dealId);
+export async function recalcDealTotals(dealId: string): Promise<{ items_count: number; price: number }> {
+  await normalizeDealItemIntegers(dealId);
   // amount мог остаться 0 при синке из Amo — берём qty×price
-  run(
+  await run(
     `UPDATE crm_deal_items
      SET amount = ROUND(IFNULL(qty,0) * IFNULL(price,0))
      WHERE deal_id = ?
@@ -2938,7 +2938,7 @@ export function recalcDealTotals(dealId: string): { items_count: number; price: 
        AND IFNULL(price,0) != 0`,
     [dealId]
   );
-  const agg = get<{ c: number; total: number }>(
+  const agg = await get<{ c: number; total: number }>(
     `SELECT COUNT(*) AS c,
             COALESCE(SUM(CASE
               WHEN IFNULL(amount,0) != 0 THEN amount
@@ -2949,23 +2949,23 @@ export function recalcDealTotals(dealId: string): { items_count: number; price: 
   );
   const itemsCount = Number(agg?.c) || 0;
   const price = roundMoney(Number(agg?.total) || 0);
-  run(
+  await run(
     `UPDATE crm_deals SET items_count = ?, price = ?, updated_at = ? WHERE id = ?`,
     [itemsCount, price, new Date().toISOString(), dealId]
   );
   try {
-    syncDealPaidStatus(dealId);
+    await syncDealPaidStatus(dealId);
   } catch {
     /* ignore */
   }
   return { items_count: itemsCount, price };
 }
 
-function productUnitName(unitId: string | null | undefined): string {
+async function productUnitName(unitId: string | null | undefined): Promise<string> {
   const id = String(unitId || '').trim();
   if (!id) return '';
   return (
-    get<{ short_name: string }>('SELECT short_name FROM units WHERE id = ?', [id])?.short_name ||
+    (await get<{ short_name: string }>('SELECT short_name FROM units WHERE id = ?', [id]))?.short_name ||
     ''
   );
 }
@@ -2974,7 +2974,7 @@ function productUnitName(unitId: string | null | undefined): string {
  * Добавить позицию в сделку из номенклатуры (по product_id / sku / code).
  * Цена: из body.price, иначе розничная из product_prices.
  */
-export function addDealItem(
+export async function addDealItem(
   dealId: string,
   opts: {
     product_id?: string;
@@ -2990,18 +2990,18 @@ export function addDealItem(
     generation?: string;
   }
 ):
-  | {
+  Promise<| {
       ok: true;
       item: Record<string, unknown>;
-      deal: ReturnType<typeof getDeal>;
+      deal: Awaited<ReturnType<typeof getDeal>>;
       service_suggestions?: ServiceSuggestion[];
       /** @deprecated пусто — услуги не добавляются сами, только предлагаются */
       auto_services?: Record<string, unknown>[];
     }
-  | { ok: false; error: string } {
-  const lock = dealCompositionLocked(dealId);
+  | { ok: false; error: string }> {
+  const lock = await dealCompositionLocked(dealId);
   if (lock.locked) return { ok: false, error: lock.reason };
-  const deal = get('SELECT id FROM crm_deals WHERE id = ?', [dealId]);
+  const deal = await get('SELECT id FROM crm_deals WHERE id = ?', [dealId]);
   if (!deal) return { ok: false, error: 'not found' };
 
   const productId = String(opts.product_id || '').trim();
@@ -3009,16 +3009,16 @@ export function addDealItem(
   const codeQ = String(opts.code || '').trim();
 
   let product = productId
-    ? get<Record<string, unknown>>('SELECT * FROM products WHERE id = ?', [productId])
+    ? await get<Record<string, unknown>>('SELECT * FROM products WHERE id = ?', [productId])
     : null;
   if (!product && skuQ) {
-    product = get<Record<string, unknown>>(
+    product = await get<Record<string, unknown>>(
       `SELECT * FROM products WHERE sku = ? OR code = ? LIMIT 1`,
       [skuQ, skuQ]
     );
   }
   if (!product && codeQ) {
-    product = get<Record<string, unknown>>(
+    product = await get<Record<string, unknown>>(
       `SELECT * FROM products WHERE code = ? OR sku = ? LIMIT 1`,
       [codeQ, codeQ]
     );
@@ -3026,7 +3026,7 @@ export function addDealItem(
   if (!product) return { ok: false, error: 'Товар не найден (укажите product_id, sku или code)' };
 
   const qty = Math.max(1, Math.round(Number(opts.qty) || 1));
-  const retail = loadRetailPrices([String(product.id)]);
+  const retail = await loadRetailPrices([String(product.id)]);
   const price =
     opts.price != null && Number.isFinite(Number(opts.price))
       ? Math.max(0, Math.round(Number(opts.price)))
@@ -3034,10 +3034,10 @@ export function addDealItem(
   const amount = roundMoney(qty * price);
 
   const maxLine =
-    get<{ m: number }>(
+    (await get<{ m: number }>(
       'SELECT COALESCE(MAX(line_no), 0) AS m FROM crm_deal_items WHERE deal_id = ?',
       [dealId]
-    )?.m ?? 0;
+    ))?.m ?? 0;
   const lineNo = Number(maxLine) + 1;
   const itemId = newGuid();
   const warehouseId = String(opts.warehouse_id || '').trim();
@@ -3047,7 +3047,7 @@ export function addDealItem(
   const model = String(opts.model || '').trim();
   const generation = String(opts.generation || '').trim();
 
-  run(
+  await run(
     `INSERT INTO crm_deal_items (
        id, deal_id, product_guid, sku, code, name, brand, price, qty, amount, unit, department, note, line_no,
        warehouse_id, supplier_id, in_doc_id, mark, model, generation
@@ -3063,7 +3063,7 @@ export function addDealItem(
       price,
       qty,
       amount,
-      productUnitName(product.unit_id as string),
+      await productUnitName(product.unit_id as string),
       '',
       '',
       lineNo,
@@ -3079,7 +3079,7 @@ export function addDealItem(
   let suggestions: ServiceSuggestion[] = [];
   try {
     if (String(product.item_kind || 'product') !== 'service') {
-      suggestions = suggestLinkedServicesForDealItem({
+      suggestions = await suggestLinkedServicesForDealItem({
         dealId,
         parentItemId: itemId,
         productId: String(product.id),
@@ -3090,8 +3090,8 @@ export function addDealItem(
     console.warn('[deal] service suggestions:', e instanceof Error ? e.message : e);
   }
 
-  recalcDealTotals(dealId);
-  const item = get('SELECT * FROM crm_deal_items WHERE id = ?', [itemId]) as Record<
+  await recalcDealTotals(dealId);
+  const item = await get('SELECT * FROM crm_deal_items WHERE id = ?', [itemId]) as Record<
     string,
     unknown
   >;
@@ -3099,25 +3099,25 @@ export function addDealItem(
   return {
     ok: true,
     item,
-    deal: getDeal(dealId),
+    deal: await getDeal(dealId),
     service_suggestions: suggestions,
     auto_services: [],
   };
 }
 
 /** Применить выбранные пользователем услуги к позиции товара. */
-export function acceptDealItemServiceSuggestions(
+export async function acceptDealItemServiceSuggestions(
   dealId: string,
   parentItemId: string,
   services: Array<{ service_product_id: string; qty?: number; price?: number }>,
   opts?: { mark?: string; model?: string; generation?: string }
 ):
-  | { ok: true; items: Record<string, unknown>[]; deal: ReturnType<typeof getDeal> }
-  | { ok: false; error: string } {
-  const lock = dealCompositionLocked(dealId);
+  Promise<| { ok: true; items: Record<string, unknown>[]; deal: Awaited<ReturnType<typeof getDeal>> }
+  | { ok: false; error: string }> {
+  const lock = await dealCompositionLocked(dealId);
   if (lock.locked) return { ok: false, error: lock.reason };
   try {
-    const items = applySuggestedServicesForDealItem({
+    const items = await applySuggestedServicesForDealItem({
       dealId,
       parentItemId,
       services,
@@ -3125,21 +3125,21 @@ export function acceptDealItemServiceSuggestions(
       model: opts?.model,
       generation: opts?.generation,
     });
-    recalcDealTotals(dealId);
-    return { ok: true, items, deal: getDeal(dealId) };
+    await recalcDealTotals(dealId);
+    return { ok: true, items, deal: await getDeal(dealId) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'error' };
   }
 }
 
-export function updateDealItem(
+export async function updateDealItem(
   dealId: string,
   itemId: string,
   opts: { qty?: number; price?: number }
-): { ok: true; item: Record<string, unknown>; deal: ReturnType<typeof getDeal> } | { ok: false; error: string } {
-  const lock = dealCompositionLocked(dealId);
+): Promise<{ ok: true; item: Record<string, unknown>; deal: Awaited<ReturnType<typeof getDeal>> } | { ok: false; error: string }> {
+  const lock = await dealCompositionLocked(dealId);
   if (lock.locked) return { ok: false, error: lock.reason };
-  const item = get<Record<string, unknown>>(
+  const item = await get<Record<string, unknown>>(
     'SELECT * FROM crm_deal_items WHERE id = ? AND deal_id = ?',
     [itemId, dealId]
   );
@@ -3154,44 +3154,44 @@ export function updateDealItem(
       ? Math.max(0, Math.round(Number(opts.price)))
       : Math.max(0, Math.round(Number(item.price) || 0));
   const amount = roundMoney(qty * price);
-  run(`UPDATE crm_deal_items SET qty = ?, price = ?, amount = ? WHERE id = ? AND deal_id = ?`, [
+  await run(`UPDATE crm_deal_items SET qty = ?, price = ?, amount = ? WHERE id = ? AND deal_id = ?`, [
     qty,
     price,
     amount,
     itemId,
     dealId,
   ]);
-  recalcDealTotals(dealId);
+  await recalcDealTotals(dealId);
   softEnsureClientStockReserve(dealId);
-  const updated = get('SELECT * FROM crm_deal_items WHERE id = ?', [itemId]) as Record<
+  const updated = await get('SELECT * FROM crm_deal_items WHERE id = ?', [itemId]) as Record<
     string,
     unknown
   >;
-  return { ok: true, item: updated, deal: getDeal(dealId) };
+  return { ok: true, item: updated, deal: await getDeal(dealId) };
 }
 
-export function deleteDealItem(
+export async function deleteDealItem(
   dealId: string,
   itemId: string
 ):
-  | { ok: true; deal: ReturnType<typeof getDeal>; deleted: Record<string, unknown> }
-  | { ok: false; error: string } {
-  const lock = dealCompositionLocked(dealId);
+  Promise<| { ok: true; deal: Awaited<ReturnType<typeof getDeal>>; deleted: Record<string, unknown> }
+  | { ok: false; error: string }> {
+  const lock = await dealCompositionLocked(dealId);
   if (lock.locked) return { ok: false, error: lock.reason };
-  const item = get<Record<string, unknown>>(
+  const item = await get<Record<string, unknown>>(
     'SELECT * FROM crm_deal_items WHERE id = ? AND deal_id = ?',
     [itemId, dealId]
   );
   if (!item) return { ok: false, error: 'not found' };
   /* С авто-услугами: удаляем дочерние строки */
   try {
-    run(`DELETE FROM crm_deal_items WHERE deal_id = ? AND parent_item_id = ?`, [dealId, itemId]);
+    await run(`DELETE FROM crm_deal_items WHERE deal_id = ? AND parent_item_id = ?`, [dealId, itemId]);
   } catch {
     /* колонки может не быть на старой БД до migrate */
   }
-  run('DELETE FROM crm_deal_items WHERE id = ? AND deal_id = ?', [itemId, dealId]);
-  recalcDealTotals(dealId);
-  return { ok: true, deal: getDeal(dealId), deleted: item };
+  await run('DELETE FROM crm_deal_items WHERE id = ? AND deal_id = ?', [itemId, dealId]);
+  await recalcDealTotals(dealId);
+  return { ok: true, deal: await getDeal(dealId), deleted: item };
 }
 
 /**
@@ -3200,11 +3200,11 @@ export function deleteDealItem(
  * — штрихкод товара с серийным учётом → FIFO следующего экземпляра;
  * — штрихкод товара без марок → токен bc:… (подтверждение штуки, расходная без серийников).
  */
-export function assignDealUnitByScan(
+export async function assignDealUnitByScan(
   dealId: string,
   serialRaw: string,
   opts?: { item_id?: string }
-): {
+): Promise<{
   ok: true;
   serial: string;
   sku: string;
@@ -3214,20 +3214,20 @@ export function assignDealUnitByScan(
   apps_label: string;
   apps_short: string;
   item: Record<string, unknown>;
-  deal: ReturnType<typeof getDeal>;
+  deal: Awaited<ReturnType<typeof getDeal>>;
   matched_by: string;
   scan_kind: 'mark' | 'barcode' | 'barcode_unit';
-} {
+}> {
   const dealIdSafe = String(dealId || '').trim();
   if (!dealIdSafe) throw new Error('deal_id required');
-  const dealRow = get('SELECT id FROM crm_deals WHERE id = ?', [dealIdSafe]);
+  const dealRow = await get('SELECT id FROM crm_deals WHERE id = ?', [dealIdSafe]);
   if (!dealRow) throw new Error('Заказ покупателя не найден');
 
   const code = String(serialRaw || '').trim();
   if (!code) throw new Error('Укажите марку (Data Matrix) или штрихкод товара');
 
   const preferItemId = String(opts?.item_id || '').trim();
-  const lines = all<{
+  const lines = (await all<{
     id: string;
     product_guid: string;
     sku: string;
@@ -3253,7 +3253,7 @@ export function assignDealUnitByScan(
      WHERE i.deal_id = ?
      ORDER BY i.line_no, i.name`,
     [dealIdSafe]
-  ).filter((l) => l.item_kind !== 'service');
+  )).filter((l) => l.item_kind !== 'service');
 
   const need = (l: (typeof lines)[0]) => {
     const have = parseSerialsJson(l.serials_json).length;
@@ -3298,7 +3298,7 @@ export function assignDealUnitByScan(
     return { target, matchedBy };
   };
 
-  const writeLinePick = (input: {
+  const writeLinePick = async (input: {
     target: (typeof lines)[0];
     token: string;
     warehouseId: string;
@@ -3314,7 +3314,7 @@ export function assignDealUnitByScan(
     scanKind: 'mark' | 'barcode' | 'barcode_unit';
   }) => {
     const nextSerials = [...parseSerialsJson(input.target.serials_json), input.token];
-    run(
+    await run(
       `UPDATE crm_deal_items
        SET serials_json = ?,
            warehouse_id = CASE WHEN ? != '' THEN ? ELSE warehouse_id END,
@@ -3333,7 +3333,7 @@ export function assignDealUnitByScan(
         dealIdSafe,
       ]
     );
-    const item = get('SELECT * FROM crm_deal_items WHERE id = ?', [input.target.id]) as Record<
+    const item = await get('SELECT * FROM crm_deal_items WHERE id = ?', [input.target.id]) as Record<
       string,
       unknown
     >;
@@ -3347,14 +3347,14 @@ export function assignDealUnitByScan(
       apps_label: input.appsLabel,
       apps_short: input.appsShort,
       item: { ...item, serials: nextSerials },
-      deal: getDeal(dealIdSafe),
+      deal: await getDeal(dealIdSafe),
       matched_by: input.matchedBy,
       scan_kind: input.scanKind,
     };
   };
 
-  const assignFromUnit = (
-    unit: NonNullable<ReturnType<typeof findUnitBySerial>>,
+  const assignFromUnit = async (
+    unit: NonNullable<Awaited<ReturnType<typeof findUnitBySerial>>>,
     scanKind: 'mark' | 'barcode_unit',
     matchedByOverride?: string
   ) => {
@@ -3374,14 +3374,14 @@ export function assignDealUnitByScan(
     let supplierId = '';
     let supplierName = '';
     if (inDocId) {
-      const doc = get<{ counterparty_id: string | null }>(
+      const doc = await get<{ counterparty_id: string | null }>(
         `SELECT counterparty_id FROM stock_docs WHERE id = ?`,
         [inDocId]
       );
       supplierId = String(doc?.counterparty_id || '').trim();
       if (supplierId) {
         supplierName =
-          get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [supplierId])
+          (await get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [supplierId]))
             ?.name || '';
       }
     }
@@ -3407,7 +3407,7 @@ export function assignDealUnitByScan(
       throw new Error(vehicleCheck.reason);
     }
 
-    return writeLinePick({
+    return await writeLinePick({
       target,
       token: serial,
       warehouseId,
@@ -3425,13 +3425,13 @@ export function assignDealUnitByScan(
   };
 
   // 1) Прямой скан Data Matrix / серийника
-  const unitDirect = findUnitBySerial(code);
+  const unitDirect = await findUnitBySerial(code);
   if (unitDirect) {
-    return assignFromUnit(unitDirect, 'mark');
+    return await assignFromUnit(unitDirect, 'mark');
   }
 
   // 2) Штрихкод / артикул / код товара
-  const product = get<{
+  const product = await get<{
     id: string;
     sku: string;
     name: string;
@@ -3455,9 +3455,9 @@ export function assignDealUnitByScan(
   const { target, matchedBy } = pickTarget(productId, sku);
 
   // Товар с экземплярами: штрихкод → взять следующий in_stock
-  if (productRequiresSerials(productId)) {
+  if (await productRequiresSerials(productId)) {
     const exclude = lines.flatMap((l) => parseSerialsJson(l.serials_json));
-    const unit = findNextInStockUnitForProduct(productId, {
+    const unit = await findNextInStockUnitForProduct(productId, {
       warehouseId: String(target.warehouse_id || '').trim(),
       excludeSerials: exclude,
     });
@@ -3466,7 +3466,7 @@ export function assignDealUnitByScan(
         `Товар «${sku || product.name}» учёт по маркам — на остатке нет свободного экземпляра. Отсканируйте Data Matrix.`
       );
     }
-    return assignFromUnit(unit, 'barcode_unit', matchedBy);
+    return await assignFromUnit(unit, 'barcode_unit', matchedBy);
   }
 
   // Товар без марок: подтверждаем штуку токеном штрихкода
@@ -3476,7 +3476,7 @@ export function assignDealUnitByScan(
     throw new Error(`Штрихкод «${code}» уже учтён в этой позиции`);
   }
 
-  const bal = get<{ warehouse_id: string; warehouse_name: string }>(
+  const bal = await get<{ warehouse_id: string; warehouse_name: string }>(
     `SELECT b.warehouse_id AS warehouse_id, IFNULL(w.name,'') AS warehouse_name
      FROM stock_balances b
      LEFT JOIN warehouses w ON w.id = b.warehouse_id
@@ -3493,7 +3493,7 @@ export function assignDealUnitByScan(
     throw new Error(`Нет остатка по «${sku || product.name}» — сначала оприходуйте товар`);
   }
 
-  return writeLinePick({
+  return await writeLinePick({
     target,
     token,
     warehouseId,

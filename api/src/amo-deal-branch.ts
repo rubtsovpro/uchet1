@@ -95,10 +95,10 @@ foreach (($res['body']['custom_fields_values'] ?? []) as $f) {
   }
 }
 
-function orgCompanyIdForBranch(branch: string): string {
+async function orgCompanyIdForBranch(branch: string): Promise<string> {
   const b = String(branch || '').trim();
   if (!b) return '';
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['integration_amo']);
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['integration_amo']);
   if (!row?.value) return '';
   try {
     const parsed = JSON.parse(row.value) as { branch_company?: Record<string, string> };
@@ -112,26 +112,26 @@ function orgCompanyIdForBranch(branch: string): string {
   }
 }
 
-export function persistAmoBranch(dealId: string, branch: string): void {
+export async function persistAmoBranch(dealId: string, branch: string): Promise<void> {
   const id = String(dealId || '').trim();
   const b = String(branch || '').trim();
   if (!id || !b) return;
-  const orgCo = orgCompanyIdForBranch(b);
+  const orgCo = await orgCompanyIdForBranch(b);
   if (orgCo) {
-    run(
+    await run(
       `UPDATE crm_deals SET amo_branch = ?, org_company_id = ?, updated_at = datetime('now') WHERE id = ?`,
       [b, orgCo, id]
     );
   } else {
-    run(`UPDATE crm_deals SET amo_branch = ?, updated_at = datetime('now') WHERE id = ?`, [b, id]);
+    await run(`UPDATE crm_deals SET amo_branch = ?, updated_at = datetime('now') WHERE id = ?`, [b, id]);
   }
 }
 
 /** Колонка БД → payload; live Amo — только по явному opts.live (не на /pick!). */
-export function resolveAmoBranchForDeal(
+export async function resolveAmoBranchForDeal(
   deal: Record<string, unknown> | null | undefined,
   opts?: { live?: boolean }
-): string {
+): Promise<string> {
   const fromDb = String((deal as { amo_branch?: string } | null)?.amo_branch || '').trim();
   if (fromDb) return fromDb;
   const fromPayload = extractAmoBranch(deal);
@@ -142,7 +142,7 @@ export function resolveAmoBranchForDeal(
   const live = fetchAmoBranchLive(id);
   if (live) {
     try {
-      persistAmoBranch(id, live);
+      await persistAmoBranch(id, live);
     } catch {
       /* колонка может ещё не быть на старом процессе */
     }

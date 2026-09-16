@@ -8,20 +8,20 @@ import { all, get, run } from './db.js';
 import { odataConfigFromEnv, type OdataConfig } from './odata.js';
 
 /** Префикс + номер сделки; при коллизии — «-2», «-3»… */
-export function numberFromDeal(
+export async function numberFromDeal(
   prefix: string,
   dealId: string,
-  isTaken: (number: string) => boolean
-): string {
+  isTaken: (number: string) => boolean | Promise<boolean>
+): Promise<string> {
   const deal = String(dealId || '')
     .trim()
     .replace(/\s+/g, '');
   if (!deal) throw new Error('Нет номера сделки для нумерации документа');
   const base = `${prefix}${deal}`;
-  if (!isTaken(base)) return base;
+  if (!(await isTaken(base))) return base;
   for (let i = 2; i < 1000; i++) {
     const n = `${base}-${i}`;
-    if (!isTaken(n)) return n;
+    if (!(await isTaken(n))) return n;
   }
   throw new Error(`Не удалось выделить номер ${prefix}${deal}`);
 }
@@ -36,7 +36,7 @@ export const DEAL_SALES_PREFIX: Record<string, string> = {
   workorder: '',
 };
 
-export function salesNumberFromDeal(docType: string, dealId: string): string {
+export async function salesNumberFromDeal(docType: string, dealId: string): Promise<string> {
   if (!(docType in DEAL_SALES_PREFIX)) throw new Error(`Нет префикса для типа ${docType}`);
   const deal = String(dealId || '')
     .trim()
@@ -46,8 +46,8 @@ export function salesNumberFromDeal(docType: string, dealId: string): string {
     return deal;
   }
   const prefix = DEAL_SALES_PREFIX[docType] ?? '';
-  return numberFromDeal(prefix, dealId, (n) =>
-    Boolean(get('SELECT id FROM sales_docs WHERE number = ? LIMIT 1', [n]))
+  return await numberFromDeal(prefix, dealId, async (n) =>
+    Boolean(await get('SELECT id FROM sales_docs WHERE number = ? LIMIT 1', [n]))
   );
 }
 
@@ -71,9 +71,9 @@ export function workorderPrintNumber(
 }
 
 /** Расходная по заказу: Р{сделка}. */
-export function outNumberFromDeal(dealId: string): string {
-  return numberFromDeal('Р', dealId, (n) =>
-    Boolean(get('SELECT id FROM stock_docs WHERE number = ? LIMIT 1', [n]))
+export async function outNumberFromDeal(dealId: string): Promise<string> {
+  return await numberFromDeal('Р', dealId, async (n) =>
+    Boolean(await get('SELECT id FROM stock_docs WHERE number = ? LIMIT 1', [n]))
   );
 }
 
@@ -95,12 +95,12 @@ export type DocNumberingState = {
   note: string;
 };
 
-function metaGet(key: string): string | null {
-  return get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key])?.value ?? null;
+async function metaGet(key: string): Promise<string | null> {
+  return (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]))?.value ?? null;
 }
 
-function metaSet(key: string, value: string): void {
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, value]);
+async function metaSet(key: string, value: string): Promise<void> {
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, value]);
 }
 
 /** Извлекает хвост цифр: «00НФ-003845» → 3845, «90001» → 90001 */
@@ -118,25 +118,25 @@ export function formatNfNumber(n: number, pad = 6): string {
   return `00НФ-${String(num).padStart(pad, '0')}`;
 }
 
-function readSeq(key: string, fallback: number): number {
-  const raw = metaGet(key);
+async function readSeq(key: string, fallback: number): Promise<number> {
+  const raw = await metaGet(key);
   if (raw == null || raw === '') return fallback;
   const n = Number(raw);
   return Number.isFinite(n) ? n : fallback;
 }
 
 /** Последний занятый номер; следующий документ = +1. */
-function bumpSeq(key: string, fallbackLast: number): number {
-  run('BEGIN');
+async function bumpSeq(key: string, fallbackLast: number): Promise<number> {
+  await run('BEGIN');
   try {
-    const cur = readSeq(key, fallbackLast);
+    const cur = await readSeq(key, fallbackLast);
     const next = cur + 1;
-    metaSet(key, String(next));
-    run('COMMIT');
+    await metaSet(key, String(next));
+    await run('COMMIT');
     return next;
   } catch (e) {
     try {
-      run('ROLLBACK');
+      await run('ROLLBACK');
     } catch {
       /* ignore */
     }
@@ -148,16 +148,16 @@ function bumpSeq(key: string, fallbackLast: number): number {
  * Установить «последний занятый» номер (не следующий).
  * Например last=3845 → следующий будет 00НФ-003846.
  */
-export function setLastOccupied(kind: 'out' | 'in' | 'invoice', lastOccupied: number): void {
+export async function setLastOccupied(kind: 'out' | 'in' | 'invoice', lastOccupied: number): Promise<void> {
   const n = Math.max(0, Math.floor(lastOccupied));
-  if (kind === 'out') metaSet(KEY_OUT, String(n));
-  else if (kind === 'in') metaSet(KEY_IN, String(n));
-  else metaSet(KEY_INV, String(n));
+  if (kind === 'out') await metaSet(KEY_OUT, String(n));
+  else if (kind === 'in') await metaSet(KEY_IN, String(n));
+  else await metaSet(KEY_INV, String(n));
 }
 
-export function nextInvoiceNumber(): string {
+export async function nextInvoiceNumber(): Promise<string> {
   // если ещё не синхронизировали — не стартуем с 90000
-  const next = bumpSeq(KEY_INV, 0);
+  const next = await bumpSeq(KEY_INV, 0);
   return String(next);
 }
 
@@ -183,10 +183,10 @@ function updFallbackLast(inn: string): number {
 }
 
 /** Максимальный чисто числовой № УПД по ИНН продавца (на случай рассинхрона meta). */
-function maxOrdinalUpdNumberForInn(inn: string): number {
+async function maxOrdinalUpdNumberForInn(inn: string): Promise<number> {
   const digits = String(inn || '').replace(/\D/g, '');
   if (!digits) return 0;
-  const rows = all<{ number: string }>(
+  const rows = await all<{ number: string }>(
     `SELECT s.number FROM sales_docs s
      JOIN organizations o ON o.id = s.organization_id
      WHERE s.doc_type = 'upd' AND REPLACE(IFNULL(o.inn,''),' ','') = ?`,
@@ -201,48 +201,48 @@ function maxOrdinalUpdNumberForInn(inn: string): number {
 }
 
 /** Установить «последний занятый» порядковый № УПД по ИНН (не следующий). */
-export function setLastOccupiedUpd(inn: string, lastOccupied: number): void {
+export async function setLastOccupiedUpd(inn: string, lastOccupied: number): Promise<void> {
   const digits = String(inn || '').replace(/\D/g, '');
   if (!digits) throw new Error('Некорректный ИНН для УПД');
   const n = Math.max(0, Math.floor(lastOccupied));
-  metaSet(updSeqKeyForInn(digits), String(n));
+  await metaSet(updSeqKeyForInn(digits), String(n));
 }
 
-function ordinalUpdLastForOrg(organizationId: string): { inn: string; last: number } {
+async function ordinalUpdLastForOrg(organizationId: string): Promise<{ inn: string; last: number }> {
   const orgId = String(organizationId || '').trim();
   let inn = '';
   if (orgId) {
     inn = String(
-      get<{ inn: string }>(`SELECT IFNULL(inn,'') AS inn FROM organizations WHERE id = ?`, [orgId])
+      (await get<{ inn: string }>(`SELECT IFNULL(inn,'') AS inn FROM organizations WHERE id = ?`, [orgId]))
         ?.inn || ''
     ).replace(/\D/g, '');
   }
   if (!inn) inn = UPD_INN_MSK;
   const key = updSeqKeyForInn(inn);
-  const cur = readSeq(key, updFallbackLast(inn));
-  const maxDoc = maxOrdinalUpdNumberForInn(inn);
+  const cur = await readSeq(key, updFallbackLast(inn));
+  const maxDoc = await maxOrdinalUpdNumberForInn(inn);
   return { inn, last: Math.max(cur, maxDoc) };
 }
 
 /** Следующий № УПД без резервирования (для подсказки в форме). */
-export function peekNextOrdinalUpdNumber(organizationId: string): string {
-  const { last } = ordinalUpdLastForOrg(organizationId);
+export async function peekNextOrdinalUpdNumber(organizationId: string): Promise<string> {
+  const { last } = await ordinalUpdLastForOrg(organizationId);
   return String(last + 1);
 }
 
 /** Последний занятый порядковый № УПД по ИНН продавца (не привязка к сделке). */
-export function nextOrdinalUpdNumber(organizationId: string): string {
-  const { inn, last } = ordinalUpdLastForOrg(organizationId);
+export async function nextOrdinalUpdNumber(organizationId: string): Promise<string> {
+  const { inn, last } = await ordinalUpdLastForOrg(organizationId);
   const key = updSeqKeyForInn(inn);
-  run('BEGIN');
+  await run('BEGIN');
   try {
     const next = last + 1;
-    metaSet(key, String(next));
-    run('COMMIT');
+    await metaSet(key, String(next));
+    await run('COMMIT');
     return String(next);
   } catch (e) {
     try {
-      run('ROLLBACK');
+      await run('ROLLBACK');
     } catch {
       /* ignore */
     }
@@ -251,29 +251,29 @@ export function nextOrdinalUpdNumber(organizationId: string): string {
 }
 
 /** Договоры с контрагентами: ДГ-00001 */
-export function nextContractNumber(): string {
-  const next = bumpSeq(KEY_CONTRACT, 0);
+export async function nextContractNumber(): Promise<string> {
+  const next = await bumpSeq(KEY_CONTRACT, 0);
   return `ДГ-${String(next).padStart(5, '0')}`;
 }
 
-export function nextOutNfNumber(): string {
-  const next = bumpSeq(KEY_OUT, 0);
+export async function nextOutNfNumber(): Promise<string> {
+  const next = await bumpSeq(KEY_OUT, 0);
   return formatNfNumber(next);
 }
 
-export function nextInNfNumber(): string {
-  const next = bumpSeq(KEY_IN, 0);
+export async function nextInNfNumber(): Promise<string> {
+  const next = await bumpSeq(KEY_IN, 0);
   return formatNfNumber(next);
 }
 
-export function getDocNumberingState(): DocNumberingState {
-  const seqOut = readSeq(KEY_OUT, 0);
-  const seqIn = readSeq(KEY_IN, 0);
-  const seqInv = readSeq(KEY_INV, 0);
-  const lastOut = metaGet('doc_numbering_last_out_1c');
-  const lastIn = metaGet('doc_numbering_last_in_1c');
-  const lastInv1c = metaGet('doc_numbering_last_invoice_1c');
-  const invNote = metaGet('doc_numbering_invoice_note');
+export async function getDocNumberingState(): Promise<DocNumberingState> {
+  const seqOut = await readSeq(KEY_OUT, 0);
+  const seqIn = await readSeq(KEY_IN, 0);
+  const seqInv = await readSeq(KEY_INV, 0);
+  const lastOut = await metaGet('doc_numbering_last_out_1c');
+  const lastIn = await metaGet('doc_numbering_last_in_1c');
+  const lastInv1c = await metaGet('doc_numbering_last_invoice_1c');
+  const invNote = await metaGet('doc_numbering_invoice_note');
   return {
     last_out_1c: lastOut,
     last_in_1c: lastIn,
@@ -283,7 +283,7 @@ export function getDocNumberingState(): DocNumberingState {
     next_out: formatNfNumber(seqOut + 1),
     next_in: formatNfNumber(seqIn + 1),
     next_invoice: String(seqInv + 1),
-    synced_at: metaGet(KEY_SYNCED),
+    synced_at: await metaGet(KEY_SYNCED),
     note:
       invNote ||
       (lastInv1c
@@ -327,14 +327,14 @@ export async function syncDocNumberingFrom1c(): Promise<DocNumberingState> {
   const lastIn = await fetchLatestNumber(cfg, 'Document_ПриходнаяНакладная');
 
   if (lastOut) {
-    metaSet('doc_numbering_last_out_1c', lastOut);
+    await metaSet('doc_numbering_last_out_1c', lastOut);
     const n = parseTrailingNumber(lastOut);
-    if (n != null) setLastOccupied('out', n);
+    if (n != null) await setLastOccupied('out', n);
   }
   if (lastIn) {
-    metaSet('doc_numbering_last_in_1c', lastIn);
+    await metaSet('doc_numbering_last_in_1c', lastIn);
     const n = parseTrailingNumber(lastIn);
-    if (n != null) setLastOccupied('in', n);
+    if (n != null) await setLastOccupied('in', n);
   }
 
   // Счёт на оплату часто не опубликован в OData — пробуем типовые имена УНФ.
@@ -349,10 +349,10 @@ export async function syncDocNumberingFrom1c(): Promise<DocNumberingState> {
     try {
       lastInv = await fetchLatestNumber(cfg, entity);
       if (lastInv) {
-        metaSet('doc_numbering_last_invoice_1c', lastInv);
-        metaSet('doc_numbering_invoice_entity', entity);
+        await metaSet('doc_numbering_last_invoice_1c', lastInv);
+        await metaSet('doc_numbering_invoice_entity', entity);
         const n = parseTrailingNumber(lastInv);
-        if (n != null) setLastOccupied('invoice', n);
+        if (n != null) await setLastOccupied('invoice', n);
         break;
       }
     } catch (e) {
@@ -360,35 +360,35 @@ export async function syncDocNumberingFrom1c(): Promise<DocNumberingState> {
     }
   }
   if (!lastInv) {
-    metaSet(
+    await metaSet(
       'doc_numbering_invoice_note',
       invoiceErr
         ? `Счёт в OData недоступен (${invoiceErr.slice(0, 120)}). Задайте last_invoice вручную или опубликуйте Document_СчетНаОплату.`
         : 'Счёт в OData не опубликован. Задайте последний № счёта из 1С вручную или опубликуйте Document_СчетНаОплату.'
     );
   } else {
-    metaSet('doc_numbering_invoice_note', `Счёт подтянут из ${metaGet('doc_numbering_invoice_entity') || '1С'}: ${lastInv}`);
+    await metaSet('doc_numbering_invoice_note', `Счёт подтянут из ${await metaGet('doc_numbering_invoice_entity') || '1С'}: ${lastInv}`);
   }
 
-  metaSet(KEY_SYNCED, new Date().toISOString());
-  return getDocNumberingState();
+  await metaSet(KEY_SYNCED, new Date().toISOString());
+  return await getDocNumberingState();
 }
 
-export function applyDocNumberingPatch(patch: {
+export async function applyDocNumberingPatch(patch: {
   last_out?: string | number;
   last_in?: string | number;
   last_invoice?: string | number;
   last_upd_msk?: string | number;
   last_upd_krd?: string | number;
-}): DocNumberingState {
+}): Promise<DocNumberingState> {
   if (patch.last_out != null && patch.last_out !== '') {
     const n =
       typeof patch.last_out === 'number'
         ? patch.last_out
         : parseTrailingNumber(String(patch.last_out));
     if (n == null) throw new Error('Некорректный last_out');
-    setLastOccupied('out', n);
-    metaSet('doc_numbering_last_out_1c', formatNfNumber(n));
+    await setLastOccupied('out', n);
+    await metaSet('doc_numbering_last_out_1c', formatNfNumber(n));
   }
   if (patch.last_in != null && patch.last_in !== '') {
     const n =
@@ -396,8 +396,8 @@ export function applyDocNumberingPatch(patch: {
         ? patch.last_in
         : parseTrailingNumber(String(patch.last_in));
     if (n == null) throw new Error('Некорректный last_in');
-    setLastOccupied('in', n);
-    metaSet('doc_numbering_last_in_1c', formatNfNumber(n));
+    await setLastOccupied('in', n);
+    await metaSet('doc_numbering_last_in_1c', formatNfNumber(n));
   }
   if (patch.last_invoice != null && patch.last_invoice !== '') {
     const raw = String(patch.last_invoice).trim();
@@ -406,9 +406,9 @@ export function applyDocNumberingPatch(patch: {
         ? patch.last_invoice
         : parseTrailingNumber(raw);
     if (n == null) throw new Error('Некорректный last_invoice');
-    setLastOccupied('invoice', n);
-    metaSet('doc_numbering_last_invoice_1c', raw || String(n));
-    metaSet('doc_numbering_invoice_note', `Последний счёт задан вручную: ${raw || n}`);
+    await setLastOccupied('invoice', n);
+    await metaSet('doc_numbering_last_invoice_1c', raw || String(n));
+    await metaSet('doc_numbering_invoice_note', `Последний счёт задан вручную: ${raw || n}`);
   }
   if (patch.last_upd_msk != null && patch.last_upd_msk !== '') {
     const n =
@@ -416,7 +416,7 @@ export function applyDocNumberingPatch(patch: {
         ? patch.last_upd_msk
         : parseTrailingNumber(String(patch.last_upd_msk));
     if (n == null) throw new Error('Некорректный last_upd_msk');
-    setLastOccupiedUpd(UPD_INN_MSK, n);
+    await setLastOccupiedUpd(UPD_INN_MSK, n);
   }
   if (patch.last_upd_krd != null && patch.last_upd_krd !== '') {
     const n =
@@ -424,7 +424,7 @@ export function applyDocNumberingPatch(patch: {
         ? patch.last_upd_krd
         : parseTrailingNumber(String(patch.last_upd_krd));
     if (n == null) throw new Error('Некорректный last_upd_krd');
-    setLastOccupiedUpd(UPD_INN_KRD, n);
+    await setLastOccupiedUpd(UPD_INN_KRD, n);
   }
-  return getDocNumberingState();
+  return await getDocNumberingState();
 }

@@ -26,12 +26,12 @@ export function stockAdjustAdminDocFilter(alias = 'd'): string {
   return ` AND IFNULL(${alias}.admin_only, 0) = 0`;
 }
 
-export function ensureStockAdjustmentsSchema(): void {
-  const docCols = all<{ name: string }>('PRAGMA table_info(stock_docs)').map((c) => c.name);
+export async function ensureStockAdjustmentsSchema(): Promise<void> {
+  const docCols = (await all<{ name: string }>('PRAGMA table_info(stock_docs)')).map((c) => c.name);
   if (!docCols.includes('admin_only')) {
-    run(`ALTER TABLE stock_docs ADD COLUMN admin_only INTEGER NOT NULL DEFAULT 0`);
+    await run(`ALTER TABLE stock_docs ADD COLUMN admin_only INTEGER NOT NULL DEFAULT 0`);
   }
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS stock_adjustments (
       id TEXT PRIMARY KEY,
       warehouse_id TEXT NOT NULL,
@@ -48,17 +48,17 @@ export function ensureStockAdjustmentsSchema(): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
-  run(`CREATE INDEX IF NOT EXISTS idx_stock_adj_wh ON stock_adjustments(warehouse_id, created_at)`);
-  run(`CREATE INDEX IF NOT EXISTS idx_stock_adj_doc ON stock_adjustments(doc_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_stock_adj_wh ON stock_adjustments(warehouse_id, created_at)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_stock_adj_doc ON stock_adjustments(doc_id)`);
 }
 
-function productQtyOnWarehouse(warehouseId: string, productId: string): number {
+async function productQtyOnWarehouse(warehouseId: string, productId: string): Promise<number> {
   return (
     Number(
-      get<{ q: number }>(
+      (await get<{ q: number }>(
         `SELECT IFNULL(qty, 0) AS q FROM stock_balances WHERE warehouse_id = ? AND product_id = ?`,
         [warehouseId, productId]
-      )?.q
+      ))?.q
     ) || 0
   );
 }
@@ -67,14 +67,14 @@ function actorLabel(actor: StockAdjustActor | null | undefined): string {
   return String(actor?.name || actor?.login || 'администратор').trim() || 'администратор';
 }
 
-export function createStockAdjustment(input: {
+export async function createStockAdjustment(input: {
   warehouse_id: string;
   product_id: string;
   /** Новое количество после коррекции (>= 0). */
   qty_after: number;
   comment: string;
   actor?: StockAdjustActor | null;
-}): {
+}): Promise<{
   id: string;
   warehouse_id: string;
   product_id: string;
@@ -85,8 +85,8 @@ export function createStockAdjustment(input: {
   doc_id: string;
   doc_number: string;
   doc_type: string;
-} {
-  ensureStockAdjustmentsSchema();
+}> {
+  await ensureStockAdjustmentsSchema();
 
   const warehouseId = String(input.warehouse_id || '').trim();
   const productId = String(input.product_id || '').trim();
@@ -95,18 +95,18 @@ export function createStockAdjustment(input: {
 
   if (!warehouseId) throw new Error('Укажите склад');
   if (!productId) throw new Error('Укажите товар');
-  if (productIsService(productId)) throw new Error('Услуги не корректируют остаток');
+  if (await productIsService(productId)) throw new Error('Услуги не корректируют остаток');
   if (comment.length < 3) throw new Error('Комментарий обязателен (минимум 3 символа)');
 
-  const wh = get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [warehouseId]);
+  const wh = await get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [warehouseId]);
   if (!wh) throw new Error('Склад не найден');
-  const prod = get<{ id: string; name: string }>(
+  const prod = await get<{ id: string; name: string }>(
     `SELECT id, IFNULL(name,'') AS name FROM products WHERE id = ?`,
     [productId]
   );
   if (!prod) throw new Error('Товар не найден');
 
-  const qtyBefore = productQtyOnWarehouse(warehouseId, productId);
+  const qtyBefore = await productQtyOnWarehouse(warehouseId, productId);
   const qtyDelta = Math.round((qtyAfter - qtyBefore) * 1000) / 1000;
   if (Math.abs(qtyDelta) < 0.0001) {
     throw new Error(`Остаток уже ${qtyBefore} — изменений нет`);
@@ -116,7 +116,7 @@ export function createStockAdjustment(input: {
   const docComment = `${STOCK_ADJUST_DOC_PREFIX} ${comment} · ${actorName} · было ${qtyBefore} → стало ${qtyAfter}`;
 
   const docType = qtyDelta > 0 ? 'in' : 'out';
-  const docId = createDocument({
+  const docId = await createDocument({
     doc_type: docType,
     warehouse_id: warehouseId,
     comment: docComment,
@@ -131,15 +131,15 @@ export function createStockAdjustment(input: {
     post: true,
   });
 
-  run(`UPDATE stock_docs SET admin_only = 1 WHERE id = ?`, [docId]);
+  await run(`UPDATE stock_docs SET admin_only = 1 WHERE id = ?`, [docId]);
 
-  const doc = get<{ number: string; doc_type: string }>(
+  const doc = await get<{ number: string; doc_type: string }>(
     `SELECT number, doc_type FROM stock_docs WHERE id = ?`,
     [docId]
   );
 
   const adjId = newGuid();
-  run(
+  await run(
     `INSERT INTO stock_adjustments (
        id, warehouse_id, product_id, qty_before, qty_delta, qty_after,
        comment, doc_id, doc_number, doc_type, created_by_id, created_by_name
@@ -153,7 +153,7 @@ export function createStockAdjustment(input: {
       qtyAfter,
       comment,
       docId,
-      String(doc?.number || nextDocNumber(docType)),
+      String(doc?.number || await nextDocNumber(docType)),
       String(doc?.doc_type || docType),
       String(input.actor?.id || ''),
       actorName,
@@ -174,12 +174,12 @@ export function createStockAdjustment(input: {
   };
 }
 
-export function listStockAdjustments(opts: {
+export async function listStockAdjustments(opts: {
   warehouse_id?: string;
   limit?: number;
   offset?: number;
-}): { items: Array<Record<string, unknown>>; total: number } {
-  ensureStockAdjustmentsSchema();
+}): Promise<{ items: Array<Record<string, unknown>>; total: number }> {
+  await ensureStockAdjustmentsSchema();
   const limit = Math.min(200, Math.max(1, Number(opts.limit) || 50));
   const offset = Math.max(0, Number(opts.offset) || 0);
   const wh = String(opts.warehouse_id || '').trim();
@@ -187,9 +187,9 @@ export function listStockAdjustments(opts: {
   const params: Array<string | number> = wh ? [wh] : [];
   const total =
     Number(
-      get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_adjustments a ${where}`, params)?.c
+      (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_adjustments a ${where}`, params))?.c
     ) || 0;
-  const items = all(
+  const items = await all(
     `SELECT a.*,
             IFNULL(w.name,'') AS warehouse_name,
             IFNULL(w.code,'') AS warehouse_code,

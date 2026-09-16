@@ -305,7 +305,7 @@ export async function pullDocTemplateFromGoogle(
   source_file_id?: string;
   owner?: string;
 }> {
-  const cfg = getDocTemplatesConfig();
+  const cfg = await getDocTemplatesConfig();
   const row = cfg.templates.find((t) => t.id === String(templateId || '').trim());
   if (!row) throw new Error('Шаблон не найден');
   const stoId = String(row.sto_template_id || '').trim();
@@ -320,7 +320,7 @@ export async function pullDocTemplateFromGoogle(
   let sellerInn = String(opts?.sellerInn || '').replace(/\D/g, '');
   if (!sellerInn && opts?.organizationId) {
     try {
-      const org = getOrgProfile(resolveOrganizationId(opts.organizationId));
+      const org = await getOrgProfile(await resolveOrganizationId(opts.organizationId));
       sellerInn = String(org.inn || '').replace(/\D/g, '');
     } catch {
       /* ignore */
@@ -375,7 +375,7 @@ export async function pullDocTemplateFromGoogle(
     );
   }
 
-  upsertDocTemplate({
+  await upsertDocTemplate({
     ...row,
     google_doc_id: fileId || row.google_doc_id,
     updated_at: new Date().toISOString(),
@@ -411,8 +411,8 @@ export async function listDocTemplatesDriveFolder(): Promise<{
   };
 }
 
-function readRaw(): Partial<DocTemplatesConfig> {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
+async function readRaw(): Promise<Partial<DocTemplatesConfig>> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
   if (!row?.value) return {};
   try {
     const parsed = JSON.parse(row.value) as Partial<DocTemplatesConfig>;
@@ -422,12 +422,12 @@ function readRaw(): Partial<DocTemplatesConfig> {
   }
 }
 
-function writeConfig(cfg: DocTemplatesConfig): void {
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(cfg)]);
+async function writeConfig(cfg: DocTemplatesConfig): Promise<void> {
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(cfg)]);
 }
 
-export function getDocTemplatesConfig(): DocTemplatesConfig {
-  const stored = readRaw();
+export async function getDocTemplatesConfig(): Promise<DocTemplatesConfig> {
+  const stored = await readRaw();
   const defaults = defaultTemplates();
   const byId = new Map(
     (Array.isArray(stored.templates) ? stored.templates : [])
@@ -495,7 +495,7 @@ export function getDocTemplatesConfig(): DocTemplatesConfig {
     !Array.isArray(stored.templates) ||
     !stored.templates.length
   ) {
-    writeConfig({ templates: list, updated_at: new Date().toISOString() });
+    await writeConfig({ templates: list, updated_at: new Date().toISOString() });
   }
   return {
     templates: list,
@@ -503,9 +503,9 @@ export function getDocTemplatesConfig(): DocTemplatesConfig {
   };
 }
 
-export function saveDocTemplatesConfig(patch: {
+export async function saveDocTemplatesConfig(patch: {
   templates?: Array<Partial<DocTemplateRow>>;
-}): DocTemplatesConfig {
+}): Promise<DocTemplatesConfig> {
   const defaults = defaultTemplates();
   const allow = new Set(DOC_TEMPLATE_ALLOWED_IDS);
   const incoming = Array.isArray(patch.templates)
@@ -527,11 +527,11 @@ export function saveDocTemplatesConfig(patch: {
       is_active: true,
     });
   });
-  writeConfig({ templates: list, updated_at: new Date().toISOString() });
-  return getDocTemplatesConfig();
+  await writeConfig({ templates: list, updated_at: new Date().toISOString() });
+  return await getDocTemplatesConfig();
 }
 
-export function upsertDocTemplate(input: Partial<DocTemplateRow> & { id?: string }): DocTemplateRow {
+export async function upsertDocTemplate(input: Partial<DocTemplateRow> & { id?: string }): Promise<DocTemplateRow> {
   const allow = new Set(DOC_TEMPLATE_ALLOWED_IDS);
   const row = normalizeTemplate({
     ...input,
@@ -540,10 +540,10 @@ export function upsertDocTemplate(input: Partial<DocTemplateRow> & { id?: string
   if (!allow.has(row.id)) {
     throw new Error('Можно править только 6 бланков СТО');
   }
-  const cfg = getDocTemplatesConfig();
+  const cfg = await getDocTemplatesConfig();
   const idx = cfg.templates.findIndex((t) => t.id === row.id);
   if (idx >= 0) cfg.templates[idx] = { ...cfg.templates[idx], ...row, title: cfg.templates[idx].title, sto_template_id: cfg.templates[idx].sto_template_id };
-  writeConfig({ templates: cfg.templates, updated_at: new Date().toISOString() });
+  await writeConfig({ templates: cfg.templates, updated_at: new Date().toISOString() });
   return cfg.templates[idx >= 0 ? idx : 0];
 }
 
@@ -552,8 +552,8 @@ export function deleteDocTemplate(_id: string): boolean {
   return false;
 }
 
-export function docTemplatesPublic() {
-  const cfg = getDocTemplatesConfig();
+export async function docTemplatesPublic() {
+  const cfg = await getDocTemplatesConfig();
   const gdrive = {
     folder_id: GDRIVE_TEMPLATES_FOLDER,
     folder_url: `https://drive.google.com/drive/folders/${GDRIVE_TEMPLATES_FOLDER}`,

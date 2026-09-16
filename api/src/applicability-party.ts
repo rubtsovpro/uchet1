@@ -113,10 +113,10 @@ export function unitAppsMatchVehicle(
   };
 }
 
-export function catalogAppsForProduct(productId: string): AppVehicle[] {
+export async function catalogAppsForProduct(productId: string): Promise<AppVehicle[]> {
   const id = String(productId || '').trim();
   if (!id) return [];
-  return all<{
+  return (await all<{
     mark: string;
     model: string;
     only_model: string;
@@ -128,7 +128,7 @@ export function catalogAppsForProduct(productId: string): AppVehicle[] {
             IFNULL(years,'') AS years
      FROM product_applicability WHERE product_id = ?`,
     [id]
-  ).map((r) => ({
+  )).map((r) => ({
     mark: r.mark,
     model: r.model || r.only_model,
     generation: r.generation,
@@ -136,14 +136,14 @@ export function catalogAppsForProduct(productId: string): AppVehicle[] {
   }));
 }
 
-export function getSupplierProductApps(
+export async function getSupplierProductApps(
   productId: string,
   supplierId: string
-): AppVehicle[] {
+): Promise<AppVehicle[]> {
   const pid = String(productId || '').trim();
   const sid = String(supplierId || '').trim();
   if (!pid || !sid) return [];
-  const row = get<{ apps_json: string }>(
+  const row = await get<{ apps_json: string }>(
     `SELECT IFNULL(apps_json,'[]') AS apps_json
      FROM supplier_product_apps WHERE product_id = ? AND supplier_id = ?`,
     [pid, sid]
@@ -151,29 +151,29 @@ export function getSupplierProductApps(
   return parseAppsJson(row?.apps_json);
 }
 
-export function setSupplierProductApps(
+export async function setSupplierProductApps(
   productId: string,
   supplierId: string,
   apps: AppVehicle[],
   comment?: string
-): { product_id: string; supplier_id: string; apps: AppVehicle[] } {
+): Promise<{ product_id: string; supplier_id: string; apps: AppVehicle[] }> {
   const pid = String(productId || '').trim();
   const sid = String(supplierId || '').trim();
   if (!pid || !sid) throw new Error('Нужны product_id и supplier_id');
   const normalized = parseAppsJson(apps);
-  const existing = get<{ id: string }>(
+  const existing = await get<{ id: string }>(
     `SELECT id FROM supplier_product_apps WHERE product_id = ? AND supplier_id = ?`,
     [pid, sid]
   );
   if (existing) {
-    run(
+    await run(
       `UPDATE supplier_product_apps
        SET apps_json = ?, comment = ?, updated_at = datetime('now')
        WHERE id = ?`,
       [appsToJson(normalized), String(comment || '').trim(), existing.id]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO supplier_product_apps (id, product_id, supplier_id, apps_json, comment)
        VALUES (?, ?, ?, ?, ?)`,
       [newGuid(), pid, sid, appsToJson(normalized), String(comment || '').trim()]
@@ -186,14 +186,14 @@ export function setSupplierProductApps(
  * Какая применимость попадёт на экземпляры при приходе:
  * строка документа → дефолт поставщика → пусто (каталог).
  */
-export function resolveAppsForReceive(opts: {
+export async function resolveAppsForReceive(opts: {
   productId: string;
   supplierId?: string;
   lineApps?: AppVehicle[] | string | null;
-}): AppVehicle[] {
+}): Promise<AppVehicle[]> {
   const fromLine = parseAppsJson(opts.lineApps);
   if (fromLine.length) return fromLine;
-  const fromSupplier = getSupplierProductApps(
+  const fromSupplier = await getSupplierProductApps(
     opts.productId,
     String(opts.supplierId || '')
   );
@@ -201,10 +201,10 @@ export function resolveAppsForReceive(opts: {
   return [];
 }
 
-export function getUnitApps(unitIdOrSerial: string): AppVehicle[] {
+export async function getUnitApps(unitIdOrSerial: string): Promise<AppVehicle[]> {
   const key = String(unitIdOrSerial || '').trim();
   if (!key) return [];
-  const row = get<{ apps_json: string }>(
+  const row = await get<{ apps_json: string }>(
     `SELECT IFNULL(apps_json,'[]') AS apps_json FROM product_units
      WHERE id = ? OR lower(serial) = lower(?)
      LIMIT 1`,
@@ -213,19 +213,19 @@ export function getUnitApps(unitIdOrSerial: string): AppVehicle[] {
   return parseAppsJson(row?.apps_json);
 }
 
-export function setUnitApps(
+export async function setUnitApps(
   serial: string,
   apps: AppVehicle[]
-): { serial: string; apps: AppVehicle[]; apps_label: string; apps_short: string } {
+): Promise<{ serial: string; apps: AppVehicle[]; apps_label: string; apps_short: string }> {
   const code = String(serial || '').trim();
   if (!code) throw new Error('Укажите марку (serial)');
-  const unit = get<{ id: string; serial: string }>(
+  const unit = await get<{ id: string; serial: string }>(
     `SELECT id, serial FROM product_units WHERE lower(serial) = lower(?) LIMIT 1`,
     [code]
   );
   if (!unit) throw new Error(`Экземпляр «${code}» не найден`);
   const normalized = parseAppsJson(apps);
-  run(`UPDATE product_units SET apps_json = ?, updated_at = datetime('now') WHERE id = ?`, [
+  await run(`UPDATE product_units SET apps_json = ?, updated_at = datetime('now') WHERE id = ?`, [
     appsToJson(normalized),
     unit.id,
   ]);

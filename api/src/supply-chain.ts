@@ -32,11 +32,11 @@ import {
 export { nextBarcode };
 
 /** Применимость партии, заданная при «Передать на склад» (payload заказа / dims задания). */
-function resolveInboundPartyApps(opts: {
+async function resolveInboundPartyApps(opts: {
   orderId: string;
   productId: string;
   serial: string;
-}): AppVehicle[] {
+}): Promise<AppVehicle[]> {
   const orderId = String(opts.orderId || '').trim();
   const productId = String(opts.productId || '').trim();
   const serial = String(opts.serial || '').trim();
@@ -44,7 +44,7 @@ function resolveInboundPartyApps(opts: {
 
   // 1) payload тонкого журнала
   try {
-    const row = get<{ payload_json: string }>(
+    const row = await get<{ payload_json: string }>(
       `SELECT IFNULL(payload_json,'') AS payload_json FROM thin_journal_docs WHERE id = ?`,
       [orderId]
     );
@@ -70,7 +70,7 @@ function resolveInboundPartyApps(opts: {
 
   // 2) активное inbound-задание
   try {
-    const task = get<{ id: string }>(
+    const task = await get<{ id: string }>(
       `SELECT id FROM warehouse_tasks
        WHERE stock_doc_id = ? AND channel = 'inbound'
          AND status NOT IN ('cancelled')
@@ -78,7 +78,7 @@ function resolveInboundPartyApps(opts: {
       [orderId]
     );
     if (!task) return [];
-    const lines = all<{ product_id: string; dims_json: string }>(
+    const lines = await all<{ product_id: string; dims_json: string }>(
       `SELECT product_id, IFNULL(dims_json,'{}') AS dims_json
        FROM warehouse_task_lines WHERE task_id = ?`,
       [task.id]
@@ -130,8 +130,8 @@ export type SupplierOrderStatus =
   | 'received'
   | 'closed';
 
-function warehouseByCode(code: string, nameFallback: string): string {
-  const row = get<{ id: string }>(
+async function warehouseByCode(code: string, nameFallback: string): Promise<string> {
+  const row = await get<{ id: string }>(
     `SELECT id FROM warehouses WHERE code = ? OR name = ? LIMIT 1`,
     [code, nameFallback]
   );
@@ -139,24 +139,24 @@ function warehouseByCode(code: string, nameFallback: string): string {
   return row.id;
 }
 
-export function mainWarehouseId(): string {
-  return warehouseByCode('MAIN', 'Основной');
+export async function mainWarehouseId(): Promise<string> {
+  return await warehouseByCode('MAIN', 'Основной');
 }
 
-export function stoWarehouseId(): string {
-  return warehouseByCode('STO', 'СТО');
+export async function stoWarehouseId(): Promise<string> {
+  return await warehouseByCode('STO', 'СТО');
 }
 
-export function transitWarehouseId(): string {
-  return warehouseByCode('IN-TRANSIT', 'В пути');
+export async function transitWarehouseId(): Promise<string> {
+  return await warehouseByCode('IN-TRANSIT', 'В пути');
 }
 
 /** Создать склад по коду, если нет (Курьер / СДЭК / Автобус). */
-export function ensureWarehouseByCode(code: string, name: string): string {
+export async function ensureWarehouseByCode(code: string, name: string): Promise<string> {
   const c = String(code || '').trim();
   const n = String(name || '').trim() || c;
   if (!c) throw new Error('Код склада пуст');
-  const existing = get<{ id: string }>(
+  const existing = await get<{ id: string }>(
     `SELECT id FROM warehouses WHERE code = ? OR name = ? LIMIT 1`,
     [c, n]
   );
@@ -168,13 +168,13 @@ export function ensureWarehouseByCode(code: string, name: string): string {
       c.toUpperCase() === 'STO' ||
       c.toUpperCase() === 'COURIER'
     ) {
-      run(
+      await run(
         `UPDATE warehouses SET is_active = 1, name = ?, updated_at = datetime('now') WHERE id = ?`,
         [n, existing.id]
       );
     }
     if (/^STO-RSV-MSK$/i.test(c) || /^STO-RES-MSK$/i.test(c) || c.toUpperCase() === 'STO') {
-      run(
+      await run(
         `UPDATE warehouses SET company_id = ? WHERE id = ? AND IFNULL(company_id,'') = ''`,
         [DEFAULT_COMPANY_ID, existing.id]
       );
@@ -187,13 +187,13 @@ export function ensureWarehouseByCode(code: string, name: string): string {
       ? DEFAULT_COMPANY_ID
       : '';
   if (companyId) {
-    run(
+    await run(
       `INSERT INTO warehouses (id, name, code, is_active, company_id, created_at, updated_at)
        VALUES (?, ?, ?, 1, ?, datetime('now'), datetime('now'))`,
       [id, n, c, companyId]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO warehouses (id, name, code, is_active, created_at, updated_at)
        VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))`,
       [id, n, c]
@@ -202,22 +202,22 @@ export function ensureWarehouseByCode(code: string, name: string): string {
   return id;
 }
 
-export function courierWarehouseId(): string {
-  return ensureWarehouseByCode('COURIER', 'Курьер');
+export async function courierWarehouseId(): Promise<string> {
+  return await ensureWarehouseByCode('COURIER', 'Курьер');
 }
 
-export function cdekWarehouseId(): string {
-  return ensureWarehouseByCode('CDEK', 'Склад СДЭК');
+export async function cdekWarehouseId(): Promise<string> {
+  return await ensureWarehouseByCode('CDEK', 'Склад СДЭК');
 }
 
-export function busWarehouseId(): string {
-  return ensureWarehouseByCode('BUS', 'Автобус');
+export async function busWarehouseId(): Promise<string> {
+  return await ensureWarehouseByCode('BUS', 'Автобус');
 }
 
 /** Склады BUS/CDEK больше не используем — отправка только через «Склад курьера». */
 export function archiveObsoleteLogisticsWarehouses(): number {
   let n = 0;
-  const upd = db.prepare(
+  const upd = /* PG: replace prepare */ db.prepare(
     `UPDATE warehouses SET is_active = 0, updated_at = datetime('now')
      WHERE UPPER(IFNULL(code,'')) = ? AND IFNULL(is_active,1) != 0`
   );
@@ -228,8 +228,8 @@ export function archiveObsoleteLogisticsWarehouses(): number {
   return n;
 }
 
-function refreshOrderStatus(orderId: string): void {
-  const units = all<{ status: string; is_extra: number }>(
+async function refreshOrderStatus(orderId: string): Promise<void> {
+  const units = await all<{ status: string; is_extra: number }>(
     `SELECT status, is_extra FROM supplier_order_units WHERE order_id = ?`,
     [orderId]
   );
@@ -242,14 +242,14 @@ function refreshOrderStatus(orderId: string): void {
   if (pending === 0 && received > 0) status = 'received';
   else if (received > 0 && pending > 0) status = 'partial';
   else if (received === 0) status = 'in_transit';
-  run(
+  await run(
     `UPDATE supplier_orders SET status = ?, mismatch = CASE WHEN ? THEN 1 ELSE mismatch END, updated_at = datetime('now')
      WHERE id = ?`,
     [status, hasExtra ? 1 : 0, orderId]
   );
 }
 
-export function listSupplierOrders(opts: { status?: string; q?: string; limit?: number }) {
+export async function listSupplierOrders(opts: { status?: string; q?: string; limit?: number }) {
   const where: string[] = ['1=1'];
   const params: Array<string | number> = [];
   if (opts.status) {
@@ -262,7 +262,7 @@ export function listSupplierOrders(opts: { status?: string; q?: string; limit?: 
     params.push(q, q, q);
   }
   const limit = Math.min(200, Math.max(1, Number(opts.limit) || 50));
-  return all(
+  return await all(
     `SELECT o.*, c.name AS supplier_name, c.barcode_prefix AS supplier_prefix,
             (SELECT COUNT(*) FROM supplier_order_units u WHERE u.order_id = o.id) AS units_total,
             (SELECT COUNT(*) FROM supplier_order_units u WHERE u.order_id = o.id AND u.status = 'received') AS units_received,
@@ -276,8 +276,8 @@ export function listSupplierOrders(opts: { status?: string; q?: string; limit?: 
   );
 }
 
-export function getSupplierOrder(id: string): Record<string, unknown> | null {
-  const order = get<Record<string, unknown>>(
+export async function getSupplierOrder(id: string): Promise<Record<string, unknown> | null> {
+  const order = await get<Record<string, unknown>>(
     `SELECT o.*, c.name AS supplier_name, c.barcode_prefix AS supplier_prefix, c.inn AS supplier_inn
      FROM supplier_orders o
      LEFT JOIN counterparties c ON c.id = o.counterparty_id
@@ -285,7 +285,7 @@ export function getSupplierOrder(id: string): Record<string, unknown> | null {
     [id]
   );
   if (!order) return null;
-  const lines = all(
+  const lines = await all(
     `SELECT l.*, p.sku, p.name AS product_name
      FROM supplier_order_lines l
      LEFT JOIN products p ON p.id = l.product_id
@@ -293,7 +293,7 @@ export function getSupplierOrder(id: string): Record<string, unknown> | null {
      ORDER BY l.sort_order, l.id`,
     [id]
   );
-  const units = all(
+  const units = await all(
     `SELECT u.*, p.sku, p.name AS product_name
      FROM supplier_order_units u
      LEFT JOIN products p ON p.id = u.product_id
@@ -304,7 +304,7 @@ export function getSupplierOrder(id: string): Record<string, unknown> | null {
   return { ...order, lines, units };
 }
 
-export function createSupplierOrder(input: {
+export async function createSupplierOrder(input: {
   counterparty_id: string;
   comment?: string;
   eta_date?: string;
@@ -314,14 +314,14 @@ export function createSupplierOrder(input: {
 }) {
   const cpId = String(input.counterparty_id || '').trim();
   if (!cpId) throw new Error('Укажите поставщика');
-  const cp = get<{ id: string }>('SELECT id FROM counterparties WHERE id = ?', [cpId]);
+  const cp = await get<{ id: string }>('SELECT id FROM counterparties WHERE id = ?', [cpId]);
   if (!cp) throw new Error('Поставщик не найден');
   const lines = (input.lines || []).filter((l) => l.product_id && Number(l.qty) > 0);
   if (!lines.length) throw new Error('Добавьте строки заказа');
   const id = newGuid();
-  const number = nextCode('ЗП', 5);
+  const number = await nextCode('ЗП', 5);
   const now = new Date().toISOString();
-  run(
+  await run(
     `INSERT INTO supplier_orders
       (id, number, counterparty_id, status, eta_date, comment, organization_id, created_by, created_at, updated_at)
      VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)`,
@@ -337,8 +337,8 @@ export function createSupplierOrder(input: {
       now,
     ]
   );
-  lines.forEach((l, i) => {
-    run(
+  lines.forEach(async (l, i) => {
+    await run(
       `INSERT INTO supplier_order_lines (id, order_id, product_id, qty, price, comment, sort_order)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -352,15 +352,15 @@ export function createSupplierOrder(input: {
       ]
     );
   });
-  return getSupplierOrder(id);
+  return await getSupplierOrder(id);
 }
 
-export function setSupplierOrderStatus(
+export async function setSupplierOrderStatus(
   id: string,
   status: SupplierOrderStatus,
   opts?: { eta_date?: string; comment?: string }
 ) {
-  const order = get<{ id: string; status: string; counterparty_id: string }>(
+  const order = await get<{ id: string; status: string; counterparty_id: string }>(
     `SELECT id, status, counterparty_id FROM supplier_orders WHERE id = ?`,
     [id]
   );
@@ -375,7 +375,7 @@ export function setSupplierOrderStatus(
     closed: [],
   };
   if (status === 'paid') {
-    return markSupplierOrderPaid(id, opts);
+    return await markSupplierOrderPaid(id, opts);
   }
   if (!(allowed[order.status] || []).includes(status) && status !== order.status) {
     throw new Error(`Нельзя сменить статус ${order.status} → ${status}`);
@@ -391,16 +391,16 @@ export function setSupplierOrderStatus(
     params.push(String(opts.comment).trim());
   }
   params.push(id);
-  run(`UPDATE supplier_orders SET ${sets.join(', ')} WHERE id = ?`, params);
-  return getSupplierOrder(id);
+  await run(`UPDATE supplier_orders SET ${sets.join(', ')} WHERE id = ?`, params);
+  return await getSupplierOrder(id);
 }
 
 /** Оплачено → генерация уникальных Data Matrix на все qty, статус in_transit. */
-export function markSupplierOrderPaid(
+export async function markSupplierOrderPaid(
   id: string,
   opts?: { eta_date?: string; comment?: string }
 ) {
-  const order = get<{
+  const order = await get<{
     id: string;
     status: string;
     counterparty_id: string;
@@ -410,46 +410,46 @@ export function markSupplierOrderPaid(
   if (!['draft', 'to_pay', 'paid'].includes(order.status)) {
     throw new Error(`Заказ уже в статусе ${order.status}`);
   }
-  const existingUnits = get<{ c: number }>(
+  const existingUnits = (await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM supplier_order_units WHERE order_id = ?`,
     [id]
-  )?.c;
+  ))?.c;
   if (existingUnits && Number(existingUnits) > 0 && order.status === 'paid') {
     // уже сгенерировано
-    return getSupplierOrder(id);
+    return await getSupplierOrder(id);
   }
   if (existingUnits && Number(existingUnits) > 0) {
     throw new Error('Data Matrix по заказу уже созданы');
   }
 
-  const cp = get<{ barcode_prefix: string }>(
+  const cp = await get<{ barcode_prefix: string }>(
     `SELECT IFNULL(barcode_prefix,'') AS barcode_prefix FROM counterparties WHERE id = ?`,
     [order.counterparty_id]
   );
   const prefix = String(cp?.barcode_prefix || '').trim() || 'DM';
-  const lines = all<{ id: string; product_id: string; qty: number }>(
+  const lines = await all<{ id: string; product_id: string; qty: number }>(
     `SELECT id, product_id, qty FROM supplier_order_lines WHERE order_id = ?`,
     [id]
   );
   if (!lines.length) throw new Error('Нет строк заказа');
 
-  const transitWh = transitWarehouseId();
+  const transitWh = await transitWarehouseId();
   const now = new Date().toISOString();
 
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const line of lines) {
       const qty = Math.max(1, Math.round(Number(line.qty)));
       const serials: string[] = [];
-      for (let i = 0; i < qty; i++) serials.push(nextBarcode(prefix));
-      const unitIds = createInTransitUnits({
+      for (let i = 0; i < qty; i++) serials.push(await nextBarcode(prefix));
+      const unitIds = await createInTransitUnits({
         productId: line.product_id,
         warehouseId: transitWh,
         serials,
         comment: `заказ ${order.number}`,
       });
-      serials.forEach((serial, idx) => {
-        run(
+      serials.forEach(async (serial, idx) => {
+        await run(
           `INSERT INTO supplier_order_units
             (id, order_id, line_id, product_id, serial, status, product_unit_id, is_extra, created_at)
            VALUES (?, ?, ?, ?, ?, 'in_transit', ?, 0, ?)`,
@@ -457,7 +457,7 @@ export function markSupplierOrderPaid(
         );
       });
     }
-    run(
+    await run(
       `UPDATE supplier_orders
        SET status = 'in_transit', paid_at = ?, eta_date = COALESCE(NULLIF(?, ''), eta_date),
            comment = CASE WHEN ? = '' THEN comment ELSE ? END, updated_at = ?
@@ -471,16 +471,16 @@ export function markSupplierOrderPaid(
         id,
       ]
     );
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
-    run('ROLLBACK');
+    await run('ROLLBACK');
     throw e;
   }
-  return getSupplierOrder(id);
+  return await getSupplierOrder(id);
 }
 
-export function orderLabels(orderId: string) {
-  const order = getSupplierOrder(orderId);
+export async function orderLabels(orderId: string) {
+  const order = await getSupplierOrder(orderId);
   if (!order) throw new Error('Заказ не найден');
   return {
     order: {
@@ -499,8 +499,8 @@ export function orderLabels(orderId: string) {
   };
 }
 
-export function labelsHtml(orderId: string): string {
-  const data = orderLabels(orderId);
+export async function labelsHtml(orderId: string): Promise<string> {
+  const data = await orderLabels(orderId);
   const rows = data.labels
     .map((l) => {
       const serial = String(l.serial || '');
@@ -534,17 +534,17 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function resolveCounterpartyIdByName(nameRaw: string): string {
+async function resolveCounterpartyIdByName(nameRaw: string): Promise<string> {
   const name = String(nameRaw || '').trim();
   if (!name) return '';
-  const exact = get<{ id: string }>(
+  const exact = await get<{ id: string }>(
     `SELECT id FROM counterparties
      WHERE name = ? OR IFNULL(name_full,'') = ?
      LIMIT 1`,
     [name, name]
   );
   if (exact?.id) return exact.id;
-  const fuzzy = get<{ id: string }>(
+  const fuzzy = await get<{ id: string }>(
     `SELECT id FROM counterparties WHERE name LIKE ? OR IFNULL(name_full,'') LIKE ? LIMIT 1`,
     [`%${name}%`, `%${name}%`]
   );
@@ -552,7 +552,7 @@ function resolveCounterpartyIdByName(nameRaw: string): string {
 }
 
 /** Марка из заказа поставщику (тонкий журнал parity), ещё не в supplier_order_units. */
-function findThinSupplierOrderBySerial(codeRaw: string): {
+async function findThinSupplierOrderBySerial(codeRaw: string): Promise<{
   order_id: string;
   number: string;
   status: string;
@@ -562,7 +562,7 @@ function findThinSupplierOrderBySerial(codeRaw: string): {
   product_name: string;
   sku: string;
   serial: string;
-} | null {
+} | null> {
   const code = String(codeRaw || '').trim();
   if (!code) return null;
   const safe = code
@@ -579,7 +579,7 @@ function findThinSupplierOrderBySerial(codeRaw: string): {
     payload_json: string;
   }> = [];
   try {
-    hits = all(
+    hits = await all(
       `SELECT id, IFNULL(number,'') AS number, IFNULL(status,'') AS status,
               IFNULL(counterparty_name,'') AS counterparty_name,
               IFNULL(payload_json,'') AS payload_json
@@ -625,7 +625,7 @@ function findThinSupplierOrderBySerial(codeRaw: string): {
         number: t.number || t.id.slice(0, 8),
         status: t.status || '',
         counterparty_name: cpName,
-        counterparty_id: resolveCounterpartyIdByName(cpName),
+        counterparty_id: await resolveCounterpartyIdByName(cpName),
         product_id: productId,
         product_name: String(l.name || ''),
         sku: String(l.article || ''),
@@ -636,8 +636,8 @@ function findThinSupplierOrderBySerial(codeRaw: string): {
   return null;
 }
 
-function thinOrderAsScanOrder(thin: NonNullable<ReturnType<typeof findThinSupplierOrderBySerial>>) {
-  return buildInboundBoard(thin.order_id) || {
+async function thinOrderAsScanOrder(thin: NonNullable<Awaited<ReturnType<typeof findThinSupplierOrderBySerial>>>) {
+  return await buildInboundBoard(thin.order_id) || {
     id: thin.order_id,
     number: thin.number,
     status: thin.status,
@@ -702,9 +702,9 @@ function productRollupFromUnits(
   }));
 }
 
-function findInboundWarehouseTask(orderId: string) {
+async function findInboundWarehouseTask(orderId: string) {
   return (
-    get<{ id: string; number: string; status: string; comment: string }>(
+    await get<{ id: string; number: string; status: string; comment: string }>(
       `SELECT id, IFNULL(number,'') AS number, IFNULL(status,'') AS status,
               IFNULL(comment,'') AS comment
        FROM warehouse_tasks
@@ -717,18 +717,18 @@ function findInboundWarehouseTask(orderId: string) {
   );
 }
 
-function syncInboundWarehouseTask(orderId: string, board: {
+async function syncInboundWarehouseTask(orderId: string, board: {
   status?: string;
   units_pending?: number;
   units_received?: number;
 }) {
-  const task = findInboundWarehouseTask(orderId);
+  const task = await findInboundWarehouseTask(orderId);
   if (!task) return null;
   const pending = Number(board.units_pending) || 0;
   const received = Number(board.units_received) || 0;
   try {
     if (pending === 0 && received > 0 && task.status !== 'handed') {
-      run(
+      await run(
         `UPDATE warehouse_tasks
          SET status = 'handed', handed_at = datetime('now'), updated_at = datetime('now')
          WHERE id = ?`,
@@ -737,7 +737,7 @@ function syncInboundWarehouseTask(orderId: string, board: {
       return { ...task, status: 'handed' };
     }
     if (received > 0 && pending > 0 && task.status === 'new') {
-      run(
+      await run(
         `UPDATE warehouse_tasks
          SET status = 'picking', picked_at = datetime('now'), updated_at = datetime('now')
          WHERE id = ?`,
@@ -752,11 +752,11 @@ function syncInboundWarehouseTask(orderId: string, board: {
 }
 
 /** Доска приёмки: товары + марки (классический заказ или тонкий журнал). */
-export function buildInboundBoard(orderIdRaw: string): Record<string, unknown> | null {
+export async function buildInboundBoard(orderIdRaw: string): Promise<Record<string, unknown> | null> {
   const orderId = String(orderIdRaw || '').trim();
   if (!orderId) return null;
 
-  const classic = getSupplierOrder(orderId);
+  const classic = await getSupplierOrder(orderId);
   if (classic) {
     const units = (classic.units as Array<Record<string, unknown>>) || [];
     const products = productRollupFromUnits(
@@ -787,14 +787,14 @@ export function buildInboundBoard(orderIdRaw: string): Record<string, unknown> |
             ? `Оприходовано ${received} из ${expected.length} · недостача ${pending}`
             : `Ожидает приёмки · ${expected.length} марок`,
     };
-    board.warehouse_task = syncInboundWarehouseTask(orderId, {
+    board.warehouse_task = await syncInboundWarehouseTask(orderId, {
       units_pending: pending,
       units_received: received,
     });
     return board;
   }
 
-  const thin = get<{
+  const thin = await get<{
     id: string;
     number: string;
     status: string;
@@ -843,7 +843,7 @@ export function buildInboundBoard(orderIdRaw: string): Record<string, unknown> |
     for (const serial of serials) {
       let status = receivedSet.has(serial.toLowerCase()) ? 'received' : 'in_transit';
       if (status !== 'received') {
-        const pu = findUnitBySerial(serial);
+        const pu = await findUnitBySerial(serial);
         if (pu && (pu.status === 'in_stock' || String(pu.in_doc_id || '').trim())) {
           status = 'received';
           if (!receivedSet.has(serial.toLowerCase())) {
@@ -878,7 +878,7 @@ export function buildInboundBoard(orderIdRaw: string): Record<string, unknown> |
     number: thin.number,
     status,
     doc_date: thin.doc_date,
-    counterparty_id: resolveCounterpartyIdByName(thin.counterparty_name),
+    counterparty_id: await resolveCounterpartyIdByName(thin.counterparty_name),
     supplier_name: thin.counterparty_name,
     counterparty_name: thin.counterparty_name,
     thin_journal: 1,
@@ -897,15 +897,15 @@ export function buildInboundBoard(orderIdRaw: string): Record<string, unknown> |
           ? `Оприходовано ${received} из ${units.length} · не пришло ${pending}`
           : `Ожидает приёмки · ${units.length} марок`,
   };
-  board.warehouse_task = syncInboundWarehouseTask(orderId, board);
+  board.warehouse_task = await syncInboundWarehouseTask(orderId, board);
   return board;
 }
 
 /** Доска приёмки возврата по заданию склада (channel=return). */
-export function buildReturnTaskBoard(taskIdRaw: string): Record<string, unknown> | null {
+export async function buildReturnTaskBoard(taskIdRaw: string): Promise<Record<string, unknown> | null> {
   const taskId = String(taskIdRaw || '').trim();
   if (!taskId) return null;
-  const task = get<{
+  const task = await get<{
     id: string;
     number: string;
     deal_id: string;
@@ -923,7 +923,7 @@ export function buildReturnTaskBoard(taskIdRaw: string): Record<string, unknown>
     [taskId]
   );
   if (!task) return null;
-  const lines = all<{
+  const lines = await all<{
     product_id: string;
     sku: string;
     name: string;
@@ -965,7 +965,7 @@ export function buildReturnTaskBoard(taskIdRaw: string): Record<string, unknown>
       for (const serial of serials) {
         let status = receivedSet.has(serial.toLowerCase()) ? 'received' : 'in_transit';
         if (status !== 'received') {
-          const pu = findUnitBySerial(serial);
+          const pu = await findUnitBySerial(serial);
           if (
             pu &&
             (pu.status === 'in_stock' || String(pu.in_doc_id || '').trim()) &&
@@ -1037,11 +1037,11 @@ export function buildReturnTaskBoard(taskIdRaw: string): Record<string, unknown>
   };
 }
 
-function findProductByBarcode(code: string) {
+async function findProductByBarcode(code: string) {
   const c = String(code || '').trim();
   if (!c) return null;
   return (
-    get<{ id: string; sku: string; name: string; barcode: string }>(
+    await get<{ id: string; sku: string; name: string; barcode: string }>(
       `SELECT id, IFNULL(sku,'') AS sku, IFNULL(name,'') AS name, IFNULL(barcode,'') AS barcode
        FROM products
        WHERE lower(IFNULL(barcode,'')) = lower(?)
@@ -1053,10 +1053,10 @@ function findProductByBarcode(code: string) {
   );
 }
 
-export function scanSupplyCode(codeRaw: string) {
+export async function scanSupplyCode(codeRaw: string) {
   const code = String(codeRaw || '').trim();
   if (!code) throw new Error('Пустой код');
-  const sou = get<Record<string, unknown>>(
+  const sou = await get<Record<string, unknown>>(
     `SELECT u.*, o.number AS order_number, o.status AS order_status, o.mismatch,
             o.counterparty_id, c.name AS supplier_name, p.sku, p.name AS product_name
      FROM supplier_order_units u
@@ -1067,9 +1067,9 @@ export function scanSupplyCode(codeRaw: string) {
      LIMIT 1`,
     [code]
   );
-  const unit = findUnitBySerial(code);
+  const unit = await findUnitBySerial(code);
   if (sou) {
-    const order = getSupplierOrder(String(sou.order_id));
+    const order = await getSupplierOrder(String(sou.order_id));
     return {
       kind: 'supplier_unit',
       serial: code,
@@ -1079,7 +1079,7 @@ export function scanSupplyCode(codeRaw: string) {
       product: null,
     };
   }
-  const thin = findThinSupplierOrderBySerial(code);
+  const thin = await findThinSupplierOrderBySerial(code);
   if (thin) {
     const alreadyIn =
       !!unit &&
@@ -1103,7 +1103,7 @@ export function scanSupplyCode(codeRaw: string) {
       kind: 'thin_supplier_order',
       serial: code,
       supplier_unit: synthetic,
-      order: thinOrderAsScanOrder(thin),
+      order: await thinOrderAsScanOrder(thin),
       product_unit: unit || null,
       product: null,
     };
@@ -1111,7 +1111,7 @@ export function scanSupplyCode(codeRaw: string) {
   if (unit) {
     return { kind: 'product_unit', serial: code, product_unit: unit, order: null, product: null };
   }
-  const product = findProductByBarcode(code);
+  const product = await findProductByBarcode(code);
   if (product) {
     return {
       kind: 'product_barcode',
@@ -1137,20 +1137,20 @@ export type ScanAction =
   | 'unknown';
 
 /** По статусу кода: приход / возврат / на СТО / УПД. */
-export function classifyScan(codeRaw: string): {
+export async function classifyScan(codeRaw: string): Promise<{
   serial: string;
   action: ScanAction;
   action_label: string;
   kind: string;
-  order: ReturnType<typeof getSupplierOrder> | null;
+  order: Awaited<ReturnType<typeof getSupplierOrder>> | null;
   supplier_unit: Record<string, unknown> | null;
-  product_unit: ReturnType<typeof findUnitBySerial> | null;
+  product_unit: Awaited<ReturnType<typeof findUnitBySerial>> | null;
   product: { id: string; sku: string; name: string; barcode: string } | null;
-  deal: ReturnType<typeof resolveBuyerDealFromSerial>;
+  deal: Awaited<ReturnType<typeof resolveBuyerDealFromSerial>>;
   sale_price?: number;
   sale_price_source?: string;
-} {
-  const base = scanSupplyCode(codeRaw);
+}> {
+  const base = await scanSupplyCode(codeRaw);
   const code = base.serial;
   const sou = (base.supplier_unit || null) as Record<string, unknown> | null;
   const unit = base.product_unit || null;
@@ -1159,21 +1159,21 @@ export function classifyScan(codeRaw: string): {
     null;
   const unitStatus = String(unit?.status || '');
   const souStatus = String(sou?.status || '');
-  let deal = resolveBuyerDealFromSerial(code);
-  const mainWh = mainWarehouseId();
-  const stoWh = stoWarehouseId();
+  let deal = await resolveBuyerDealFromSerial(code);
+  const mainWh = await mainWarehouseId();
+  const stoWh = await stoWarehouseId();
   const whId = String(unit?.warehouse_id || '');
 
   const pack = (
     action: ScanAction,
     action_label: string,
-    dealOverride?: ReturnType<typeof resolveBuyerDealFromSerial>
+    dealOverride?: Awaited<ReturnType<typeof resolveBuyerDealFromSerial>>
   ) => ({
     serial: code,
     action,
     action_label,
     kind: base.kind,
-    order: (base.order as ReturnType<typeof getSupplierOrder>) || null,
+    order: (base.order as Awaited<ReturnType<typeof getSupplierOrder>>) || null,
     supplier_unit: sou,
     product_unit: unit,
     product,
@@ -1181,7 +1181,7 @@ export function classifyScan(codeRaw: string): {
   });
 
   if (base.kind === 'product_barcode' && product) {
-    return pack('receive_free', 'Приход по штрихкоду товара (новая марка)');
+    return await pack('receive_free', 'Приход по штрихкоду товара (новая марка)');
   }
 
   // Продан / у клиента / есть расходный — это возврат, не приход от поставщика
@@ -1191,13 +1191,13 @@ export function classifyScan(codeRaw: string): {
 
   if (isClientHeld) {
     const sale = unit?.product_id
-      ? getLastSalePrice({
+      ? await getLastSalePrice({
           productId: String(unit.product_id),
           serial: code,
           dealId: deal?.deal_id || '',
         })
       : { price: 0, source: '', deal_id: '' };
-    const packed = pack('return', 'Возврат от клиента');
+    const packed = await pack('return', 'Возврат от клиента');
     return {
       ...packed,
       sale_price: sale.price,
@@ -1214,20 +1214,20 @@ export function classifyScan(codeRaw: string): {
   }
 
   if (sou && (souStatus === 'in_transit' || souStatus === 'expected')) {
-    return pack('receive', 'Приход из поставки');
+    return await pack('receive', 'Приход из поставки');
   }
 
   if (unitStatus === 'in_transit') {
-    return pack('receive', 'Приход (в пути)');
+    return await pack('receive', 'Приход (в пути)');
   }
 
   if (unitStatus === 'in_stock' && whId === mainWh) {
-    return pack('to_sto', 'Переместить на СТО');
+    return await pack('to_sto', 'Переместить на СТО');
   }
 
   if (unitStatus === 'in_stock' && whId === stoWh) {
     if (!deal && unit?.product_id) {
-      const fromReq = get<{ deal_id: string }>(
+      const fromReq = await get<{ deal_id: string }>(
         `SELECT IFNULL(r.deal_id,'') AS deal_id
          FROM sto_transfer_requests r
          JOIN sto_transfer_request_lines l ON l.request_id = r.id
@@ -1238,8 +1238,8 @@ export function classifyScan(codeRaw: string): {
         [code, unit.product_id]
       );
       if (fromReq?.deal_id) {
-        deal = resolveBuyerDealFromSerial(code);
-        const d = getDeal(fromReq.deal_id) as Record<string, unknown> | null;
+        deal = await resolveBuyerDealFromSerial(code);
+        const d = await getDeal(fromReq.deal_id) as Record<string, unknown> | null;
         if (d) {
           deal = {
             deal_id: fromReq.deal_id,
@@ -1258,64 +1258,64 @@ export function classifyScan(codeRaw: string): {
       }
     }
     if (deal?.deal_id) {
-      return pack('install', 'УПД + списание со СТО', deal);
+      return await pack('install', 'УПД + списание со СТО', deal);
     }
-    return pack('on_sto', 'На СТО — для УПД нужен заказ покупателя', null);
+    return await pack('on_sto', 'На СТО — для УПД нужен заказ покупателя', null);
   }
 
   if (sou && souStatus === 'received') {
-    return pack('already_received', 'Уже оприходован из поставки');
+    return await pack('already_received', 'Уже оприходован из поставки');
   }
 
   if (unitStatus === 'in_stock') {
-    return pack('in_stock', 'Уже на складе');
+    return await pack('in_stock', 'Уже на складе');
   }
 
   // Непонятный кейс → приход без основания
-  return pack('receive_free', 'Приход без основания');
+  return await pack('receive_free', 'Приход без основания');
 }
 
 /** Одно нажатие: приход / возврат / СТО / УПД — по статусу Data Matrix. */
-export function applyScan(
+export async function applyScan(
   codeRaw: string,
   opts?: { comment?: string; actor_name?: string; deal_id?: string }
-): Record<string, unknown> {
-  const classified = classifyScan(codeRaw);
+): Promise<Record<string, unknown>> {
+  const classified = await classifyScan(codeRaw);
   const actor = opts?.actor_name;
 
   if (classified.action === 'receive') {
     if (classified.supplier_unit) {
       const isThin = classified.kind === 'thin_supplier_order' || !!classified.supplier_unit.thin_journal;
       const row = isThin
-        ? receiveThinSupplierOrderUnit(classified.serial, actor)
-        : receiveUnit(classified.serial, actor);
+        ? await receiveThinSupplierOrderUnit(classified.serial, actor)
+        : await receiveUnit(classified.serial, actor);
       return { ...row, action: 'receive', action_label: classified.action_label, deal: classified.deal };
     }
-    const mainWh = mainWarehouseId();
+    const mainWh = await mainWarehouseId();
     const docId = newGuid();
     const lineId = newGuid();
     const unit = classified.product_unit;
     if (!unit) throw new Error('Data Matrix не найден');
-    run(
+    await run(
       `INSERT INTO stock_docs
         (id, doc_type, number, doc_date, warehouse_id, warehouse_to_id, counterparty_id, comment, posted,
          organization_id, deal_id, basis_order_id, source_supplier_order_id, mismatch)
        VALUES (?, 'in', ?, ?, ?, NULL, NULL, ?, 1, '', '', '', '', 0)`,
       [
         docId,
-        nextDocNumber('in'),
+        await nextDocNumber('in'),
         new Date().toISOString().slice(0, 10),
         mainWh,
         `Приход Data Matrix${actor ? ' · ' + actor : ''}`,
       ]
     );
-    run(
+    await run(
       `INSERT INTO stock_doc_lines (id, doc_id, product_id, qty, serials_json, warehouse_id)
        VALUES (?, ?, ?, 1, ?, ?)`,
       [lineId, docId, unit.product_id, JSON.stringify([classified.serial]), mainWh]
     );
-    applyStockDelta(mainWh, unit.product_id, 1);
-    promoteInTransitUnit({
+    await applyStockDelta(mainWh, unit.product_id, 1);
+    await promoteInTransitUnit({
       serial: classified.serial,
       warehouseId: mainWh,
       docId,
@@ -1330,14 +1330,14 @@ export function applyScan(
       stock_doc_id: docId,
       order: classified.order,
       deal: classified.deal,
-      product_unit: findUnitBySerial(classified.serial),
+      product_unit: await findUnitBySerial(classified.serial),
     };
   }
 
   if (classified.action === 'receive_free' || classified.action === 'unknown') {
     if (classified.kind === 'product_barcode' && classified.product?.id) {
-      const newSerial = nextBarcode('DM');
-      const row = receiveFreeNoBasis(newSerial, actor, {
+      const newSerial = await nextBarcode('DM');
+      const row = await receiveFreeNoBasis(newSerial, actor, {
         product_id: classified.product.id,
         status: '',
       });
@@ -1351,7 +1351,7 @@ export function applyScan(
         deal: classified.deal,
       };
     }
-    const row = receiveFreeNoBasis(classified.serial, actor, classified.product_unit || undefined);
+    const row = await receiveFreeNoBasis(classified.serial, actor, classified.product_unit || undefined);
     return {
       ...row,
       action: 'receive_free',
@@ -1365,7 +1365,7 @@ export function applyScan(
     const comment =
       String(opts?.comment || '').trim() ||
       `Возврат от клиента · Data Matrix${classified.deal?.deal_name ? ' · ' + classified.deal.deal_name : ''}`;
-    const row = clientReturn({
+    const row = await clientReturn({
       serial: classified.serial,
       comment,
       deal_id: classified.deal?.deal_id,
@@ -1380,7 +1380,7 @@ export function applyScan(
   }
 
   if (classified.action === 'to_sto') {
-    const row = transferSerialToSto({
+    const row = await transferSerialToSto({
       serial: classified.serial,
       deal_id: opts?.deal_id || classified.deal?.deal_id || '',
       actor_name: actor,
@@ -1397,7 +1397,7 @@ export function applyScan(
   if (classified.action === 'install') {
     const dealId = String(opts?.deal_id || classified.deal?.deal_id || '').trim();
     if (!dealId) throw new Error('Нет заказа покупателя для УПД');
-    const row = installAndUpd({
+    const row = await installAndUpd({
       deal_id: dealId,
       serials: [classified.serial],
       created_by: actor,
@@ -1409,7 +1409,7 @@ export function applyScan(
       serial: classified.serial,
       deal: classified.deal,
       order: classified.order,
-      product_unit: findUnitBySerial(classified.serial),
+      product_unit: await findUnitBySerial(classified.serial),
     };
   }
 
@@ -1423,7 +1423,7 @@ export function applyScan(
     throw new Error('Уже на складе');
   }
   // запасной путь — приход без основания
-  const row = receiveFreeNoBasis(classified.serial, actor, classified.product_unit || undefined);
+  const row = await receiveFreeNoBasis(classified.serial, actor, classified.product_unit || undefined);
   return {
     ...row,
     action: 'receive_free',
@@ -1434,14 +1434,14 @@ export function applyScan(
 }
 
 /** Приход без заказа / сделки / поставщика — когда основание не определено. */
-export function receiveFreeNoBasis(
+export async function receiveFreeNoBasis(
   serialRaw: string,
   actorName?: string,
   unitHint?: { product_id?: string; status?: string; id?: string } | null
 ) {
   const code = String(serialRaw || '').trim();
   if (!code) throw new Error('Пустой код');
-  const unit = findUnitBySerial(code);
+  const unit = await findUnitBySerial(code);
   const productId = String(unit?.product_id || unitHint?.product_id || '').trim();
   if (!productId) {
     throw new Error('Неизвестный товар — укажите номенклатуру или заказ поставщику');
@@ -1452,31 +1452,31 @@ export function receiveFreeNoBasis(
   if (unit && ['sold', 'at_client', 'written_off'].includes(String(unit.status || ''))) {
     throw new Error('Товар отгружен — оформляйте возврат');
   }
-  const mainWh = mainWarehouseId();
+  const mainWh = await mainWarehouseId();
   const docId = newGuid();
   const lineId = newGuid();
-  const number = nextDocNumber('in');
+  const number = await nextDocNumber('in');
   const docDate = new Date().toISOString().slice(0, 10);
   const comment =
     `основание:без основания` + (actorName ? ` · ${actorName}` : '') + ` · ${code}`;
-  run(
+  await run(
     `INSERT INTO stock_docs
       (id, doc_type, number, doc_date, warehouse_id, warehouse_to_id, counterparty_id, comment, posted,
        organization_id, deal_id, basis_order_id, source_supplier_order_id, mismatch)
      VALUES (?, 'in', ?, ?, ?, NULL, NULL, ?, 1, '', '', '', '', 0)`,
     [docId, number, docDate, mainWh, comment]
   );
-  run(
+  await run(
     `INSERT INTO stock_doc_lines (id, doc_id, product_id, qty, serials_json, warehouse_id)
      VALUES (?, ?, ?, 1, ?, ?)`,
     [lineId, docId, productId, JSON.stringify([code]), mainWh]
   );
-  applyStockDelta(mainWh, productId, 1);
+  await applyStockDelta(mainWh, productId, 1);
   if (unit && (unit.status === 'in_transit' || unit.status === 'in_stock')) {
     try {
-      promoteInTransitUnit({ serial: code, warehouseId: mainWh, docId, lineId });
+      await promoteInTransitUnit({ serial: code, warehouseId: mainWh, docId, lineId });
     } catch {
-      run(
+      await run(
         `UPDATE product_units
          SET status = 'in_stock', warehouse_id = ?, in_doc_id = ?, in_line_id = ?, updated_at = ?
          WHERE lower(serial) = lower(?)`,
@@ -1484,7 +1484,7 @@ export function receiveFreeNoBasis(
       );
     }
   } else if (!unit) {
-    receiveUnits({
+    await receiveUnits({
       productId,
       warehouseId: mainWh,
       serials: [code],
@@ -1492,7 +1492,7 @@ export function receiveFreeNoBasis(
       lineId,
     });
   } else {
-    run(
+    await run(
       `UPDATE product_units
        SET status = 'in_stock', warehouse_id = ?, in_doc_id = ?, in_line_id = ?,
            out_doc_id = '', out_line_id = '', updated_at = ?
@@ -1505,11 +1505,11 @@ export function receiveFreeNoBasis(
     ok: true,
     serial: code,
     stock_doc_id: docId,
-    product_unit: findUnitBySerial(code),
+    product_unit: await findUnitBySerial(code),
   };
 }
 
-function postReceiveOne(opts: {
+async function postReceiveOne(opts: {
   productId: string;
   serial: string;
   warehouseId: string;
@@ -1517,12 +1517,12 @@ function postReceiveOne(opts: {
   orderId?: string;
   comment: string;
   dealId?: string;
-}): { doc_id: string; line_id: string } {
+}): Promise<{ doc_id: string; line_id: string }> {
   const docId = newGuid();
   const lineId = newGuid();
-  const number = nextDocNumber('in');
+  const number = await nextDocNumber('in');
   const docDate = new Date().toISOString().slice(0, 10);
-  run(
+  await run(
     `INSERT INTO stock_docs
       (id, doc_type, number, doc_date, warehouse_id, warehouse_to_id, counterparty_id, comment, posted,
        organization_id, deal_id, basis_order_id, source_supplier_order_id, mismatch)
@@ -1538,13 +1538,13 @@ function postReceiveOne(opts: {
       opts.orderId || '',
     ]
   );
-  run(
+  await run(
     `INSERT INTO stock_doc_lines (id, doc_id, product_id, qty, serials_json, warehouse_id)
      VALUES (?, ?, ?, 1, ?, ?)`,
     [lineId, docId, opts.productId, JSON.stringify([opts.serial]), opts.warehouseId]
   );
-  applyStockDelta(opts.warehouseId, opts.productId, 1);
-  promoteInTransitUnit({
+  await applyStockDelta(opts.warehouseId, opts.productId, 1);
+  await promoteInTransitUnit({
     serial: opts.serial,
     warehouseId: opts.warehouseId,
     docId,
@@ -1555,9 +1555,9 @@ function postReceiveOne(opts: {
 }
 
 /** Оприходовать один Data Matrix из поставки на основной склад. */
-export function receiveUnit(serialRaw: string, actorName?: string) {
+export async function receiveUnit(serialRaw: string, actorName?: string) {
   const code = String(serialRaw || '').trim();
-  const sou = get<{
+  const sou = await get<{
     id: string;
     order_id: string;
     product_id: string;
@@ -1566,16 +1566,16 @@ export function receiveUnit(serialRaw: string, actorName?: string) {
   }>(`SELECT * FROM supplier_order_units WHERE lower(serial) = lower(?)`, [code]);
   if (!sou) throw new Error('Код не из поставки — для излишка используйте receive-extra');
   if (sou.status === 'received') throw new Error('Уже оприходован');
-  const order = get<{ counterparty_id: string; number: string }>(
+  const order = await get<{ counterparty_id: string; number: string }>(
     `SELECT counterparty_id, number FROM supplier_orders WHERE id = ?`,
     [sou.order_id]
   );
   if (!order) throw new Error('Заказ не найден');
   const supplierName =
-    get<{ name: string }>(`SELECT name FROM counterparties WHERE id = ?`, [order.counterparty_id])
+    (await get<{ name: string }>(`SELECT name FROM counterparties WHERE id = ?`, [order.counterparty_id]))
       ?.name || '';
-  const mainWh = mainWarehouseId();
-  const posted = postReceiveOne({
+  const mainWh = await mainWarehouseId();
+  const posted = await postReceiveOne({
     productId: sou.product_id,
     serial: sou.serial,
     warehouseId: mainWh,
@@ -1586,18 +1586,18 @@ export function receiveUnit(serialRaw: string, actorName?: string) {
       (supplierName ? ` · ${supplierName}` : '') +
       (actorName ? ` · ${actorName}` : ''),
   });
-  run(
+  await run(
     `UPDATE supplier_order_units
      SET status = 'received', received_at = datetime('now'), stock_doc_id = ?
      WHERE id = ?`,
     [posted.doc_id, sou.id]
   );
-  refreshOrderStatus(sou.order_id);
+  await refreshOrderStatus(sou.order_id);
   return {
     ok: true,
     serial: sou.serial,
     stock_doc_id: posted.doc_id,
-    order: buildInboundBoard(sou.order_id) || getSupplierOrder(sou.order_id),
+    order: await buildInboundBoard(sou.order_id) || await getSupplierOrder(sou.order_id),
     action: 'receive',
     action_label: 'Оприходован · на складе',
   };
@@ -1606,11 +1606,11 @@ export function receiveUnit(serialRaw: string, actorName?: string) {
 /**
  * Приход по марке из заказа поставщику (тонкий журнал): документ-основание + поставщик из заказа.
  */
-export function receiveThinSupplierOrderUnit(serialRaw: string, actorName?: string) {
+export async function receiveThinSupplierOrderUnit(serialRaw: string, actorName?: string) {
   const code = String(serialRaw || '').trim();
-  const thin = findThinSupplierOrderBySerial(code);
+  const thin = await findThinSupplierOrderBySerial(code);
   if (!thin) throw new Error('Код не найден в заказе поставщику');
-  const existing = findUnitBySerial(code);
+  const existing = await findUnitBySerial(code);
   if (existing && (existing.status === 'in_stock' || String(existing.in_doc_id || '').trim())) {
     throw new Error('Уже оприходован');
   }
@@ -1624,44 +1624,44 @@ export function receiveThinSupplierOrderUnit(serialRaw: string, actorName?: stri
         : 'В заказе поставщику не указан поставщик'
     );
   }
-  const mainWh = mainWarehouseId();
+  const mainWh = await mainWarehouseId();
   const docId = newGuid();
   const lineId = newGuid();
-  const number = nextDocNumber('in');
+  const number = await nextDocNumber('in');
   const docDate = new Date().toISOString().slice(0, 10);
   const comment =
     `основание:заказ поставщику ${thin.number}` +
     (thin.counterparty_name ? ` · ${thin.counterparty_name}` : '') +
     (actorName ? ` · ${actorName}` : '');
-  run(
+  await run(
     `INSERT INTO stock_docs
       (id, doc_type, number, doc_date, warehouse_id, warehouse_to_id, counterparty_id, comment, posted,
        organization_id, deal_id, basis_order_id, source_supplier_order_id, mismatch)
      VALUES (?, 'in', ?, ?, ?, NULL, ?, ?, 1, '', '', '', ?, 0)`,
     [docId, number, docDate, mainWh, thin.counterparty_id, comment, thin.order_id]
   );
-  run(
+  await run(
     `INSERT INTO stock_doc_lines (id, doc_id, product_id, qty, serials_json, warehouse_id)
      VALUES (?, ?, ?, 1, ?, ?)`,
     [lineId, docId, thin.product_id, JSON.stringify([code]), mainWh]
   );
-  applyStockDelta(mainWh, thin.product_id, 1);
-  const partyApps = resolveInboundPartyApps({
+  await applyStockDelta(mainWh, thin.product_id, 1);
+  const partyApps = await resolveInboundPartyApps({
     orderId: thin.order_id,
     productId: thin.product_id,
     serial: code,
   });
   if (existing && (existing.status === 'in_transit' || existing.status === 'in_stock')) {
-    promoteInTransitUnit({ serial: code, warehouseId: mainWh, docId, lineId });
+    await promoteInTransitUnit({ serial: code, warehouseId: mainWh, docId, lineId });
     if (partyApps.length) {
       try {
-        setUnitApps(code, partyApps);
+        await setUnitApps(code, partyApps);
       } catch {
         /* ignore */
       }
     }
   } else {
-    receiveUnits({
+    await receiveUnits({
       productId: thin.product_id,
       warehouseId: mainWh,
       serials: [code],
@@ -1674,7 +1674,7 @@ export function receiveThinSupplierOrderUnit(serialRaw: string, actorName?: stri
   invalidateStockValuationCache();
   // пометка в payload заказа, что марка принята
   try {
-    const row = get<{ payload_json: string }>(
+    const row = await get<{ payload_json: string }>(
       `SELECT IFNULL(payload_json,'') AS payload_json FROM thin_journal_docs WHERE id = ?`,
       [thin.order_id]
     );
@@ -1689,7 +1689,7 @@ export function receiveThinSupplierOrderUnit(serialRaw: string, actorName?: stri
       payload.received_serials = received;
       payload.last_receive_at = new Date().toISOString();
       payload.stock_doc_id = docId;
-      run(
+      await run(
         `UPDATE thin_journal_docs SET payload_json = ?, updated_at = datetime('now') WHERE id = ?`,
         [JSON.stringify(payload), thin.order_id]
       );
@@ -1699,14 +1699,14 @@ export function receiveThinSupplierOrderUnit(serialRaw: string, actorName?: stri
   }
   // статус заказа: partial / received
   try {
-    const board = buildInboundBoard(thin.order_id);
+    const board = await buildInboundBoard(thin.order_id);
     if (board) {
       const st = String(board.status || 'partial');
-      run(
+      await run(
         `UPDATE thin_journal_docs SET status = ?, updated_at = datetime('now') WHERE id = ?`,
         [st === 'received' ? 'received' : 'partial', thin.order_id]
       );
-      syncInboundWarehouseTask(thin.order_id, {
+      await syncInboundWarehouseTask(thin.order_id, {
         status: st,
         units_pending: Number(board.units_pending) || 0,
         units_received: Number(board.units_received) || 0,
@@ -1719,54 +1719,54 @@ export function receiveThinSupplierOrderUnit(serialRaw: string, actorName?: stri
     ok: true,
     serial: code,
     stock_doc_id: docId,
-    order: buildInboundBoard(thin.order_id) || thinOrderAsScanOrder(thin),
-    product_unit: findUnitBySerial(code),
+    order: await buildInboundBoard(thin.order_id) || await thinOrderAsScanOrder(thin),
+    product_unit: await findUnitBySerial(code),
     action: 'receive',
     action_label: 'Оприходован · на складе',
   };
 }
 
 /** Излишек: новый Data Matrix, строка в заказе, оприходование, mismatch. */
-export function receiveExtra(input: {
+export async function receiveExtra(input: {
   order_id: string;
   product_id: string;
   actor_name?: string;
   note?: string;
 }) {
-  const order = get<{ id: string; number: string; counterparty_id: string }>(
+  const order = await get<{ id: string; number: string; counterparty_id: string }>(
     `SELECT id, number, counterparty_id FROM supplier_orders WHERE id = ?`,
     [input.order_id]
   );
   if (!order) throw new Error('Заказ не найден');
-  const product = get<{ id: string }>('SELECT id FROM products WHERE id = ?', [input.product_id]);
+  const product = await get<{ id: string }>('SELECT id FROM products WHERE id = ?', [input.product_id]);
   if (!product) throw new Error('Товар не найден');
-  const cp = get<{ barcode_prefix: string }>(
+  const cp = await get<{ barcode_prefix: string }>(
     `SELECT IFNULL(barcode_prefix,'') AS barcode_prefix FROM counterparties WHERE id = ?`,
     [order.counterparty_id]
   );
-  const serial = nextBarcode(String(cp?.barcode_prefix || 'DM'));
-  const transitWh = transitWarehouseId();
-  const mainWh = mainWarehouseId();
-  const unitIds = createInTransitUnits({
+  const serial = await nextBarcode(String(cp?.barcode_prefix || 'DM'));
+  const transitWh = await transitWarehouseId();
+  const mainWh = await mainWarehouseId();
+  const unitIds = await createInTransitUnits({
     productId: product.id,
     warehouseId: transitWh,
     serials: [serial],
     comment: `излишек ${order.number}`,
   });
   const lineId = newGuid();
-  run(
+  await run(
     `INSERT INTO supplier_order_lines (id, order_id, product_id, qty, price, comment, sort_order)
      VALUES (?, ?, ?, 1, 0, ?, 9999)`,
     [lineId, order.id, product.id, String(input.note || 'излишек при приёмке')]
   );
   const souId = newGuid();
-  run(
+  await run(
     `INSERT INTO supplier_order_units
       (id, order_id, line_id, product_id, serial, status, product_unit_id, is_extra, created_at)
      VALUES (?, ?, ?, ?, ?, 'in_transit', ?, 1, datetime('now'))`,
     [souId, order.id, lineId, product.id, serial, unitIds[0] || '']
   );
-  const posted = postReceiveOne({
+  const posted = await postReceiveOne({
     productId: product.id,
     serial,
     warehouseId: mainWh,
@@ -1774,12 +1774,12 @@ export function receiveExtra(input: {
     orderId: order.id,
     comment: `Излишек по заказу ${order.number}${input.actor_name ? ' · ' + input.actor_name : ''}`,
   });
-  run(
+  await run(
     `UPDATE supplier_order_units SET status = 'received', received_at = datetime('now'), stock_doc_id = ? WHERE id = ?`,
     [posted.doc_id, souId]
   );
   const note = String(input.note || 'Есть позиции вне заказа').trim();
-  run(
+  await run(
     `UPDATE supplier_orders
      SET mismatch = 1,
          mismatch_note = CASE WHEN mismatch_note = '' THEN ? ELSE mismatch_note || '; ' || ? END,
@@ -1787,43 +1787,43 @@ export function receiveExtra(input: {
      WHERE id = ?`,
     [note, note, order.id]
   );
-  refreshOrderStatus(order.id);
+  await refreshOrderStatus(order.id);
   return {
     ok: true,
     serial,
     stock_doc_id: posted.doc_id,
-    order: getSupplierOrder(order.id),
+    order: await getSupplierOrder(order.id),
   };
 }
 
-export function finishReceipt(orderId: string) {
-  const classic = getSupplierOrder(orderId);
+export async function finishReceipt(orderId: string) {
+  const classic = await getSupplierOrder(orderId);
   if (classic) {
-    refreshOrderStatus(orderId);
+    await refreshOrderStatus(orderId);
     const units = (classic.units as Array<{ status: string; is_extra: number }>) || [];
     const pending = units.filter(
       (u) => !u.is_extra && (u.status === 'in_transit' || u.status === 'expected')
     ).length;
     if (pending > 0) {
-      run(
+      await run(
         `UPDATE supplier_orders SET status = 'partial', mismatch = 1,
            mismatch_note = CASE WHEN mismatch_note = '' THEN ? ELSE mismatch_note END,
            updated_at = datetime('now') WHERE id = ?`,
         [`Не оприходовано позиций: ${pending}`, orderId]
       );
     } else {
-      run(
+      await run(
         `UPDATE supplier_orders SET status = 'received', updated_at = datetime('now') WHERE id = ?`,
         [orderId]
       );
     }
-    const board = buildInboundBoard(orderId);
-    if (board) syncInboundWarehouseTask(orderId, board as { units_pending?: number; units_received?: number });
-    return board || getSupplierOrder(orderId);
+    const board = await buildInboundBoard(orderId);
+    if (board) await syncInboundWarehouseTask(orderId, board as { units_pending?: number; units_received?: number });
+    return board || await getSupplierOrder(orderId);
   }
 
   // тонкий журнал заказа поставщику
-  const board = buildInboundBoard(orderId);
+  const board = await buildInboundBoard(orderId);
   if (!board) throw new Error('Заказ не найден');
   const pending = Number(board.units_pending) || 0;
   const received = Number(board.units_received) || 0;
@@ -1832,7 +1832,7 @@ export function finishReceipt(orderId: string) {
       ? `Не пришло из заказа: ${pending} марок (оприходовано ${received})`
       : '';
   try {
-    const row = get<{ payload_json: string }>(
+    const row = await get<{ payload_json: string }>(
       `SELECT IFNULL(payload_json,'') AS payload_json FROM thin_journal_docs WHERE id = ?`,
       [orderId]
     );
@@ -1846,25 +1846,25 @@ export function finishReceipt(orderId: string) {
     } else {
       payload.finish_partial = 0;
     }
-    run(
+    await run(
       `UPDATE thin_journal_docs
        SET status = ?, payload_json = ?, updated_at = datetime('now')
        WHERE id = ?`,
       [pending > 0 ? 'partial' : 'received', JSON.stringify(payload), orderId]
     );
   } catch {
-    run(
+    await run(
       `UPDATE thin_journal_docs SET status = ?, updated_at = datetime('now') WHERE id = ?`,
       [pending > 0 ? 'partial' : 'received', orderId]
     );
   }
-  const next = buildInboundBoard(orderId);
+  const next = await buildInboundBoard(orderId);
   if (next) {
     if (pending > 0) {
       // задание остаётся открытым — на складе видят недостачу
-      const task = findInboundWarehouseTask(orderId);
+      const task = await findInboundWarehouseTask(orderId);
       if (task && task.status !== 'handed') {
-        run(
+        await run(
           `UPDATE warehouse_tasks
            SET status = 'picking',
                comment = CASE WHEN comment LIKE '%недостача%' THEN comment ELSE comment || ' · недостача ' || ? END,
@@ -1874,7 +1874,7 @@ export function finishReceipt(orderId: string) {
         );
       }
     } else {
-      syncInboundWarehouseTask(orderId, next as { units_pending?: number; units_received?: number });
+      await syncInboundWarehouseTask(orderId, next as { units_pending?: number; units_received?: number });
     }
   }
   return next;
@@ -1882,7 +1882,7 @@ export function finishReceipt(orderId: string) {
 
 /* ——— СТО transfer requests ——— */
 
-export function createStoTransferRequest(input: {
+export async function createStoTransferRequest(input: {
   deal_id?: string;
   warehouse_task_id?: string;
   comment?: string;
@@ -1894,9 +1894,9 @@ export function createStoTransferRequest(input: {
   const id = newGuid();
   const dealId = String(input.deal_id || '').trim();
   const number =
-    nextTransferNumber(dealId) || nextCode('СТО', 5);
+    await nextTransferNumber(dealId) || await nextCode('СТО', 5);
   const now = new Date().toISOString();
-  run(
+  await run(
     `INSERT INTO sto_transfer_requests
       (id, number, deal_id, warehouse_task_id, status, comment, created_by, created_at, updated_at)
      VALUES (?, ?, ?, ?, 'new', ?, ?, ?, ?)`,
@@ -1912,7 +1912,7 @@ export function createStoTransferRequest(input: {
     ]
   );
   for (const l of lines) {
-    run(
+    await run(
       `INSERT INTO sto_transfer_request_lines (id, request_id, product_id, qty, serial, status)
        VALUES (?, ?, ?, ?, ?, 'new')`,
       [
@@ -1924,31 +1924,31 @@ export function createStoTransferRequest(input: {
       ]
     );
   }
-  logStoTransferEvent({
+  await logStoTransferEvent({
     request_id: id,
     event: 'created',
     summary: `${number} · создано`,
     actor_name: String(input.created_by || ''),
     payload: { number, deal_id: dealId, lines: lines.length },
   });
-  return getStoTransferRequest(id);
+  return await getStoTransferRequest(id);
 }
 
-export function getStoTransferRequest(id: string) {
-  const req = get(`SELECT * FROM sto_transfer_requests WHERE id = ?`, [id]);
+export async function getStoTransferRequest(id: string) {
+  const req = await get(`SELECT * FROM sto_transfer_requests WHERE id = ?`, [id]);
   if (!req) return null;
-  const lines = all(
+  const lines = await all(
     `SELECT l.*, p.sku, p.name AS product_name
      FROM sto_transfer_request_lines l
      LEFT JOIN products p ON p.id = l.product_id
      WHERE l.request_id = ?`,
     [id]
   );
-  const history = listStoTransferEvents(String((req as { id: string }).id), 40);
+  const history = await listStoTransferEvents(String((req as { id: string }).id), 40);
   return { ...req, lines, history };
 }
 
-export function listStoTransferRequests(opts?: { status?: string; deal_id?: string; limit?: number }) {
+export async function listStoTransferRequests(opts?: { status?: string; deal_id?: string; limit?: number }) {
   const where: string[] = ['1=1'];
   const params: Array<string | number> = [];
   if (opts?.status) {
@@ -1960,7 +1960,7 @@ export function listStoTransferRequests(opts?: { status?: string; deal_id?: stri
     params.push(String(opts.deal_id).trim());
   }
   const limit = Math.min(100, Math.max(1, Number(opts?.limit) || 40));
-  return all(
+  return await all(
     `SELECT r.*,
        (SELECT COUNT(*) FROM sto_transfer_request_lines l WHERE l.request_id = r.id AND l.status = 'new') AS pending_lines
      FROM sto_transfer_requests r
@@ -1972,22 +1972,22 @@ export function listStoTransferRequests(opts?: { status?: string; deal_id?: stri
 }
 
 /** Скан Data Matrix на основном → перемещение на СТО (по заявке или напрямую). */
-export function transferSerialToSto(input: {
+export async function transferSerialToSto(input: {
   serial: string;
   request_id?: string;
   deal_id?: string;
   actor_name?: string;
 }) {
   const code = String(input.serial || '').trim();
-  const unit = findUnitBySerial(code);
+  const unit = await findUnitBySerial(code);
   if (!unit) throw new Error('Data Matrix не найден');
   if (unit.status !== 'in_stock') throw new Error(`Data Matrix в статусе ${unit.status}`);
-  const mainWh = mainWarehouseId();
-  const stoWh = stoWarehouseId();
+  const mainWh = await mainWarehouseId();
+  const stoWh = await stoWarehouseId();
   if (unit.warehouse_id !== mainWh) {
     throw new Error('Код не на основном складе');
   }
-  const docId = createDocument({
+  const docId = await createDocument({
     doc_type: 'transfer',
     warehouse_id: mainWh,
     warehouse_to_id: stoWh,
@@ -1997,35 +1997,35 @@ export function transferSerialToSto(input: {
     post: true,
   });
   if (input.request_id) {
-    const line = get<{ id: string }>(
+    const line = await get<{ id: string }>(
       `SELECT id FROM sto_transfer_request_lines
        WHERE request_id = ? AND product_id = ? AND status = 'new'
        ORDER BY id LIMIT 1`,
       [input.request_id, unit.product_id]
     );
     if (line?.id) {
-      run(
+      await run(
         `UPDATE sto_transfer_request_lines
          SET status = 'done', transferred_at = datetime('now'), stock_doc_id = ?, serial = ?
          WHERE id = ?`,
         [docId, code, line.id]
       );
     }
-    const left = get<{ c: number }>(
+    const left = (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM sto_transfer_request_lines WHERE request_id = ? AND status = 'new'`,
       [input.request_id]
-    )?.c;
-    run(
+    ))?.c;
+    await run(
       `UPDATE sto_transfer_requests
        SET status = ?, updated_at = datetime('now') WHERE id = ?`,
       [Number(left) > 0 ? 'picking' : 'done', input.request_id]
     );
   }
-  return { ok: true, stock_doc_id: docId, serial: code, product_unit: findUnitBySerial(code) };
+  return { ok: true, stock_doc_id: docId, serial: code, product_unit: await findUnitBySerial(code) };
 }
 
 /** Установка/выдача: УПД + списание со СТО по списку Data Matrix. */
-export function installAndUpd(input: {
+export async function installAndUpd(input: {
   deal_id: string;
   serials: string[];
   created_by?: string;
@@ -2035,15 +2035,15 @@ export function installAndUpd(input: {
   if (!dealId) throw new Error('Укажите сделку');
   const serials = [...new Set((input.serials || []).map((s) => String(s || '').trim()).filter(Boolean))];
   if (!serials.length) throw new Error('Укажите коды Data Matrix');
-  const stoWh = stoWarehouseId();
+  const stoWh = await stoWarehouseId();
   for (const s of serials) {
-    const u = findUnitBySerial(s);
+    const u = await findUnitBySerial(s);
     if (!u) throw new Error(`Data Matrix ${s} не найден`);
     if (u.status !== 'in_stock' || u.warehouse_id !== stoWh) {
       throw new Error(`Data Matrix ${s} должен быть на складе СТО`);
     }
   }
-  const result = createUpdAndWriteOffFromDeal({
+  const result = await createUpdAndWriteOffFromDeal({
     dealId,
     createdBy: input.created_by,
     organizationId: input.organization_id,
@@ -2053,14 +2053,14 @@ export function installAndUpd(input: {
   if (result.stock_doc_id) {
     const byProduct = new Map<string, string[]>();
     for (const s of serials) {
-      const u = findUnitBySerial(s)!;
+      const u = (await findUnitBySerial(s))!;
       const list = byProduct.get(u.product_id) || [];
       list.push(s);
       byProduct.set(u.product_id, list);
     }
     for (const [productId, codes] of byProduct) {
       try {
-        shipUnits({
+        await shipUnits({
           productId,
           warehouseId: stoWh,
           serials: codes,
@@ -2075,7 +2075,7 @@ export function installAndUpd(input: {
     // Нет товарных позиций в УПД — списываем вручную
     const byProduct = new Map<string, string[]>();
     for (const s of serials) {
-      const u = findUnitBySerial(s)!;
+      const u = (await findUnitBySerial(s))!;
       const list = byProduct.get(u.product_id) || [];
       list.push(s);
       byProduct.set(u.product_id, list);
@@ -2085,7 +2085,7 @@ export function installAndUpd(input: {
       qty: codes.length,
       serials: codes,
     }));
-    const outId = createDocument({
+    const outId = await createDocument({
       doc_type: 'out',
       warehouse_id: stoWh,
       deal_id: dealId,
@@ -2100,19 +2100,19 @@ export function installAndUpd(input: {
 }
 
 /** Найти заказ покупателя (сделку) по серийнику / Data Matrix. */
-export function resolveBuyerDealFromSerial(serialRaw: string): {
+export async function resolveBuyerDealFromSerial(serialRaw: string): Promise<{
   deal_id: string;
   deal_name: string;
   buyer_name: string;
   source: string;
-} | null {
+} | null> {
   const code = String(serialRaw || '').trim();
   if (!code) return null;
 
-  const pack = (dealId: string, source: string) => {
+  const pack = async (dealId: string, source: string) => {
     const id = String(dealId || '').trim();
     if (!id) return null;
-    const deal = getDeal(id) as Record<string, unknown> | null;
+    const deal = await getDeal(id) as Record<string, unknown> | null;
     if (!deal) {
       return {
         deal_id: id,
@@ -2129,18 +2129,18 @@ export function resolveBuyerDealFromSerial(serialRaw: string): {
     };
   };
 
-  const unit = findUnitBySerial(code);
+  const unit = await findUnitBySerial(code);
   if (unit?.out_doc_id) {
-    const row = get<{ deal_id: string }>(
+    const row = await get<{ deal_id: string }>(
       `SELECT IFNULL(deal_id,'') AS deal_id FROM stock_docs WHERE id = ?`,
       [unit.out_doc_id]
     );
-    const hit = pack(row?.deal_id || '', 'out_doc');
+    const hit = await pack(row?.deal_id || '', 'out_doc');
     if (hit) return hit;
   }
 
   const like = `%"${code.replace(/"/g, '')}"%`;
-  const fromLine = get<{ deal_id: string }>(
+  const fromLine = await get<{ deal_id: string }>(
     `SELECT IFNULL(d.deal_id,'') AS deal_id
      FROM stock_doc_lines l
      JOIN stock_docs d ON d.id = l.doc_id
@@ -2152,35 +2152,35 @@ export function resolveBuyerDealFromSerial(serialRaw: string): {
     [like]
   );
   {
-    const hit = pack(fromLine?.deal_id || '', 'stock_line');
+    const hit = await pack(fromLine?.deal_id || '', 'stock_line');
     if (hit) return hit;
   }
 
-  const fromTask = get<{ deal_id: string }>(
+  const fromTask = await get<{ deal_id: string }>(
     `SELECT IFNULL(deal_id,'') AS deal_id FROM warehouse_tasks
      WHERE lower(barcode) = lower(?) AND IFNULL(deal_id,'') != ''
      ORDER BY datetime(updated_at) DESC LIMIT 1`,
     [code]
   );
   {
-    const hit = pack(fromTask?.deal_id || '', 'warehouse_task');
+    const hit = await pack(fromTask?.deal_id || '', 'warehouse_task');
     if (hit) return hit;
   }
 
-  const fromDm = get<{ deal_id: string }>(
+  const fromDm = await get<{ deal_id: string }>(
     `SELECT IFNULL(deal_id,'') AS deal_id FROM datamatrix_codes
      WHERE lower(code) = lower(?) AND IFNULL(deal_id,'') != ''
      LIMIT 1`,
     [code]
   );
   {
-    const hit = pack(fromDm?.deal_id || '', 'datamatrix');
+    const hit = await pack(fromDm?.deal_id || '', 'datamatrix');
     if (hit) return hit;
   }
 
   // Запасной путь: товар из единицы → последняя сделка с этой номенклатурой
   if (unit?.product_id) {
-    const fromItem = get<{ deal_id: string }>(
+    const fromItem = await get<{ deal_id: string }>(
       `SELECT i.deal_id AS deal_id
        FROM crm_deal_items i
        JOIN crm_deals d ON d.id = i.deal_id
@@ -2189,7 +2189,7 @@ export function resolveBuyerDealFromSerial(serialRaw: string): {
        LIMIT 1`,
       [unit.product_id]
     );
-    const hit = pack(fromItem?.deal_id || '', 'deal_item');
+    const hit = await pack(fromItem?.deal_id || '', 'deal_item');
     if (hit) return hit;
   }
 
@@ -2197,7 +2197,7 @@ export function resolveBuyerDealFromSerial(serialRaw: string): {
 }
 
 /** Возврат от клиента: скан на основном складе. */
-export function clientReturn(input: {
+export async function clientReturn(input: {
   serial: string;
   comment: string;
   deal_id?: string;
@@ -2206,7 +2206,7 @@ export function clientReturn(input: {
   const code = String(input.serial || '').trim();
   const comment = String(input.comment || '').trim();
   if (!comment) throw new Error('Укажите комментарий к приходу возврата');
-  const unit = findUnitBySerial(code);
+  const unit = await findUnitBySerial(code);
   if (!unit) throw new Error('Data Matrix не найден');
   const resolved =
     String(input.deal_id || '').trim()
@@ -2216,11 +2216,11 @@ export function clientReturn(input: {
           buyer_name: '',
           source: 'manual',
         }
-      : resolveBuyerDealFromSerial(code);
+      : await resolveBuyerDealFromSerial(code);
   let dealId = resolved?.deal_id || '';
   let buyerName = String(resolved?.buyer_name || '').trim();
   if (dealId && !buyerName) {
-    const d = getDeal(dealId) as Record<string, unknown> | null;
+    const d = await getDeal(dealId) as Record<string, unknown> | null;
     if (d) {
       buyerName = String(d.buyer_name || d.company_name || d.name || '').trim();
       if (resolved) {
@@ -2229,7 +2229,7 @@ export function clientReturn(input: {
       }
     }
   }
-  const sale = getLastSalePrice({
+  const sale = await getLastSalePrice({
     productId: unit.product_id,
     serial: code,
     dealId,
@@ -2237,16 +2237,16 @@ export function clientReturn(input: {
   if (!dealId && sale.deal_id) dealId = sale.deal_id;
   const price = Math.max(0, Number(sale.price) || 0);
   const amount = price;
-  const mainWh = mainWarehouseId();
+  const mainWh = await mainWarehouseId();
   const docId = newGuid();
   const lineId = newGuid();
-  const number = nextDocNumber('return');
+  const number = await nextDocNumber('return');
   const docDate = new Date().toISOString().slice(0, 10);
   const dealNote = resolved || dealId
     ? ` · заказ покупателя ${(resolved?.deal_name || dealId)}${buyerName ? ' · ' + buyerName : ''}`
     : '';
   const priceNote = price > 0 ? ` · цена продажи ${price}` : '';
-  run(
+  await run(
     `INSERT INTO stock_docs
       (id, doc_type, number, doc_date, warehouse_id, warehouse_to_id, counterparty_id, comment, posted,
        organization_id, deal_id, basis_order_id, source_supplier_order_id, mismatch, amount)
@@ -2261,13 +2261,13 @@ export function clientReturn(input: {
       amount,
     ]
   );
-  run(
+  await run(
     `INSERT INTO stock_doc_lines (id, doc_id, product_id, qty, price, amount, serials_json, warehouse_id)
      VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
     [lineId, docId, unit.product_id, price, amount, JSON.stringify([code]), mainWh]
   );
-  applyStockDelta(mainWh, unit.product_id, 1);
-  returnUnitFromClient({
+  await applyStockDelta(mainWh, unit.product_id, 1);
+  await returnUnitFromClient({
     serial: code,
     warehouseId: mainWh,
     docId,
@@ -2275,7 +2275,7 @@ export function clientReturn(input: {
     comment,
   });
   invalidateStockValuationCache();
-  const money = createMoneyRefundFromReturn({
+  const money = await createMoneyRefundFromReturn({
     stockDocId: docId,
     stockDocNumber: number,
     amount,
@@ -2286,20 +2286,20 @@ export function clientReturn(input: {
   });
   // прогресс по заданию возврата (если было требование на склад)
   try {
-    markReturnTaskSerialReceived(code, dealId);
+    await markReturnTaskSerialReceived(code, dealId);
   } catch {
     /* ignore */
   }
   const returnBoard = dealId
-    ? (() => {
-        const t = get<{ id: string }>(
+    ? (async () => {
+        const t = await get<{ id: string }>(
           `SELECT id FROM warehouse_tasks
            WHERE deal_id = ? AND channel = 'return'
              AND status NOT IN ('cancelled','handed')
            ORDER BY datetime(created_at) DESC LIMIT 1`,
           [dealId]
         );
-        return t ? buildReturnTaskBoard(t.id) : null;
+        return t ? await buildReturnTaskBoard(t.id) : null;
       })()
     : null;
   return {
@@ -2312,18 +2312,18 @@ export function clientReturn(input: {
     sale_price_source: sale.source,
     amount,
     money_refund: money,
-    product_unit: findUnitBySerial(code),
+    product_unit: await findUnitBySerial(code),
     order: returnBoard || undefined,
     action: 'return',
     action_label: 'Возврат принят · на складе',
   };
 }
 
-function markReturnTaskSerialReceived(serialRaw: string, dealIdRaw: string) {
+async function markReturnTaskSerialReceived(serialRaw: string, dealIdRaw: string) {
   const code = String(serialRaw || '').trim();
   const dealId = String(dealIdRaw || '').trim();
   if (!code) return;
-  const tasks = all<{ id: string }>(
+  const tasks = await all<{ id: string }>(
     dealId
       ? `SELECT id FROM warehouse_tasks
          WHERE channel = 'return' AND deal_id = ?
@@ -2335,7 +2335,7 @@ function markReturnTaskSerialReceived(serialRaw: string, dealIdRaw: string) {
     dealId ? [dealId] : []
   );
   for (const t of tasks) {
-    const lines = all<{ id: string; dims_json: string }>(
+    const lines = await all<{ id: string; dims_json: string }>(
       `SELECT id, IFNULL(dims_json,'{}') AS dims_json FROM warehouse_task_lines WHERE task_id = ?`,
       [t.id]
     );
@@ -2356,26 +2356,26 @@ function markReturnTaskSerialReceived(serialRaw: string, dealIdRaw: string) {
         received.push(code);
       }
       dims.received_serials = received;
-      run(`UPDATE warehouse_task_lines SET dims_json = ? WHERE id = ?`, [
+      await run(`UPDATE warehouse_task_lines SET dims_json = ? WHERE id = ?`, [
         JSON.stringify(dims),
         l.id,
       ]);
       hit = true;
     }
     if (hit) {
-      const board = buildReturnTaskBoard(t.id);
+      const board = await buildReturnTaskBoard(t.id);
       if (board) {
         const pending = Number(board.units_pending) || 0;
         const receivedN = Number(board.units_received) || 0;
         if (pending === 0 && receivedN > 0) {
-          run(
+          await run(
             `UPDATE warehouse_tasks
              SET status = 'handed', handed_at = datetime('now'), updated_at = datetime('now')
              WHERE id = ?`,
             [t.id]
           );
         } else if (receivedN > 0) {
-          run(
+          await run(
             `UPDATE warehouse_tasks
              SET status = 'picking', picked_at = COALESCE(NULLIF(picked_at,''), datetime('now')),
                  updated_at = datetime('now')
@@ -2398,26 +2398,26 @@ function actorName(c: { get: (k: string) => unknown }): string {
 }
 
 export function mountSupplyChainRoutes(api: Hono): void {
-  api.get('/supply/orders', (c) => {
+  api.get('/supply/orders', async (c) => {
     const status = c.req.query('status') || undefined;
     const q = c.req.query('q') || undefined;
-    return c.json({ items: listSupplierOrders({ status, q }) });
+    return c.json({ items: await listSupplierOrders({ status, q }) });
   });
 
-  api.get('/supply/orders/:id', (c) => {
-    const row = buildInboundBoard(c.req.param('id')) || getSupplierOrder(c.req.param('id'));
+  api.get('/supply/orders/:id', async (c) => {
+    const row = await buildInboundBoard(c.req.param('id')) || await getSupplierOrder(c.req.param('id'));
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
   });
 
-  api.get('/supply/inbound-board/:id', (c) => {
-    const row = buildInboundBoard(c.req.param('id'));
+  api.get('/supply/inbound-board/:id', async (c) => {
+    const row = await buildInboundBoard(c.req.param('id'));
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
   });
 
-  api.get('/supply/inbound-task/:taskId', (c) => {
-    const task = get<{
+  api.get('/supply/inbound-task/:taskId', async (c) => {
+    const task = await get<{
       id: string;
       stock_doc_id: string;
       channel: string;
@@ -2442,12 +2442,12 @@ export function mountSupplyChainRoutes(api: Hono): void {
       if (!task.stock_doc_id) {
         return c.json({ error: 'Задание на оприходование не найдено' }, 404);
       }
-      const board = buildInboundBoard(task.stock_doc_id);
+      const board = await buildInboundBoard(task.stock_doc_id);
       if (!board) return c.json({ error: 'Заказ поставщику не найден' }, 404);
       return c.json({ ...board, warehouse_task_id: task.id, task_kind: 'inbound' });
     }
     if (task.channel === 'return') {
-      const board = buildReturnTaskBoard(task.id);
+      const board = await buildReturnTaskBoard(task.id);
       if (!board) return c.json({ error: 'Не удалось собрать доску возврата' }, 404);
       return c.json({ ...board, warehouse_task_id: task.id, task_kind: 'return' });
     }
@@ -2463,7 +2463,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
         organization_id?: string;
         lines: Array<{ product_id: string; qty: number; price?: number; comment?: string }>;
       }>();
-      const row = createSupplierOrder({
+      const row = await createSupplierOrder({
         ...body,
         created_by: actorName(c as { get: (k: string) => unknown }),
       });
@@ -2476,7 +2476,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
   api.post('/supply/orders/:id/status', async (c) => {
     try {
       const body = await c.req.json<{ status: SupplierOrderStatus; eta_date?: string; comment?: string }>();
-      const row = setSupplierOrderStatus(c.req.param('id'), body.status, body);
+      const row = await setSupplierOrderStatus(c.req.param('id'), body.status, body);
       return c.json(row);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -2486,32 +2486,32 @@ export function mountSupplyChainRoutes(api: Hono): void {
   api.post('/supply/orders/:id/mark-paid', async (c) => {
     try {
       const body = (await c.req.json().catch(() => ({}))) as { eta_date?: string; comment?: string };
-      const row = markSupplierOrderPaid(c.req.param('id'), body);
+      const row = await markSupplierOrderPaid(c.req.param('id'), body);
       return c.json(row);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.get('/supply/orders/:id/labels', (c) => {
+  api.get('/supply/orders/:id/labels', async (c) => {
     try {
-      return c.json(orderLabels(c.req.param('id')));
+      return c.json(await orderLabels(c.req.param('id')));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.get('/supply/orders/:id/labels.html', (c) => {
+  api.get('/supply/orders/:id/labels.html', async (c) => {
     try {
-      return c.html(labelsHtml(c.req.param('id')));
+      return c.html(await labelsHtml(c.req.param('id')));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.get('/supply/scan/:code', (c) => {
+  api.get('/supply/scan/:code', async (c) => {
     try {
-      return c.json(classifyScan(decodeURIComponent(c.req.param('code'))));
+      return c.json(await classifyScan(decodeURIComponent(c.req.param('code'))));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 404);
     }
@@ -2520,7 +2520,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
   api.post('/supply/scan', async (c) => {
     try {
       const body = await c.req.json<{ code?: string; barcode?: string }>();
-      return c.json(classifyScan(body.code || body.barcode || ''));
+      return c.json(await classifyScan(body.code || body.barcode || ''));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 404);
     }
@@ -2529,7 +2529,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
   api.post('/supply/scan-apply', async (c) => {
     try {
       const body = await c.req.json<{ code?: string; serial?: string; comment?: string }>();
-      const row = applyScan(body.code || body.serial || '', {
+      const row = await applyScan(body.code || body.serial || '', {
         comment: body.comment,
         actor_name: actorName(c as { get: (k: string) => unknown }),
       });
@@ -2542,7 +2542,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
   api.post('/supply/receive-unit', async (c) => {
     try {
       const body = await c.req.json<{ serial?: string; barcode?: string }>();
-      const row = receiveUnit(body.serial || body.barcode || '', actorName(c as { get: (k: string) => unknown }));
+      const row = await receiveUnit(body.serial || body.barcode || '', actorName(c as { get: (k: string) => unknown }));
       return c.json(row);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -2556,7 +2556,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
         product_id: string;
         note?: string;
       }>();
-      const row = receiveExtra({
+      const row = await receiveExtra({
         ...body,
         actor_name: actorName(c as { get: (k: string) => unknown }),
       });
@@ -2566,17 +2566,17 @@ export function mountSupplyChainRoutes(api: Hono): void {
     }
   });
 
-  api.post('/supply/orders/:id/finish', (c) => {
+  api.post('/supply/orders/:id/finish', async (c) => {
     try {
-      return c.json(finishReceipt(c.req.param('id')));
+      return c.json(await finishReceipt(c.req.param('id')));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.get('/supply/sto-requests', (c) => {
+  api.get('/supply/sto-requests', async (c) => {
     return c.json({
-      items: listStoTransferRequests({
+      items: await listStoTransferRequests({
         status: c.req.query('status') || undefined,
         deal_id: c.req.query('deal_id') || undefined,
         limit: Number(c.req.query('limit') || 40) || 40,
@@ -2584,8 +2584,8 @@ export function mountSupplyChainRoutes(api: Hono): void {
     });
   });
 
-  api.get('/supply/sto-requests/:id', (c) => {
-    const row = getStoTransferRequest(c.req.param('id'));
+  api.get('/supply/sto-requests/:id', async (c) => {
+    const row = await getStoTransferRequest(c.req.param('id'));
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
   });
@@ -2676,7 +2676,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
           .map((x) => x.trim())
           .filter(Boolean)
       : undefined;
-    const html = renderCourierRunsRegistryHtml({
+    const html = await renderCourierRunsRegistryHtml({
       actor_name: String(actor?.name || actor?.login || '').trim(),
       autoprint: c.req.query('autoprint') === '1',
       run_ids,
@@ -2691,7 +2691,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
       const actor = (c as { get: (k: string) => unknown }).get('actor') as
         | { id?: string; name?: string }
         | undefined;
-      const row = setCourierRunStatus({
+      const row = await setCourierRunStatus({
         id: c.req.param('id'),
         status: body.status,
         courier_staff_id: actor?.id,
@@ -2726,7 +2726,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
   api.post('/supply/sto-parts/:id/rebrand-done', async (c) => {
     try {
       const { markStoRebrandDone } = await import('./sto-parts-flow.js');
-      const row = markStoRebrandDone({
+      const row = await markStoRebrandDone({
         id: c.req.param('id'),
         actor_name: actorName(c as { get: (k: string) => unknown }),
       });
@@ -2740,10 +2740,10 @@ export function mountSupplyChainRoutes(api: Hono): void {
     try {
       const { executeStoPartsFromTask } = await import('./sto-parts-execute.js');
       const { getStoTransferRequest } = await import('./supply-chain.js');
-      const req = getStoTransferRequest(c.req.param('id')) as { warehouse_task_id?: string } | null;
+      const req = await getStoTransferRequest(c.req.param('id')) as { warehouse_task_id?: string } | null;
       if (!req?.warehouse_task_id) throw new Error('Нет задания складу');
       const actor = (c as { get: (k: string) => unknown }).get('actor') as { id?: string } | undefined;
-      const row = executeStoPartsFromTask({
+      const row = await executeStoPartsFromTask({
         task_id: String(req.warehouse_task_id),
         actor_id: actor?.id,
       });
@@ -2760,7 +2760,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
         request_id?: string;
         deal_id?: string;
       }>();
-      const row = transferSerialToSto({
+      const row = await transferSerialToSto({
         ...body,
         actor_name: actorName(c as { get: (k: string) => unknown }),
       });
@@ -2777,7 +2777,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
         serials: string[];
         organization_id?: string;
       }>();
-      const row = installAndUpd({
+      const row = await installAndUpd({
         ...body,
         created_by: actorName(c as { get: (k: string) => unknown }),
       });
@@ -2794,7 +2794,7 @@ export function mountSupplyChainRoutes(api: Hono): void {
         comment: string;
         deal_id?: string;
       }>();
-      const row = clientReturn({
+      const row = await clientReturn({
         ...body,
         actor_name: actorName(c as { get: (k: string) => unknown }),
       });
@@ -2804,19 +2804,19 @@ export function mountSupplyChainRoutes(api: Hono): void {
     }
   });
 
-  api.get('/supply/serial-deal', (c) => {
+  api.get('/supply/serial-deal', async (c) => {
     const serial = (c.req.query('serial') || '').trim();
     if (!serial) return c.json({ error: 'serial required' }, 400);
-    const deal = resolveBuyerDealFromSerial(serial);
-    const unit = findUnitBySerial(serial) || null;
+    const deal = await resolveBuyerDealFromSerial(serial);
+    const unit = await findUnitBySerial(serial) || null;
     return c.json({ serial, deal, product_unit: unit });
   });
 
-  api.get('/supply/warehouses', (c) => {
+  api.get('/supply/warehouses', async (c) => {
     return c.json({
-      main: mainWarehouseId(),
-      sto: stoWarehouseId(),
-      transit: transitWarehouseId(),
+      main: await mainWarehouseId(),
+      sto: await stoWarehouseId(),
+      transit: await transitWarehouseId(),
     });
   });
 }

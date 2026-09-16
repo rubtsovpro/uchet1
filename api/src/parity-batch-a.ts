@@ -537,12 +537,12 @@ export function getThinJournalMeta(key: string): ThinJournalMeta | null {
   return JOURNAL_BY_KEY.get(String(key || '').trim()) || null;
 }
 
-export function listThinJournalDocs(journalKey: string, limit = 200, q = '') {
+export async function listThinJournalDocs(journalKey: string, limit = 200, q = '') {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
   const lim = Math.min(500, Math.max(1, Math.floor(Number(limit) || 200)));
   const like = `%${(q || '').trim()}%`;
-  const items = all<{
+  const items = (await all<{
     id: string;
     journal_key: string;
     number: string;
@@ -563,7 +563,7 @@ export function listThinJournalDocs(journalKey: string, limit = 200, q = '') {
      ORDER BY doc_date DESC, number DESC
      LIMIT ?`,
     [journalKey, like, like, like, like, like, lim]
-  ).map((r) => {
+  )).map((r) => {
     const lines = parsePayloadLines(r.payload_json);
     const payload = readPayloadObject(r.payload_json);
     const linesCount =
@@ -606,11 +606,11 @@ export function listThinJournalDocs(journalKey: string, limit = 200, q = '') {
 }
 
 /** Журнал перемещений: thin + заявки С… (sto_transfer_requests). */
-export function listTransferOrdersJournal(limit = 200, q = '') {
-  const base = listThinJournalDocs('transfer_orders', limit, q);
+export async function listTransferOrdersJournal(limit = 200, q = '') {
+  const base = await listThinJournalDocs('transfer_orders', limit, q);
   const lim = Math.min(500, Math.max(1, Math.floor(Number(limit) || 200)));
   const like = `%${(q || '').trim()}%`;
-  const stoRows = all<{
+  const stoRows = await all<{
     id: string;
     number: string;
     status: string;
@@ -631,28 +631,28 @@ export function listTransferOrdersJournal(limit = 200, q = '') {
      LIMIT ?`,
     [like, like, like, like, like, lim]
   );
-  const whName = (wid: string) => {
+  const whName = async (wid: string) => {
     if (!wid) return '';
-    const w = get<{ name: string }>(
+    const w = await get<{ name: string }>(
       `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [wid]
     );
     return String(w?.name || '').trim();
   };
-  const stoItems = stoRows.map((r) => {
+  const stoItems = await Promise.all(stoRows.map(async (r) => {
     const task = r.warehouse_task_id
-      ? get<{ number: string; status: string }>(
+      ? await get<{ number: string; status: string }>(
           `SELECT IFNULL(number,'') AS number, IFNULL(status,'') AS status
            FROM warehouse_tasks WHERE id = ?`,
           [r.warehouse_task_id]
         )
       : null;
     const linesCount =
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM sto_transfer_request_lines WHERE request_id = ?`,
         [r.id]
-      )?.c || 0;
-    const toLabel = whName(r.dest_warehouse_id) || 'Склад курьера / СТО';
+      ))?.c || 0;
+    const toLabel = await whName(r.dest_warehouse_id) || 'Склад курьера / СТО';
     const route = `Основной склад → ${toLabel}`;
     return {
       id: r.id,
@@ -676,7 +676,7 @@ export function listTransferOrdersJournal(limit = 200, q = '') {
       deal_id: r.deal_id,
       kind: 'sto_transfer',
     };
-  });
+  }));
   const seen = new Set((base.items || []).map((x: { id: string }) => x.id));
   const merged = [...(base.items || [])];
   for (const s of stoItems) {
@@ -755,7 +755,7 @@ function parsePayloadLines(payloadJson: string): ThinPayloadLine[] {
   }
 }
 
-function enrichLinesWithCategories<
+async function enrichLinesWithCategories<
   T extends {
     product_id: string;
     category: string;
@@ -763,7 +763,7 @@ function enrichLinesWithCategories<
     name?: string;
     article?: string;
   },
->(lines: T[], supplierId = ''): Array<
+>(lines: T[], supplierId = ''): Promise<Array<
   T & {
     sku: string;
     code: string;
@@ -772,7 +772,7 @@ function enrichLinesWithCategories<
     apps_short: string;
     apps_source: 'supplier' | 'catalog' | '';
   }
-> {
+>> {
   const ids = [...new Set(lines.map((l) => l.product_id).filter(Boolean))];
   if (!ids.length) {
     return lines.map((l) => ({
@@ -786,7 +786,7 @@ function enrichLinesWithCategories<
     }));
   }
   const placeholders = ids.map(() => '?').join(',');
-  const rows = all<{
+  const rows = await all<{
     id: string;
     category: string;
     category_id: string;
@@ -808,7 +808,7 @@ function enrichLinesWithCategories<
   const byId = new Map(rows.map((r) => [r.id, r]));
   const sid = String(supplierId || '').trim();
   const catalogByPid = new Map<string, AppVehicle[]>();
-  const appRows = all<{
+  const appRows = await all<{
     product_id: string;
     mark: string;
     model: string;
@@ -837,7 +837,7 @@ function enrichLinesWithCategories<
   const supplierByPid = new Map<string, AppVehicle[]>();
   if (sid) {
     try {
-      const supRows = all<{ product_id: string; apps_json: string }>(
+      const supRows = await all<{ product_id: string; apps_json: string }>(
         `SELECT product_id, IFNULL(apps_json,'[]') AS apps_json
          FROM supplier_product_apps
          WHERE supplier_id = ? AND product_id IN (${placeholders})`,
@@ -877,10 +877,13 @@ function enrichLinesWithCategories<
   });
 }
 
-export function getThinJournalDoc(journalKey: string, id: string) {
+export async function getThinJournalDoc(
+  journalKey: string,
+  id: string
+): Promise<Record<string, unknown> | null> {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
-  const row = get<{
+  const row = await get<{
     id: string;
     journal_key: string;
     number: string;
@@ -907,9 +910,9 @@ export function getThinJournalDoc(journalKey: string, id: string) {
     payload = {};
   }
   const counterpartyId = String(payload.counterparty_id || '').trim();
-  let lines = enrichLinesWithCategories(parsePayloadLines(row.payload_json), counterpartyId);
+  let lines = await enrichLinesWithCategories(parsePayloadLines(row.payload_json), counterpartyId);
   if (!lines.length && Array.isArray(payload.line_details)) {
-    lines = enrichLinesWithCategories(
+    lines = await enrichLinesWithCategories(
       parsePayloadLines(
         JSON.stringify({
           lines: (payload.line_details as Array<Record<string, unknown>>).map((l, i) => ({
@@ -924,6 +927,19 @@ export function getThinJournalDoc(journalKey: string, id: string) {
       counterpartyId
     );
   }
+  const supplierExtra =
+    journalKey === 'supplier_orders'
+      ? await (async () => {
+          const edit = await supplierOrderLinesEditability(row.id, row.status);
+          return {
+            lines_editable: edit.ok,
+            lines_lock_reason: edit.reason || '',
+            inbound_draft_id: edit.inbound_id || '',
+            inbound_draft_number: edit.inbound_number || '',
+            inbound_draft_posted: !!edit.inbound_posted,
+          };
+        })()
+      : {};
   return {
     id: row.id,
     journal_key: row.journal_key,
@@ -956,18 +972,7 @@ export function getThinJournalDoc(journalKey: string, id: string) {
     warehouse_task_number: String(payload.warehouse_task_number || ''),
     lines,
     lines_count: lines.length,
-    ...(journalKey === 'supplier_orders'
-      ? (() => {
-          const edit = supplierOrderLinesEditability(row.id, row.status);
-          return {
-            lines_editable: edit.ok,
-            lines_lock_reason: edit.reason || '',
-            inbound_draft_id: edit.inbound_id || '',
-            inbound_draft_number: edit.inbound_number || '',
-            inbound_draft_posted: !!edit.inbound_posted,
-          };
-        })()
-      : {}),
+    ...supplierExtra,
   };
 }
 
@@ -984,14 +989,14 @@ const SUPPLIER_ORDER_LINES_LOCKED_STATUSES = new Set([
   'paid',
 ]);
 
-export function findInboundLinkedToSupplierOrder(orderId: string): {
+export async function findInboundLinkedToSupplierOrder(orderId: string): Promise<{
   id: string;
   number: string;
   posted: boolean;
-} | null {
+} | null> {
   const id = String(orderId || '').trim();
   if (!id) return null;
-  const row = get<{ id: string; number: string; posted: number }>(
+  const row = await get<{ id: string; number: string; posted: number }>(
     `SELECT id, IFNULL(number,'') AS number, IFNULL(posted,0) AS posted
      FROM stock_docs
      WHERE doc_type = 'in' AND IFNULL(source_supplier_order_id,'') = ?
@@ -1007,16 +1012,16 @@ export function findInboundLinkedToSupplierOrder(orderId: string): {
   };
 }
 
-export function supplierOrderLinesEditability(
+export async function supplierOrderLinesEditability(
   orderId: string,
   status?: string
-): {
+): Promise<{
   ok: boolean;
   reason: string;
   inbound_id?: string;
   inbound_number?: string;
   inbound_posted?: boolean;
-} {
+}> {
   const st = String(status || '').trim().toLowerCase();
   if (SUPPLIER_ORDER_LINES_LOCKED_STATUSES.has(st)) {
     return {
@@ -1024,7 +1029,7 @@ export function supplierOrderLinesEditability(
       reason: `Заказ уже проведён (статус «${thinStatusLabel(st)}») — строки нельзя менять`,
     };
   }
-  const inbound = findInboundLinkedToSupplierOrder(orderId);
+  const inbound = await findInboundLinkedToSupplierOrder(orderId);
   if (inbound) {
     return {
       ok: false,
@@ -1052,26 +1057,26 @@ function thinStatusLabel(st: string): string {
   return map[st] || st || '—';
 }
 
-export function assertSupplierOrderLinesEditable(orderId: string): void {
-  const row = get<{ status: string }>(
+export async function assertSupplierOrderLinesEditable(orderId: string): Promise<void> {
+  const row = await get<{ status: string }>(
     `SELECT IFNULL(status,'') AS status FROM thin_journal_docs
      WHERE id = ? AND journal_key = 'supplier_orders'`,
     [orderId]
   );
   if (!row) throw new Error('Заказ поставщику не найден');
-  const edit = supplierOrderLinesEditability(orderId, row.status);
+  const edit = await supplierOrderLinesEditability(orderId, row.status);
   if (!edit.ok) throw new Error(edit.reason);
 }
 
 /** Заменить/дописать строки заказа поставщику (без авто-марок по умолчанию). */
-export function replaceThinSupplierOrderLines(
+export async function replaceThinSupplierOrderLines(
   id: string,
   inputLines: ThinOrderLineInput[],
   opts?: { append?: boolean; allocate_marks?: boolean }
 ) {
   const journalKey = 'supplier_orders';
-  assertSupplierOrderLinesEditable(id);
-  const row = get<{ id: string; payload_json: string }>(
+  await assertSupplierOrderLinesEditable(id);
+  const row = await get<{ id: string; payload_json: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
     [id, journalKey]
@@ -1106,7 +1111,7 @@ export function replaceThinSupplierOrderLines(
       });
       continue;
     }
-    const product = get<{ id: string; sku: string; name: string; code: string }>(
+    const product = await get<{ id: string; sku: string; name: string; code: string }>(
       `SELECT id, IFNULL(sku,'') AS sku, IFNULL(name,'') AS name, IFNULL(code,'') AS code
        FROM products WHERE id = ?`,
       [productId]
@@ -1128,16 +1133,16 @@ export function replaceThinSupplierOrderLines(
       old_sku: String(input.old_sku || '').trim(),
     });
   }
-  saveThinPayload(id, payload, lines);
+  await saveThinPayload(id, payload, lines);
   if (opts?.allocate_marks) {
-    const allocated = allocateThinJournalDatamatrix(journalKey, id, { force: false });
+    const allocated = await allocateThinJournalDatamatrix(journalKey, id, { force: false });
     if (allocated) return allocated;
   }
-  return getThinJournalDoc(journalKey, id);
+  return await getThinJournalDoc(journalKey, id);
 }
 
 /** Обновить поля шапки заказа в payload_json. */
-export function patchThinSupplierOrderHeader(
+export async function patchThinSupplierOrderHeader(
   id: string,
   patch: {
     status?: string;
@@ -1153,7 +1158,7 @@ export function patchThinSupplierOrderHeader(
     supply_number?: string;
   }
 ) {
-  const row = get<{ id: string; payload_json: string }>(
+  const row = await get<{ id: string; payload_json: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = 'supplier_orders'`,
     [id]
@@ -1176,34 +1181,34 @@ export function patchThinSupplierOrderHeader(
   if (patch.warehouse_id != null) payload.warehouse_id = String(patch.warehouse_id).trim();
 
   if (patch.status != null) {
-    run(`UPDATE thin_journal_docs SET status = ?, updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE thin_journal_docs SET status = ?, updated_at = datetime('now') WHERE id = ?`, [
       String(patch.status).trim(),
       id,
     ]);
   }
   if (patch.comment != null) {
-    run(`UPDATE thin_journal_docs SET comment = ?, updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE thin_journal_docs SET comment = ?, updated_at = datetime('now') WHERE id = ?`, [
       String(patch.comment).trim(),
       id,
     ]);
   }
   if (patch.doc_date != null) {
-    run(`UPDATE thin_journal_docs SET doc_date = ?, updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE thin_journal_docs SET doc_date = ?, updated_at = datetime('now') WHERE id = ?`, [
       String(patch.doc_date).slice(0, 10),
       id,
     ]);
   }
   if (patch.counterparty_name != null) {
-    run(
+    await run(
       `UPDATE thin_journal_docs SET counterparty_name = ?, updated_at = datetime('now') WHERE id = ?`,
       [String(patch.counterparty_name).trim(), id]
     );
   }
-  saveThinPayload(id, payload, lines);
-  return getThinJournalDoc('supplier_orders', id);
+  await saveThinPayload(id, payload, lines);
+  return await getThinJournalDoc('supplier_orders', id);
 }
 
-export function createThinJournalDoc(
+export async function createThinJournalDoc(
   journalKey: string,
   input: {
     counterparty_name?: string;
@@ -1217,10 +1222,10 @@ export function createThinJournalDoc(
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
   const id = newGuid();
-  const number = nextCode(meta.prefix.replace(/[^A-Za-zА-Яа-я0-9]/g, '').slice(0, 4) || 'TJ', 5);
+  const number = await nextCode(meta.prefix.replace(/[^A-Za-zА-Яа-я0-9]/g, '').slice(0, 4) || 'TJ', 5);
   const docDate = (input.doc_date || new Date().toISOString().slice(0, 10)).slice(0, 10);
   const status = String(input.status || 'draft').trim() || 'draft';
-  run(
+  await run(
     `INSERT INTO thin_journal_docs
       (id, journal_key, number, doc_date, status, counterparty_name, amount, comment, payload_json)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1236,7 +1241,7 @@ export function createThinJournalDoc(
       String(input.payload_json || ''),
     ]
   );
-  return get('SELECT * FROM thin_journal_docs WHERE id = ?', [id]);
+  return await get('SELECT * FROM thin_journal_docs WHERE id = ?', [id]);
 }
 
 function readPayloadObject(payloadJson: string): Record<string, unknown> {
@@ -1259,14 +1264,14 @@ function linesAmount(
   }, 0);
 }
 
-function saveThinPayload(
+async function saveThinPayload(
   id: string,
   payload: Record<string, unknown>,
   lines: Array<{ qty: number; price: number; amount: number }>
 ) {
   const next = { ...payload, lines };
   const amount = Math.round(linesAmount(lines));
-  run(
+  await run(
     `UPDATE thin_journal_docs
      SET payload_json = ?, amount = ?, updated_at = datetime('now')
      WHERE id = ?`,
@@ -1274,15 +1279,15 @@ function saveThinPayload(
   );
 }
 
-export function addThinJournalLine(
+export async function addThinJournalLine(
   journalKey: string,
   id: string,
   input: { product_id: string; qty?: number; price?: number }
 ) {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
-  if (journalKey === 'supplier_orders') assertSupplierOrderLinesEditable(id);
-  const row = get<{ id: string; payload_json: string }>(
+  if (journalKey === 'supplier_orders') await assertSupplierOrderLinesEditable(id);
+  const row = await get<{ id: string; payload_json: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
     [id, journalKey]
@@ -1290,7 +1295,7 @@ export function addThinJournalLine(
   if (!row) return null;
   const productId = String(input.product_id || '').trim();
   if (!productId) throw new Error('product_id required');
-  const product = get<{
+  const product = await get<{
     id: string;
     sku: string;
     name: string;
@@ -1322,13 +1327,13 @@ export function addThinJournalLine(
     serials: [],
     old_sku: '',
   });
-  saveThinPayload(id, payload, lines);
+  await saveThinPayload(id, payload, lines);
   // Заказ поставщику: марки сразу на qty
   if (journalKey === 'supplier_orders') {
-    const allocated = allocateThinJournalDatamatrix(journalKey, id, { force: false });
+    const allocated = await allocateThinJournalDatamatrix(journalKey, id, { force: false });
     if (allocated) return allocated;
   }
-  return getThinJournalDoc(journalKey, id);
+  return await getThinJournalDoc(journalKey, id);
 }
 
 /** Нужны ли догенерированные марки (не хватает qty или есть дубли внутри заказа). */
@@ -1358,15 +1363,15 @@ export function thinJournalNeedsMarks(doc: {
  * Для заказа поставщику: догенерировать марки, если их нет.
  * Вызывается при открытии карточки и после добавления строк.
  */
-export function ensureThinJournalMarks(journalKey: string, id: string) {
+export async function ensureThinJournalMarks(journalKey: string, id: string) {
   if (journalKey !== 'supplier_orders') {
-    return getThinJournalDoc(journalKey, id);
+    return await getThinJournalDoc(journalKey, id);
   }
-  const doc = getThinJournalDoc(journalKey, id);
+  const doc = await getThinJournalDoc(journalKey, id);
   if (!doc) return null;
   if (!thinJournalNeedsMarks(doc)) return doc;
   try {
-    return allocateThinJournalDatamatrix(journalKey, id, { force: false }) || doc;
+    return await allocateThinJournalDatamatrix(journalKey, id, { force: false }) || doc;
   } catch {
     // Открытие карточки важнее выдачи марок — не роняем GET
     return doc;
@@ -1374,17 +1379,17 @@ export function ensureThinJournalMarks(journalKey: string, id: string) {
 }
 
 /** Марка уже занята в экземплярах / старых заказах / других тонких журналах. */
-function thinSerialTakenElsewhere(serial: string, excludeDocId?: string): boolean {
+async function thinSerialTakenElsewhere(serial: string, excludeDocId?: string): Promise<boolean> {
   const s = String(serial || '').trim();
   if (!s) return true;
   if (
-    get<{ id: string }>(`SELECT id FROM product_units WHERE lower(serial) = lower(?) LIMIT 1`, [s])
+    await get<{ id: string }>(`SELECT id FROM product_units WHERE lower(serial) = lower(?) LIMIT 1`, [s])
   ) {
     return true;
   }
   try {
     if (
-      get<{ id: string }>(
+      await get<{ id: string }>(
         `SELECT id FROM supplier_order_units WHERE lower(serial) = lower(?) LIMIT 1`,
         [s]
       )
@@ -1402,12 +1407,12 @@ function thinSerialTakenElsewhere(serial: string, excludeDocId?: string): boolea
       .replace(/"/g, '');
     const like = `%"${safe}"%`;
     const hit = excludeDocId
-      ? get<{ id: string }>(
+      ? await get<{ id: string }>(
           `SELECT id FROM thin_journal_docs
            WHERE id != ? AND IFNULL(payload_json,'') LIKE ? ESCAPE '\\' LIMIT 1`,
           [excludeDocId, like]
         )
-      : get<{ id: string }>(
+      : await get<{ id: string }>(
           `SELECT id FROM thin_journal_docs
            WHERE IFNULL(payload_json,'') LIKE ? ESCAPE '\\' LIMIT 1`,
           [like]
@@ -1420,16 +1425,16 @@ function thinSerialTakenElsewhere(serial: string, excludeDocId?: string): boolea
 }
 
 /** Уникальная марка: счётчик + проверка занятости. */
-function thinNextUniqueBarcode(
+async function thinNextUniqueBarcode(
   prefixRaw: string,
   usedInDoc: Set<string>,
   excludeDocId?: string
-): string {
+): Promise<string> {
   for (let attempt = 0; attempt < 80; attempt++) {
-    const code = nextBarcode(prefixRaw);
+    const code = await nextBarcode(prefixRaw);
     const key = code.toLowerCase();
     if (usedInDoc.has(key)) continue;
-    if (thinSerialTakenElsewhere(code, excludeDocId)) continue;
+    if (await thinSerialTakenElsewhere(code, excludeDocId)) continue;
     usedInDoc.add(key);
     return code;
   }
@@ -1437,14 +1442,14 @@ function thinNextUniqueBarcode(
 }
 
 /** Уникальные марки (Data Matrix): по одной на каждую единицу qty в строке. */
-export function allocateThinJournalDatamatrix(
+export async function allocateThinJournalDatamatrix(
   journalKey: string,
   id: string,
   opts?: { prefix?: string; force?: boolean }
 ) {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
-  const row = get<{ id: string; payload_json: string; number: string; counterparty_name: string }>(
+  const row = await get<{ id: string; payload_json: string; number: string; counterparty_name: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json, IFNULL(number,'') AS number,
             IFNULL(counterparty_name,'') AS counterparty_name
      FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
@@ -1455,7 +1460,7 @@ export function allocateThinJournalDatamatrix(
   if (!prefix) {
     const cpName = String(row.counterparty_name || '').trim();
     if (cpName) {
-      const cp = get<{ barcode_prefix: string }>(
+      const cp = await get<{ barcode_prefix: string }>(
         `SELECT IFNULL(barcode_prefix,'') AS barcode_prefix FROM counterparties
          WHERE name = ? OR IFNULL(name_full,'') = ? LIMIT 1`,
         [cpName, cpName]
@@ -1468,7 +1473,7 @@ export function allocateThinJournalDatamatrix(
   const payload = readPayloadObject(row.payload_json);
   const lines = parsePayloadLines(row.payload_json);
   if (!lines.length) {
-    const doc = getThinJournalDoc(journalKey, id);
+    const doc = await getThinJournalDoc(journalKey, id);
     if (!doc) return null;
     return { ...doc, dm_created: 0, dm_prefix: prefix };
   }
@@ -1495,7 +1500,7 @@ export function allocateThinJournalDatamatrix(
         continue;
       }
       // чужой/занятый код — не оставляем, выдадим новый
-      if (thinSerialTakenElsewhere(s, id)) {
+      if (await thinSerialTakenElsewhere(s, id)) {
         replaced += 1;
         continue;
       }
@@ -1503,13 +1508,13 @@ export function allocateThinJournalDatamatrix(
       serials.push(s);
     }
     while (serials.length < need) {
-      serials.push(thinNextUniqueBarcode(prefix, usedInDoc, id));
+      serials.push(await thinNextUniqueBarcode(prefix, usedInDoc, id));
       created += 1;
     }
     line.serials = serials;
   }
 
-  saveThinPayload(
+  await saveThinPayload(
     id,
     {
       ...payload,
@@ -1519,13 +1524,13 @@ export function allocateThinJournalDatamatrix(
     },
     lines
   );
-  const doc = getThinJournalDoc(journalKey, id);
+  const doc = await getThinJournalDoc(journalKey, id);
   if (!doc) return null;
   return { ...doc, dm_created: created, dm_replaced: replaced, dm_prefix: prefix };
 }
 
-export function thinJournalDmLabels(journalKey: string, id: string) {
-  const doc = getThinJournalDoc(journalKey, id);
+export async function thinJournalDmLabels(journalKey: string, id: string) {
+  const doc = await getThinJournalDoc(journalKey, id);
   if (!doc) return null;
   const labels: Array<{
     serial: string;
@@ -1559,8 +1564,8 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-export function thinJournalDmLabelsHtml(journalKey: string, id: string): string {
-  const data = thinJournalDmLabels(journalKey, id);
+export async function thinJournalDmLabelsHtml(journalKey: string, id: string): Promise<string> {
+  const data = await thinJournalDmLabels(journalKey, id);
   if (!data) throw new Error('not found');
   const rows = data.labels
     .map((l) => {
@@ -1586,8 +1591,8 @@ export function thinJournalDmLabelsHtml(journalKey: string, id: string): string 
 </style></head><body onload="window.print()">${rows || '<p>Нет кодов Data Matrix — сначала сгенерируйте</p>'}</body></html>`;
 }
 
-export function thinJournalDmExcelCsv(journalKey: string, id: string): string {
-  const data = thinJournalDmLabels(journalKey, id);
+export async function thinJournalDmExcelCsv(journalKey: string, id: string): Promise<string> {
+  const data = await thinJournalDmLabels(journalKey, id);
   if (!data) throw new Error('not found');
   const esc = (s: string) => `"${String(s || '').replace(/"/g, '""')}"`;
   const lines = [
@@ -1607,7 +1612,7 @@ export function thinJournalDmExcelCsv(journalKey: string, id: string): string {
 }
 
 export async function thinJournalDmLabelsPdf(journalKey: string, id: string): Promise<Buffer> {
-  const data = thinJournalDmLabels(journalKey, id);
+  const data = await thinJournalDmLabels(journalKey, id);
   if (!data) throw new Error('not found');
   const PDFDocument = (await import('pdfkit')).default;
   const { renderDataMatrixPng } = await import('./datamatrix.js');
@@ -1666,11 +1671,11 @@ export async function thinJournalDmLabelsPdf(journalKey: string, id: string): Pr
   return done;
 }
 
-export function removeThinJournalLine(journalKey: string, id: string, lineIndex: number) {
+export async function removeThinJournalLine(journalKey: string, id: string, lineIndex: number) {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
-  if (journalKey === 'supplier_orders') assertSupplierOrderLinesEditable(id);
-  const row = get<{ id: string; payload_json: string }>(
+  if (journalKey === 'supplier_orders') await assertSupplierOrderLinesEditable(id);
+  const row = await get<{ id: string; payload_json: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
     [id, journalKey]
@@ -1684,16 +1689,16 @@ export function removeThinJournalLine(journalKey: string, id: string, lineIndex:
   lines.forEach((l, i) => {
     l.line_no = i + 1;
   });
-  saveThinPayload(id, payload, lines);
-  return getThinJournalDoc(journalKey, id);
+  await saveThinPayload(id, payload, lines);
+  return await getThinJournalDoc(journalKey, id);
 }
 
 /** Удалить несколько позиций заказа (не весь документ). Индексы — как в UI. */
-export function removeThinJournalLines(journalKey: string, id: string, lineIndexes: number[]) {
+export async function removeThinJournalLines(journalKey: string, id: string, lineIndexes: number[]) {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
-  if (journalKey === 'supplier_orders') assertSupplierOrderLinesEditable(id);
-  const row = get<{ id: string; payload_json: string }>(
+  if (journalKey === 'supplier_orders') await assertSupplierOrderLinesEditable(id);
+  const row = await get<{ id: string; payload_json: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
     [id, journalKey]
@@ -1711,12 +1716,12 @@ export function removeThinJournalLines(journalKey: string, id: string, lineIndex
   next.forEach((l, i) => {
     l.line_no = i + 1;
   });
-  saveThinPayload(id, payload, next);
-  return getThinJournalDoc(journalKey, id);
+  await saveThinPayload(id, payload, next);
+  return await getThinJournalDoc(journalKey, id);
 }
 
 /** Правка qty/цены одной позиции заказа поставщику (черновик). */
-export function patchThinJournalLine(
+export async function patchThinJournalLine(
   journalKey: string,
   id: string,
   lineIndex: number,
@@ -1724,8 +1729,8 @@ export function patchThinJournalLine(
 ) {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
-  if (journalKey === 'supplier_orders') assertSupplierOrderLinesEditable(id);
-  const row = get<{ id: string; payload_json: string }>(
+  if (journalKey === 'supplier_orders') await assertSupplierOrderLinesEditable(id);
+  const row = await get<{ id: string; payload_json: string }>(
     `SELECT id, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
     [id, journalKey]
@@ -1750,11 +1755,11 @@ export function patchThinJournalLine(
   lines.forEach((l, i) => {
     l.line_no = i + 1;
   });
-  saveThinPayload(id, payload, lines);
-  return getThinJournalDoc(journalKey, id);
+  await saveThinPayload(id, payload, lines);
+  return await getThinJournalDoc(journalKey, id);
 }
 
-export function patchThinJournalDoc(
+export async function patchThinJournalDoc(
   id: string,
   patch: {
     status?: string;
@@ -1765,67 +1770,67 @@ export function patchThinJournalDoc(
     payload_json?: string;
   }
 ) {
-  const row = get<{ id: string }>('SELECT id FROM thin_journal_docs WHERE id = ?', [id]);
+  const row = await get<{ id: string }>('SELECT id FROM thin_journal_docs WHERE id = ?', [id]);
   if (!row) return null;
   if (patch.status != null) {
-    run(`UPDATE thin_journal_docs SET status = ?, updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE thin_journal_docs SET status = ?, updated_at = datetime('now') WHERE id = ?`, [
       String(patch.status).trim(),
       id,
     ]);
   }
   if (patch.counterparty_name != null) {
-    run(
+    await run(
       `UPDATE thin_journal_docs SET counterparty_name = ?, updated_at = datetime('now') WHERE id = ?`,
       [String(patch.counterparty_name).trim(), id]
     );
   }
   if (patch.amount != null) {
-    run(`UPDATE thin_journal_docs SET amount = ?, updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE thin_journal_docs SET amount = ?, updated_at = datetime('now') WHERE id = ?`, [
       Number(patch.amount) || 0,
       id,
     ]);
   }
   if (patch.comment != null) {
-    run(`UPDATE thin_journal_docs SET comment = ?, updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE thin_journal_docs SET comment = ?, updated_at = datetime('now') WHERE id = ?`, [
       String(patch.comment).trim(),
       id,
     ]);
   }
   if (patch.doc_date != null) {
-    run(`UPDATE thin_journal_docs SET doc_date = ?, updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE thin_journal_docs SET doc_date = ?, updated_at = datetime('now') WHERE id = ?`, [
       String(patch.doc_date).slice(0, 10),
       id,
     ]);
   }
   if (patch.payload_json != null) {
-    run(`UPDATE thin_journal_docs SET payload_json = ?, updated_at = datetime('now') WHERE id = ?`, [
+    await run(`UPDATE thin_journal_docs SET payload_json = ?, updated_at = datetime('now') WHERE id = ?`, [
       String(patch.payload_json),
       id,
     ]);
   }
-  return get('SELECT * FROM thin_journal_docs WHERE id = ?', [id]);
+  return await get('SELECT * FROM thin_journal_docs WHERE id = ?', [id]);
 }
 
-export function deleteThinJournalDoc(journalKey: string, id: string): boolean {
+export async function deleteThinJournalDoc(journalKey: string, id: string): Promise<boolean> {
   const meta = getThinJournalMeta(journalKey);
   if (!meta) throw new Error('unknown journal');
   // Заказ поставщику целиком никогда не удаляем — только позиции (строки).
   if (journalKey === 'supplier_orders') {
     throw new Error('Удаление заказа поставщику запрещено. Можно удалять только позиции.');
   }
-  const row = get<{ id: string }>(
+  const row = await get<{ id: string }>(
     `SELECT id FROM thin_journal_docs WHERE id = ? AND journal_key = ?`,
     [id, journalKey]
   );
   if (!row) return false;
-  run(`DELETE FROM thin_journal_docs WHERE id = ? AND journal_key = ?`, [id, journalKey]);
+  await run(`DELETE FROM thin_journal_docs WHERE id = ? AND journal_key = ?`, [id, journalKey]);
   return true;
 }
 
 /** Отчёт закупок: последние приходы + ГТД в строках. */
-export function purchasesInboundReport(limit = 100, gtdOnly = false) {
+export async function purchasesInboundReport(limit = 100, gtdOnly = false) {
   const lim = Math.min(300, Math.max(1, Math.floor(Number(limit) || 100)));
-  const items = all<{
+  const items = await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -1867,8 +1872,8 @@ export function purchasesInboundReport(limit = 100, gtdOnly = false) {
 }
 
 /** Расчёт потребностей: ниже минимума + без min_stock (топ по нулевым). */
-export function demandCalculation(limit = 200) {
-  const low = all(
+export async function demandCalculation(limit = 200) {
+  const low = await all(
     `SELECT p.id, p.sku, p.name, IFNULL(p.brand,'') AS brand,
             IFNULL(p.min_stock,0) AS min_stock,
             IFNULL((SELECT SUM(r.qty) FROM product_store_rests r WHERE r.product_id=p.id),0) AS qty,
@@ -1888,21 +1893,21 @@ export function demandCalculation(limit = 200) {
 }
 
 /** Хаб отчётов закупок (live SQLite). */
-export function purchasesReportsHub() {
-  return purchasesReportsLive();
+export async function purchasesReportsHub() {
+  return await purchasesReportsLive();
 }
 
 /** Хаб отчётов склада (live SQLite). */
-export function warehouseReportsHub() {
-  return warehouseReportsLive();
+export async function warehouseReportsHub() {
+  return await warehouseReportsLive();
 }
 
 /** Списания = stock_docs out (журнал). */
-export function listWriteOffs(limit = 200) {
+export async function listWriteOffs(limit = 200) {
   const lim = Math.min(500, Math.max(1, limit));
   return {
     note: 'Списания / расходные со склада (doc_type=out). Данные из 1С sync + локальные.',
-    items: all(
+    items: await all(
       `SELECT d.id, d.number, d.doc_date, d.amount, d.posted, d.source, d.comment,
               IFNULL(c.name,'') AS counterparty, IFNULL(w.name,'') AS warehouse
        FROM stock_docs d
@@ -1916,11 +1921,11 @@ export function listWriteOffs(limit = 200) {
   };
 }
 
-export function listTransfers(limit = 200) {
+export async function listTransfers(limit = 200) {
   const lim = Math.min(500, Math.max(1, limit));
   return {
     note: 'Перемещения между складами (doc_type=transfer).',
-    items: all(
+    items: await all(
       `SELECT d.id, d.number, d.doc_date, d.posted, d.source, d.comment,
               IFNULL(w.name,'') AS warehouse_from,
               IFNULL(w2.name,'') AS warehouse_to

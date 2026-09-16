@@ -181,22 +181,22 @@ function buildBalanceFrom(warehouseId: string, companyFilter: CompanyFilter, q: 
   return { from, params: [warehouseId, warehouseId, ...params] };
 }
 
-export function listWarehouseBalancePdfRows(opts: {
+export async function listWarehouseBalancePdfRows(opts: {
   warehouseId: string;
   q?: string;
   companyFilter: CompanyFilter;
   limit?: number;
-}): {
+}): Promise<{
   rows: WarehouseBalancePdfRow[];
   total: number;
   truncated: boolean;
   warehouse: { id: string; code: string; name: string; company_name: string };
   qtySum: number;
-} {
+}> {
   const warehouseId = String(opts.warehouseId || '').trim();
   const q = String(opts.q || '').trim();
   const limit = Math.min(Math.max(Number(opts.limit) || PDF_ROW_LIMIT, 1), PDF_ROW_LIMIT);
-  const wh = get<{ id: string; code: string; name: string; company_name: string }>(
+  const wh = await get<{ id: string; code: string; name: string; company_name: string }>(
     `SELECT w.id, IFNULL(w.code,'') AS code, IFNULL(w.name,'') AS name,
             IFNULL(co.name,'') AS company_name
      FROM warehouses w
@@ -214,8 +214,8 @@ export function listWarehouseBalancePdfRows(opts: {
     };
   }
   const { from, params } = buildBalanceFrom(warehouseId, opts.companyFilter, q);
-  const total = get<{ c: number }>(`SELECT COUNT(*) AS c ${from}`, params)?.c ?? 0;
-  const raw = all<{
+  const total = (await get<{ c: number }>(`SELECT COUNT(*) AS c ${from}`, params))?.c ?? 0;
+  const raw = await all<{
     code: string;
     sku: string;
     name: string;
@@ -231,7 +231,7 @@ export function listWarehouseBalancePdfRows(opts: {
     [...params, limit]
   );
   const qtySum =
-    get<{ q: number }>(`SELECT COALESCE(SUM(x.qty),0) AS q ${from}`, params)?.q ?? 0;
+    (await get<{ q: number }>(`SELECT COALESCE(SUM(x.qty),0) AS q ${from}`, params))?.q ?? 0;
   return {
     rows: raw.map((r) => ({
       code: String(r.code || ''),
@@ -322,7 +322,7 @@ export async function renderWarehouseBalancesPdf(opts: {
   q?: string;
   companyFilter: CompanyFilter;
 }): Promise<{ buffer: Buffer; filename: string; title: string; rowCount: number }> {
-  const pack = listWarehouseBalancePdfRows(opts);
+  const pack = await listWarehouseBalancePdfRows(opts);
   if (!pack.warehouse.id || (!pack.warehouse.code && !pack.warehouse.name)) {
     throw new Error('Склад не найден');
   }

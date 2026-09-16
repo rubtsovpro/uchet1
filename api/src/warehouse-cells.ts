@@ -29,8 +29,8 @@ export type CellParts = {
   kind: 'shelf' | 'floor';
 };
 
-export function ensureWarehouseCellsSchema(): void {
-  run(`
+export async function ensureWarehouseCellsSchema(): Promise<void> {
+  await run(`
     CREATE TABLE IF NOT EXISTS warehouse_cells (
       id TEXT PRIMARY KEY,
       warehouse_id TEXT NOT NULL,
@@ -46,11 +46,11 @@ export function ensureWarehouseCellsSchema(): void {
       FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
     )
   `);
-  run(`CREATE INDEX IF NOT EXISTS idx_wh_cells_wh ON warehouse_cells(warehouse_id)`);
-  run(`CREATE INDEX IF NOT EXISTS idx_wh_cells_rack ON warehouse_cells(warehouse_id, rack, bay, level)`);
-  ensureAllowInboundColumn();
+  await run(`CREATE INDEX IF NOT EXISTS idx_wh_cells_wh ON warehouse_cells(warehouse_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_wh_cells_rack ON warehouse_cells(warehouse_id, rack, bay, level)`);
+  await ensureAllowInboundColumn();
 
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS stock_cell_balances (
       warehouse_id TEXT NOT NULL,
       cell_id TEXT NOT NULL,
@@ -65,10 +65,10 @@ export function ensureWarehouseCellsSchema(): void {
       FOREIGN KEY (cell_id) REFERENCES warehouse_cells(id)
     )
   `);
-  run(`CREATE INDEX IF NOT EXISTS idx_stock_cell_cell ON stock_cell_balances(cell_id)`);
-  run(`CREATE INDEX IF NOT EXISTS idx_stock_cell_sku ON stock_cell_balances(sku)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_stock_cell_cell ON stock_cell_balances(cell_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_stock_cell_sku ON stock_cell_balances(sku)`);
 
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS warehouse_cells_meta (
       warehouse_id TEXT PRIMARY KEY,
       source TEXT NOT NULL DEFAULT '',
@@ -80,7 +80,7 @@ export function ensureWarehouseCellsSchema(): void {
     )
   `);
 
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS stock_doc_line_placements (
       id TEXT PRIMARY KEY,
       doc_id TEXT NOT NULL,
@@ -94,14 +94,14 @@ export function ensureWarehouseCellsSchema(): void {
       FOREIGN KEY (cell_id) REFERENCES warehouse_cells(id)
     )
   `);
-  const plCols = all<{ name: string }>('PRAGMA table_info(stock_doc_line_placements)').map(
+  const plCols = (await all<{ name: string }>('PRAGMA table_info(stock_doc_line_placements)')).map(
     (c) => c.name
   );
   if (plCols.length && !plCols.includes('warehouse_id')) {
-    run(`ALTER TABLE stock_doc_line_placements ADD COLUMN warehouse_id TEXT NOT NULL DEFAULT ''`);
+    await run(`ALTER TABLE stock_doc_line_placements ADD COLUMN warehouse_id TEXT NOT NULL DEFAULT ''`);
   }
-  run(`CREATE INDEX IF NOT EXISTS idx_placements_doc ON stock_doc_line_placements(doc_id)`);
-  run(`CREATE INDEX IF NOT EXISTS idx_placements_line ON stock_doc_line_placements(line_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_placements_doc ON stock_doc_line_placements(doc_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_placements_line ON stock_doc_line_placements(line_id)`);
 }
 
 /** А7.1 / а7.1 → A7.1; кириллица П остаётся. */
@@ -172,19 +172,19 @@ export function parseCellCode(raw: string): CellParts | null {
   return null;
 }
 
-function resolveWarehouseId(explicit?: string): string {
+async function resolveWarehouseId(explicit?: string): Promise<string> {
   const id = String(explicit || '').trim();
   if (id) {
-    const row = get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [id]);
+    const row = await get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [id]);
     if (row?.id) return String(row.id);
     throw new Error('Склад не найден');
   }
-  const byCode = get<{ id: string }>(
+  const byCode = await get<{ id: string }>(
     `SELECT id FROM warehouses WHERE code = ? AND IFNULL(is_active,1) = 1 LIMIT 1`,
     [CELLS_DEFAULT_WAREHOUSE_CODE]
   );
   if (byCode?.id) return String(byCode.id);
-  const byName = get<{ id: string }>(
+  const byName = await get<{ id: string }>(
     `SELECT id FROM warehouses WHERE name LIKE '%Москва%' AND IFNULL(is_active,1) = 1
      AND name NOT LIKE '%СТО%' ORDER BY name LIMIT 1`
   );
@@ -192,13 +192,13 @@ function resolveWarehouseId(explicit?: string): string {
   throw new Error('Не найден основной склад (НФ-000032)');
 }
 
-function upsertCell(warehouseId: string, parts: CellParts): string {
-  const existing = get<{ id: string }>(
+async function upsertCell(warehouseId: string, parts: CellParts): Promise<string> {
+  const existing = await get<{ id: string }>(
     `SELECT id FROM warehouse_cells WHERE warehouse_id = ? AND code = ?`,
     [warehouseId, parts.code]
   );
   if (existing?.id) {
-    run(
+    await run(
       `UPDATE warehouse_cells
        SET rack = ?, bay = ?, level = ?, kind = ?, is_active = 1, updated_at = datetime('now')
        WHERE id = ?`,
@@ -207,7 +207,7 @@ function upsertCell(warehouseId: string, parts: CellParts): string {
     return String(existing.id);
   }
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO warehouse_cells (id, warehouse_id, code, rack, bay, level, kind, is_active)
      VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
     [id, warehouseId, parts.code, parts.rack, parts.bay, parts.level, parts.kind]
@@ -216,27 +216,27 @@ function upsertCell(warehouseId: string, parts: CellParts): string {
 }
 
 /** Паллеты пола П.n — создать, если ещё нет (карта МСК / приход). */
-export function ensureFloorPalletCells(
+export async function ensureFloorPalletCells(
   warehouseId?: string,
   slots: number[] = [8, 11, 13]
-): void {
-  ensureWarehouseCellsSchema();
+): Promise<void> {
+  await ensureWarehouseCellsSchema();
   let wid = '';
   try {
-    wid = resolveWarehouseId(warehouseId);
+    wid = await resolveWarehouseId(warehouseId);
   } catch {
     return;
   }
   for (const n of slots) {
     const parts = parseCellCode(`П.${Math.floor(Number(n) || 0)}`);
-    if (parts && parts.kind === 'floor') upsertCell(wid, parts);
+    if (parts && parts.kind === 'floor') await upsertCell(wid, parts);
   }
 }
 
-function lookupProduct(sku: string): { id: string; name: string } | null {
+async function lookupProduct(sku: string): Promise<{ id: string; name: string } | null> {
   const s = String(sku || '').trim();
   if (!s) return null;
-  const row = get<{ id: string; name: string }>(
+  const row = await get<{ id: string; name: string }>(
     `SELECT id, name FROM products WHERE sku = ? OR barcode = ? LIMIT 1`,
     [s, s]
   );
@@ -250,7 +250,7 @@ export type ImportCellRow = {
   cell?: string;
 };
 
-export function importCellRows(input: {
+export async function importCellRows(input: {
   warehouse_id?: string;
   rows: ImportCellRow[];
   source?: string;
@@ -258,16 +258,16 @@ export function importCellRows(input: {
   fetched_at?: string;
   /** Полная замена снэпшота по складу (по умолчанию да). */
   replace?: boolean;
-}): {
+}): Promise<{
   warehouse_id: string;
   cells: number;
   lines: number;
   skipped: number;
   unmatched_sku: number;
   bad_cells: string[];
-} {
-  ensureWarehouseCellsSchema();
-  const warehouseId = resolveWarehouseId(input.warehouse_id);
+}> {
+  await ensureWarehouseCellsSchema();
+  const warehouseId = await resolveWarehouseId(input.warehouse_id);
   const replace = input.replace !== false;
   const badCells: string[] = [];
   let skipped = 0;
@@ -276,7 +276,7 @@ export function importCellRows(input: {
   const cellIds = new Set<string>();
 
   if (replace) {
-    run(`DELETE FROM stock_cell_balances WHERE warehouse_id = ?`, [warehouseId]);
+    await run(`DELETE FROM stock_cell_balances WHERE warehouse_id = ?`, [warehouseId]);
   }
 
   for (const raw of input.rows || []) {
@@ -297,21 +297,21 @@ export function importCellRows(input: {
       skipped++;
       continue;
     }
-    const cellId = upsertCell(warehouseId, parts);
+    const cellId = await upsertCell(warehouseId, parts);
     cellIds.add(cellId);
-    const product = lookupProduct(sku);
+    const product = await lookupProduct(sku);
     if (!product) unmatched++;
     const productId = product?.id || '';
     const productName = product?.name || '';
     const supply = String(raw.supply || '').trim();
 
-    const existing = get<{ qty: number }>(
+    const existing = await get<{ qty: number }>(
       `SELECT qty FROM stock_cell_balances
        WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
       [warehouseId, cellId, sku]
     );
     if (existing) {
-      run(
+      await run(
         `UPDATE stock_cell_balances
          SET qty = qty + ?, supply = CASE WHEN ? != '' THEN ? ELSE supply END,
              product_id = CASE WHEN ? != '' THEN ? ELSE product_id END,
@@ -332,7 +332,7 @@ export function importCellRows(input: {
         ]
       );
     } else {
-      run(
+      await run(
         `INSERT INTO stock_cell_balances
          (warehouse_id, cell_id, product_id, sku, product_name, supply, qty)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -342,7 +342,7 @@ export function importCellRows(input: {
     lines++;
   }
 
-  run(
+  await run(
     `INSERT INTO warehouse_cells_meta (warehouse_id, source, sheet_title, fetched_at, imported_at, row_count)
      VALUES (?, ?, ?, ?, datetime('now'), ?)
      ON CONFLICT(warehouse_id) DO UPDATE SET
@@ -370,7 +370,7 @@ export function importCellRows(input: {
   };
 }
 
-export function importCellsFromCacheFile(filePath?: string): ReturnType<typeof importCellRows> {
+export async function importCellsFromCacheFile(filePath?: string): Promise<Awaited<ReturnType<typeof importCellRows>>> {
   const p = filePath || process.env.WMS_CELLS_CACHE || DEFAULT_CACHE;
   if (!fs.existsSync(p)) {
     throw new Error(`Нет файла снэпшота: ${p}. Сначала tools/fetch_cells_sheet.php`);
@@ -382,7 +382,7 @@ export function importCellsFromCacheFile(filePath?: string): ReturnType<typeof i
     warehouse_id?: string;
     rows?: ImportCellRow[];
   };
-  return importCellRows({
+  return await importCellRows({
     warehouse_id: raw.warehouse_id,
     rows: Array.isArray(raw.rows) ? raw.rows : [],
     source: raw.source || 'Март. Ячейки',
@@ -392,22 +392,22 @@ export function importCellsFromCacheFile(filePath?: string): ReturnType<typeof i
   });
 }
 
-export function getCellsMeta(warehouseId?: string) {
-  ensureWarehouseCellsSchema();
-  const wid = resolveWarehouseId(warehouseId);
-  const meta = get<Record<string, unknown>>(
+export async function getCellsMeta(warehouseId?: string) {
+  await ensureWarehouseCellsSchema();
+  const wid = await resolveWarehouseId(warehouseId);
+  const meta = await get<Record<string, unknown>>(
     `SELECT * FROM warehouse_cells_meta WHERE warehouse_id = ?`,
     [wid]
   );
-  const wh = get<{ id: string; name: string; code: string }>(
+  const wh = await get<{ id: string; name: string; code: string }>(
     `SELECT id, name, code FROM warehouses WHERE id = ?`,
     [wid]
   );
-  const cellCount = get<{ c: number }>(
+  const cellCount = await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM warehouse_cells WHERE warehouse_id = ? AND is_active = 1`,
     [wid]
   );
-  const lineCount = get<{ c: number }>(
+  const lineCount = await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM stock_cell_balances WHERE warehouse_id = ? AND qty > 0`,
     [wid]
   );
@@ -420,11 +420,11 @@ export function getCellsMeta(warehouseId?: string) {
 }
 
 /** Карта стеллажей: racks → bays → levels → summary. */
-export function getCellsMap(warehouseId?: string) {
-  ensureWarehouseCellsSchema();
-  const wid = resolveWarehouseId(warehouseId);
-  ensureFloorPalletCells(wid, [8, 11, 13]);
-  const cells = all<{
+export async function getCellsMap(warehouseId?: string) {
+  await ensureWarehouseCellsSchema();
+  const wid = await resolveWarehouseId(warehouseId);
+  await ensureFloorPalletCells(wid, [8, 11, 13]);
+  const cells = await all<{
     id: string;
     code: string;
     rack: string;
@@ -438,7 +438,7 @@ export function getCellsMap(warehouseId?: string) {
      ORDER BY rack, bay, level`,
     [wid]
   );
-  const sums = all<{
+  const sums = await all<{
     cell_id: string;
     sku_count: number;
     qty_sum: number;
@@ -498,20 +498,20 @@ export function getCellsMap(warehouseId?: string) {
 
   const rackList = [...racks.values()].sort((a, b) => a.rack.localeCompare(b.rack, 'ru'));
   return {
-    ...getCellsMeta(wid),
+    ...await getCellsMeta(wid),
     racks: rackList,
   };
 }
 
-export function getCellContents(input: { warehouse_id?: string; code?: string; cell_id?: string }) {
-  ensureWarehouseCellsSchema();
-  const wid = resolveWarehouseId(input.warehouse_id);
+export async function getCellContents(input: { warehouse_id?: string; code?: string; cell_id?: string }) {
+  await ensureWarehouseCellsSchema();
+  const wid = await resolveWarehouseId(input.warehouse_id);
   let cell = null as Record<string, unknown> | null;
   const cellId = String(input.cell_id || '').trim();
   const code = normalizeCellCode(String(input.code || ''));
   if (cellId) {
     cell =
-      get<Record<string, unknown>>(
+      await get<Record<string, unknown>>(
         `SELECT * FROM warehouse_cells WHERE id = ? AND warehouse_id = ?`,
         [cellId, wid]
       ) || null;
@@ -519,21 +519,21 @@ export function getCellContents(input: { warehouse_id?: string; code?: string; c
     const parts = parseCellCode(code);
     const look = parts?.code || code;
     cell =
-      get<Record<string, unknown>>(
+      await get<Record<string, unknown>>(
         `SELECT * FROM warehouse_cells WHERE warehouse_id = ? AND code = ?`,
         [wid, look]
       ) || null;
     if (!cell && parts) {
-      const cellId = upsertCell(wid, parts);
+      const cellId = await upsertCell(wid, parts);
       cell =
-        get<Record<string, unknown>>(`SELECT * FROM warehouse_cells WHERE id = ? AND warehouse_id = ?`, [
+        await get<Record<string, unknown>>(`SELECT * FROM warehouse_cells WHERE id = ? AND warehouse_id = ?`, [
           cellId,
           wid,
         ]) || null;
     }
   }
   if (!cell) throw new Error('Ячейка не найдена');
-  const lines = all(
+  const lines = await all(
     `SELECT b.sku, b.product_id, b.product_name, b.supply, b.qty, b.updated_at,
             p.name AS catalog_name
      FROM stock_cell_balances b
@@ -545,15 +545,15 @@ export function getCellContents(input: { warehouse_id?: string; code?: string; c
   return { cell, lines };
 }
 
-export function listCellBalances(input: {
+export async function listCellBalances(input: {
   warehouse_id?: string;
   q?: string;
   rack?: string;
   limit?: number;
   offset?: number;
 }) {
-  ensureWarehouseCellsSchema();
-  const wid = resolveWarehouseId(input.warehouse_id);
+  await ensureWarehouseCellsSchema();
+  const wid = await resolveWarehouseId(input.warehouse_id);
   const q = String(input.q || '').trim();
   const rack = String(input.rack || '').trim();
   const limit = Math.min(500, Math.max(1, Number(input.limit) || 100));
@@ -569,14 +569,14 @@ export function listCellBalances(input: {
     const like = `%${q}%`;
     params.push(like, like, like);
   }
-  const total = get<{ c: number }>(
+  const total = await get<{ c: number }>(
     `SELECT COUNT(*) AS c
      FROM stock_cell_balances b
      JOIN warehouse_cells c ON c.id = b.cell_id
      WHERE ${where}`,
     params
   );
-  const rows = all(
+  const rows = await all(
     `SELECT b.sku, b.product_id, b.product_name, b.supply, b.qty,
             c.code AS cell_code, c.rack, c.bay, c.level, c.kind
      FROM stock_cell_balances b
@@ -590,15 +590,15 @@ export function listCellBalances(input: {
 }
 
 /** Где уже лежит товар: ячейки + склады (для подсказки при приходе). */
-export function listProductInboundHints(productId: string, preferWarehouseId?: string) {
-  ensureWarehouseCellsSchema();
+export async function listProductInboundHints(productId: string, preferWarehouseId?: string) {
+  await ensureWarehouseCellsSchema();
   const pid = String(productId || '').trim();
   if (!pid) return { cells: [], warehouses: [], suggest_cell: '' };
-  const prefer = String(preferWarehouseId || '').trim() || resolveMainInboundWarehouseId();
+  const prefer = String(preferWarehouseId || '').trim() || await resolveMainInboundWarehouseId();
   const sku = String(
-    get<{ sku: string }>(`SELECT IFNULL(sku,'') AS sku FROM products WHERE id = ?`, [pid])?.sku || ''
+    (await get<{ sku: string }>(`SELECT IFNULL(sku,'') AS sku FROM products WHERE id = ?`, [pid]))?.sku || ''
   ).trim();
-  const cells = all<{
+  const cells = (await all<{
     cell_code: string;
     qty: number;
     supply: string;
@@ -625,7 +625,7 @@ export function listProductInboundHints(productId: string, preferWarehouseId?: s
               c.code COLLATE NOCASE
      LIMIT 30`,
     [pid, sku, sku, prefer]
-  ).map((r) => ({
+  )).map((r) => ({
     cell_code: String(r.cell_code || '').trim(),
     qty: Number(r.qty) || 0,
     supply: String(r.supply || '').trim(),
@@ -634,7 +634,7 @@ export function listProductInboundHints(productId: string, preferWarehouseId?: s
     warehouse_code: String(r.warehouse_code || ''),
     on_inbound_wh: String(r.warehouse_id || '') === prefer,
   }));
-  const warehouses = all<{
+  const warehouses = (await all<{
     warehouse_id: string;
     warehouse_name: string;
     warehouse_code: string;
@@ -651,7 +651,7 @@ export function listProductInboundHints(productId: string, preferWarehouseId?: s
      ORDER BY CASE WHEN b.warehouse_id = ? THEN 0 ELSE 1 END, qty DESC
      LIMIT 20`,
     [pid, prefer]
-  ).map((r) => ({
+  )).map((r) => ({
     warehouse_id: String(r.warehouse_id || ''),
     warehouse_name: String(r.warehouse_name || ''),
     warehouse_code: String(r.warehouse_code || ''),
@@ -675,10 +675,10 @@ type PalletGroup = {
   lines: PalletLine[];
 };
 
-function docLines(docId: string): PalletLine[] {
+async function docLines(docId: string): Promise<PalletLine[]> {
   const id = String(docId || '').trim();
   if (!id) return [];
-  return all<{ sku: string; name: string; qty: number; product_id: string }>(
+  return (await all<{ sku: string; name: string; qty: number; product_id: string }>(
     `SELECT IFNULL(p.sku,'') AS sku, IFNULL(p.name,'') AS name,
             IFNULL(l.qty,0) AS qty, IFNULL(l.product_id,'') AS product_id
      FROM stock_doc_lines l
@@ -686,7 +686,7 @@ function docLines(docId: string): PalletLine[] {
      WHERE l.doc_id = ? AND IFNULL(l.qty,0) != 0
      ORDER BY p.sku COLLATE NOCASE`,
     [id]
-  ).map((r) => ({
+  )).map((r) => ({
     sku: String(r.sku || ''),
     name: String(r.name || ''),
     qty: Number(r.qty) || 0,
@@ -705,8 +705,8 @@ function sumPallet(groups: PalletGroup[]) {
 }
 
 /** Паллет на схеме склада: актуальные сделки + товары (курьер / резерв СТО / СТО). */
-export function getWarehousePallet(input: { kind?: string; warehouse_id?: string }) {
-  ensureWarehouseCellsSchema();
+export async function getWarehousePallet(input: { kind?: string; warehouse_id?: string }) {
+  await ensureWarehouseCellsSchema();
   const kind = String(input.kind || '').trim().toLowerCase();
   if (kind !== 'courier' && kind !== 'reserve' && kind !== 'sto') {
     throw new Error('kind: courier|reserve|sto');
@@ -715,26 +715,26 @@ export function getWarehousePallet(input: { kind?: string; warehouse_id?: string
   let wid = String(input.warehouse_id || '').trim();
   if (!wid) {
     wid =
-      get<{ id: string }>(`SELECT id FROM warehouses WHERE upper(code) = ? LIMIT 1`, [defaultCode])?.id ||
+      (await get<{ id: string }>(`SELECT id FROM warehouses WHERE upper(code) = ? LIMIT 1`, [defaultCode]))?.id ||
       '';
   }
   // Старый вызов без id мог уйти на Отложено (STO-RES) — для паллета «резерв» канон STO-RSV
   if (kind === 'reserve' && wid) {
     const code = String(
-      get<{ code: string }>(`SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`, [wid])?.code ||
+      (await get<{ code: string }>(`SELECT IFNULL(code,'') AS code FROM warehouses WHERE id = ?`, [wid]))?.code ||
         ''
     )
       .trim()
       .toUpperCase();
     if (/^STO-RES-/.test(code)) {
       wid =
-        get<{ id: string }>(
+        (await get<{ id: string }>(
           `SELECT id FROM warehouses WHERE upper(code) = 'STO-RSV-MSK' LIMIT 1`
-        )?.id || wid;
+        ))?.id || wid;
     }
   }
   if (!wid) throw new Error('Склад не найден');
-  const wh = get<{ id: string; name: string; code: string }>(
+  const wh = await get<{ id: string; name: string; code: string }>(
     `SELECT id, name, code FROM warehouses WHERE id = ?`,
     [wid]
   );
@@ -743,7 +743,7 @@ export function getWarehousePallet(input: { kind?: string; warehouse_id?: string
   const groups: PalletGroup[] = [];
 
   if (kind === 'courier') {
-    const runs = all<{
+    const runs = await all<{
       deal_id: string;
       status: string;
       stock_doc_id: string;
@@ -769,7 +769,7 @@ export function getWarehousePallet(input: { kind?: string; warehouse_id?: string
       picked_up: 'Забрал',
     };
     for (const r of runs) {
-      const lines = docLines(String(r.stock_doc_id || ''));
+      const lines = await docLines(String(r.stock_doc_id || ''));
       const dealId = String(r.deal_id || '').trim();
       const docNum = String(r.doc_number || '').trim();
       const ship = String(r.amo_shipment || '').trim();
@@ -785,9 +785,9 @@ export function getWarehousePallet(input: { kind?: string; warehouse_id?: string
     }
   } else if (kind === 'reserve') {
     // Только актуальный остаток (+ черновики передачи), не вся история TR на резерв.
-    const dealIds = new Set(listOpenDealIdsOnWarehouse(wid));
-    const pendingByDeal = new Map<string, ReturnType<typeof pendingHandoffInboundOnWarehouse>>();
-    for (const row of pendingHandoffInboundOnWarehouse(wid)) {
+    const dealIds = new Set(await listOpenDealIdsOnWarehouse(wid));
+    const pendingByDeal = new Map<string, Awaited<ReturnType<typeof pendingHandoffInboundOnWarehouse>>>();
+    for (const row of await pendingHandoffInboundOnWarehouse(wid)) {
       const dealId = String(row.deal_id || '').trim();
       if (!dealId) continue;
       dealIds.add(dealId);
@@ -796,7 +796,7 @@ export function getWarehousePallet(input: { kind?: string; warehouse_id?: string
       pendingByDeal.set(dealId, list);
     }
     for (const dealId of [...dealIds].sort((a, b) => a.localeCompare(b, 'ru'))) {
-      const stockLines = listOpenDealStockLinesOnWarehouse(wid, dealId);
+      const stockLines = await listOpenDealStockLinesOnWarehouse(wid, dealId);
       const pendingLines = (pendingByDeal.get(dealId) || []).map((r) => ({
         sku: r.sku,
         name: r.name,
@@ -805,12 +805,12 @@ export function getWarehousePallet(input: { kind?: string; warehouse_id?: string
       }));
       const lines = stockLines.length ? stockLines : pendingLines;
       if (!lines.length) continue;
-      const deal = get<{ buyer_name: string; amo_shipment: string }>(
+      const deal = await get<{ buyer_name: string; amo_shipment: string }>(
         `SELECT IFNULL(buyer_name,'') AS buyer_name, IFNULL(amo_shipment,'') AS amo_shipment
          FROM crm_deals WHERE id = ?`,
         [dealId]
       );
-      const doc = get<{ number: string }>(
+      const doc = await get<{ number: string }>(
         `SELECT IFNULL(number,'') AS number
          FROM stock_docs
          WHERE warehouse_to_id = ? AND deal_id = ? AND posted = 1
@@ -834,16 +834,16 @@ export function getWarehousePallet(input: { kind?: string; warehouse_id?: string
     }
   } else {
     // СТО: только сделки с остатком на полу; после списания по продаже — не показываем.
-    const dealIds = listOpenDealIdsOnWarehouse(wid);
+    const dealIds = await listOpenDealIdsOnWarehouse(wid);
     for (const dealId of dealIds) {
-      const lines = listOpenDealStockLinesOnWarehouse(wid, dealId);
+      const lines = await listOpenDealStockLinesOnWarehouse(wid, dealId);
       if (!lines.length) continue;
-      const deal = get<{ buyer_name: string; amo_shipment: string }>(
+      const deal = await get<{ buyer_name: string; amo_shipment: string }>(
         `SELECT IFNULL(buyer_name,'') AS buyer_name, IFNULL(amo_shipment,'') AS amo_shipment
          FROM crm_deals WHERE id = ?`,
         [dealId]
       );
-      const doc = get<{ number: string }>(
+      const doc = await get<{ number: string }>(
         `SELECT IFNULL(number,'') AS number
          FROM stock_docs
          WHERE warehouse_to_id = ? AND deal_id = ? AND posted = 1
@@ -876,28 +876,28 @@ export function getWarehousePallet(input: { kind?: string; warehouse_id?: string
 }
 
 /** Основной склад для ручного прихода с ячейками (МСК). */
-export function resolveMainInboundWarehouseId(): string {
+export async function resolveMainInboundWarehouseId(): Promise<string> {
   try {
-    return mainWarehouseId();
+    return await mainWarehouseId();
   } catch {
-    return resolveWarehouseId();
+    return await resolveWarehouseId();
   }
 }
 
-export function isMainInboundWarehouseId(warehouseId: string): boolean {
+export async function isMainInboundWarehouseId(warehouseId: string): Promise<boolean> {
   const id = String(warehouseId || '').trim();
   if (!id) return false;
   try {
-    if (id === mainWarehouseId()) return true;
+    if (id === await mainWarehouseId()) return true;
   } catch {
     /* ignore */
   }
   try {
-    if (id === resolveWarehouseId()) return true;
+    if (id === await resolveWarehouseId()) return true;
   } catch {
     /* ignore */
   }
-  const wh = get<{ code: string; name: string }>(
+  const wh = await get<{ code: string; name: string }>(
     `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
     [id]
   );
@@ -908,25 +908,25 @@ export function isMainInboundWarehouseId(warehouseId: string): boolean {
   return /основн/i.test(name) && !/сто|резерв|курьер|сдэк|автобус/i.test(name);
 }
 
-export function listCellCodes(warehouseId?: string): string[] {
-  ensureWarehouseCellsSchema();
-  const wid = resolveWarehouseId(warehouseId || resolveMainInboundWarehouseId());
-  ensureFloorPalletCells(wid, [8, 11, 13]);
-  return all<{ code: string }>(
+export async function listCellCodes(warehouseId?: string): Promise<string[]> {
+  await ensureWarehouseCellsSchema();
+  const wid = await resolveWarehouseId(warehouseId || await resolveMainInboundWarehouseId());
+  await ensureFloorPalletCells(wid, [8, 11, 13]);
+  return (await all<{ code: string }>(
     `SELECT code FROM warehouse_cells WHERE warehouse_id = ? AND is_active = 1 ORDER BY rack, bay, level, code`,
     [wid]
-  ).map((r) => String(r.code || ''));
+  )).map((r) => String(r.code || ''));
 }
 
 /** Склады, куда разрешён приход с размещением (флаг allow_inbound + сетка ячеек). */
-export function listWarehousesWithCells(): Array<{
+export async function listWarehousesWithCells(): Promise<Array<{
   id: string;
   name: string;
   code: string;
   allow_inbound: number;
-}> {
-  ensureWarehouseCellsSchema();
-  return all<{ id: string; name: string; code: string; allow_inbound: number }>(
+}>> {
+  await ensureWarehouseCellsSchema();
+  return (await all<{ id: string; name: string; code: string; allow_inbound: number }>(
     `SELECT DISTINCT w.id, IFNULL(w.name,'') AS name, IFNULL(w.code,'') AS code,
             IFNULL(w.allow_inbound, 0) AS allow_inbound
      FROM warehouses w
@@ -940,7 +940,7 @@ export function listWarehousesWithCells(): Array<{
          ELSE 2
        END,
        w.name COLLATE NOCASE`
-  ).map((r) => ({
+  )).map((r) => ({
     id: String(r.id),
     name: String(r.name || ''),
     code: String(r.code || ''),
@@ -948,22 +948,22 @@ export function listWarehousesWithCells(): Array<{
   }));
 }
 
-export function warehouseAllowsInbound(warehouseId: string): boolean {
+export async function warehouseAllowsInbound(warehouseId: string): Promise<boolean> {
   const wid = String(warehouseId || '').trim();
   if (!wid) return false;
-  ensureWarehouseCellsSchema();
-  const row = get<{ allow_inbound: number }>(
+  await ensureWarehouseCellsSchema();
+  const row = await get<{ allow_inbound: number }>(
     `SELECT IFNULL(allow_inbound, 0) AS allow_inbound FROM warehouses WHERE id = ?`,
     [wid]
   );
   return Number(row?.allow_inbound) === 1;
 }
 
-function ensureAllowInboundColumn(): void {
-  const cols = all<{ name: string }>(`PRAGMA table_info(warehouses)`).map((c) => c.name);
+async function ensureAllowInboundColumn(): Promise<void> {
+  const cols = (await all<{ name: string }>(`PRAGMA table_info(warehouses)`)).map((c) => c.name);
   if (!cols.length || cols.includes('allow_inbound')) return;
-  run(`ALTER TABLE warehouses ADD COLUMN allow_inbound INTEGER NOT NULL DEFAULT 0`);
-  run(
+  await run(`ALTER TABLE warehouses ADD COLUMN allow_inbound INTEGER NOT NULL DEFAULT 0`);
+  await run(
     `UPDATE warehouses SET allow_inbound = 1
      WHERE IFNULL(code,'') = 'НФ-000032'
         OR IFNULL(code,'') LIKE 'STO-RES-%'
@@ -972,13 +972,13 @@ function ensureAllowInboundColumn(): void {
   );
 }
 
-export function warehouseHasActiveCells(warehouseId: string): boolean {
+export async function warehouseHasActiveCells(warehouseId: string): Promise<boolean> {
   const wid = String(warehouseId || '').trim();
   if (!wid) return false;
-  return listCellCodes(wid).length > 0;
+  return (await listCellCodes(wid)).length > 0;
 }
 
-export function applyCellReceiveDelta(input: {
+export async function applyCellReceiveDelta(input: {
   warehouse_id: string;
   cell_code: string;
   product_id: string;
@@ -986,19 +986,19 @@ export function applyCellReceiveDelta(input: {
   product_name?: string;
   qty: number;
   supply?: string;
-}): void {
-  ensureWarehouseCellsSchema();
+}): Promise<void> {
+  await ensureWarehouseCellsSchema();
   const warehouseId = String(input.warehouse_id || '').trim();
   const qty = Number(input.qty);
   if (!(qty > 0)) throw new Error('Количество размещения должно быть > 0');
   const parts = parseCellCode(String(input.cell_code || ''));
   if (!parts) throw new Error(`Неверный код ячейки: ${input.cell_code}`);
-  const cellId = upsertCell(warehouseId, parts);
+  const cellId = await upsertCell(warehouseId, parts);
   let sku = String(input.sku || '').trim();
   let productId = String(input.product_id || '').trim();
   let productName = String(input.product_name || '').trim();
   if (productId && !sku) {
-    const p = get<{ sku: string; name: string }>(
+    const p = await get<{ sku: string; name: string }>(
       `SELECT IFNULL(sku,'') AS sku, IFNULL(name,'') AS name FROM products WHERE id = ?`,
       [productId]
     );
@@ -1007,12 +1007,12 @@ export function applyCellReceiveDelta(input: {
   }
   if (!sku) throw new Error('Не удалось определить SKU для размещения');
   const supply = String(input.supply || '').trim();
-  const existing = get<{ qty: number }>(
+  const existing = await get<{ qty: number }>(
     `SELECT qty FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
     [warehouseId, cellId, sku]
   );
   if (existing) {
-    run(
+    await run(
       `UPDATE stock_cell_balances
        SET qty = qty + ?, supply = CASE WHEN ? != '' THEN ? ELSE supply END,
            product_id = CASE WHEN ? != '' THEN ? ELSE product_id END,
@@ -1033,7 +1033,7 @@ export function applyCellReceiveDelta(input: {
       ]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO stock_cell_balances
        (warehouse_id, cell_id, product_id, sku, product_name, supply, qty)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -1043,14 +1043,14 @@ export function applyCellReceiveDelta(input: {
 }
 
 /** Списание с ячейки (возврат / перемещение). Не уходит в минус. */
-export function applyCellIssueDelta(input: {
+export async function applyCellIssueDelta(input: {
   warehouse_id: string;
   cell_code: string;
   product_id: string;
   sku?: string;
   qty: number;
-}): void {
-  ensureWarehouseCellsSchema();
+}): Promise<void> {
+  await ensureWarehouseCellsSchema();
   const warehouseId = String(input.warehouse_id || '').trim();
   const qty = Number(input.qty);
   if (!(qty > 0)) return;
@@ -1060,19 +1060,19 @@ export function applyCellIssueDelta(input: {
   const productId = String(input.product_id || '').trim();
   if (productId && !sku) {
     sku = String(
-      get<{ sku: string }>(`SELECT IFNULL(sku,'') AS sku FROM products WHERE id = ?`, [productId])
+      (await get<{ sku: string }>(`SELECT IFNULL(sku,'') AS sku FROM products WHERE id = ?`, [productId]))
         ?.sku || ''
     ).trim();
   }
   if (!sku) return;
-  const cellId = upsertCell(warehouseId, parts);
+  const cellId = await upsertCell(warehouseId, parts);
   const existing =
-    get<{ qty: number }>(
+    await get<{ qty: number }>(
       `SELECT qty FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
       [warehouseId, cellId, sku]
     ) ||
     (productId
-      ? get<{ qty: number }>(
+      ? await get<{ qty: number }>(
           `SELECT qty FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND product_id = ?`,
           [warehouseId, cellId, productId]
         )
@@ -1080,12 +1080,12 @@ export function applyCellIssueDelta(input: {
   if (!existing) return;
   const next = Math.max(0, (Number(existing.qty) || 0) - qty);
   if (next <= 0) {
-    run(
+    await run(
       `DELETE FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND (sku = ? OR (? != '' AND product_id = ?))`,
       [warehouseId, cellId, sku, productId, productId]
     );
   } else {
-    run(
+    await run(
       `UPDATE stock_cell_balances SET qty = ?, updated_at = datetime('now')
        WHERE warehouse_id = ? AND cell_id = ? AND (sku = ? OR (? != '' AND product_id = ?))`,
       [next, warehouseId, cellId, sku, productId, productId]
@@ -1093,20 +1093,20 @@ export function applyCellIssueDelta(input: {
   }
 }
 
-export function insertLinePlacements(input: {
+export async function insertLinePlacements(input: {
   doc_id: string;
   line_id: string;
   warehouse_id: string;
   product_id: string;
   placements: Array<{ cell_code: string; qty: number; warehouse_id?: string }>;
-}): void {
-  ensureWarehouseCellsSchema();
+}): Promise<void> {
+  await ensureWarehouseCellsSchema();
   const docId = String(input.doc_id || '').trim();
   const lineId = String(input.line_id || '').trim();
   const defaultWh = String(input.warehouse_id || '').trim();
   const productId = String(input.product_id || '').trim();
   if (!docId || !lineId || !defaultWh) throw new Error('Не указан документ или строка');
-  const product = get<{ sku: string; name: string }>(
+  const product = await get<{ sku: string; name: string }>(
     `SELECT IFNULL(sku,'') AS sku, IFNULL(name,'') AS name FROM products WHERE id = ?`,
     [productId]
   );
@@ -1118,7 +1118,7 @@ export function insertLinePlacements(input: {
     if (!wh) throw new Error('Не указан склад размещения');
     // Адрес необязателен («—»): остаток на склад без ячейки
     if (!cellCode || cellCode === '—' || cellCode === '-' || cellCode === '–') {
-      run(
+      await run(
         `INSERT INTO stock_doc_line_placements (id, doc_id, line_id, cell_id, cell_code, qty, warehouse_id)
          VALUES (?, ?, ?, '', '', ?, ?)`,
         [newGuid(), docId, lineId, qty, wh]
@@ -1127,8 +1127,8 @@ export function insertLinePlacements(input: {
     }
     const parts = parseCellCode(cellCode);
     if (!parts) throw new Error(`Неверный код ячейки: ${cellCode}`);
-    const cellId = upsertCell(wh, parts);
-    run(
+    const cellId = await upsertCell(wh, parts);
+    await run(
       `INSERT INTO stock_doc_line_placements (id, doc_id, line_id, cell_id, cell_code, qty, warehouse_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [newGuid(), docId, lineId, cellId, parts.code, qty, wh]
@@ -1137,16 +1137,16 @@ export function insertLinePlacements(input: {
   }
 }
 
-export function applyInboundPlacementsForDoc(docId: string): boolean {
-  ensureWarehouseCellsSchema();
+export async function applyInboundPlacementsForDoc(docId: string): Promise<boolean> {
+  await ensureWarehouseCellsSchema();
   const id = String(docId || '').trim();
   if (!id) return false;
-  const doc = get<{ warehouse_id: string; posted: number }>(
+  const doc = await get<{ warehouse_id: string; posted: number }>(
     `SELECT warehouse_id, posted FROM stock_docs WHERE id = ?`,
     [id]
   );
   if (!doc?.warehouse_id) return false;
-  const rows = all<{
+  const rows = await all<{
     line_id: string;
     cell_code: string;
     qty: number;
@@ -1180,7 +1180,7 @@ export function applyInboundPlacementsForDoc(docId: string): boolean {
       String(row.line_warehouse_id || '').trim() ||
       headerWh;
     if (!wh) throw new Error('Не указан склад размещения');
-    applyCellReceiveDelta({
+    await applyCellReceiveDelta({
       warehouse_id: wh,
       cell_code: cellCode,
       product_id: String(row.product_id),
@@ -1196,17 +1196,17 @@ export function applyInboundPlacementsForDoc(docId: string): boolean {
  * Задать размещение строки прихода (одна или несколько частей: склад + ячейка + qty).
  * Сумма qty частей должна равняться количеству строки.
  */
-export function replaceLinePlacements(input: {
+export async function replaceLinePlacements(input: {
   doc_id: string;
   line_id: string;
   placements: Array<{ warehouse_id: string; cell_code: string; qty: number }>;
-}): { ok: true; placements: Array<{ warehouse_id: string; cell_code: string; qty: number }> } {
-  ensureWarehouseCellsSchema();
+}): Promise<{ ok: true; placements: Array<{ warehouse_id: string; cell_code: string; qty: number }> }> {
+  await ensureWarehouseCellsSchema();
   const docId = String(input.doc_id || '').trim();
   const lineId = String(input.line_id || '').trim();
   if (!docId || !lineId) throw new Error('Не указан документ или строка');
 
-  const doc = get<{ id: string; posted: number; warehouse_id: string; doc_type: string }>(
+  const doc = await get<{ id: string; posted: number; warehouse_id: string; doc_type: string }>(
     `SELECT id, posted, IFNULL(warehouse_id,'') AS warehouse_id, IFNULL(doc_type,'') AS doc_type
      FROM stock_docs WHERE id = ?`,
     [docId]
@@ -1214,7 +1214,7 @@ export function replaceLinePlacements(input: {
   if (!doc) throw new Error('Документ не найден');
   if (String(doc.doc_type) !== 'in') throw new Error('Размещение только для приходных');
 
-  const line = get<{ id: string; product_id: string; qty: number; warehouse_id: string }>(
+  const line = await get<{ id: string; product_id: string; qty: number; warehouse_id: string }>(
     `SELECT id, IFNULL(product_id,'') AS product_id, qty, IFNULL(warehouse_id,'') AS warehouse_id
      FROM stock_doc_lines WHERE id = ? AND doc_id = ?`,
     [lineId, docId]
@@ -1245,12 +1245,12 @@ export function replaceLinePlacements(input: {
     } else {
       p.cell_code = '';
     }
-    if (!warehouseAllowsInbound(p.warehouse_id)) {
+    if (!await warehouseAllowsInbound(p.warehouse_id)) {
       throw new Error('На этот склад приход запрещён — включите «Приходуем сюда» в карточке склада');
     }
   }
 
-  const oldPlacements = all<{ cell_code: string; qty: number; warehouse_id: string }>(
+  const oldPlacements = await all<{ cell_code: string; qty: number; warehouse_id: string }>(
     `SELECT cell_code, qty, IFNULL(warehouse_id,'') AS warehouse_id
      FROM stock_doc_line_placements WHERE doc_id = ? AND line_id = ?`,
     [docId, lineId]
@@ -1262,7 +1262,7 @@ export function replaceLinePlacements(input: {
     for (const p of oldPlacements) {
       const oldCell = String(p.cell_code || '').trim();
       if (!oldCell) continue;
-      applyCellIssueDelta({
+      await applyCellIssueDelta({
         warehouse_id: String(p.warehouse_id || '').trim() || fallbackWh,
         cell_code: oldCell,
         product_id: productId,
@@ -1271,21 +1271,21 @@ export function replaceLinePlacements(input: {
     }
   }
 
-  run(`DELETE FROM stock_doc_line_placements WHERE doc_id = ? AND line_id = ?`, [docId, lineId]);
+  await run(`DELETE FROM stock_doc_line_placements WHERE doc_id = ? AND line_id = ?`, [docId, lineId]);
   const primaryWh = parts.reduce((best, p) => (p.qty > best.qty ? p : best), parts[0]).warehouse_id;
-  insertLinePlacements({
+  await insertLinePlacements({
     doc_id: docId,
     line_id: lineId,
     warehouse_id: primaryWh,
     product_id: productId,
     placements: parts,
   });
-  run(`UPDATE stock_doc_lines SET warehouse_id = ? WHERE id = ? AND doc_id = ?`, [
+  await run(`UPDATE stock_doc_lines SET warehouse_id = ? WHERE id = ? AND doc_id = ?`, [
     primaryWh,
     lineId,
     docId,
   ]);
-  run(
+  await run(
     `UPDATE stock_docs SET warehouse_id = ?
      WHERE id = ? AND (IFNULL(warehouse_id,'') = '' OR warehouse_id = ?)`,
     [primaryWh, docId, fallbackWh]
@@ -1294,7 +1294,7 @@ export function replaceLinePlacements(input: {
   if (Number(doc.posted) === 1) {
     for (const p of parts) {
       if (!p.cell_code) continue;
-      applyCellReceiveDelta({
+      await applyCellReceiveDelta({
         warehouse_id: p.warehouse_id,
         cell_code: p.cell_code,
         product_id: productId,
@@ -1307,18 +1307,18 @@ export function replaceLinePlacements(input: {
 }
 
 /** @deprecated use replaceLinePlacements */
-export function replaceLinePlacement(input: {
+export async function replaceLinePlacement(input: {
   doc_id: string;
   line_id: string;
   warehouse_id: string;
   cell_code: string;
-}): { ok: true; cell_code: string; warehouse_id: string } {
-  const line = get<{ qty: number }>(
+}): Promise<{ ok: true; cell_code: string; warehouse_id: string }> {
+  const line = await get<{ qty: number }>(
     `SELECT qty FROM stock_doc_lines WHERE id = ? AND doc_id = ?`,
     [String(input.line_id || ''), String(input.doc_id || '')]
   );
   const qty = Number(line?.qty) || 0;
-  const r = replaceLinePlacements({
+  const r = await replaceLinePlacements({
     doc_id: input.doc_id,
     line_id: input.line_id,
     placements: [
@@ -1333,11 +1333,11 @@ export function replaceLinePlacement(input: {
   return { ok: true, cell_code: first.cell_code, warehouse_id: first.warehouse_id };
 }
 
-export function getPlacementsForDoc(docId: string) {
-  ensureWarehouseCellsSchema();
+export async function getPlacementsForDoc(docId: string) {
+  await ensureWarehouseCellsSchema();
   const id = String(docId || '').trim();
   if (!id) return { lines: [] };
-  const rows = all<{
+  const rows = await all<{
     line_id: string;
     cell_code: string;
     qty: number;
@@ -1365,12 +1365,12 @@ export function getPlacementsForDoc(docId: string) {
   return { lines: rows };
 }
 
-export function getPlacementSummariesForDocs(docIds: string[]): Record<string, string> {
-  ensureWarehouseCellsSchema();
+export async function getPlacementSummariesForDocs(docIds: string[]): Promise<Record<string, string>> {
+  await ensureWarehouseCellsSchema();
   const ids = (docIds || []).map((x) => String(x || '').trim()).filter(Boolean);
   if (!ids.length) return {};
   const ph = ids.map(() => '?').join(',');
-  const rows = all<{ doc_id: string; cell_code: string; qty: number }>(
+  const rows = await all<{ doc_id: string; cell_code: string; qty: number }>(
     `SELECT doc_id, cell_code, SUM(qty) AS qty
      FROM stock_doc_line_placements
      WHERE doc_id IN (${ph})
@@ -1394,14 +1394,14 @@ export function getPlacementSummariesForDocs(docIds: string[]): Record<string, s
 }
 
 /** Перемещение qty между ячейками одного склада (адресный остаток). */
-export function moveStockBetweenCells(input: {
+export async function moveStockBetweenCells(input: {
   warehouse_id: string;
   from_cell: string;
   to_cell: string;
   product_id?: string;
   sku?: string;
   qty: number;
-}): {
+}): Promise<{
   warehouse_id: string;
   from_cell: string;
   to_cell: string;
@@ -1411,8 +1411,8 @@ export function moveStockBetweenCells(input: {
   qty: number;
   from_qty_after: number;
   to_qty_after: number;
-} {
-  ensureWarehouseCellsSchema();
+}> {
+  await ensureWarehouseCellsSchema();
   const warehouseId = String(input.warehouse_id || '').trim();
   if (!warehouseId) throw new Error('Укажите склад');
   const qty = Number(input.qty);
@@ -1427,7 +1427,7 @@ export function moveStockBetweenCells(input: {
   let productId = String(input.product_id || '').trim();
   let productName = '';
   if (productId) {
-    const p = get<{ sku: string; name: string }>(
+    const p = await get<{ sku: string; name: string }>(
       `SELECT IFNULL(sku,'') AS sku, IFNULL(name,'') AS name FROM products WHERE id = ?`,
       [productId]
     );
@@ -1438,10 +1438,10 @@ export function moveStockBetweenCells(input: {
   if (!sku && !productId) throw new Error('Укажите товар');
 
   const fromParts = parseCellCode(fromCode)!;
-  const fromCellId = upsertCell(warehouseId, fromParts);
+  const fromCellId = await upsertCell(warehouseId, fromParts);
   const bal =
     (sku
-      ? get<{ qty: number; product_id: string; product_name: string; sku: string }>(
+      ? await get<{ qty: number; product_id: string; product_name: string; sku: string }>(
           `SELECT qty, IFNULL(product_id,'') AS product_id, IFNULL(product_name,'') AS product_name,
                   IFNULL(sku,'') AS sku
            FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
@@ -1449,7 +1449,7 @@ export function moveStockBetweenCells(input: {
         )
       : null) ||
     (productId
-      ? get<{ qty: number; product_id: string; product_name: string; sku: string }>(
+      ? await get<{ qty: number; product_id: string; product_name: string; sku: string }>(
           `SELECT qty, IFNULL(product_id,'') AS product_id, IFNULL(product_name,'') AS product_name,
                   IFNULL(sku,'') AS sku
            FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND product_id = ?`,
@@ -1467,14 +1467,14 @@ export function moveStockBetweenCells(input: {
   if (!sku) sku = String(bal.sku || '').trim();
   if (!productName) productName = String(bal.product_name || '').trim();
 
-  applyCellIssueDelta({
+  await applyCellIssueDelta({
     warehouse_id: warehouseId,
     cell_code: fromCode,
     product_id: productId,
     sku,
     qty,
   });
-  applyCellReceiveDelta({
+  await applyCellReceiveDelta({
     warehouse_id: warehouseId,
     cell_code: toCode,
     product_id: productId,
@@ -1484,12 +1484,12 @@ export function moveStockBetweenCells(input: {
   });
 
   const toParts = parseCellCode(toCode)!;
-  const toCellId = upsertCell(warehouseId, toParts);
-  const fromAfter = get<{ qty: number }>(
+  const toCellId = await upsertCell(warehouseId, toParts);
+  const fromAfter = await get<{ qty: number }>(
     `SELECT qty FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
     [warehouseId, fromCellId, sku]
   );
-  const toAfter = get<{ qty: number }>(
+  const toAfter = await get<{ qty: number }>(
     `SELECT qty FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
     [warehouseId, toCellId, sku]
   );
@@ -1507,27 +1507,27 @@ export function moveStockBetweenCells(input: {
 }
 
 export function mountWarehouseCellsRoutes(api: Hono): void {
-  api.get('/warehouse/cells/meta', (c) => {
+  api.get('/warehouse/cells/meta', async (c) => {
     try {
-      ensureWarehouseCellsSchema();
-      return c.json(getCellsMeta(c.req.query('warehouse_id') || undefined));
+      await ensureWarehouseCellsSchema();
+      return c.json(await getCellsMeta(c.req.query('warehouse_id') || undefined));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.get('/warehouse/cells/map', (c) => {
+  api.get('/warehouse/cells/map', async (c) => {
     try {
-      return c.json(getCellsMap(c.req.query('warehouse_id') || undefined));
+      return c.json(await getCellsMap(c.req.query('warehouse_id') || undefined));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.get('/warehouse/cells/balances', (c) => {
+  api.get('/warehouse/cells/balances', async (c) => {
     try {
       return c.json(
-        listCellBalances({
+        await listCellBalances({
           warehouse_id: c.req.query('warehouse_id') || undefined,
           q: c.req.query('q') || undefined,
           rack: c.req.query('rack') || undefined,
@@ -1540,10 +1540,10 @@ export function mountWarehouseCellsRoutes(api: Hono): void {
     }
   });
 
-  api.get('/warehouse/cells/pallet', (c) => {
+  api.get('/warehouse/cells/pallet', async (c) => {
     try {
       return c.json(
-        getWarehousePallet({
+        await getWarehousePallet({
           kind: c.req.query('kind') || undefined,
           warehouse_id: c.req.query('warehouse_id') || undefined,
         })
@@ -1553,11 +1553,11 @@ export function mountWarehouseCellsRoutes(api: Hono): void {
     }
   });
 
-  api.get('/warehouse/cells/:code', (c) => {
+  api.get('/warehouse/cells/:code', async (c) => {
     try {
       const code = decodeURIComponent(c.req.param('code') || '');
       return c.json(
-        getCellContents({
+        await getCellContents({
           warehouse_id: c.req.query('warehouse_id') || undefined,
           code,
         })
@@ -1579,8 +1579,8 @@ export function mountWarehouseCellsRoutes(api: Hono): void {
         from_cache?: boolean;
       }>();
       const result = body.from_cache
-        ? importCellsFromCacheFile()
-        : importCellRows({
+        ? await importCellsFromCacheFile()
+        : await importCellRows({
             warehouse_id: body.warehouse_id,
             rows: body.rows || [],
             source: body.source,
@@ -1594,9 +1594,9 @@ export function mountWarehouseCellsRoutes(api: Hono): void {
     }
   });
 
-  api.post('/warehouse/cells/import-cache', (c) => {
+  api.post('/warehouse/cells/import-cache', async (c) => {
     try {
-      const result = importCellsFromCacheFile();
+      const result = await importCellsFromCacheFile();
       return c.json({ ok: true, ...result });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -1614,7 +1614,7 @@ export function mountWarehouseCellsRoutes(api: Hono): void {
         qty?: number;
         comment?: string;
       };
-      const moved = moveStockBetweenCells({
+      const moved = await moveStockBetweenCells({
         warehouse_id: String(body.warehouse_id || ''),
         from_cell: String(body.from_cell || ''),
         to_cell: String(body.to_cell || ''),
@@ -1626,12 +1626,12 @@ export function mountWarehouseCellsRoutes(api: Hono): void {
       try {
         const { createThinJournalDoc } = await import('./parity-batch-a.js');
         const whName =
-          get<{ name: string }>(
+          (await get<{ name: string }>(
             `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
             [moved.warehouse_id]
-          )?.name || '';
+          ))?.name || '';
         const comment = String(body.comment || '').trim();
-        history = createThinJournalDoc('cell_transfers', {
+        history = await createThinJournalDoc('cell_transfers', {
           counterparty_name: `${moved.from_cell} → ${moved.to_cell}`,
           comment:
             comment ||

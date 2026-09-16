@@ -19,10 +19,10 @@ type HsStoreRef = { wmsId: string; hsGuid: string };
 
 const PODBveska_STORE_CODES = ['НФ-000032', 'НФ-000034', 'НФ-000037', '00-000001'] as const;
 
-function loadPodveskaStoreIds(): Set<string> {
+async function loadPodveskaStoreIds(): Promise<Set<string>> {
   const ids = new Set<string>();
   try {
-    const raw = get<{ value: string }>(`SELECT value FROM meta WHERE key = 'hs_podveska_store_ids'`)?.value;
+    const raw = (await get<{ value: string }>(`SELECT value FROM meta WHERE key = 'hs_podveska_store_ids'`))?.value;
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
     if (Array.isArray(parsed)) {
       for (const x of parsed) {
@@ -37,9 +37,9 @@ function loadPodveskaStoreIds(): Set<string> {
 }
 
 /** GUID склада из pnevmopodveska_2025 — fogel-синк не перезаписывает строку, создаёт alias. */
-function isProtectedPodveskaHsGuid(hsGuid: string): boolean {
-  if (loadPodveskaStoreIds().has(hsGuid)) return true;
-  const wh = get<{ company_id: string; code: string }>(
+async function isProtectedPodveskaHsGuid(hsGuid: string): Promise<boolean> {
+  if ((await loadPodveskaStoreIds()).has(hsGuid)) return true;
+  const wh = await get<{ company_id: string; code: string }>(
     `SELECT IFNULL(company_id,'') AS company_id, IFNULL(code,'') AS code FROM warehouses WHERE id = ?`,
     [hsGuid]
   );
@@ -53,15 +53,15 @@ function fogelAliasMetaKey(hsGuid: string): string {
 }
 
 /** Отдельный WMS-склад Фогеля при общем GUID с Подвеской в 1С. */
-function ensureFogelWarehouseAlias(
+async function ensureFogelWarehouseAlias(
   row: { guid?: string; name?: string; code?: string },
   companyId: string
-): string {
+): Promise<string> {
   const hsGuid = String(row.guid || '').trim();
   if (!UUID_RE.test(hsGuid)) return hsGuid;
 
   let wmsId = '';
-  const metaRow = get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [
+  const metaRow = await get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [
     fogelAliasMetaKey(hsGuid),
   ]);
   if (metaRow?.value) {
@@ -78,7 +78,7 @@ function ensureFogelWarehouseAlias(
   const fogelCode = rawCode.includes(':fogel') ? rawCode : `${rawCode}:fogel`;
   const name = String(row.name || rawCode || hsGuid).trim() || rawCode;
 
-  run(
+  await run(
     `INSERT INTO warehouses (id, name, code, is_active, company_id) VALUES (?, ?, ?, 1, ?)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
@@ -87,23 +87,23 @@ function ensureFogelWarehouseAlias(
        company_id = excluded.company_id`,
     [wmsId, name, fogelCode, companyId || null]
   );
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     fogelAliasMetaKey(hsGuid),
     JSON.stringify({ wms_id: wmsId, hs_guid: hsGuid, code: rawCode, name }),
   ]);
   return wmsId;
 }
 
-function companyIdForHsDepartment(sourceDepartment: string): string {
+async function companyIdForHsDepartment(sourceDepartment: string): Promise<string> {
   const sd = String(sourceDepartment || '').toLowerCase();
   if (sd.includes('fogel')) {
-    const fogel = get<{ id: string }>(
+    const fogel = await get<{ id: string }>(
       `SELECT id FROM companies WHERE UPPER(IFNULL(code,'')) IN ('ФОГЕЛЬ','FOGEL') LIMIT 1`
     );
     if (fogel?.id) return fogel.id;
   }
   if (sd.includes('strela') || sd.includes('стрела')) {
-    const strela = get<{ id: string }>(
+    const strela = await get<{ id: string }>(
       `SELECT id FROM companies WHERE UPPER(IFNULL(code,'')) IN ('STRELA','СТРЕЛА') LIMIT 1`
     );
     if (strela?.id) return strela.id;
@@ -334,17 +334,17 @@ function hsScopedProductId(catalogGuid: string, sourceDepartment: string): strin
   return `${sd}${HS_DEPT_SEP}${g}`;
 }
 
-function hsProductIdForDepartment(catalogGuid: string, sourceDepartment: string): string {
+async function hsProductIdForDepartment(catalogGuid: string, sourceDepartment: string): Promise<string> {
   const g = hsCatalogGuid({ guid: catalogGuid });
   const sd = String(sourceDepartment || '').trim();
   const scoped = hsScopedProductId(g, sd);
-  if (get(`SELECT 1 AS ok FROM products WHERE id = ?`, [scoped])) return scoped;
-  const byCatalog = get<{ id: string }>(
+  if (await get(`SELECT 1 AS ok FROM products WHERE id = ?`, [scoped])) return scoped;
+  const byCatalog = await get<{ id: string }>(
     `SELECT id FROM products WHERE catalog_guid = ? AND source_department = ? LIMIT 1`,
     [g, sd]
   );
   if (byCatalog?.id) return byCatalog.id;
-  if (sd && get(`SELECT 1 AS ok FROM products WHERE id = ? AND source_department = ?`, [g, sd])) {
+  if (sd && await get(`SELECT 1 AS ok FROM products WHERE id = ? AND source_department = ?`, [g, sd])) {
     return g;
   }
   return scoped;
@@ -356,29 +356,29 @@ function numOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function ensureDefaultUnit(): string {
-  const u = get<{ id: string }>(`SELECT id FROM units WHERE short_name = 'шт' LIMIT 1`);
+async function ensureDefaultUnit(): Promise<string> {
+  const u = await get<{ id: string }>(`SELECT id FROM units WHERE short_name = 'шт' LIMIT 1`);
   if (u?.id) return u.id;
   const id = '00000000-0000-5000-8000-000000000001';
-  run(`INSERT OR IGNORE INTO units (id, name, short_name) VALUES (?, 'Штука', 'шт')`, [id]);
+  await run(`INSERT OR IGNORE INTO units (id, name, short_name) VALUES (?, 'Штука', 'шт')`, [id]);
   return id;
 }
 
-function upsertHsCategory(row: { guid?: string; name?: string; code?: string }): void {
+async function upsertHsCategory(row: { guid?: string; name?: string; code?: string }): Promise<void> {
   const id = String(row.guid || '').trim();
   if (!UUID_RE.test(id)) return;
   const name = String(row.name || row.code || id).trim() || id;
-  run(
+  await run(
     `INSERT INTO categories (id, name, parent_id) VALUES (?, ?, NULL)
      ON CONFLICT(id) DO UPDATE SET name = excluded.name`,
     [id, name]
   );
 }
 
-function upsertHsStore(
+async function upsertHsStore(
   row: { guid?: string; name?: string; code?: string },
   opts?: { companyId?: string; sourceDepartment?: string }
-): void {
+): Promise<void> {
   const id = String(row.guid || '').trim();
   if (!UUID_RE.test(id)) return;
   let name = String(row.name || row.code || id).trim() || id;
@@ -400,12 +400,12 @@ function upsertHsStore(
     /не\s*найден/i.test(name) ||
     /малярк/i.test(name);
   if (unusedTech) {
-    const exists = get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [id]);
+    const exists = await get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [id]);
     if (!exists) return;
-    run(`UPDATE warehouses SET is_active = 0, name = ? WHERE id = ?`, [name, id]);
+    await run(`UPDATE warehouses SET is_active = 0, name = ? WHERE id = ?`, [name, id]);
     return;
   }
-  const clash = get<{ id: string }>(
+  const clash = await get<{ id: string }>(
     `SELECT id FROM warehouses WHERE code = ? AND id != ?`,
     [code, id]
   );
@@ -415,13 +415,13 @@ function upsertHsStore(
       ? DEFAULT_COMPANY_ID
       : String(opts?.companyId || '').trim();
   if (companyId) {
-    run(
+    await run(
       `INSERT INTO warehouses (id, name, code, is_active, company_id) VALUES (?, ?, ?, 1, ?)
        ON CONFLICT(id) DO UPDATE SET name = excluded.name, is_active = 1, company_id = excluded.company_id`,
       [id, name, safeCode, companyId]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO warehouses (id, name, code, is_active) VALUES (?, ?, ?, 1)
        ON CONFLICT(id) DO UPDATE SET name = excluded.name, is_active = 1`,
       [id, name, safeCode]
@@ -430,7 +430,7 @@ function upsertHsStore(
 }
 
 /** Склады pnevmopodveska_2025: не даём fogel_2025 перезаписать имя/контур (общие GUID в 1С). */
-export function repairPodveskaMskWarehouses(): { fixed: number } {
+export async function repairPodveskaMskWarehouses(): Promise<{ fixed: number }> {
   const namesByCode: Record<string, string> = {
     'НФ-000032': 'Основной',
     '00-000001': 'Склад СТО Москва',
@@ -438,7 +438,7 @@ export function repairPodveskaMskWarehouses(): { fixed: number } {
   let fixed = 0;
   let ids: string[] = [];
   try {
-    const raw = get<{ value: string }>(`SELECT value FROM meta WHERE key = 'hs_podveska_store_ids'`)?.value;
+    const raw = (await get<{ value: string }>(`SELECT value FROM meta WHERE key = 'hs_podveska_store_ids'`))?.value;
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
     if (Array.isArray(parsed)) ids = parsed.map((x) => String(x || '').trim()).filter(Boolean);
   } catch {
@@ -446,11 +446,11 @@ export function repairPodveskaMskWarehouses(): { fixed: number } {
   }
   const targetIds = new Set<string>(ids);
   for (const code of Object.keys(namesByCode)) {
-    const row = get<{ id: string }>(`SELECT id FROM warehouses WHERE code = ? LIMIT 1`, [code]);
+    const row = await get<{ id: string }>(`SELECT id FROM warehouses WHERE code = ? LIMIT 1`, [code]);
     if (row?.id) targetIds.add(String(row.id));
   }
   for (const id of targetIds) {
-    const row = get<{ code: string; name: string; company_id: string }>(
+    const row = await get<{ code: string; name: string; company_id: string }>(
       `SELECT IFNULL(code,'') AS code, IFNULL(name,'') AS name, IFNULL(company_id,'') AS company_id
        FROM warehouses WHERE id = ?`,
       [id]
@@ -460,7 +460,7 @@ export function repairPodveskaMskWarehouses(): { fixed: number } {
     const wantName = namesByCode[code];
     if (!wantName) continue;
     if (row.company_id === DEFAULT_COMPANY_ID && row.name === wantName) continue;
-    run(`UPDATE warehouses SET name = ?, company_id = ?, is_active = 1 WHERE id = ?`, [
+    await run(`UPDATE warehouses SET name = ?, company_id = ?, is_active = 1 WHERE id = ?`, [
       wantName,
       DEFAULT_COMPANY_ID,
       id,
@@ -470,7 +470,7 @@ export function repairPodveskaMskWarehouses(): { fixed: number } {
   return { fixed };
 }
 
-function upsertHsProduct(row: HsProduct, unitId: string, sourceDepartment: string): string | null {
+async function upsertHsProduct(row: HsProduct, unitId: string, sourceDepartment: string): Promise<string | null> {
   const catalogGuid = hsCatalogGuid(row);
   if (!UUID_RE.test(catalogGuid)) return null;
   const internalId = hsScopedProductId(catalogGuid, sourceDepartment);
@@ -480,28 +480,28 @@ function upsertHsProduct(row: HsProduct, unitId: string, sourceDepartment: strin
   const deptKey = sourceDepartment.includes('fogel') ? 'fogel' : 'podveska';
   // Уже существующая карточка: не менять sku на новый хвост при каждом синке
   // (иначе база зарастает @podveska / :hex при коллизиях).
-  const existingSku = get<{ sku: string }>(
+  const existingSku = (await get<{ sku: string }>(
     `SELECT IFNULL(sku,'') AS sku FROM products WHERE id = ?`,
     [internalId]
-  )?.sku;
+  ))?.sku;
   let sku = baseSku;
-  const skuTaken = (candidate: string) =>
-    !!get<{ id: string }>(`SELECT id FROM products WHERE sku = ? AND id != ? LIMIT 1`, [
+  const skuTaken = async (candidate: string) =>
+    !!await get<{ id: string }>(`SELECT id FROM products WHERE sku = ? AND id != ? LIMIT 1`, [
       candidate,
       internalId,
     ]);
-  if (skuTaken(sku)) {
-    if (existingSku && existingSku !== sku && !skuTaken(existingSku)) {
+  if (await skuTaken(sku)) {
+    if (existingSku && existingSku !== sku && !await skuTaken(existingSku)) {
       sku = existingSku;
-    } else if (existingSku && !skuTaken(existingSku)) {
+    } else if (existingSku && !await skuTaken(existingSku)) {
       sku = existingSku;
     } else {
       const namespaced = `${baseSku}@${deptKey}`;
       const withGuid = `${baseSku}:${catalogGuid.slice(0, 8)}`;
       const withId = `${baseSku}:${internalId.slice(0, 18)}`;
-      if (!skuTaken(namespaced)) sku = namespaced;
-      else if (!skuTaken(withGuid)) sku = withGuid;
-      else if (!skuTaken(withId)) sku = withId;
+      if (!await skuTaken(namespaced)) sku = namespaced;
+      else if (!await skuTaken(withGuid)) sku = withGuid;
+      else if (!await skuTaken(withId)) sku = withId;
       else if (existingSku) sku = existingSku;
       else sku = withId;
     }
@@ -515,7 +515,7 @@ function upsertHsProduct(row: HsProduct, unitId: string, sourceDepartment: strin
   const arraySku = Array.isArray(row.array_sku) ? row.array_sku.filter(Boolean).join(',') : '';
   const catId = String(row.category || '').trim();
   if (catId && UUID_RE.test(catId)) {
-    run(`INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES (?, ?, NULL)`, [
+    await run(`INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES (?, ?, NULL)`, [
       catId,
       catId,
     ]);
@@ -529,10 +529,10 @@ function upsertHsProduct(row: HsProduct, unitId: string, sourceDepartment: strin
   const l = pkg ? numOrNull(pkg.length_cm) : null;
   const wg = pkg ? numOrNull(pkg.weight_g) : null;
   const unitShort =
-    get<{ short_name: string }>(`SELECT IFNULL(short_name,'') AS short_name FROM units WHERE id = ?`, [
+    (await get<{ short_name: string }>(`SELECT IFNULL(short_name,'') AS short_name FROM units WHERE id = ?`, [
       unitId,
-    ])?.short_name || mUnit;
-  const itemKind = classifyProductKind({
+    ]))?.short_name || mUnit;
+  const itemKind = await classifyProductKind({
     name,
     unit_short: unitShort,
     category_id: catId && UUID_RE.test(catId) ? catId : '',
@@ -540,7 +540,7 @@ function upsertHsProduct(row: HsProduct, unitId: string, sourceDepartment: strin
   // Услуги из 1С/HS не синкаем — только 23 общих se-* (apply_obshchie_uslugi). Остатки по услугам не ведём.
   if (itemKind === 'service') return null;
 
-  run(
+  await run(
     `INSERT INTO products (
        id, sku, name, category_id, unit_id, barcode, brand, is_active,
        code, array_sku, notupload, package_width_cm, package_height_cm,
@@ -608,7 +608,7 @@ async function syncCategoriesAndStores(
   const fogelCompanyId = String(opts?.companyId || '').trim();
   if (Array.isArray(catsRaw)) {
     for (const row of catsRaw as Array<{ guid?: string; name?: string; code?: string }>) {
-      upsertHsCategory(row);
+      await upsertHsCategory(row);
       if (UUID_RE.test(String(row.guid || ''))) categories += 1;
     }
   }
@@ -617,15 +617,15 @@ async function syncCategoriesAndStores(
       const hsGuid = String(row.guid || '').trim();
       if (!UUID_RE.test(hsGuid)) continue;
 
-      if (sd === 'fogel_2025' && isProtectedPodveskaHsGuid(hsGuid)) {
-        const wmsId = ensureFogelWarehouseAlias(row, fogelCompanyId);
+      if (sd === 'fogel_2025' && await isProtectedPodveskaHsGuid(hsGuid)) {
+        const wmsId = await ensureFogelWarehouseAlias(row, fogelCompanyId);
         storeRefs.push({ wmsId, hsGuid });
         storeIds.push(wmsId);
         stores += 1;
         continue;
       }
 
-      upsertHsStore(row, { companyId: opts?.companyId, sourceDepartment: sd });
+      await upsertHsStore(row, { companyId: opts?.companyId, sourceDepartment: sd });
       storeRefs.push({ wmsId: hsGuid, hsGuid });
       storeIds.push(hsGuid);
       stores += 1;
@@ -638,11 +638,11 @@ async function syncEmployees(): Promise<number> {
   const raw = await hsGet('Get/employees', '');
   if (!Array.isArray(raw)) return 0;
   let n = 0;
-  const ins = db.prepare(
+  const ins = /* PG: replace prepare */ db.prepare(
     `INSERT INTO employees (id, code, name) VALUES (?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET code = excluded.code, name = excluded.name`
   );
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const row of raw as Array<{ guid?: string; code?: string; name?: string }>) {
       const id = String(row.guid || '').trim();
@@ -650,10 +650,10 @@ async function syncEmployees(): Promise<number> {
       ins.run(id, String(row.code || '').trim(), String(row.name || id).trim());
       n += 1;
     }
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
     try {
-      run('ROLLBACK');
+      await run('ROLLBACK');
     } catch {
       /* ignore */
     }
@@ -727,7 +727,7 @@ export type HsSyncResult = {
   related: number;
   rests: number;
   restRows: number;
-  dictionaries?: ReturnType<typeof rebuildDictionaries>;
+  dictionaries?: Awaited<ReturnType<typeof rebuildDictionaries>>;
   seconds: number;
 };
 
@@ -737,10 +737,10 @@ export async function syncApplicabilityAndProperties(
 ): Promise<HsSyncResult> {
   assertHsConfigured(profile.baseUrl);
   const t0 = Date.now();
-  const unitId = ensureDefaultUnit();
+  const unitId = await ensureDefaultUnit();
 
   const { categories, stores, storeIds, storeRefs } = await syncCategoriesAndStores(profile.baseUrl, {
-    companyId: companyIdForHsDepartment(profile.sourceDepartment),
+    companyId: await companyIdForHsDepartment(profile.sourceDepartment),
     sourceDepartment: profile.sourceDepartment,
   });
   console.log(`HS [${profile.label}] categories`, categories, 'stores', stores);
@@ -760,10 +760,10 @@ export async function syncApplicabilityAndProperties(
 
   if (profile.clearGlobalDerived) {
     const scope = hsScopedProductIdsSql(profile.sourceDepartment);
-    run(`DELETE FROM product_applicability WHERE product_id IN (${scope})`);
-    run(`DELETE FROM product_properties WHERE product_id IN (${scope})`);
-    run(`DELETE FROM product_prices WHERE product_id IN (${scope})`);
-    run(`DELETE FROM product_related WHERE product_id IN (${scope})`);
+    await run(`DELETE FROM product_applicability WHERE product_id IN (${scope})`);
+    await run(`DELETE FROM product_properties WHERE product_id IN (${scope})`);
+    await run(`DELETE FROM product_prices WHERE product_id IN (${scope})`);
+    await run(`DELETE FROM product_related WHERE product_id IN (${scope})`);
   }
 
   let productsUpserted = 0;
@@ -773,24 +773,24 @@ export async function syncApplicabilityAndProperties(
   let relatedCount = 0;
   const batches = chunk(catIds, 12);
 
-  const insertApp = db.prepare(`
+  const insertApp = /* PG: replace prepare */ db.prepare(`
     INSERT OR IGNORE INTO product_applicability
       (id, product_id, mark, model, only_model, generation, years)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
-  const insertProp = db.prepare(`
+  const insertProp = /* PG: replace prepare */ db.prepare(`
     INSERT OR IGNORE INTO product_properties (id, product_id, property, value)
     VALUES (?, ?, ?, ?)
   `);
-  const insertPrice = db.prepare(`
+  const insertPrice = /* PG: replace prepare */ db.prepare(`
     INSERT OR REPLACE INTO product_prices (id, product_id, price_type, price)
     VALUES (?, ?, ?, ?)
   `);
-  const insertRelated = db.prepare(`
+  const insertRelated = /* PG: replace prepare */ db.prepare(`
     INSERT OR IGNORE INTO product_related (product_id, related_id) VALUES (?, ?)
   `);
-  const updateBrand = db.prepare(`UPDATE products SET brand = ? WHERE id = ?`);
-  const updatePkg = db.prepare(`
+  const updateBrand = /* PG: replace prepare */ db.prepare(`UPDATE products SET brand = ? WHERE id = ?`);
+  const updatePkg = /* PG: replace prepare */ db.prepare(`
     UPDATE products SET
       package_width_cm = COALESCE(?, package_width_cm),
       package_height_cm = COALESCE(?, package_height_cm),
@@ -810,9 +810,9 @@ export async function syncApplicabilityAndProperties(
     try {
       const body = batch.map((guid) => ({ guid }));
       const [prodRaw, propRaw, priceRaw] = await Promise.all([
-        hsGet('Get/products', body, profile.baseUrl),
-        hsGet('Get/property_products', body, profile.baseUrl),
-        hsGet('Get/prices', body, profile.baseUrl),
+        await hsGet('Get/products', body, profile.baseUrl),
+        await hsGet('Get/property_products', body, profile.baseUrl),
+        await hsGet('Get/prices', body, profile.baseUrl),
       ]);
       products = Array.isArray(prodRaw) ? (prodRaw as HsProduct[]) : [];
       props = Array.isArray(propRaw) ? (propRaw as HsPropItem[]) : [];
@@ -841,10 +841,10 @@ export async function syncApplicabilityAndProperties(
       }
     }
 
-    run('BEGIN');
+    await run('BEGIN');
     try {
       for (const row of products) {
-        const pid = upsertHsProduct(row, unitId, profile.sourceDepartment);
+        const pid = await upsertHsProduct(row, unitId, profile.sourceDepartment);
         if (!pid) continue;
         productsUpserted += 1;
 
@@ -867,7 +867,7 @@ export async function syncApplicabilityAndProperties(
             typeof a === 'string'
               ? a.trim()
               : String((a as { guid?: string; id?: string }).guid || (a as { id?: string }).id || '').trim();
-          const relatedId = hsProductIdForDepartment(rid, profile.sourceDepartment);
+          const relatedId = await hsProductIdForDepartment(rid, profile.sourceDepartment);
           if (rid && UUID_RE.test(rid) && relatedId !== pid) {
             const r = insertRelated.run(pid, relatedId);
             if (r.changes) relatedCount += 1;
@@ -876,9 +876,9 @@ export async function syncApplicabilityAndProperties(
       }
 
       for (const row of props) {
-        const pid = hsProductIdForDepartment(productGuid(row), profile.sourceDepartment);
-        if (!pid || !get(`SELECT 1 AS ok FROM products WHERE id = ?`, [pid])) continue;
-        if (productIsService(pid)) continue;
+        const pid = await hsProductIdForDepartment(productGuid(row), profile.sourceDepartment);
+        if (!pid || !await get(`SELECT 1 AS ok FROM products WHERE id = ?`, [pid])) continue;
+        if (await productIsService(pid)) continue;
         const list = Array.isArray(row.array_property) ? row.array_property : [];
         let brandFromProp = '';
         let pw: number | null = null;
@@ -906,9 +906,9 @@ export async function syncApplicabilityAndProperties(
       }
 
       for (const row of prices) {
-        const pid = hsProductIdForDepartment(productGuid(row), profile.sourceDepartment);
-        if (!pid || !get(`SELECT 1 AS ok FROM products WHERE id = ?`, [pid])) continue;
-        if (productIsService(pid)) continue;
+        const pid = await hsProductIdForDepartment(productGuid(row), profile.sourceDepartment);
+        if (!pid || !await get(`SELECT 1 AS ok FROM products WHERE id = ?`, [pid])) continue;
+        if (await productIsService(pid)) continue;
         const list = Array.isArray(row.array) ? row.array : [];
         for (const p of list) {
           const priceType = String(p.typeprice || '').trim();
@@ -919,10 +919,10 @@ export async function syncApplicabilityAndProperties(
           priceCount += 1;
         }
       }
-      run('COMMIT');
+      await run('COMMIT');
     } catch (e) {
       try {
-        run('ROLLBACK');
+        await run('ROLLBACK');
       } catch {
         /* ignore */
       }
@@ -937,42 +937,42 @@ export async function syncApplicabilityAndProperties(
     console.log(`HS: скрыто legacy-услуг (не se-*): ${legacyServicesHidden}`);
   }
 
-  run(
+  await run(
     `UPDATE products SET is_active = 0
      WHERE source_department = ?
        AND instr(id, ?) = 0`,
     [profile.sourceDepartment, HS_DEPT_SEP]
   );
 
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     profile.metaSyncedKey,
     new Date().toISOString(),
   ]);
   if (profile.sourceDepartment === 'pnevmopodveska_2025') {
     const podveskaGuids = storeRefs.map((r) => r.hsGuid);
-    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
       'hs_podveska_store_ids',
       JSON.stringify(podveskaGuids),
     ]);
   }
   if (profile.sourceDepartment === 'fogel_2025') {
-    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
       'fogel_hs_store_refs',
       JSON.stringify(storeRefs),
     ]);
   }
   if (profile.clearGlobalDerived || profile.metaSyncedKey === 'hs_synced_at') {
-    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
       'prices_synced_at',
       new Date().toISOString(),
     ]);
-    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
       'rests_synced_at',
       new Date().toISOString(),
     ]);
   }
 
-  const dictionaries = rebuildDictionaries();
+  const dictionaries = await rebuildDictionaries();
 
   return {
     categories,
@@ -1002,47 +1002,47 @@ async function syncRestsInternal(
   if (profile.scopeRestsToHsStores && restStores.length) {
     whs = restStores;
   } else {
-    whs = all<{ id: string }>(`SELECT id FROM warehouses WHERE is_active = 1`)
+    whs = (await all<{ id: string }>(`SELECT id FROM warehouses WHERE is_active = 1`))
       .filter((w) => UUID_RE.test(w.id))
       .map((w) => ({ wmsId: w.id, hsGuid: w.id }));
   }
   if (!whs.length || !catIds.length) return { warehouses: 0, rows: 0 };
 
   if (profile.clearAllRests) {
-    run('DELETE FROM product_store_rests');
-    run('DELETE FROM stock_balances');
+    await run('DELETE FROM product_store_rests');
+    await run('DELETE FROM stock_balances');
   } else if (profile.scopeRestsToHsStores && restStores.length) {
     const sd = String(profile.sourceDepartment || '').trim();
     for (const ref of restStores) {
       if (sd) {
-        run(
+        await run(
           `DELETE FROM product_store_rests
            WHERE warehouse_id = ?
              AND product_id IN (SELECT id FROM products WHERE source_department = ?)`,
           [ref.wmsId, sd]
         );
-        run(
+        await run(
           `DELETE FROM stock_balances
            WHERE warehouse_id = ?
              AND product_id IN (SELECT id FROM products WHERE source_department = ?)`,
           [ref.wmsId, sd]
         );
       } else {
-        run('DELETE FROM product_store_rests WHERE warehouse_id = ?', [ref.wmsId]);
-        run('DELETE FROM stock_balances WHERE warehouse_id = ?', [ref.wmsId]);
+        await run('DELETE FROM product_store_rests WHERE warehouse_id = ?', [ref.wmsId]);
+        await run('DELETE FROM stock_balances WHERE warehouse_id = ?', [ref.wmsId]);
       }
     }
   }
 
-  const insertRest = db.prepare(`
+  const insertRest = /* PG: replace prepare */ db.prepare(`
     INSERT INTO product_store_rests (product_id, warehouse_id, qty) VALUES (?, ?, ?)
     ON CONFLICT(product_id, warehouse_id) DO UPDATE SET qty = excluded.qty
   `);
-  const insertBal = db.prepare(`
+  const insertBal = /* PG: replace prepare */ db.prepare(`
     INSERT INTO stock_balances (warehouse_id, product_id, qty) VALUES (?, ?, ?)
     ON CONFLICT(warehouse_id, product_id) DO UPDATE SET qty = excluded.qty
   `);
-  const productExists = db.prepare(`SELECT 1 AS ok FROM products WHERE id = ?`);
+  const productExists = /* PG: replace prepare */ db.prepare(`SELECT 1 AS ok FROM products WHERE id = ?`);
 
   let rows = 0;
   for (const wh of whs) {
@@ -1077,23 +1077,23 @@ async function syncRestsInternal(
       }
     }
 
-    run('BEGIN');
+    await run('BEGIN');
     try {
       for (const row of rests) {
         const catalogGuid = String(row.product || '').trim();
-        const pid = hsProductIdForDepartment(catalogGuid, profile.sourceDepartment);
+        const pid = await hsProductIdForDepartment(catalogGuid, profile.sourceDepartment);
         if (!pid || !productExists.get(pid)) continue;
-        if (productIsService(pid)) continue;
+        if (await productIsService(pid)) continue;
         const qty = Number(row.quantity);
         if (!Number.isFinite(qty)) continue;
         insertRest.run(pid, wh.wmsId, qty);
         insertBal.run(wh.wmsId, pid, qty);
         rows += 1;
       }
-      run('COMMIT');
+      await run('COMMIT');
     } catch (e) {
       try {
-        run('ROLLBACK');
+        await run('ROLLBACK');
       } catch {
         /* ignore */
       }
@@ -1105,7 +1105,7 @@ async function syncRestsInternal(
 }
 
 export async function syncFogelFromHs(): Promise<HsSyncResult> {
-  return syncApplicabilityAndProperties(HS_SYNC_FOGEL);
+  return await syncApplicabilityAndProperties(HS_SYNC_FOGEL);
 }
 
 /** Подвеска + Фогель: полный синк номенклатуры/цен/остатков в WMS из 1С HS. */
@@ -1117,7 +1117,7 @@ export async function syncFullCatalogFrom1cHs(): Promise<{
   const t0 = Date.now();
   const podveska = await syncApplicabilityAndProperties(HS_SYNC_PODVESKA);
   const fogel = await syncFogelFromHs();
-  rebuildDictionaries();
+  await rebuildDictionaries();
   return {
     podveska,
     fogel,
@@ -1140,7 +1140,7 @@ export async function syncRestsOnly(): Promise<{
   const base = profile.baseUrl || defaultHsBase();
   // Только склады и категории базы pnevmopodveska_2025 (не Фогель).
   const { storeIds, storeRefs } = await syncCategoriesAndStores(base, {
-    companyId: companyIdForHsDepartment(profile.sourceDepartment),
+    companyId: await companyIdForHsDepartment(profile.sourceDepartment),
     sourceDepartment: profile.sourceDepartment,
   });
   const catIds = await fetchHsCategoryIds(base);
@@ -1149,7 +1149,7 @@ export async function syncRestsOnly(): Promise<{
   }
   const r = await syncRestsInternal(catIds, profile, storeRefs);
   // Чужие остатки (Фогель и т.п.) — убрать: в Учёте сейчас только Подвеска.
-  run(
+  await run(
     `DELETE FROM product_store_rests
      WHERE product_id IN (
        SELECT id FROM products
@@ -1158,7 +1158,7 @@ export async function syncRestsOnly(): Promise<{
      )`,
     [profile.sourceDepartment]
   );
-  run(
+  await run(
     `DELETE FROM stock_balances
      WHERE product_id IN (
        SELECT id FROM products
@@ -1167,15 +1167,15 @@ export async function syncRestsOnly(): Promise<{
      )`,
     [profile.sourceDepartment]
   );
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'rests_synced_at',
     new Date().toISOString(),
   ]);
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'rests_source_department',
     profile.sourceDepartment,
   ]);
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'hs_podveska_store_ids',
     JSON.stringify(storeRefs.map((r) => r.hsGuid)),
   ]);
@@ -1193,7 +1193,7 @@ export async function syncRestsOnly(): Promise<{
 export async function syncPricesOnly(): Promise<{
   prices: number;
   categories: number;
-  dictionaries: ReturnType<typeof rebuildDictionaries>;
+  dictionaries: Awaited<ReturnType<typeof rebuildDictionaries>>;
   seconds: number;
 }> {
   assertHsConfigured();
@@ -1204,14 +1204,14 @@ export async function syncPricesOnly(): Promise<{
     throw new Error('HS Get/Categories вернул пусто — проверьте HS_*');
   }
 
-  run('DELETE FROM product_prices');
+  await run('DELETE FROM product_prices');
   let priceCount = 0;
   const batches = chunk(catIds, 12);
-  const insertPrice = db.prepare(`
+  const insertPrice = /* PG: replace prepare */ db.prepare(`
     INSERT OR REPLACE INTO product_prices (id, product_id, price_type, price)
     VALUES (?, ?, ?, ?)
   `);
-  const productExists = db.prepare(`SELECT 1 AS ok FROM products WHERE id = ?`);
+  const productExists = /* PG: replace prepare */ db.prepare(`SELECT 1 AS ok FROM products WHERE id = ?`);
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i]!;
@@ -1234,7 +1234,7 @@ export async function syncPricesOnly(): Promise<{
         }
       }
     }
-    run('BEGIN');
+    await run('BEGIN');
     try {
       for (const row of prices) {
         const pid = productGuid(row);
@@ -1248,10 +1248,10 @@ export async function syncPricesOnly(): Promise<{
           priceCount += 1;
         }
       }
-      run('COMMIT');
+      await run('COMMIT');
     } catch (e) {
       try {
-        run('ROLLBACK');
+        await run('ROLLBACK');
       } catch {
         /* ignore */
       }
@@ -1259,36 +1259,36 @@ export async function syncPricesOnly(): Promise<{
     }
   }
 
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     'prices_synced_at',
     new Date().toISOString(),
   ]);
   return {
     prices: priceCount,
     categories: catIds.length,
-    dictionaries: rebuildDictionaries(),
+    dictionaries: await rebuildDictionaries(),
     seconds: Math.round((Date.now() - t0) / 1000),
   };
 }
 
-export function hsSyncMeta() {
+export async function hsSyncMeta() {
   return {
     lastSync:
-      all<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['hs_synced_at'])[0]?.value ??
+      (await all<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['hs_synced_at']))[0]?.value ??
       null,
     pricesSync:
-      all<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['prices_synced_at'])[0]
+      (await all<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['prices_synced_at']))[0]
         ?.value ?? null,
     restsSync:
-      all<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['rests_synced_at'])[0]
+      (await all<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['rests_synced_at']))[0]
         ?.value ?? null,
     applicability:
-      all<{ c: number }>('SELECT COUNT(*) AS c FROM product_applicability')[0]?.c ?? 0,
-    properties: all<{ c: number }>('SELECT COUNT(*) AS c FROM product_properties')[0]?.c ?? 0,
-    prices: all<{ c: number }>('SELECT COUNT(*) AS c FROM product_prices')[0]?.c ?? 0,
-    rests: all<{ c: number }>('SELECT COUNT(*) AS c FROM product_store_rests')[0]?.c ?? 0,
-    employees: all<{ c: number }>('SELECT COUNT(*) AS c FROM employees')[0]?.c ?? 0,
-    related: all<{ c: number }>('SELECT COUNT(*) AS c FROM product_related')[0]?.c ?? 0,
+      (await all<{ c: number }>('SELECT COUNT(*) AS c FROM product_applicability'))[0]?.c ?? 0,
+    properties: (await all<{ c: number }>('SELECT COUNT(*) AS c FROM product_properties'))[0]?.c ?? 0,
+    prices: (await all<{ c: number }>('SELECT COUNT(*) AS c FROM product_prices'))[0]?.c ?? 0,
+    rests: (await all<{ c: number }>('SELECT COUNT(*) AS c FROM product_store_rests'))[0]?.c ?? 0,
+    employees: (await all<{ c: number }>('SELECT COUNT(*) AS c FROM employees'))[0]?.c ?? 0,
+    related: (await all<{ c: number }>('SELECT COUNT(*) AS c FROM product_related'))[0]?.c ?? 0,
     configured: hsConfigured(),
   };
 }

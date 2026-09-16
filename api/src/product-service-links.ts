@@ -10,8 +10,8 @@ import { loadRetailPrices } from './stock-valuation.js';
 export const DEFAULT_INSTALL_SERVICE_SKU = 'SVC-INSTALL';
 export const DEFAULT_INSTALL_SERVICE_NAME = 'Снятие / установка';
 
-export function ensureProductServiceLinksSchema(): void {
-  db.exec(`
+export async function ensureProductServiceLinksSchema(): Promise<void> {
+  /* PG: replace prepare */ db.exec(`
     CREATE TABLE IF NOT EXISTS product_service_links (
       id TEXT PRIMARY KEY,
       product_id TEXT NOT NULL,
@@ -27,26 +27,26 @@ export function ensureProductServiceLinksSchema(): void {
     CREATE INDEX IF NOT EXISTS idx_psl_product ON product_service_links(product_id);
   `);
   try {
-    const cols = all<{ name: string }>('PRAGMA table_info(products)').map((c) => c.name);
+    const cols = (await all<{ name: string }>('PRAGMA table_info(products)')).map((c) => c.name);
     if (!cols.includes('install_price')) {
-      db.exec(`ALTER TABLE products ADD COLUMN install_price REAL NOT NULL DEFAULT 0`);
+      /* PG: replace prepare */ db.exec(`ALTER TABLE products ADD COLUMN install_price REAL NOT NULL DEFAULT 0`);
     }
     if (!cols.includes('price_min')) {
-      db.exec(`ALTER TABLE products ADD COLUMN price_min REAL NOT NULL DEFAULT 0`);
+      /* PG: replace prepare */ db.exec(`ALTER TABLE products ADD COLUMN price_min REAL NOT NULL DEFAULT 0`);
     }
     if (!cols.includes('price_max')) {
-      db.exec(`ALTER TABLE products ADD COLUMN price_max REAL NOT NULL DEFAULT 0`);
+      /* PG: replace prepare */ db.exec(`ALTER TABLE products ADD COLUMN price_max REAL NOT NULL DEFAULT 0`);
     }
   } catch {
     /* ignore */
   }
   try {
-    const dic = all<{ name: string }>('PRAGMA table_info(crm_deal_items)').map((c) => c.name);
+    const dic = (await all<{ name: string }>('PRAGMA table_info(crm_deal_items)')).map((c) => c.name);
     if (!dic.includes('parent_item_id')) {
-      db.exec(`ALTER TABLE crm_deal_items ADD COLUMN parent_item_id TEXT NOT NULL DEFAULT ''`);
+      /* PG: replace prepare */ db.exec(`ALTER TABLE crm_deal_items ADD COLUMN parent_item_id TEXT NOT NULL DEFAULT ''`);
     }
     if (!dic.includes('auto_service')) {
-      db.exec(`ALTER TABLE crm_deal_items ADD COLUMN auto_service INTEGER NOT NULL DEFAULT 0`);
+      /* PG: replace prepare */ db.exec(`ALTER TABLE crm_deal_items ADD COLUMN auto_service INTEGER NOT NULL DEFAULT 0`);
     }
   } catch {
     /* ignore */
@@ -54,9 +54,9 @@ export function ensureProductServiceLinksSchema(): void {
 }
 
 /** Услуга-шаблон «Снятие / установка» в номенклатуре. */
-export function ensureDefaultInstallService(): { id: string; sku: string; name: string } {
-  ensureProductServiceLinksSchema();
-  let row = get<{ id: string; sku: string; name: string }>(
+export async function ensureDefaultInstallService(): Promise<{ id: string; sku: string; name: string }> {
+  await ensureProductServiceLinksSchema();
+  let row = await get<{ id: string; sku: string; name: string }>(
     `SELECT id, sku, name FROM products
      WHERE sku = ? OR (IFNULL(item_kind,'') = 'service' AND lower(name) = lower(?))
      LIMIT 1`,
@@ -64,12 +64,12 @@ export function ensureDefaultInstallService(): { id: string; sku: string; name: 
   );
   if (row) return { id: row.id, sku: row.sku, name: row.name };
   const unitId =
-    get<{ id: string }>(`SELECT id FROM units WHERE short_name = ? LIMIT 1`, ['шт'])?.id ||
-    get<{ id: string }>(`SELECT id FROM units LIMIT 1`)?.id ||
+    (await get<{ id: string }>(`SELECT id FROM units WHERE short_name = ? LIMIT 1`, ['шт']))?.id ||
+    (await get<{ id: string }>(`SELECT id FROM units LIMIT 1`))?.id ||
     '';
   if (!unitId) throw new Error('Нет единицы измерения «шт»');
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO products (id, sku, code, name, category_id, unit_id, barcode, item_kind, brand)
      VALUES (?, ?, ?, ?, NULL, ?, '', 'service', '')`,
     [id, DEFAULT_INSTALL_SERVICE_SKU, DEFAULT_INSTALL_SERVICE_SKU, DEFAULT_INSTALL_SERVICE_NAME, unitId]
@@ -91,9 +91,9 @@ export type ServiceLink = {
   service_item_kind?: string;
 };
 
-export function listProductServiceLinks(productId: string): ServiceLink[] {
-  ensureProductServiceLinksSchema();
-  return all<ServiceLink>(
+export async function listProductServiceLinks(productId: string): Promise<ServiceLink[]> {
+  await ensureProductServiceLinksSchema();
+  return await all<ServiceLink>(
     `SELECT l.*,
             IFNULL(p.sku,'') AS service_sku,
             IFNULL(p.name,'') AS service_name,
@@ -107,12 +107,12 @@ export function listProductServiceLinks(productId: string): ServiceLink[] {
 }
 
 /** Привязать услугу снятия/установки к товару (цена из install_price или явная). */
-export function linkInstallService(
+export async function linkInstallService(
   productId: string,
   opts?: { price?: number; service_product_id?: string }
-): ServiceLink {
-  ensureProductServiceLinksSchema();
-  const product = get<{ id: string; install_price: number; item_kind: string }>(
+): Promise<ServiceLink> {
+  await ensureProductServiceLinksSchema();
+  const product = await get<{ id: string; install_price: number; item_kind: string }>(
     `SELECT id, IFNULL(install_price,0) AS install_price, IFNULL(item_kind,'product') AS item_kind
      FROM products WHERE id = ?`,
     [productId]
@@ -122,28 +122,28 @@ export function linkInstallService(
     throw new Error('К услуге нельзя привязать услугу');
   }
   const svc = opts?.service_product_id
-    ? get<{ id: string }>('SELECT id FROM products WHERE id = ?', [opts.service_product_id])
-    : ensureDefaultInstallService();
+    ? await get<{ id: string }>('SELECT id FROM products WHERE id = ?', [opts.service_product_id])
+    : await ensureDefaultInstallService();
   if (!svc?.id) throw new Error('Услуга не найдена');
   const price =
     opts?.price != null && Number.isFinite(Number(opts.price))
       ? Math.max(0, Number(opts.price))
       : Number(product.install_price) || null;
 
-  const existing = get<{ id: string }>(
+  const existing = await get<{ id: string }>(
     `SELECT id FROM product_service_links
      WHERE product_id = ? AND role = 'install' LIMIT 1`,
     [productId]
   );
   if (existing) {
-    run(
+    await run(
       `UPDATE product_service_links
        SET service_product_id = ?, price_override = ?, auto_add = 1, qty_mode = 'same'
        WHERE id = ?`,
       [svc.id, price, existing.id]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO product_service_links (
          id, product_id, service_product_id, role, price_override, qty_mode, auto_add, sort_order
        ) VALUES (?, ?, ?, 'install', ?, 'same', 1, 0)`,
@@ -151,15 +151,15 @@ export function linkInstallService(
     );
   }
   if (price != null) {
-    run(`UPDATE products SET install_price = ? WHERE id = ?`, [price, productId]);
+    await run(`UPDATE products SET install_price = ? WHERE id = ?`, [price, productId]);
   }
-  const links = listProductServiceLinks(productId);
+  const links = await listProductServiceLinks(productId);
   const hit = links.find((l) => l.role === 'install') || links[0];
   if (!hit) throw new Error('Связь не создана');
   return hit;
 }
 
-export function setProductServiceLinks(
+export async function setProductServiceLinks(
   productId: string,
   links: Array<{
     service_product_id: string;
@@ -168,20 +168,20 @@ export function setProductServiceLinks(
     auto_add?: boolean;
     qty_mode?: string;
   }>
-): ServiceLink[] {
-  ensureProductServiceLinksSchema();
-  const product = get('SELECT id FROM products WHERE id = ?', [productId]);
+): Promise<ServiceLink[]> {
+  await ensureProductServiceLinksSchema();
+  const product = await get('SELECT id FROM products WHERE id = ?', [productId]);
   if (!product) throw new Error('Товар не найден');
-  run(`DELETE FROM product_service_links WHERE product_id = ?`, [productId]);
+  await run(`DELETE FROM product_service_links WHERE product_id = ?`, [productId]);
   let order = 0;
   for (const L of links) {
     const sid = String(L.service_product_id || '').trim();
     if (!sid) continue;
-    const svc = get<{ item_kind: string }>('SELECT IFNULL(item_kind,\'product\') AS item_kind FROM products WHERE id = ?', [
+    const svc = await get<{ item_kind: string }>('SELECT IFNULL(item_kind,\'product\') AS item_kind FROM products WHERE id = ?', [
       sid,
     ]);
     if (!svc) throw new Error(`Услуга ${sid} не найдена`);
-    run(
+    await run(
       `INSERT INTO product_service_links (
          id, product_id, service_product_id, role, price_override, qty_mode, auto_add, sort_order
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -199,13 +199,13 @@ export function setProductServiceLinks(
       ]
     );
   }
-  return listProductServiceLinks(productId);
+  return await listProductServiceLinks(productId);
 }
 
-function productUnitName(unitId: string | undefined): string {
+async function productUnitName(unitId: string | undefined): Promise<string> {
   if (!unitId) return 'шт';
   return (
-    get<{ short_name: string }>('SELECT short_name FROM units WHERE id = ?', [unitId])
+    (await get<{ short_name: string }>('SELECT short_name FROM units WHERE id = ?', [unitId]))
       ?.short_name || 'шт'
   );
 }
@@ -215,15 +215,15 @@ function roundMoney(n: number): number {
 }
 
 /** Цена снятия/установки: колонка products.install_price или product_prices. */
-export function resolveInstallPrice(productId: string): number {
-  ensureProductServiceLinksSchema();
-  const col = get<{ install_price: number }>(
+export async function resolveInstallPrice(productId: string): Promise<number> {
+  await ensureProductServiceLinksSchema();
+  const col = await get<{ install_price: number }>(
     `SELECT IFNULL(install_price,0) AS install_price FROM products WHERE id = ?`,
     [productId]
   );
   const fromCol = Number(col?.install_price) || 0;
   if (fromCol > 0) return fromCol;
-  const fromPp = get<{ price: number }>(
+  const fromPp = await get<{ price: number }>(
     `SELECT price FROM product_prices
      WHERE product_id = ?
        AND (
@@ -251,43 +251,43 @@ export type ServiceSuggestion = {
 };
 
 /** Предложить связанные услуги для позиции (автосервис / СТО) — без записи в заказ. */
-export function suggestLinkedServicesForDealItem(input: {
+export async function suggestLinkedServicesForDealItem(input: {
   dealId: string;
   parentItemId: string;
   productId: string;
   qty: number;
-}): ServiceSuggestion[] {
-  ensureProductServiceLinksSchema();
-  const deal = get<Record<string, unknown>>('SELECT * FROM crm_deals WHERE id = ?', [input.dealId]);
+}): Promise<ServiceSuggestion[]> {
+  await ensureProductServiceLinksSchema();
+  const deal = await get<Record<string, unknown>>('SELECT * FROM crm_deals WHERE id = ?', [input.dealId]);
   if (!deal) return [];
   if (!resolveIsSto(deal)) return [];
 
-  const product = get<{ item_kind: string; name: string }>(
+  const product = await get<{ item_kind: string; name: string }>(
     `SELECT IFNULL(item_kind,'product') AS item_kind, IFNULL(name,'') AS name
      FROM products WHERE id = ?`,
     [input.productId]
   );
   if (!product || String(product.item_kind) === 'service') return [];
 
-  const installPrice = resolveInstallPrice(input.productId);
+  const installPrice = await resolveInstallPrice(input.productId);
 
-  let links = listProductServiceLinks(input.productId).filter((l) => Number(l.auto_add) === 1);
+  let links = (await listProductServiceLinks(input.productId)).filter((l) => Number(l.auto_add) === 1);
   if (!links.length && installPrice > 0) {
-    linkInstallService(input.productId, { price: installPrice });
-    links = listProductServiceLinks(input.productId).filter((l) => Number(l.auto_add) === 1);
+    await linkInstallService(input.productId, { price: installPrice });
+    links = (await listProductServiceLinks(input.productId)).filter((l) => Number(l.auto_add) === 1);
   }
   if (!links.length) return [];
 
-  const retailMap = loadRetailPrices(links.map((l) => l.service_product_id).filter(Boolean));
+  const retailMap = await loadRetailPrices(links.map((l) => l.service_product_id).filter(Boolean));
   const out: ServiceSuggestion[] = [];
 
   for (const link of links) {
-    const svc = get<Record<string, unknown>>(`SELECT * FROM products WHERE id = ?`, [
+    const svc = await get<Record<string, unknown>>(`SELECT * FROM products WHERE id = ?`, [
       link.service_product_id,
     ]);
     if (!svc) continue;
 
-    const already = !!get(
+    const already = !!await get(
       `SELECT id FROM crm_deal_items
        WHERE deal_id = ? AND parent_item_id = ? AND product_guid = ?`,
       [input.dealId, input.parentItemId, String(svc.id)]
@@ -320,17 +320,17 @@ export function suggestLinkedServicesForDealItem(input: {
 /**
  * Для СТО/автосервис: товары в заказе, к которым ещё не добавлены связанные услуги.
  */
-export function listPendingServiceSuggestionsForDeal(dealId: string): Array<{
+export async function listPendingServiceSuggestionsForDeal(dealId: string): Promise<Array<{
   parent_item_id: string;
   product_label: string;
   product_id: string;
   suggestions: ServiceSuggestion[];
-}> {
-  ensureProductServiceLinksSchema();
-  const deal = get<Record<string, unknown>>('SELECT * FROM crm_deals WHERE id = ?', [dealId]);
+}>> {
+  await ensureProductServiceLinksSchema();
+  const deal = await get<Record<string, unknown>>('SELECT * FROM crm_deals WHERE id = ?', [dealId]);
   if (!deal || !resolveIsSto(deal)) return [];
 
-  const items = all<{
+  const items = await all<{
     id: string;
     product_guid: string;
     name: string;
@@ -359,13 +359,13 @@ export function listPendingServiceSuggestionsForDeal(dealId: string): Array<{
     if (String(it.parent_item_id || '').trim()) continue;
     const productId = String(it.product_guid || '').trim();
     if (!productId) continue;
-    const kind = get<{ item_kind: string }>(
+    const kind = await get<{ item_kind: string }>(
       `SELECT IFNULL(item_kind,'product') AS item_kind FROM products WHERE id = ?`,
       [productId]
     );
     if (!kind || String(kind.item_kind) === 'service') continue;
 
-    const suggestions = suggestLinkedServicesForDealItem({
+    const suggestions = await suggestLinkedServicesForDealItem({
       dealId,
       parentItemId: String(it.id),
       productId,
@@ -383,20 +383,20 @@ export function listPendingServiceSuggestionsForDeal(dealId: string): Array<{
 }
 
 /** Добавить выбранные услуги к позиции товара в заказе. */
-export function applySuggestedServicesForDealItem(input: {
+export async function applySuggestedServicesForDealItem(input: {
   dealId: string;
   parentItemId: string;
   services: Array<{ service_product_id: string; qty?: number; price?: number }>;
   mark?: string;
   model?: string;
   generation?: string;
-}): Record<string, unknown>[] {
-  ensureProductServiceLinksSchema();
-  const deal = get<Record<string, unknown>>('SELECT * FROM crm_deals WHERE id = ?', [input.dealId]);
+}): Promise<Record<string, unknown>[]> {
+  await ensureProductServiceLinksSchema();
+  const deal = await get<Record<string, unknown>>('SELECT * FROM crm_deals WHERE id = ?', [input.dealId]);
   if (!deal) throw new Error('not found');
   if (!resolveIsSto(deal)) throw new Error('Услуги к товару — только в автосервисе / СТО');
 
-  const parent = get<{ product_guid: string; name: string }>(
+  const parent = await get<{ product_guid: string; name: string }>(
     `SELECT product_guid, name FROM crm_deal_items WHERE id = ? AND deal_id = ?`,
     [input.parentItemId, input.dealId]
   );
@@ -406,12 +406,12 @@ export function applySuggestedServicesForDealItem(input: {
   for (const sel of input.services || []) {
     const sid = String(sel.service_product_id || '').trim();
     if (!sid) continue;
-    const svc = get<Record<string, unknown>>(`SELECT * FROM products WHERE id = ?`, [sid]);
+    const svc = await get<Record<string, unknown>>(`SELECT * FROM products WHERE id = ?`, [sid]);
     if (!svc) continue;
     if (String(svc.item_kind || 'product') !== 'service') {
       throw new Error(`«${svc.name || sid}» не услуга`);
     }
-    const already = get(
+    const already = await get(
       `SELECT id FROM crm_deal_items
        WHERE deal_id = ? AND parent_item_id = ? AND product_guid = ?`,
       [input.dealId, input.parentItemId, sid]
@@ -422,16 +422,16 @@ export function applySuggestedServicesForDealItem(input: {
     const price =
       sel.price != null && Number.isFinite(Number(sel.price))
         ? Math.max(0, Number(sel.price))
-        : loadRetailPrices([sid]).get(sid) ?? 0;
+        : (await loadRetailPrices([sid])).get(sid) ?? 0;
     const amount = roundMoney(qty * price);
     const maxLine =
-      get<{ m: number }>(
+      (await get<{ m: number }>(
         'SELECT COALESCE(MAX(line_no), 0) AS m FROM crm_deal_items WHERE deal_id = ?',
         [input.dealId]
-      )?.m ?? 0;
+      ))?.m ?? 0;
     const itemId = newGuid();
     const note = `К ${String(parent.name || '').slice(0, 80)}`;
-    run(
+    await run(
       `INSERT INTO crm_deal_items (
          id, deal_id, product_guid, sku, code, name, brand, price, qty, amount, unit,
          department, note, line_no, warehouse_id, supplier_id, in_doc_id,
@@ -447,7 +447,7 @@ export function applySuggestedServicesForDealItem(input: {
         price,
         qty,
         amount,
-        productUnitName(svc.unit_id as string | undefined),
+        await productUnitName(svc.unit_id as string | undefined),
         note,
         Number(maxLine) + 1,
         String(input.mark || ''),
@@ -456,7 +456,7 @@ export function applySuggestedServicesForDealItem(input: {
         input.parentItemId,
       ]
     );
-    const row = get('SELECT * FROM crm_deal_items WHERE id = ?', [itemId]);
+    const row = await get('SELECT * FROM crm_deal_items WHERE id = ?', [itemId]);
     if (row) created.push(row);
   }
   return created;

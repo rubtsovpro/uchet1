@@ -36,7 +36,7 @@ export type CounterpartyVehicle = CounterpartyVehicleFields & {
   counterparty_id: string;
   created_at?: string;
   updated_at?: string;
-  sts_photos?: ReturnType<typeof stsMediaInfoForVehicle>;
+  sts_photos?: Awaited<ReturnType<typeof stsMediaInfoForVehicle>>;
 };
 
 function normPlate(v: unknown): string {
@@ -83,30 +83,30 @@ function rowToVehicle(r: Row): CounterpartyVehicle {
   };
 }
 
-export function listCounterpartyVehicles(counterpartyId: string): CounterpartyVehicle[] {
+export async function listCounterpartyVehicles(counterpartyId: string): Promise<CounterpartyVehicle[]> {
   const cpId = String(counterpartyId || '').trim();
   if (!cpId) return [];
-  return all(
+  return (await all(
     `SELECT * FROM counterparty_vehicles
      WHERE counterparty_id = ?
      ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC`,
     [cpId]
-  ).map(rowToVehicle);
+  )).map(rowToVehicle);
 }
 
-export function getCounterpartyVehicle(id: string): CounterpartyVehicle | null {
-  const row = get('SELECT * FROM counterparty_vehicles WHERE id = ?', [String(id || '').trim()]);
+export async function getCounterpartyVehicle(id: string): Promise<CounterpartyVehicle | null> {
+  const row = await get('SELECT * FROM counterparty_vehicles WHERE id = ?', [String(id || '').trim()]);
   return row ? rowToVehicle(row) : null;
 }
 
 /** Upsert по id или по госномеру/VIN в рамках контрагента. */
-export function upsertCounterpartyVehicle(
+export async function upsertCounterpartyVehicle(
   counterpartyId: string,
   vehicle: CounterpartyVehicleFields & { id?: string }
-): CounterpartyVehicle {
+): Promise<CounterpartyVehicle> {
   const cpId = String(counterpartyId || '').trim();
   if (!cpId) throw new Error('counterparty_id required');
-  const cp = get('SELECT id FROM counterparties WHERE id = ?', [cpId]);
+  const cp = await get('SELECT id FROM counterparties WHERE id = ?', [cpId]);
   if (!cp) throw new Error('Контрагент не найден');
 
   const plate = normPlate(vehicle.car_plate);
@@ -115,14 +115,14 @@ export function upsertCounterpartyVehicle(
 
   let id = String(vehicle.id || '').trim();
   if (id) {
-    const existing = get(
+    const existing = await get(
       'SELECT id FROM counterparty_vehicles WHERE id = ? AND counterparty_id = ?',
       [id, cpId]
     );
     if (!existing) id = '';
   }
   if (!id && plate) {
-    const byPlate = get(
+    const byPlate = await get(
       `SELECT id FROM counterparty_vehicles
        WHERE counterparty_id = ? AND replace(upper(IFNULL(car_plate,'')),' ','') = ?
        LIMIT 1`,
@@ -131,7 +131,7 @@ export function upsertCounterpartyVehicle(
     if (byPlate) id = String(byPlate.id);
   }
   if (!id && vin) {
-    const byVin = get(
+    const byVin = await get(
       `SELECT id FROM counterparty_vehicles
        WHERE counterparty_id = ? AND replace(upper(IFNULL(car_vin,'')),' ','') = ?
        LIMIT 1`,
@@ -162,7 +162,7 @@ export function upsertCounterpartyVehicle(
 
   if (id) {
     // пробег / поколение / дата диагн. — пустые значения не затирают
-    run(
+    await run(
       `UPDATE counterparty_vehicles SET
          car_plate=?, car_vin=?, car_year=?, car_brand=?, car_model=?, car_color=?,
          car_category=?, car_pts=?, car_owner=?, car_owner_street=?, car_owner_house=?,
@@ -176,7 +176,7 @@ export function upsertCounterpartyVehicle(
     );
   } else {
     id = newGuid();
-    run(
+    await run(
       `INSERT INTO counterparty_vehicles (
          id, counterparty_id,
          car_plate, car_vin, car_year, car_brand, car_model, car_color,
@@ -186,20 +186,20 @@ export function upsertCounterpartyVehicle(
       [id, cpId, ...fields, mil, gen, lastDiag]
     );
   }
-  const saved = getCounterpartyVehicle(id);
+  const saved = await getCounterpartyVehicle(id);
   if (!saved) throw new Error('Не удалось сохранить авто');
   return saved;
 }
 
-export function deleteCounterpartyVehicle(counterpartyId: string, vehicleId: string): void {
+export async function deleteCounterpartyVehicle(counterpartyId: string, vehicleId: string): Promise<void> {
   const cpId = String(counterpartyId || '').trim();
   const id = String(vehicleId || '').trim();
   if (!cpId || !id) throw new Error('id required');
-  run(`DELETE FROM counterparty_vehicles WHERE id = ? AND counterparty_id = ?`, [id, cpId]);
+  await run(`DELETE FROM counterparty_vehicles WHERE id = ? AND counterparty_id = ?`, [id, cpId]);
 }
 
 /** Контрагент сделки (id / amo_company_id / ИНН / телефон). */
-export function resolveCounterpartyIdForDeal(deal: Row | null | undefined): string {
+export async function resolveCounterpartyIdForDeal(deal: Row | null | undefined): Promise<string> {
   if (!deal) return '';
   const contactIdsRaw = String(deal.amo_contact_ids || '')
     .split(/[,;\s]+/)
@@ -208,7 +208,7 @@ export function resolveCounterpartyIdForDeal(deal: Row | null | undefined): stri
   const mainContact = String(deal.amo_contact_id || '').replace(/\D/g, '');
   const contactIds = [...new Set(mainContact ? [mainContact, ...contactIdsRaw] : contactIdsRaw)];
   for (const amoContactId of contactIds) {
-    const byContact = get(
+    const byContact = await get(
       `SELECT id FROM counterparties WHERE amo_contact_id = ? ORDER BY name LIMIT 1`,
       [amoContactId]
     );
@@ -216,9 +216,9 @@ export function resolveCounterpartyIdForDeal(deal: Row | null | undefined): stri
   }
   const companyId = String(deal.company_id || '').trim();
   if (companyId) {
-    const byId = get('SELECT id FROM counterparties WHERE id = ?', [companyId]);
+    const byId = await get('SELECT id FROM counterparties WHERE id = ?', [companyId]);
     if (byId) return String(byId.id);
-    const byAmo = get(
+    const byAmo = await get(
       `SELECT id FROM counterparties WHERE amo_company_id = ? ORDER BY name LIMIT 1`,
       [companyId]
     );
@@ -226,7 +226,7 @@ export function resolveCounterpartyIdForDeal(deal: Row | null | undefined): stri
   }
   const inn = String(deal.buyer_inn || '').replace(/\D/g, '');
   if (inn.length === 10 || inn.length === 12) {
-    const byInn = get(
+    const byInn = await get(
       `SELECT id FROM counterparties
        WHERE replace(IFNULL(inn,''),' ','') = ?
        ORDER BY CASE WHEN kind = 'buyer' THEN 0 ELSE 1 END, name
@@ -238,7 +238,7 @@ export function resolveCounterpartyIdForDeal(deal: Row | null | undefined): stri
   const phoneDig = digitsOnly(deal.buyer_phone);
   const phone10 = phoneDig.length >= 10 ? phoneDig.slice(-10) : '';
   if (phone10) {
-    const candidates = all<{ id: string; phone: string; kind: string; name: string }>(
+    const candidates = await all<{ id: string; phone: string; kind: string; name: string }>(
       `SELECT id, phone, kind, name FROM counterparties
        WHERE IFNULL(phone,'') != ''
          AND (phone LIKE ? OR phone LIKE ? OR phone LIKE ?)
@@ -255,8 +255,8 @@ export function resolveCounterpartyIdForDeal(deal: Row | null | undefined): stri
  * Найти или создать карточку контрагента по данным сделки
  * (физлица часто без company_id — создаём по ФИО+телефону).
  */
-export function ensureCounterpartyForDeal(deal: Row | null | undefined): string {
-  const existing = resolveCounterpartyIdForDeal(deal);
+export async function ensureCounterpartyForDeal(deal: Row | null | undefined): Promise<string> {
+  const existing = await resolveCounterpartyIdForDeal(deal);
   if (existing) return existing;
   if (!deal) return '';
   const name =
@@ -264,7 +264,7 @@ export function ensureCounterpartyForDeal(deal: Row | null | undefined): string 
     pick(deal.buyer_name) ||
     pick(deal.name);
   if (!name) return '';
-  const phone = normalizePhoneForStorage(deal.buyer_phone);
+  const phone = await normalizePhoneForStorage(deal.buyer_phone);
   const inn = String(deal.buyer_inn || '').replace(/\D/g, '');
   const amoContactId = String(deal.amo_contact_id || '').replace(/\D/g, '');
   const amoContactIds = String(deal.amo_contact_ids || '')
@@ -280,7 +280,7 @@ export function ensureCounterpartyForDeal(deal: Row | null | undefined): string 
       kind === 'legal' ||
       kind === 'ip' ||
       inn.length === 10);
-  run(
+  await run(
     `INSERT INTO counterparties (
        id, name, inn, phone, kind, party_kind, is_active, source, amo_contact_id, created_at
      ) VALUES (?, ?, ?, ?, 'buyer', ?, 1, 'deal-garage', ?, datetime('now'))`,
@@ -289,7 +289,7 @@ export function ensureCounterpartyForDeal(deal: Row | null | undefined): string 
   // привязать сделку к созданному контрагенту
   const dealId = pick(deal.id);
   if (dealId) {
-    run(
+    await run(
       `UPDATE crm_deals
        SET company_id = CASE WHEN IFNULL(company_id,'') = '' THEN ? ELSE company_id END,
            company_name = CASE WHEN IFNULL(company_name,'') = '' THEN ? ELSE company_name END,
@@ -303,23 +303,23 @@ export function ensureCounterpartyForDeal(deal: Row | null | undefined): string 
   return id;
 }
 
-export function garageForDeal(dealId: string, opts?: { ensure?: boolean }): {
+export async function garageForDeal(dealId: string, opts?: { ensure?: boolean }): Promise<{
   counterparty_id: string;
   vehicles: CounterpartyVehicle[];
-} {
-  const deal = get('SELECT * FROM crm_deals WHERE id = ?', [String(dealId || '').trim()]);
+}> {
+  const deal = await get('SELECT * FROM crm_deals WHERE id = ?', [String(dealId || '').trim()]);
   const counterparty_id = opts?.ensure
-    ? ensureCounterpartyForDeal(deal)
-    : resolveCounterpartyIdForDeal(deal);
+    ? await ensureCounterpartyForDeal(deal)
+    : await resolveCounterpartyIdForDeal(deal);
   if (!counterparty_id) return { counterparty_id: '', vehicles: [] };
-  let vehicles = listCounterpartyVehicles(counterparty_id);
+  let vehicles = await listCounterpartyVehicles(counterparty_id);
   // разово подтянуть авто с текущего заказа, если гараж пуст
   if (!vehicles.length && deal) {
     const plate = normPlate(deal.car_plate);
     const vin = normVin(deal.car_vin);
     if (plate || vin) {
       try {
-        upsertCounterpartyVehicle(counterparty_id, {
+        await upsertCounterpartyVehicle(counterparty_id, {
           car_plate: plate,
           car_vin: vin,
           car_year: pick(deal.car_year),
@@ -335,7 +335,7 @@ export function garageForDeal(dealId: string, opts?: { ensure?: boolean }): {
           car_sts_date: pick(deal.car_sts_date),
           car_sts_number: pick(deal.car_sts_number),
         });
-        vehicles = listCounterpartyVehicles(counterparty_id);
+        vehicles = await listCounterpartyVehicles(counterparty_id);
       } catch {
         /* ignore seed errors */
       }

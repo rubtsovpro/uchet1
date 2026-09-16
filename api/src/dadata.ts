@@ -78,7 +78,7 @@ export function formatContractInFace(directorName: string, post?: string): strin
 }
 
 async function dadataPost(url: string, body: Record<string, unknown>): Promise<unknown> {
-  const s = getDadataSettings();
+  const s = await getDadataSettings();
   if (!s.api_key) {
     throw new Error('DaData не настроена — укажите API-ключ в Настройки → Интеграции → DaData');
   }
@@ -213,7 +213,7 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function applyPartyToCounterparty(id: string, party: DadataParty, opts?: { overwriteName?: boolean }) {
+async function applyPartyToCounterparty(id: string, party: DadataParty, opts?: { overwriteName?: boolean }) {
   const name = String(party.name || '').trim();
   const nameFull = String(party.name_full || name).trim();
   const inn = String(party.inn || '').replace(/\D/g, '');
@@ -221,21 +221,21 @@ function applyPartyToCounterparty(id: string, party: DadataParty, opts?: { overw
   const ogrn = String(party.ogrn || '').replace(/\D/g, '');
   const address = String(party.address || '').trim();
   const director = formatContractInFace(party.management, party.management_post);
-  if (opts?.overwriteName && name) run('UPDATE counterparties SET name = ? WHERE id = ?', [name, id]);
-  if (nameFull) run('UPDATE counterparties SET name_full = ? WHERE id = ?', [nameFull, id]);
-  if (inn) run('UPDATE counterparties SET inn = ? WHERE id = ?', [inn, id]);
+  if (opts?.overwriteName && name) await run('UPDATE counterparties SET name = ? WHERE id = ?', [name, id]);
+  if (nameFull) await run('UPDATE counterparties SET name_full = ? WHERE id = ?', [nameFull, id]);
+  if (inn) await run('UPDATE counterparties SET inn = ? WHERE id = ?', [inn, id]);
   const partyKind =
     String(party.type || '').toUpperCase() === 'INDIVIDUAL'
       ? 'ip'
       : String(party.type || '').toUpperCase() === 'LEGAL'
         ? 'legal'
         : '';
-  if (partyKind) run('UPDATE counterparties SET party_kind = ? WHERE id = ?', [partyKind, id]);
-  run('UPDATE counterparties SET kpp = ? WHERE id = ?', [kpp, id]);
-  run('UPDATE counterparties SET ogrn = ? WHERE id = ?', [ogrn, id]);
-  run('UPDATE counterparties SET address = ? WHERE id = ?', [address, id]);
+  if (partyKind) await run('UPDATE counterparties SET party_kind = ? WHERE id = ?', [partyKind, id]);
+  await run('UPDATE counterparties SET kpp = ? WHERE id = ?', [kpp, id]);
+  await run('UPDATE counterparties SET ogrn = ? WHERE id = ?', [ogrn, id]);
+  await run('UPDATE counterparties SET address = ? WHERE id = ?', [address, id]);
   if (director) {
-    run(
+    await run(
       `UPDATE counterparties SET director = CASE
          WHEN IFNULL(TRIM(director),'') = '' THEN ?
          ELSE director
@@ -243,16 +243,16 @@ function applyPartyToCounterparty(id: string, party: DadataParty, opts?: { overw
       [director, id]
     );
   }
-  run('UPDATE counterparties SET dadata_synced_at = datetime(?) WHERE id = ?', [
+  await run('UPDATE counterparties SET dadata_synced_at = datetime(?) WHERE id = ?', [
     new Date().toISOString(),
     id,
   ]);
 }
 
 /** Нужно обогащение: есть ИНН, ещё не сходили в DaData, или пустые реквизиты. */
-export function listCounterpartiesNeedingDadata(limit = 500): Array<{ id: string; inn: string; name: string }> {
+export async function listCounterpartiesNeedingDadata(limit = 500): Promise<Array<{ id: string; inn: string; name: string }>> {
   const lim = Math.min(5000, Math.max(1, Math.floor(limit)));
-  return all<{ id: string; inn: string; name: string }>(
+  return (await all<{ id: string; inn: string; name: string }>(
     `SELECT id, inn, name FROM counterparties
      WHERE length(replace(IFNULL(inn,''),' ','')) IN (10, 12)
        AND IFNULL(dadata_synced_at,'') = ''
@@ -267,7 +267,7 @@ export function listCounterpartiesNeedingDadata(limit = 500): Array<{ id: string
      ORDER BY name
      LIMIT ?`,
     [lim]
-  )
+  ))
     .map((r) => ({
       id: String(r.id),
       inn: String(r.inn || '').replace(/\D/g, ''),
@@ -276,15 +276,15 @@ export function listCounterpartiesNeedingDadata(limit = 500): Array<{ id: string
     .filter((r) => r.inn.length === 10 || r.inn.length === 12);
 }
 
-export function dadataEnrichStats() {
-  const total = get<{ c: number }>('SELECT COUNT(*) AS c FROM counterparties')?.c ?? 0;
+export async function dadataEnrichStats() {
+  const total = (await get<{ c: number }>('SELECT COUNT(*) AS c FROM counterparties'))?.c ?? 0;
   const withInn =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM counterparties
        WHERE length(replace(IFNULL(inn,''),' ','')) IN (10, 12)`
-    )?.c ?? 0;
+    ))?.c ?? 0;
   const need =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM counterparties
        WHERE length(replace(IFNULL(inn,''),' ','')) IN (10, 12)
          AND IFNULL(dadata_synced_at,'') = ''
@@ -296,11 +296,11 @@ export function dadataEnrichStats() {
              AND IFNULL(kpp,'') = ''
            )
          )`
-    )?.c ?? 0;
+    ))?.c ?? 0;
   const synced =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM counterparties WHERE IFNULL(dadata_synced_at,'') != ''`
-    )?.c ?? 0;
+    ))?.c ?? 0;
   return { total, with_inn: withInn, need_fill: need, synced };
 }
 
@@ -325,7 +325,7 @@ export async function enrichCounterpartiesFromDadata(input?: {
   const limit = Math.min(3000, Math.max(1, Math.floor(input?.limit ?? 500)));
   const overwriteName = input?.overwriteName === true;
   const throttleMs = Math.max(40, Math.floor(input?.throttleMs ?? 80));
-  const rows = listCounterpartiesNeedingDadata(limit);
+  const rows = await listCounterpartiesNeedingDadata(limit);
 
   let updated = 0;
   let notFound = 0;
@@ -344,12 +344,12 @@ export async function enrichCounterpartiesFromDadata(input?: {
       if (!party) {
         notFound += 1;
         // чтобы не долбить один и тот же ИНН каждый день
-        run('UPDATE counterparties SET dadata_synced_at = datetime(?) WHERE id = ?', [
+        await run('UPDATE counterparties SET dadata_synced_at = datetime(?) WHERE id = ?', [
           new Date().toISOString(),
           row.id,
         ]);
       } else {
-        applyPartyToCounterparty(row.id, party, { overwriteName });
+        await applyPartyToCounterparty(row.id, party, { overwriteName });
         updated += 1;
         if (samples.length < 8) {
           samples.push({ id: row.id, name: party.name || row.name, inn: party.inn || row.inn });

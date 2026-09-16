@@ -33,10 +33,10 @@ function isWarehouseComment(comment: string | null | undefined): boolean {
   return String(comment || '').includes('тип:складской');
 }
 
-function findStockByNumber(number: string, prefer: 'sale' | 'warehouse' | 'any' = 'any') {
+async function findStockByNumber(number: string, prefer: 'sale' | 'warehouse' | 'any' = 'any') {
   const num = String(number || '').trim();
   if (!num) return null;
-  const rows = all<{
+  const rows = await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -123,8 +123,8 @@ export function parseCommentRefs(comment: string): {
   return { sale, warehouse, returnBasis, inboundBasis, receipts };
 }
 
-export function buildDocLinks(docId: string): { links: DocLink[]; note: string } {
-  const doc = get<{
+export async function buildDocLinks(docId: string): Promise<{ links: DocLink[]; note: string }> {
+  const doc = await get<{
     id: string;
     number: string;
     doc_type: string;
@@ -150,7 +150,7 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
   // Заказ покупателя = сделка Amo (в 1С GUID заказа в OData недоступен как документ)
   const dealId = String(doc.deal_id || '').trim();
   if (dealId) {
-    const deal = get<{
+    const deal = await get<{
       id: string;
       name: string;
       price: number;
@@ -184,7 +184,7 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
       },
       seen
     );
-    const salesByDeal = all<{
+    const salesByDeal = await all<{
       id: string;
       number: string;
       doc_date: string;
@@ -234,21 +234,21 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
   }
 
   if (refs.sale) {
-    const row = findStockByNumber(refs.sale, 'sale');
+    const row = await findStockByNumber(refs.sale, 'sale');
     if (row) pushUnique(links, linkFromStock('sale', 'Расходная (продажа)', row), seen);
   }
   if (refs.warehouse) {
-    const row = findStockByNumber(refs.warehouse, 'warehouse');
+    const row = await findStockByNumber(refs.warehouse, 'warehouse');
     if (row) pushUnique(links, linkFromStock('warehouse', 'Складской расход', row), seen);
   }
   if (refs.returnBasis) {
-    const row = findStockByNumber(refs.returnBasis, 'sale');
+    const row = await findStockByNumber(refs.returnBasis, 'sale');
     if (row) pushUnique(links, linkFromStock('return_basis', 'Основание — расходная', row), seen);
   }
   if (refs.inboundBasis) {
     const row =
-      findStockByNumber(refs.inboundBasis, 'warehouse') ||
-      findStockByNumber(refs.inboundBasis, 'any');
+      await findStockByNumber(refs.inboundBasis, 'warehouse') ||
+      await findStockByNumber(refs.inboundBasis, 'any');
     if (row) {
       pushUnique(
         links,
@@ -280,7 +280,7 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
 
   // Приход по заказу поставщику (1С док.501)
   if (doc.doc_type === 'in' && String(doc.comment || '').includes('основание:док.501')) {
-    const so = get<{
+    const so = await get<{
       id: string;
       number: string;
       doc_date: string;
@@ -332,12 +332,12 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
   }
 
   for (const rn of refs.receipts || []) {
-    const row = findStockByNumber(rn, 'any');
+    const row = await findStockByNumber(rn, 'any');
     if (row) pushUnique(links, linkFromStock('purchase', 'Приход по заказу', row), seen);
   }
 
   // Обратные ссылки по номеру этого документа в comment других
-  const reverse = all<{
+  const reverse = await all<{
     id: string;
     number: string;
     doc_date: string;
@@ -391,7 +391,7 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
   // Если складской без продажи — уже из comment.
 
   // По строкам: приходы с ценой (поставщик) + заказы поставщику
-  const lineProducts = all<{ product_id: string; name: string; qty: number }>(
+  const lineProducts = await all<{ product_id: string; name: string; qty: number }>(
     `SELECT l.product_id, IFNULL(p.name,'') AS name, l.qty
      FROM stock_doc_lines l
      LEFT JOIN products p ON p.id = l.product_id
@@ -401,7 +401,7 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
   );
 
   for (const lp of lineProducts) {
-    const purchases = all<{
+    const purchases = await all<{
       id: string;
       number: string;
       doc_date: string;
@@ -445,7 +445,7 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
       );
 
       // Жёсткая связь заказ→приход из тонкого журнала (comment: приходные:НОМЕР)
-      const so = get<{
+      const so = await get<{
         id: string;
         number: string;
         doc_date: string;
@@ -486,7 +486,7 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
       }
     }
 
-    const orders = all<{
+    const orders = await all<{
       id: string;
       number: string;
       doc_date: string;
@@ -523,10 +523,10 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
       );
       const r = parseCommentRefs(o.comment);
       for (const rn of r.receipts || []) {
-        const row = findStockByNumber(rn, 'any');
+        const row = await findStockByNumber(rn, 'any');
         if (!row) continue;
         // только если в приходе реально есть эта номенклатура с ценой
-        const hit = get<{ qty: number; price: number }>(
+        const hit = await get<{ qty: number; price: number }>(
           `SELECT l.qty, IFNULL(l.price,0) AS price
            FROM stock_doc_lines l
            WHERE l.doc_id = ? AND l.product_id = ? AND IFNULL(l.price,0) > 0
@@ -555,7 +555,7 @@ export function buildDocLinks(docId: string): { links: DocLink[]; note: string }
 
   // Оплаты (bank_docs) с расходной в purpose
   if (doc.doc_type === 'out' && !whSelf) {
-    const pays = all<{
+    const pays = await all<{
       id: string;
       number: string;
       doc_date: string;

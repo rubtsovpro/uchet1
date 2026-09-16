@@ -48,8 +48,8 @@ type VapidKeys = { publicKey: string; privateKey: string; subject: string };
 let cachedVapid: VapidKeys | null = null;
 let webPushReady = false;
 
-export function ensureWebPushSchema() {
-  run(`
+export async function ensureWebPushSchema() {
+  await run(`
     CREATE TABLE IF NOT EXISTS web_push_subscriptions (
       id TEXT PRIMARY KEY,
       staff_id TEXT NOT NULL,
@@ -63,7 +63,7 @@ export function ensureWebPushSchema() {
     CREATE INDEX IF NOT EXISTS idx_web_push_staff
       ON web_push_subscriptions(staff_id);
   `);
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS car_photo_tasks (
       id TEXT PRIMARY KEY,
       deal_id TEXT NOT NULL,
@@ -82,9 +82,9 @@ export function ensureWebPushSchema() {
       ON car_photo_tasks(status, created_at);
   `);
   try {
-    const cols = all<{ name: string }>(`PRAGMA table_info(car_photo_tasks)`).map((c) => c.name);
+    const cols = (await all<{ name: string }>(`PRAGMA table_info(car_photo_tasks)`)).map((c) => c.name);
     if (!cols.includes('kind')) {
-      run(`ALTER TABLE car_photo_tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'car'`);
+      await run(`ALTER TABLE car_photo_tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'car'`);
     }
   } catch {
     /* ignore */
@@ -146,14 +146,14 @@ export function getVapidPublicKey(): string {
   return getVapidKeys().publicKey;
 }
 
-export function upsertPushSubscription(input: {
+export async function upsertPushSubscription(input: {
   staffId: string;
   endpoint: string;
   p256dh: string;
   auth: string;
   userAgent?: string;
 }) {
-  ensureWebPushSchema();
+  await ensureWebPushSchema();
   const staffId = String(input.staffId || '').trim();
   const endpoint = String(input.endpoint || '').trim();
   const p256dh = String(input.p256dh || '').trim();
@@ -161,13 +161,13 @@ export function upsertPushSubscription(input: {
   if (!staffId || !endpoint || !p256dh || !auth) {
     throw new Error('Нужны endpoint, keys.p256dh, keys.auth');
   }
-  const existing = get<{ id: string }>(
+  const existing = await get<{ id: string }>(
     `SELECT id FROM web_push_subscriptions WHERE endpoint = ?`,
     [endpoint]
   );
   const now = new Date().toISOString();
   if (existing?.id) {
-    run(
+    await run(
       `UPDATE web_push_subscriptions
        SET staff_id = ?, p256dh = ?, auth = ?, user_agent = ?, updated_at = ?
        WHERE id = ?`,
@@ -176,7 +176,7 @@ export function upsertPushSubscription(input: {
     return existing.id;
   }
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO web_push_subscriptions
       (id, staff_id, endpoint, p256dh, auth, user_agent, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -185,24 +185,24 @@ export function upsertPushSubscription(input: {
   return id;
 }
 
-export function deletePushSubscription(endpoint: string, staffId?: string) {
-  ensureWebPushSchema();
+export async function deletePushSubscription(endpoint: string, staffId?: string) {
+  await ensureWebPushSchema();
   const ep = String(endpoint || '').trim();
   if (!ep) return 0;
   if (staffId) {
-    run(`DELETE FROM web_push_subscriptions WHERE endpoint = ? AND staff_id = ?`, [
+    await run(`DELETE FROM web_push_subscriptions WHERE endpoint = ? AND staff_id = ?`, [
       ep,
       staffId,
     ]);
   } else {
-    run(`DELETE FROM web_push_subscriptions WHERE endpoint = ?`, [ep]);
+    await run(`DELETE FROM web_push_subscriptions WHERE endpoint = ?`, [ep]);
   }
   return 1;
 }
 
 /** Сотрудники с разделом reception (и админы) — получатели пуша «сфотать авто». */
-export function listReceptionStaffIds(): string[] {
-  const rows = all<{
+export async function listReceptionStaffIds(): Promise<string[]> {
+  const rows = await all<{
     id: string;
     role: string;
     rights_json: string;
@@ -217,7 +217,7 @@ export function listReceptionStaffIds(): string[] {
       out.push(r.id);
       continue;
     }
-    const rights = effectiveRightsForStaff(r);
+    const rights = await effectiveRightsForStaff(r);
     const actor = { role: r.role, rights };
     if (canAccessSection(actor, 'reception') || canAccessSection(actor, 'works')) {
       out.push(r.id);
@@ -230,12 +230,12 @@ export async function sendWebPushToStaff(
   staffIds: string[],
   payload: { title: string; body: string; url?: string; tag?: string; dealId?: string }
 ): Promise<{ sent: number; failed: number }> {
-  ensureWebPushSchema();
+  await ensureWebPushSchema();
   ensureWebPushConfigured();
   const ids = [...new Set(staffIds.map(String).filter(Boolean))];
   if (!ids.length) return { sent: 0, failed: 0 };
   const placeholders = ids.map(() => '?').join(',');
-  const subs = all<{
+  const subs = await all<{
     id: string;
     endpoint: string;
     p256dh: string;
@@ -269,7 +269,7 @@ export async function sendWebPushToStaff(
       failed += 1;
       const status = Number((e as { statusCode?: number })?.statusCode || 0);
       if (status === 404 || status === 410) {
-        run(`DELETE FROM web_push_subscriptions WHERE id = ?`, [sub.id]);
+        await run(`DELETE FROM web_push_subscriptions WHERE id = ?`, [sub.id]);
       }
     }
   }
@@ -297,40 +297,40 @@ export type CarPhotoTask = {
   sts_back?: boolean;
 };
 
-export function createCarPhotoTask(input: {
+export async function createCarPhotoTask(input: {
   dealId: string;
   kind?: ReceptionPhotoKind | 'car' | 'sts';
   note?: string;
   createdBy?: string;
   createdByName?: string;
-}): CarPhotoTask {
-  ensureWebPushSchema();
+}): Promise<CarPhotoTask> {
+  await ensureWebPushSchema();
   const dealId = String(input.dealId || '').trim();
   if (!dealId) throw new Error('deal_id required');
   const want = (input.kind === 'sts' ? 'sts' : input.kind === 'both' ? 'both' : 'car') as ReceptionPhotoKind;
-  const deal = get<{ id: string }>(`SELECT id FROM crm_deals WHERE id = ?`, [dealId]);
+  const deal = await get<{ id: string }>(`SELECT id FROM crm_deals WHERE id = ?`, [dealId]);
   if (!deal) throw new Error('Заказ не найден');
-  const open = get<CarPhotoTask>(
+  const open = await get<CarPhotoTask>(
     `SELECT * FROM car_photo_tasks WHERE deal_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1`,
     [dealId]
   );
   if (open) {
     const merged = mergePhotoKinds(String(open.kind || 'car'), want);
     if (merged !== String(open.kind || 'car')) {
-      run(`UPDATE car_photo_tasks SET kind = ? WHERE id = ?`, [merged, open.id]);
+      await run(`UPDATE car_photo_tasks SET kind = ? WHERE id = ?`, [merged, open.id]);
       open.kind = merged;
     }
     if (input.note) {
-      run(`UPDATE car_photo_tasks SET note = ? WHERE id = ?`, [
+      await run(`UPDATE car_photo_tasks SET note = ? WHERE id = ?`, [
         String(input.note).slice(0, 500),
         open.id,
       ]);
       open.note = String(input.note).slice(0, 500);
     }
-    return enrichCarPhotoTask(open);
+    return await enrichCarPhotoTask(open);
   }
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO car_photo_tasks
       (id, deal_id, status, kind, note, created_by, created_by_name, created_at)
      VALUES (?, ?, 'open', ?, ?, ?, ?, datetime('now'))`,
@@ -343,12 +343,12 @@ export function createCarPhotoTask(input: {
       String(input.createdByName || '').slice(0, 120),
     ]
   );
-  const row = get<CarPhotoTask>(`SELECT * FROM car_photo_tasks WHERE id = ?`, [id]);
-  return enrichCarPhotoTask(row!);
+  const row = await get<CarPhotoTask>(`SELECT * FROM car_photo_tasks WHERE id = ?`, [id]);
+  return await enrichCarPhotoTask(row!);
 }
 
-function enrichCarPhotoTask(row: CarPhotoTask): CarPhotoTask {
-  const deal = get<{
+async function enrichCarPhotoTask(row: CarPhotoTask): Promise<CarPhotoTask> {
+  const deal = await get<{
     buyer_name?: string;
     company_name?: string;
     car_plate?: string;
@@ -381,39 +381,41 @@ function enrichCarPhotoTask(row: CarPhotoTask): CarPhotoTask {
   };
 }
 
-export function listOpenCarPhotoTasks(limit = 40): CarPhotoTask[] {
-  ensureWebPushSchema();
-  const rows = all<CarPhotoTask>(
+export async function listOpenCarPhotoTasks(limit = 40): Promise<CarPhotoTask[]> {
+  await ensureWebPushSchema();
+  const rows = await all<CarPhotoTask>(
     `SELECT * FROM car_photo_tasks WHERE status = 'open'
      ORDER BY created_at DESC LIMIT ?`,
     [Math.min(100, Math.max(1, limit))]
   );
-  return rows.map(enrichCarPhotoTask);
+  return rows.length
+    ? await Promise.all(rows.map((r) => enrichCarPhotoTask(r)))
+    : [];
 }
 
-export function getCarPhotoTask(id: string): CarPhotoTask | null {
-  ensureWebPushSchema();
-  const row = get<CarPhotoTask>(`SELECT * FROM car_photo_tasks WHERE id = ?`, [
+export async function getCarPhotoTask(id: string): Promise<CarPhotoTask | null> {
+  await ensureWebPushSchema();
+  const row = await get<CarPhotoTask>(`SELECT * FROM car_photo_tasks WHERE id = ?`, [
     String(id || '').trim(),
   ]);
-  return row ? enrichCarPhotoTask(row) : null;
+  return row ? await enrichCarPhotoTask(row) : null;
 }
 
-export function getOpenCarPhotoTaskForDeal(dealId: string): CarPhotoTask | null {
-  ensureWebPushSchema();
-  const row = get<CarPhotoTask>(
+export async function getOpenCarPhotoTaskForDeal(dealId: string): Promise<CarPhotoTask | null> {
+  await ensureWebPushSchema();
+  const row = await get<CarPhotoTask>(
     `SELECT * FROM car_photo_tasks WHERE deal_id = ? AND status = 'open'
      ORDER BY created_at DESC LIMIT 1`,
     [String(dealId || '').trim()]
   );
-  return row ? enrichCarPhotoTask(row) : null;
+  return row ? await enrichCarPhotoTask(row) : null;
 }
 
-export function completeCarPhotoTaskForDeal(dealId: string, doneKind: 'car' | 'sts' = 'car') {
-  ensureWebPushSchema();
+export async function completeCarPhotoTaskForDeal(dealId: string, doneKind: 'car' | 'sts' = 'car') {
+  await ensureWebPushSchema();
   const id = String(dealId || '').trim();
   if (!id) return;
-  const open = get<{ id: string; kind: string }>(
+  const open = await get<{ id: string; kind: string }>(
     `SELECT id, kind FROM car_photo_tasks WHERE deal_id = ? AND status = 'open'
      ORDER BY created_at DESC LIMIT 1`,
     [id]
@@ -425,7 +427,7 @@ export function completeCarPhotoTaskForDeal(dealId: string, doneKind: 'car' | 's
     const sts = stsMediaInfo(id);
     const stsOk = !!(sts.front && sts.back);
     if (carOk && stsOk) {
-      run(
+      await run(
         `UPDATE car_photo_tasks SET status = 'done', completed_at = datetime('now') WHERE id = ?`,
         [open.id]
       );
@@ -441,40 +443,40 @@ export function completeCarPhotoTaskForDeal(dealId: string, doneKind: 'car' | 's
   if (kind === 'car') {
     if (!dealCarPhotosSummary(id).photos_ok) return;
   }
-  run(
+  await run(
     `UPDATE car_photo_tasks SET status = 'done', completed_at = datetime('now') WHERE id = ?`,
     [open.id]
   );
 }
 
 /** Закрыть задачу вручную («Готово» на телефоне) — без проверки нормы фото. */
-export function closeCarPhotoTask(taskId: string): CarPhotoTask | null {
-  ensureWebPushSchema();
+export async function closeCarPhotoTask(taskId: string): Promise<CarPhotoTask | null> {
+  await ensureWebPushSchema();
   const id = String(taskId || '').trim();
   if (!id) return null;
-  const row = get<CarPhotoTask>(`SELECT * FROM car_photo_tasks WHERE id = ?`, [id]);
+  const row = await get<CarPhotoTask>(`SELECT * FROM car_photo_tasks WHERE id = ?`, [id]);
   if (!row) return null;
   if (String(row.status) === 'open') {
-    run(
+    await run(
       `UPDATE car_photo_tasks SET status = 'done', completed_at = datetime('now') WHERE id = ?`,
       [id]
     );
   }
-  return getCarPhotoTask(id);
+  return await getCarPhotoTask(id);
 }
 
 /** Закрыть открытую задачу по сделке (если нет task id). */
-export function closeOpenCarPhotoTaskForDeal(dealId: string): CarPhotoTask | null {
-  ensureWebPushSchema();
+export async function closeOpenCarPhotoTaskForDeal(dealId: string): Promise<CarPhotoTask | null> {
+  await ensureWebPushSchema();
   const id = String(dealId || '').trim();
   if (!id) return null;
-  const open = get<{ id: string }>(
+  const open = await get<{ id: string }>(
     `SELECT id FROM car_photo_tasks WHERE deal_id = ? AND status = 'open'
      ORDER BY created_at DESC LIMIT 1`,
     [id]
   );
   if (!open?.id) return null;
-  return closeCarPhotoTask(open.id);
+  return await closeCarPhotoTask(open.id);
 }
 
 /** Создать задачу + колокольчик + Web Push приёмщикам. */
@@ -492,15 +494,15 @@ export async function requestCarPhotoShoot(input: {
   push: { sent: number; failed: number };
   href: string;
 }> {
-  const task = createCarPhotoTask(input);
+  const task = await createCarPhotoTask(input);
   const plate = task.car_plate || 'без номера';
   const buyer = task.buyer_name || 'клиент';
   const title = kindTitle(task.kind);
   const href = `/reception-photo?v=rp7&deal=${encodeURIComponent(task.deal_id)}&task=${encodeURIComponent(task.id)}&kind=${encodeURIComponent(task.kind)}`;
-  const staffIds = listReceptionStaffIds();
+  const staffIds = await listReceptionStaffIds();
   let notified = 0;
   for (const sid of staffIds) {
-    createStaffNotification({
+    await createStaffNotification({
       staff_id: sid,
       kind: task.kind === 'sts' ? 'sts_photo_request' : 'car_photo_request',
       title,
@@ -536,8 +538,8 @@ export function canUseCarPhotoReception(actor: {
 }
 
 /** Сотрудники с разделом pick (и админы) — получатели пуша «пикинг / перемещение». */
-export function listPickStaffIds(): string[] {
-  const rows = all<{
+export async function listPickStaffIds(): Promise<string[]> {
+  const rows = await all<{
     id: string;
     role: string;
     rights_json: string;
@@ -552,7 +554,7 @@ export function listPickStaffIds(): string[] {
       out.push(r.id);
       continue;
     }
-    const rights = effectiveRightsForStaff(r);
+    const rights = await effectiveRightsForStaff(r);
     const actor = { role: r.role, rights };
     if (canAccessSection(actor, 'pick')) {
       out.push(r.id);
@@ -585,10 +587,10 @@ export async function requestWarehousePickPush(input: {
   const href = `/pick?task=${encodeURIComponent(taskId)}`;
   const title = 'Пикинг · перемещение';
   const body = [num, route, String(input.comment || '').trim()].filter(Boolean).join(' · ');
-  const staffIds = listPickStaffIds();
+  const staffIds = await listPickStaffIds();
   let notified = 0;
   for (const sid of staffIds) {
-    createStaffNotification({
+    await createStaffNotification({
       staff_id: sid,
       kind: 'warehouse_pick_request',
       title,

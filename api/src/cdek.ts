@@ -10,8 +10,8 @@ import { getCdekBridgeSettings } from './integration-settings.js';
 import { cdekWidgetUrl } from './ops.js';
 
 /** Публичный URL PDF ярлыка СДЭК (barcode.php на виджете). */
-export function cdekPublicBaseUrl(): string {
-  const wms = getCdekBridgeSettings().wms_url;
+export async function cdekPublicBaseUrl(): Promise<string> {
+  const wms = (await getCdekBridgeSettings()).wms_url;
   try {
     const u = new URL(wms);
     return `${u.origin}${u.pathname.replace(/\/wms_api\.php$/i, '')}`;
@@ -20,7 +20,7 @@ export function cdekPublicBaseUrl(): string {
   }
 }
 
-export function cdekBarcodePublicUrl(leadId: string, track: string): string {
+export async function cdekBarcodePublicUrl(leadId: string, track: string): Promise<string> {
   const id = String(leadId || '').trim();
   const num = String(track || '').trim();
   if (!id || !num) return '';
@@ -29,13 +29,13 @@ export function cdekBarcodePublicUrl(leadId: string, track: string): string {
     .digest('hex')
     .slice(0, 20);
   const qs = new URLSearchParams({ l: id, n: num, s: sign });
-  return `${cdekPublicBaseUrl()}/barcode.php?${qs.toString()}`;
+  return `${await cdekPublicBaseUrl()}/barcode.php?${qs.toString()}`;
 }
 
-function resolveCdekBarcodeUrl(leadId: string, track: string, explicit?: string): string {
+async function resolveCdekBarcodeUrl(leadId: string, track: string, explicit?: string): Promise<string> {
   const url = String(explicit || '').trim();
   if (url) return url;
-  return cdekBarcodePublicUrl(leadId, track);
+  return await cdekBarcodePublicUrl(leadId, track);
 }
 
 const WIDGET_DEALS_DIRS = (): string[] =>
@@ -45,7 +45,7 @@ const WIDGET_DEALS_DIRS = (): string[] =>
   ].filter((v): v is string => !!String(v || '').trim());
 
 /** Локальный кэш виджета (data/deals/*.json) на том же VPS. */
-export function loadCdekDealFromWidgetCache(leadId: string): CdekShipment | null {
+export async function loadCdekDealFromWidgetCache(leadId: string): Promise<CdekShipment | null> {
   const id = String(leadId || '').trim();
   if (!id) return null;
   for (const dir of WIDGET_DEALS_DIRS()) {
@@ -55,7 +55,7 @@ export function loadCdekDealFromWidgetCache(leadId: string): CdekShipment | null
       const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
       const num = String(raw.cdek_number || '').trim();
       if (!num) continue;
-      const barcode = resolveCdekBarcodeUrl(id, num, String(raw.cdek_barcode_url || ''));
+      const barcode = await resolveCdekBarcodeUrl(id, num, String(raw.cdek_barcode_url || ''));
       return {
         ok: true,
         lead_id: Number(id) || 0,
@@ -73,7 +73,7 @@ export function loadCdekDealFromWidgetCache(leadId: string): CdekShipment | null
         shipment_method_title: String(raw.shipment_method_title || ''),
         tariff_code: (raw.tariff_code as number | null | undefined) ?? null,
         has_order: true,
-        widget_url: cdekWidgetUrl(id),
+        widget_url: await cdekWidgetUrl(id),
         native_api: false,
         updated_at: String(raw.updated_at || ''),
       };
@@ -84,14 +84,14 @@ export function loadCdekDealFromWidgetCache(leadId: string): CdekShipment | null
   return null;
 }
 
-function mergeWidgetCache(leadId: string, base: CdekShipment): CdekShipment {
+async function mergeWidgetCache(leadId: string, base: CdekShipment): Promise<CdekShipment> {
   if (base.cdek_number && base.cdek_barcode_url) return base;
-  const cached = loadCdekDealFromWidgetCache(leadId);
+  const cached = await loadCdekDealFromWidgetCache(leadId);
   if (!cached) return base;
   const num = String(base.cdek_number || cached.cdek_number || '').trim();
   const barcode =
     String(base.cdek_barcode_url || cached.cdek_barcode_url || '').trim() ||
-    (num ? cdekBarcodePublicUrl(leadId, num) : '');
+    (num ? await cdekBarcodePublicUrl(leadId, num) : '');
   return {
     ...base,
     ok: true,
@@ -206,16 +206,16 @@ export type CdekDealRow = CdekShipment & {
   cod_enabled?: boolean;
 };
 
-function cdekWmsUrl(): string {
-  return getCdekBridgeSettings().wms_url;
+async function cdekWmsUrl(): Promise<string> {
+  return (await getCdekBridgeSettings()).wms_url;
 }
 
-function cdekWmsKey(): string {
-  return getCdekBridgeSettings().wms_key;
+async function cdekWmsKey(): Promise<string> {
+  return (await getCdekBridgeSettings()).wms_key;
 }
 
-export function cdekConfigured(): boolean {
-  return cdekWmsKey() !== '';
+export async function cdekConfigured(): Promise<boolean> {
+  return await cdekWmsKey() !== '';
 }
 
 type WmsAction =
@@ -243,7 +243,7 @@ async function callCdekWmsRaw(
     query?: Record<string, string | number>;
   } = {}
 ): Promise<Record<string, unknown>> {
-  const key = cdekWmsKey();
+  const key = await cdekWmsKey();
   if (!key) {
     return {
       ok: false,
@@ -251,7 +251,7 @@ async function callCdekWmsRaw(
     };
   }
 
-  const url = new URL(cdekWmsUrl());
+  const url = new URL(await cdekWmsUrl());
   url.searchParams.set('action', action);
   if (opts.leadId) {
     url.searchParams.set('lead_id', opts.leadId);
@@ -294,7 +294,7 @@ async function callCdekWmsRaw(
   return data;
 }
 
-function emptyShipment(leadId: string, error?: string): CdekShipment {
+async function emptyShipment(leadId: string, error?: string): Promise<CdekShipment> {
   return {
     ok: false,
     lead_id: Number(leadId) || 0,
@@ -304,24 +304,24 @@ function emptyShipment(leadId: string, error?: string): CdekShipment {
     cdek_status_code: '',
     cdek_status_name: '',
     has_order: false,
-    widget_url: cdekWidgetUrl(leadId),
+    widget_url: await cdekWidgetUrl(leadId),
     native_api: false,
     error,
   };
 }
 
-function asShipment(data: Record<string, unknown>, leadId: string): CdekShipment {
+async function asShipment(data: Record<string, unknown>, leadId: string): Promise<CdekShipment> {
   const cdekNum = String(data.cdek_number || '');
   if (data.ok === false) {
     return {
-      ...emptyShipment(leadId, String(data.error || 'ошибка')),
+      ...await emptyShipment(leadId, String(data.error || 'ошибка')),
       cdek_number: cdekNum,
       cdek_uuid: String(data.cdek_uuid || ''),
-      cdek_barcode_url: resolveCdekBarcodeUrl(leadId, cdekNum, String(data.cdek_barcode_url || '')),
+      cdek_barcode_url: await resolveCdekBarcodeUrl(leadId, cdekNum, String(data.cdek_barcode_url || '')),
       cdek_status_code: String(data.cdek_status_code || ''),
       cdek_status_name: String(data.cdek_status_name || ''),
       has_order: Boolean(data.has_order),
-      widget_url: String(data.widget_url || cdekWidgetUrl(leadId)),
+      widget_url: String(data.widget_url || await cdekWidgetUrl(leadId)),
       native_api: true,
     };
   }
@@ -332,7 +332,7 @@ function asShipment(data: Record<string, unknown>, leadId: string): CdekShipment
     account_title: String(data.account_title || ''),
     cdek_number: cdekNum,
     cdek_uuid: String(data.cdek_uuid || ''),
-    cdek_barcode_url: resolveCdekBarcodeUrl(leadId, cdekNum, String(data.cdek_barcode_url || '')),
+    cdek_barcode_url: await resolveCdekBarcodeUrl(leadId, cdekNum, String(data.cdek_barcode_url || '')),
     cdek_status_code: String(data.cdek_status_code || ''),
     cdek_status_name: String(data.cdek_status_name || ''),
     delivery_cost: (data.delivery_cost as number | null | undefined) ?? null,
@@ -345,7 +345,7 @@ function asShipment(data: Record<string, unknown>, leadId: string): CdekShipment
     shipment_method_title: String(data.shipment_method_title || ''),
     tariff_code: (data.tariff_code as number | null | undefined) ?? null,
     has_order: Boolean(data.has_order),
-    widget_url: String(data.widget_url || cdekWidgetUrl(leadId)),
+    widget_url: String(data.widget_url || await cdekWidgetUrl(leadId)),
     native_api: true,
     updated_at: String(data.updated_at || ''),
     refresh: (data.refresh as CdekShipment['refresh']) ?? null,
@@ -360,20 +360,20 @@ async function callCdekWms(
     leadId,
     method: action === 'refresh' ? 'POST' : 'GET',
   });
-  return asShipment(data, leadId);
+  return await asShipment(data, leadId);
 }
 
 export async function fetchCdekShipment(leadId: string): Promise<CdekShipment> {
   const id = String(leadId || '').trim();
-  if (!cdekWmsKey()) {
-    return mergeWidgetCache(id, emptyShipment(id, 'Не задан ключ СДЭК (Настройки → Интеграции → СДЭК)'));
+  if (!await cdekWmsKey()) {
+    return await mergeWidgetCache(id, await emptyShipment(id, 'Не задан ключ СДЭК (Настройки → Интеграции → СДЭК)'));
   }
-  const ship = mergeWidgetCache(id, await callCdekWms('shipment', id));
+  const ship = await mergeWidgetCache(id, await callCdekWms('shipment', id));
   return ship;
 }
 
 export async function refreshCdekShipment(leadId: string): Promise<CdekShipment> {
-  return callCdekWms('refresh', leadId);
+  return await callCdekWms('refresh', leadId);
 }
 
 export async function fetchCdekSettings(): Promise<CdekSettings> {
@@ -438,7 +438,7 @@ export async function callCdekWidgetAction(
     'pick_pack_save',
     'pick_regenerate',
   ]);
-  return callCdekWmsRaw(action, {
+  return await callCdekWmsRaw(action, {
     method: postish.has(action) ? 'POST' : 'GET',
     body,
     leadId: String(body.lead_id || body.deal_id || ''),
@@ -446,14 +446,14 @@ export async function callCdekWidgetAction(
 }
 
 export async function fetchCdekPickPack(leadId: string): Promise<Record<string, unknown>> {
-  return callCdekWmsRaw('pick_pack' as WmsAction, { leadId });
+  return await callCdekWmsRaw('pick_pack' as WmsAction, { leadId });
 }
 
 export async function saveCdekPickPack(
   leadId: string,
   body: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  return callCdekWmsRaw('pick_pack_save' as WmsAction, {
+  return await callCdekWmsRaw('pick_pack_save' as WmsAction, {
     leadId,
     method: 'POST',
     body: { lead_id: leadId, ...body },
@@ -464,7 +464,7 @@ export async function regenerateCdekPickShipment(
   leadId: string,
   body: Record<string, unknown> = {}
 ): Promise<Record<string, unknown>> {
-  return callCdekWmsRaw('pick_regenerate' as WmsAction, {
+  return await callCdekWmsRaw('pick_regenerate' as WmsAction, {
     leadId,
     method: 'POST',
     body: { lead_id: leadId, ...body },
@@ -498,7 +498,7 @@ export async function listCdekDeals(limit = 300): Promise<{
 
 export async function fetchCdekDeal(leadId: string): Promise<CdekDealRow> {
   const data = await callCdekWmsRaw('deal', { leadId });
-  return asShipment(data, leadId) as CdekDealRow;
+  return await asShipment(data, leadId) as CdekDealRow;
 }
 
 /** Подтянуть трек из виджета в warehouse_tasks.track_number. */
@@ -507,7 +507,7 @@ export async function syncTaskCdekTrack(input: {
   refresh?: boolean;
   actor_id?: string;
 }): Promise<{ task: Record<string, unknown>; cdek: CdekShipment }> {
-  const task = get(`SELECT * FROM warehouse_tasks WHERE id = ?`, [input.taskId]) as
+  const task = await get(`SELECT * FROM warehouse_tasks WHERE id = ?`, [input.taskId]) as
     | { id: string; deal_id: string; track_number?: string }
     | undefined;
   if (!task) throw new Error('Задание не найдено');
@@ -520,13 +520,13 @@ export async function syncTaskCdekTrack(input: {
 
   const track = String(cdek.cdek_number || '').trim();
   if (track && track !== String(task.track_number || '').trim()) {
-    run(
+    await run(
       `UPDATE warehouse_tasks SET track_number = ?, updated_at = datetime('now') WHERE id = ?`,
       [track, input.taskId]
     );
   }
 
-  const updated = get(`SELECT * FROM warehouse_tasks WHERE id = ?`, [input.taskId]) as Record<
+  const updated = await get(`SELECT * FROM warehouse_tasks WHERE id = ?`, [input.taskId]) as Record<
     string,
     unknown
   >;

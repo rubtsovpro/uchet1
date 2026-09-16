@@ -13,7 +13,7 @@ if (!dealId) {
 }
 
 try {
-  const r = syncDealsFromAmo1c({ dealId, limit: 1 });
+  const r = await syncDealsFromAmo1c({ dealId, limit: 1 });
   console.log(JSON.stringify({ ok: true, dealId, ...r }));
 } catch (e) {
   console.error('[sync-deal-cli]', dealId, e);

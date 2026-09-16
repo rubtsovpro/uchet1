@@ -41,9 +41,9 @@ type ProductRow = {
 
 let schemaReady = false;
 
-export function ensureCatalogApiSchema(): void {
+export async function ensureCatalogApiSchema(): Promise<void> {
   if (schemaReady) return;
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS product_alt_codes (
       id TEXT PRIMARY KEY,
       product_id TEXT NOT NULL,
@@ -56,11 +56,11 @@ export function ensureCatalogApiSchema(): void {
       FOREIGN KEY (product_id) REFERENCES products(id)
     )
   `);
-  run(`CREATE INDEX IF NOT EXISTS idx_pac_product ON product_alt_codes(product_id)`);
-  run(`CREATE INDEX IF NOT EXISTS idx_pac_value ON product_alt_codes(value)`);
-  run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pac_unique ON product_alt_codes(product_id, code_type, value)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_pac_product ON product_alt_codes(product_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_pac_value ON product_alt_codes(value)`);
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pac_unique ON product_alt_codes(product_id, code_type, value)`);
 
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS product_merge_map (
       master_product_id TEXT NOT NULL,
       source_product_id TEXT NOT NULL,
@@ -69,9 +69,9 @@ export function ensureCatalogApiSchema(): void {
       PRIMARY KEY (master_product_id, source_product_id)
     )
   `);
-  run(`CREATE INDEX IF NOT EXISTS idx_pmm_source ON product_merge_map(source_product_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_pmm_source ON product_merge_map(source_product_id)`);
 
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS catalog_idempotency (
       idempotency_key TEXT PRIMARY KEY,
       operation TEXT NOT NULL DEFAULT '',
@@ -80,7 +80,7 @@ export function ensureCatalogApiSchema(): void {
     )
   `);
 
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS catalog_snapshots (
       id TEXT PRIMARY KEY,
       label TEXT NOT NULL DEFAULT '',
@@ -90,7 +90,7 @@ export function ensureCatalogApiSchema(): void {
     )
   `);
 
-  run(`
+  await run(`
     CREATE TABLE IF NOT EXISTS product_price_merge_log (
       id TEXT PRIMARY KEY,
       master_product_id TEXT NOT NULL,
@@ -105,14 +105,14 @@ export function ensureCatalogApiSchema(): void {
   schemaReady = true;
 }
 
-function withTransaction<T>(fn: () => T): T {
-  run('BEGIN IMMEDIATE');
+async function withTransaction<T>(fn: () => T): Promise<T> {
+  await run('BEGIN IMMEDIATE');
   try {
     const out = fn();
-    run('COMMIT');
+    await run('COMMIT');
     return out;
   } catch (e) {
-    run('ROLLBACK');
+    await run('ROLLBACK');
     throw e;
   }
 }
@@ -140,9 +140,9 @@ function mergeArraySku(existing: string, extras: string[]): string {
   return [...set].join(', ');
 }
 
-function loadProduct(id: string): ProductRow | null {
+async function loadProduct(id: string): Promise<ProductRow | null> {
   return (
-    get<ProductRow>(
+    await get<ProductRow>(
       `SELECT id, sku, name, IFNULL(code,'') AS code, IFNULL(barcode,'') AS barcode,
               IFNULL(gtin,'') AS gtin, IFNULL(array_sku,'') AS array_sku,
               category_id, IFNULL(is_active,1) AS is_active, IFNULL(brand,'') AS brand
@@ -152,23 +152,23 @@ function loadProduct(id: string): ProductRow | null {
   );
 }
 
-export function mergedSourceIds(productId: string): string[] {
-  ensureCatalogApiSchema();
-  const rows = all<{ source_product_id: string }>(
+export async function mergedSourceIds(productId: string): Promise<string[]> {
+  await ensureCatalogApiSchema();
+  const rows = await all<{ source_product_id: string }>(
     `SELECT source_product_id FROM product_merge_map WHERE master_product_id = ?`,
     [productId]
   );
   return rows.map((r) => String(r.source_product_id)).filter(Boolean);
 }
 
-export function allRelatedProductIds(productId: string): string[] {
-  const sources = mergedSourceIds(productId);
+export async function allRelatedProductIds(productId: string): Promise<string[]> {
+  const sources = await mergedSourceIds(productId);
   return [productId, ...sources];
 }
 
-function listAltCodes(productId: string) {
-  ensureCatalogApiSchema();
-  return all<{
+async function listAltCodes(productId: string) {
+  await ensureCatalogApiSchema();
+  return (await all<{
     id: string;
     type: string;
     value: string;
@@ -180,7 +180,7 @@ function listAltCodes(productId: string) {
     `SELECT id, code_type AS type, value, supplier, note, source_product_id, created_at
      FROM product_alt_codes WHERE product_id = ? ORDER BY code_type, value`,
     [productId]
-  ).map((r) => ({
+  )).map((r) => ({
     type: r.type,
     value: r.value,
     supplier: r.supplier || undefined,
@@ -190,21 +190,21 @@ function listAltCodes(productId: string) {
   }));
 }
 
-function upsertAltCode(
+async function upsertAltCode(
   productId: string,
   entry: { type?: string; value: string; supplier?: string; note?: string; source_product_id?: string }
-): void {
+): Promise<void> {
   const type = CODE_TYPES.has(String(entry.type || '').toLowerCase())
     ? String(entry.type).toLowerCase()
     : 'other';
   const value = String(entry.value || '').trim();
   if (!value) return;
-  const existing = get<{ id: string }>(
+  const existing = await get<{ id: string }>(
     `SELECT id FROM product_alt_codes WHERE product_id = ? AND code_type = ? AND value = ?`,
     [productId, type, value]
   );
   if (existing?.id) return;
-  run(
+  await run(
     `INSERT INTO product_alt_codes (id, product_id, code_type, value, supplier, note, source_product_id)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -231,8 +231,8 @@ function collectCodesFromProduct(p: ProductRow): Array<{ type: string; value: st
   return out;
 }
 
-function stockByWarehouse(productId: string): Array<{ warehouse_id: string; warehouse: string; qty: number }> {
-  return all<{ warehouse_id: string; warehouse: string; qty: number }>(
+async function stockByWarehouse(productId: string): Promise<Array<{ warehouse_id: string; warehouse: string; qty: number }>> {
+  return (await all<{ warehouse_id: string; warehouse: string; qty: number }>(
     `SELECT b.warehouse_id, w.name AS warehouse, SUM(b.qty) AS qty
      FROM (
        SELECT warehouse_id, product_id, qty FROM stock_balances WHERE product_id = ? AND qty != 0
@@ -250,36 +250,36 @@ function stockByWarehouse(productId: string): Array<{ warehouse_id: string; ware
      GROUP BY b.warehouse_id, w.name
      HAVING SUM(b.qty) != 0`,
     [productId, productId]
-  ).map((r) => ({
+  )).map((r) => ({
     warehouse_id: r.warehouse_id,
     warehouse: r.warehouse,
     qty: Math.round((Number(r.qty) || 0) * 1000) / 1000,
   }));
 }
 
-function findUnpostedDocs(productIds: string[]): string[] {
+async function findUnpostedDocs(productIds: string[]): Promise<string[]> {
   if (!productIds.length) return [];
   const ph = productIds.map(() => '?').join(',');
-  return all<{ number: string }>(
+  return (await all<{ number: string }>(
     `SELECT DISTINCT d.number
      FROM stock_docs d
      JOIN stock_doc_lines l ON l.doc_id = d.id
      WHERE IFNULL(d.posted,0) = 0 AND l.product_id IN (${ph})`,
     productIds
-  ).map((r) => String(r.number));
+  )).map((r) => String(r.number));
 }
 
-function findOpenDeals(productIds: string[]): Array<{ deal_id: string; name: string }> {
+async function findOpenDeals(productIds: string[]): Promise<Array<{ deal_id: string; name: string }>> {
   if (!productIds.length) return [];
   const ph = productIds.map(() => '?').join(',');
-  const fromItems = all<{ deal_id: string; name: string }>(
+  const fromItems = await all<{ deal_id: string; name: string }>(
     `SELECT DISTINCT d.id AS deal_id, IFNULL(d.name,'') AS name
      FROM crm_deal_items i
      JOIN crm_deals d ON d.id = i.deal_id
      WHERE i.product_guid IN (${ph})`,
     productIds
   );
-  const fromReserves = all<{ deal_id: string; name: string }>(
+  const fromReserves = await all<{ deal_id: string; name: string }>(
     `SELECT DISTINCT r.deal_id, IFNULL(d.name,'') AS name
      FROM stock_reserves r
      LEFT JOIN crm_deals d ON d.id = r.deal_id
@@ -295,20 +295,20 @@ function findOpenDeals(productIds: string[]): Array<{ deal_id: string; name: str
   return [...map.entries()].map(([deal_id, name]) => ({ deal_id, name }));
 }
 
-function bumpStock(masterId: string, warehouseId: string, delta: number): void {
+async function bumpStock(masterId: string, warehouseId: string, delta: number): Promise<void> {
   if (!(Math.abs(delta) > 0.0000001)) return;
-  const row = get<{ qty: number }>(
+  const row = await get<{ qty: number }>(
     `SELECT qty FROM stock_balances WHERE warehouse_id = ? AND product_id = ?`,
     [warehouseId, masterId]
   );
   if (row) {
-    run(`UPDATE stock_balances SET qty = ? WHERE warehouse_id = ? AND product_id = ?`, [
+    await run(`UPDATE stock_balances SET qty = ? WHERE warehouse_id = ? AND product_id = ?`, [
       Math.round((Number(row.qty) + delta) * 1000) / 1000,
       warehouseId,
       masterId,
     ]);
   } else if (delta > 0) {
-    run(`INSERT INTO stock_balances (warehouse_id, product_id, qty) VALUES (?, ?, ?)`, [
+    await run(`INSERT INTO stock_balances (warehouse_id, product_id, qty) VALUES (?, ?, ?)`, [
       warehouseId,
       masterId,
       delta,
@@ -316,16 +316,16 @@ function bumpStock(masterId: string, warehouseId: string, delta: number): void {
   }
 }
 
-function moveStoreRest(masterId: string, sourceId: string, warehouseId: string, qty: number): void {
-  bumpStock(masterId, warehouseId, qty);
-  run(
+async function moveStoreRest(masterId: string, sourceId: string, warehouseId: string, qty: number): Promise<void> {
+  await bumpStock(masterId, warehouseId, qty);
+  await run(
     `UPDATE product_store_rests SET qty = 0 WHERE product_id = ? AND warehouse_id = ?`,
     [sourceId, warehouseId]
   );
 }
 
-function moveCellBalances(master: ProductRow, source: ProductRow): number {
-  const rows = all<{
+async function moveCellBalances(master: ProductRow, source: ProductRow): Promise<number> {
+  const rows = await all<{
     warehouse_id: string;
     cell_id: string;
     sku: string;
@@ -339,13 +339,13 @@ function moveCellBalances(master: ProductRow, source: ProductRow): number {
     const qty = Number(r.qty) || 0;
     if (!(qty > 0)) continue;
     const masterSku = master.sku;
-    const target = get<{ qty: number }>(
+    const target = await get<{ qty: number }>(
       `SELECT qty FROM stock_cell_balances
        WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
       [r.warehouse_id, r.cell_id, masterSku]
     );
     if (target) {
-      run(
+      await run(
         `UPDATE stock_cell_balances SET product_id = ?, product_name = ?, qty = ?
          WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
         [
@@ -358,13 +358,13 @@ function moveCellBalances(master: ProductRow, source: ProductRow): number {
         ]
       );
     } else {
-      run(
+      await run(
         `UPDATE stock_cell_balances SET product_id = ?, sku = ?, product_name = ?
          WHERE warehouse_id = ? AND cell_id = ? AND sku = ?`,
         [master.id, masterSku, master.name, r.warehouse_id, r.cell_id, r.sku]
       );
     }
-    run(
+    await run(
       `DELETE FROM stock_cell_balances WHERE warehouse_id = ? AND cell_id = ? AND sku = ? AND product_id = ?`,
       [r.warehouse_id, r.cell_id, r.sku, source.id]
     );
@@ -373,19 +373,19 @@ function moveCellBalances(master: ProductRow, source: ProductRow): number {
   return moved;
 }
 
-function logSourcePrices(masterId: string, sourceId: string): void {
-  const masterPrices = all<{ price_type: string; price: number }>(
+async function logSourcePrices(masterId: string, sourceId: string): Promise<void> {
+  const masterPrices = await all<{ price_type: string; price: number }>(
     `SELECT price_type, price FROM product_prices WHERE product_id = ?`,
     [masterId]
   );
   const masterMap = new Map(masterPrices.map((p) => [p.price_type, Number(p.price) || 0]));
-  const sourcePrices = all<{ price_type: string; price: number }>(
+  const sourcePrices = await all<{ price_type: string; price: number }>(
     `SELECT price_type, price FROM product_prices WHERE product_id = ?`,
     [sourceId]
   );
   for (const sp of sourcePrices) {
     const mp = masterMap.get(sp.price_type) ?? 0;
-    run(
+    await run(
       `INSERT INTO product_price_merge_log
          (id, master_product_id, source_product_id, price_type, master_price, source_price, action)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -400,7 +400,7 @@ function logSourcePrices(masterId: string, sourceId: string): void {
       ]
     );
     if (!(mp > 0) && Number(sp.price) > 0) {
-      run(
+      await run(
         `INSERT OR IGNORE INTO product_prices (id, product_id, price_type, price)
          VALUES (?, ?, ?, ?)`,
         [newGuid(), masterId, sp.price_type, Number(sp.price)]
@@ -409,14 +409,14 @@ function logSourcePrices(masterId: string, sourceId: string): void {
   }
 }
 
-function copySupplierLinks(masterId: string, sourceId: string): number {
-  const rows = all<{ supplier_id: string }>(
+async function copySupplierLinks(masterId: string, sourceId: string): Promise<number> {
+  const rows = await all<{ supplier_id: string }>(
     `SELECT supplier_id FROM supplier_product_apps WHERE product_id = ?`,
     [sourceId]
   );
   let n = 0;
   for (const r of rows) {
-    run(
+    await run(
       `INSERT OR IGNORE INTO supplier_product_apps (id, product_id, supplier_id) VALUES (?, ?, ?)`,
       [newGuid(), masterId, r.supplier_id]
     );
@@ -425,9 +425,9 @@ function copySupplierLinks(masterId: string, sourceId: string): number {
   return n;
 }
 
-export function planProductMerge(masterId: string, input: ProductMergeInput) {
-  ensureCatalogApiSchema();
-  const master = loadProduct(masterId);
+export async function planProductMerge(masterId: string, input: ProductMergeInput) {
+  await ensureCatalogApiSchema();
+  const master = await loadProduct(masterId);
   if (!master) throw new Error('Мастер-карточка не найдена');
 
   const sourceIds = [...new Set((input.source_ids || []).map((x) => String(x || '').trim()).filter(Boolean))];
@@ -436,7 +436,7 @@ export function planProductMerge(masterId: string, input: ProductMergeInput) {
 
   for (const sid of sourceIds) {
     if (sid === masterId) throw new Error('Источник совпадает с мастером');
-    const src = loadProduct(sid);
+    const src = await loadProduct(sid);
     if (!src) throw new Error(`Карточка-источник не найдена: ${sid}`);
     if (!src.is_active) warnings.push(`Источник ${sid} уже в архиве — будет пропущен`);
     sources.push(src);
@@ -445,7 +445,7 @@ export function planProductMerge(masterId: string, input: ProductMergeInput) {
   const activeSources = sources.filter((s) => s.is_active);
   const activeIds = activeSources.map((s) => s.id);
 
-  const unposted = findUnpostedDocs(activeIds);
+  const unposted = await findUnpostedDocs(activeIds);
   if (unposted.length) {
     const err = new Error(`Непроведённые документы по источникам: ${unposted.join(', ')}`);
     (err as Error & { status?: number; details?: unknown }).status = 409;
@@ -453,7 +453,7 @@ export function planProductMerge(masterId: string, input: ProductMergeInput) {
     throw err;
   }
 
-  const openDeals = findOpenDeals(activeIds);
+  const openDeals = await findOpenDeals(activeIds);
   if (openDeals.length) {
     const err = new Error(
       `Источник в открытых сделках Amo: ${openDeals.map((d) => d.deal_id).join(', ')}`
@@ -473,7 +473,7 @@ export function planProductMerge(masterId: string, input: ProductMergeInput) {
   }> = [];
 
   for (const src of activeSources) {
-    const whRows = stockByWarehouse(src.id);
+    const whRows = await stockByWarehouse(src.id);
     const codes = collectCodesFromProduct(src).map((c) => c.value);
     perSource.push({ id: src.id, sku: src.sku, by_warehouse: whRows, codes });
     for (const w of whRows) {
@@ -514,33 +514,33 @@ export function planProductMerge(masterId: string, input: ProductMergeInput) {
   };
 }
 
-export function executeProductMerge(masterId: string, input: ProductMergeInput) {
-  const plan = planProductMerge(masterId, input);
+export async function executeProductMerge(masterId: string, input: ProductMergeInput) {
+  const plan = await planProductMerge(masterId, input);
   if (input.dry_run) return plan;
 
-  const master = loadProduct(masterId)!;
+  const master = (await loadProduct(masterId))!;
   const mergeCodesTo = input.merge_codes_to || 'both';
   const codesAdded: string[] = [];
   const archived: string[] = [];
 
-  withTransaction(() => {
+  await withTransaction(async () => {
     for (const srcInfo of plan.sources) {
-      const source = loadProduct(srcInfo.id);
+      const source = await loadProduct(srcInfo.id);
       if (!source || !source.is_active) continue;
 
       if (input.move_stock !== false) {
         for (const w of srcInfo.by_warehouse) {
-          bumpStock(masterId, w.warehouse_id, w.qty);
-          run(`UPDATE stock_balances SET qty = 0 WHERE product_id = ? AND warehouse_id = ?`, [
+          await bumpStock(masterId, w.warehouse_id, w.qty);
+          await run(`UPDATE stock_balances SET qty = 0 WHERE product_id = ? AND warehouse_id = ?`, [
             source.id,
             w.warehouse_id,
           ]);
-          moveStoreRest(masterId, source.id, w.warehouse_id, w.qty);
+          await moveStoreRest(masterId, source.id, w.warehouse_id, w.qty);
         }
       }
 
       if (input.move_reserves !== false) {
-        run(
+        await run(
           `UPDATE stock_reserves SET product_id = ?
            WHERE product_id = ? AND lower(IFNULL(status,'')) IN ('active','reserved','hold','open')`,
           [masterId, source.id]
@@ -548,14 +548,14 @@ export function executeProductMerge(masterId: string, input: ProductMergeInput) 
       }
 
       if (input.move_cells !== false) {
-        moveCellBalances(master, source);
+        await moveCellBalances(master, source);
       }
 
       if (input.move_suppliers !== false) {
-        copySupplierLinks(masterId, source.id);
+        await copySupplierLinks(masterId, source.id);
       }
 
-      logSourcePrices(masterId, source.id);
+      await logSourcePrices(masterId, source.id);
 
       const codeEntries = collectCodesFromProduct(source);
       let arraySku = master.array_sku;
@@ -565,7 +565,7 @@ export function executeProductMerge(masterId: string, input: ProductMergeInput) 
           arraySku = mergeArraySku(arraySku, [ce.value]);
         }
         if (mergeCodesTo === 'alt_codes' || mergeCodesTo === 'both') {
-          upsertAltCode(masterId, {
+          await upsertAltCode(masterId, {
             type: ce.type,
             value: ce.value,
             note: ce.note || `merge from ${source.sku}`,
@@ -577,24 +577,24 @@ export function executeProductMerge(masterId: string, input: ProductMergeInput) 
         }
       }
       if (mergeCodesTo === 'crosses' || mergeCodesTo === 'both') {
-        run(`UPDATE products SET array_sku = ? WHERE id = ?`, [arraySku, masterId]);
+        await run(`UPDATE products SET array_sku = ? WHERE id = ?`, [arraySku, masterId]);
       }
 
-      run(
+      await run(
         `INSERT OR REPLACE INTO product_merge_map (master_product_id, source_product_id, merged_at, comment)
          VALUES (?, ?, datetime('now'), ?)`,
         [masterId, source.id, String(input.comment || '').trim()]
       );
 
       if (input.archive_sources !== false) {
-        run(`UPDATE products SET is_active = 0, master_product_id = ?, dedup_role = 'alias' WHERE id = ?`, [
+        await run(`UPDATE products SET is_active = 0, master_product_id = ?, dedup_role = 'alias' WHERE id = ?`, [
           masterId,
           source.id,
         ]);
         archived.push(source.id);
       }
 
-      run(
+      await run(
         `UPDATE crm_deal_items SET product_guid = ?, sku = ?, code = ?
          WHERE product_guid = ?`,
         [masterId, master.sku, master.code, source.id]
@@ -612,8 +612,8 @@ export function executeProductMerge(masterId: string, input: ProductMergeInput) 
   };
 }
 
-export function productUnitCost(productId: string) {
-  const layers = productInboundLayers(productId);
+export async function productUnitCost(productId: string) {
+  const layers = await productInboundLayers(productId);
   return {
     product_id: productId,
     method: 'fifo_inbound',
@@ -621,13 +621,13 @@ export function productUnitCost(productId: string) {
     unit_cost: layers.unit_cost,
     total_value: layers.value,
     last_price: layers.last_price,
-    merged_sources: mergedSourceIds(productId),
+    merged_sources: await mergedSourceIds(productId),
   };
 }
 
-function readIdempotency(key: string): unknown | null {
-  ensureCatalogApiSchema();
-  const row = get<{ response_json: string }>(
+async function readIdempotency(key: string): Promise<unknown | null> {
+  await ensureCatalogApiSchema();
+  const row = await get<{ response_json: string }>(
     `SELECT response_json FROM catalog_idempotency WHERE idempotency_key = ?`,
     [key]
   );
@@ -639,17 +639,17 @@ function readIdempotency(key: string): unknown | null {
   }
 }
 
-function writeIdempotency(key: string, operation: string, response: unknown): void {
-  ensureCatalogApiSchema();
-  run(
+async function writeIdempotency(key: string, operation: string, response: unknown): Promise<void> {
+  await ensureCatalogApiSchema();
+  await run(
     `INSERT OR REPLACE INTO catalog_idempotency (idempotency_key, operation, response_json, created_at)
      VALUES (?, ?, ?, datetime('now'))`,
     [key, operation, JSON.stringify(response)]
   );
 }
 
-function requireCatalogEdit(c: { json: (b: unknown, s?: number) => Response }): boolean {
-  const actor = actorFromContext(c as never);
+async function requireCatalogEdit(c: { json: (b: unknown, s?: number) => Response }): Promise<boolean> {
+  const actor = await actorFromContext(c as never);
   if (!canDo(actor, 'can_edit_products')) {
     c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
     return false;
@@ -663,17 +663,17 @@ function httpError(c: { json: (b: unknown, s?: number) => Response }, e: unknown
   return c.json({ error: err.message || 'error', details: err.details || undefined }, status);
 }
 
-export function mountProductCatalogApiRoutes(api: Hono): void {
-  ensureCatalogApiSchema();
+export async function mountProductCatalogApiRoutes(api: Hono): Promise<void> {
+  await ensureCatalogApiSchema();
 
   api.post('/products/:master_id/merge', async (c) => {
-    if (!requireCatalogEdit(c)) return c.res;
+    if (!await requireCatalogEdit(c)) return c.res;
     const masterId = c.req.param('master_id');
     const body = (await c.req.json().catch(() => ({}))) as ProductMergeInput;
     try {
-      const result = executeProductMerge(masterId, body);
+      const result = await executeProductMerge(masterId, body);
       if (!body.dry_run) {
-        auditFromContext(c, {
+        await auditFromContext(c, {
           action: 'product.merge',
           entity: 'product',
           entityId: masterId,
@@ -687,60 +687,60 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
     }
   });
 
-  api.get('/products/:id/codes', (c) => {
+  api.get('/products/:id/codes', async (c) => {
     const id = c.req.param('id');
-    if (!loadProduct(id)) return c.json({ error: 'not found' }, 404);
-    return c.json({ product_id: id, codes: listAltCodes(id) });
+    if (!await loadProduct(id)) return c.json({ error: 'not found' }, 404);
+    return c.json({ product_id: id, codes: await listAltCodes(id) });
   });
 
   api.put('/products/:id/codes', async (c) => {
-    if (!requireCatalogEdit(c)) return c.res;
+    if (!await requireCatalogEdit(c)) return c.res;
     const id = c.req.param('id');
-    if (!loadProduct(id)) return c.json({ error: 'not found' }, 404);
+    if (!await loadProduct(id)) return c.json({ error: 'not found' }, 404);
     const body = (await c.req.json().catch(() => ({}))) as {
       codes?: Array<{ type?: string; value: string; supplier?: string; note?: string }>;
       replace?: boolean;
     };
     if (body.replace) {
-      run(`DELETE FROM product_alt_codes WHERE product_id = ?`, [id]);
+      await run(`DELETE FROM product_alt_codes WHERE product_id = ?`, [id]);
     }
     for (const code of body.codes || []) {
-      upsertAltCode(id, code);
+      await upsertAltCode(id, code);
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'product.codes.set',
       entity: 'product',
       entityId: id,
       summary: `Кроссы: ${(body.codes || []).length} шт.`,
     });
-    return c.json({ ok: true, product_id: id, codes: listAltCodes(id) });
+    return c.json({ ok: true, product_id: id, codes: await listAltCodes(id) });
   });
 
   api.delete('/products/:id/codes', async (c) => {
-    if (!requireCatalogEdit(c)) return c.res;
+    if (!await requireCatalogEdit(c)) return c.res;
     const id = c.req.param('id');
     const value = (c.req.query('value') || '').trim();
     const type = (c.req.query('type') || '').trim().toLowerCase();
-    if (!loadProduct(id)) return c.json({ error: 'not found' }, 404);
+    if (!await loadProduct(id)) return c.json({ error: 'not found' }, 404);
     if (value) {
-      run(
+      await run(
         `DELETE FROM product_alt_codes WHERE product_id = ? AND value = ?${type ? ' AND code_type = ?' : ''}`,
         type ? [id, value, type] : [id, value]
       );
     } else {
-      run(`DELETE FROM product_alt_codes WHERE product_id = ?`, [id]);
+      await run(`DELETE FROM product_alt_codes WHERE product_id = ?`, [id]);
     }
-    return c.json({ ok: true, product_id: id, codes: listAltCodes(id) });
+    return c.json({ ok: true, product_id: id, codes: await listAltCodes(id) });
   });
 
-  api.get('/products/:id/cost', (c) => {
+  api.get('/products/:id/cost', async (c) => {
     const id = c.req.param('id');
-    if (!loadProduct(id)) return c.json({ error: 'not found' }, 404);
-    return c.json(productUnitCost(id));
+    if (!await loadProduct(id)) return c.json({ error: 'not found' }, 404);
+    return c.json(await productUnitCost(id));
   });
 
   api.post('/products/bulk/merge', async (c) => {
-    if (!requireCatalogEdit(c)) return c.res;
+    if (!await requireCatalogEdit(c)) return c.res;
     const body = (await c.req.json().catch(() => ({}))) as {
       operations?: Array<{ master_id: string; source_ids: string[] } & ProductMergeInput>;
       dry_run?: boolean;
@@ -748,7 +748,7 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
     };
     const key = String(body.idempotency_key || '').trim();
     if (key) {
-      const cached = readIdempotency(key);
+      const cached = await readIdempotency(key);
       if (cached) return c.json(cached);
     }
     const ops = Array.isArray(body.operations) ? body.operations.slice(0, 500) : [];
@@ -756,7 +756,7 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
     for (const op of ops) {
       try {
         results.push(
-          executeProductMerge(String(op.master_id || ''), {
+          await executeProductMerge(String(op.master_id || ''), {
             ...op,
             source_ids: op.source_ids || [],
             dry_run: body.dry_run,
@@ -767,39 +767,39 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
       }
     }
     const payload = { ok: true, dry_run: !!body.dry_run, results };
-    if (key) writeIdempotency(key, 'bulk_merge', payload);
+    if (key) await writeIdempotency(key, 'bulk_merge', payload);
     return c.json(payload);
   });
 
   api.post('/products/bulk/archive', async (c) => {
-    if (!requireCatalogEdit(c)) return c.res;
+    if (!await requireCatalogEdit(c)) return c.res;
     const body = (await c.req.json().catch(() => ({}))) as {
       ids?: string[];
       idempotency_key?: string;
     };
     const key = String(body.idempotency_key || '').trim();
     if (key) {
-      const cached = readIdempotency(key);
+      const cached = await readIdempotency(key);
       if (cached) return c.json(cached);
     }
     const ids = [...new Set((body.ids || []).map((x) => String(x || '').trim()).filter(Boolean))].slice(0, 5000);
     const results: Array<{ id: string; ok: boolean; error?: string }> = [];
     for (const id of ids) {
-      const p = loadProduct(id);
+      const p = await loadProduct(id);
       if (!p) {
         results.push({ id, ok: false, error: 'not found' });
         continue;
       }
-      run(`UPDATE products SET is_active = 0 WHERE id = ?`, [id]);
+      await run(`UPDATE products SET is_active = 0 WHERE id = ?`, [id]);
       results.push({ id, ok: true });
     }
     const payload = { ok: true, archived: results.filter((r) => r.ok).length, results };
-    if (key) writeIdempotency(key, 'bulk_archive', payload);
+    if (key) await writeIdempotency(key, 'bulk_archive', payload);
     return c.json(payload);
   });
 
   api.patch('/products/bulk', async (c) => {
-    if (!requireCatalogEdit(c)) return c.res;
+    if (!await requireCatalogEdit(c)) return c.res;
     const body = (await c.req.json().catch(() => ({}))) as {
       ids?: string[];
       patch?: Record<string, unknown>;
@@ -807,7 +807,7 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
     };
     const key = String(body.idempotency_key || '').trim();
     if (key) {
-      const cached = readIdempotency(key);
+      const cached = await readIdempotency(key);
       if (cached) return c.json(cached);
     }
     const allowed = ['name', 'sku', 'code', 'brand', 'category_id', 'barcode', 'gtin', 'array_sku', 'is_active'];
@@ -818,12 +818,12 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
     const setSql = fields.map((f) => `${f} = ?`).join(', ');
     const results: Array<{ id: string; ok: boolean; error?: string }> = [];
     for (const id of ids) {
-      if (!loadProduct(id)) {
+      if (!await loadProduct(id)) {
         results.push({ id, ok: false, error: 'not found' });
         continue;
       }
       try {
-        run(`UPDATE products SET ${setSql} WHERE id = ?`, [
+        await run(`UPDATE products SET ${setSql} WHERE id = ?`, [
           ...fields.map((f) => patch[f] as string | number | null),
           id,
         ]);
@@ -833,40 +833,40 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
       }
     }
     const payload = { ok: true, updated: results.filter((r) => r.ok).length, results };
-    if (key) writeIdempotency(key, 'bulk_patch', payload);
+    if (key) await writeIdempotency(key, 'bulk_patch', payload);
     return c.json(payload);
   });
 
   api.post('/snapshots', async (c) => {
-    if (!requireCatalogEdit(c)) return c.res;
+    if (!await requireCatalogEdit(c)) return c.res;
     const body = (await c.req.json().catch(() => ({}))) as { label?: string; product_ids?: string[] };
     const ids = body.product_ids?.length
       ? [...new Set(body.product_ids.map(String))]
-      : all<{ id: string }>(`SELECT id FROM products`).map((r) => r.id);
+      : (await all<{ id: string }>(`SELECT id FROM products`)).map((r) => r.id);
     const ph = ids.map(() => '?').join(',') || "''";
     const products = ids.length
-      ? all(`SELECT * FROM products WHERE id IN (${ph})`, ids)
+      ? await all(`SELECT * FROM products WHERE id IN (${ph})`, ids)
       : [];
     const stock = ids.length
-      ? all(`SELECT * FROM stock_balances WHERE product_id IN (${ph})`, ids)
+      ? await all(`SELECT * FROM stock_balances WHERE product_id IN (${ph})`, ids)
       : [];
     const prices = ids.length
-      ? all(`SELECT * FROM product_prices WHERE product_id IN (${ph})`, ids)
+      ? await all(`SELECT * FROM product_prices WHERE product_id IN (${ph})`, ids)
       : [];
     const codes = ids.length
-      ? all(`SELECT * FROM product_alt_codes WHERE product_id IN (${ph})`, ids)
+      ? await all(`SELECT * FROM product_alt_codes WHERE product_id IN (${ph})`, ids)
       : [];
     const id = newGuid();
     const payload = { products, stock_balances: stock, product_prices: prices, product_alt_codes: codes };
-    run(
+    await run(
       `INSERT INTO catalog_snapshots (id, label, payload_json, product_count) VALUES (?, ?, ?, ?)`,
       [id, String(body.label || '').trim() || 'snapshot', JSON.stringify(payload), products.length]
     );
     return c.json({ ok: true, id, label: body.label || '', product_count: products.length }, 201);
   });
 
-  api.get('/snapshots/:id', (c) => {
-    const row = get<{ id: string; label: string; payload_json: string; product_count: number; created_at: string }>(
+  api.get('/snapshots/:id', async (c) => {
+    const row = await get<{ id: string; label: string; payload_json: string; product_count: number; created_at: string }>(
       `SELECT id, label, payload_json, product_count, created_at FROM catalog_snapshots WHERE id = ?`,
       [c.req.param('id')]
     );
@@ -887,9 +887,9 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
   });
 
   api.post('/snapshots/:id/restore', async (c) => {
-    if (!requireCatalogEdit(c)) return c.res;
+    if (!await requireCatalogEdit(c)) return c.res;
     const body = (await c.req.json().catch(() => ({}))) as { dry_run?: boolean; restore_stock?: boolean; restore_prices?: boolean };
-    const row = get<{ payload_json: string }>(`SELECT payload_json FROM catalog_snapshots WHERE id = ?`, [
+    const row = await get<{ payload_json: string }>(`SELECT payload_json FROM catalog_snapshots WHERE id = ?`, [
       c.req.param('id'),
     ]);
     if (!row) return c.json({ error: 'not found' }, 404);
@@ -905,9 +905,9 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
     };
     if (body.dry_run) return c.json({ ok: true, dry_run: true, plan });
 
-    withTransaction(() => {
+    await withTransaction(async () => {
       for (const p of payload.products || []) {
-        run(
+        await run(
           `UPDATE products SET sku=?, name=?, code=?, barcode=?, gtin=?, array_sku=?, category_id=?, is_active=?, brand=?
            WHERE id=?`,
           [
@@ -926,7 +926,7 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
       }
       if (body.restore_stock !== false) {
         for (const s of payload.stock_balances || []) {
-          run(
+          await run(
             `INSERT INTO stock_balances (warehouse_id, product_id, qty) VALUES (?, ?, ?)
              ON CONFLICT(warehouse_id, product_id) DO UPDATE SET qty = excluded.qty`,
             [s.warehouse_id, s.product_id, s.qty]
@@ -935,11 +935,11 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
       }
       if (body.restore_prices !== false) {
         for (const pr of payload.product_prices || []) {
-          run(`DELETE FROM product_prices WHERE product_id = ? AND price_type = ?`, [
+          await run(`DELETE FROM product_prices WHERE product_id = ? AND price_type = ?`, [
             pr.product_id,
             pr.price_type,
           ]);
-          run(
+          await run(
             `INSERT INTO product_prices (id, product_id, price_type, price) VALUES (?, ?, ?, ?)`,
             [newGuid(), pr.product_id, pr.price_type, pr.price]
           );
@@ -951,10 +951,10 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
   });
 
   api.post('/products/catalog/normalize-sku-clones', async (c) => {
-    if (!requireCatalogEdit(c)) return c.res;
+    if (!await requireCatalogEdit(c)) return c.res;
     const body = (await c.req.json().catch(() => ({}))) as { dry_run?: boolean; limit?: number };
     const lim = Math.min(10000, Math.max(1, Number(body.limit) || 5000));
-    const rows = all<{ id: string; sku: string }>(
+    const rows = await all<{ id: string; sku: string }>(
       `SELECT id, sku FROM products
        WHERE sku GLOB '*:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
        LIMIT ?`,
@@ -973,10 +973,10 @@ export function mountProductCatalogApiRoutes(api: Hono): void {
 
     let fixed = 0;
     for (const a of actions) {
-      const clash = get<{ id: string }>(`SELECT id FROM products WHERE sku = ? AND id != ?`, [a.to, a.id]);
+      const clash = await get<{ id: string }>(`SELECT id FROM products WHERE sku = ? AND id != ?`, [a.to, a.id]);
       if (clash) continue;
-      upsertAltCode(a.id, { type: 'sku', value: a.from, note: 'бывший sku с хвостом :id' });
-      run(`UPDATE products SET sku = ? WHERE id = ?`, [a.to, a.id]);
+      await upsertAltCode(a.id, { type: 'sku', value: a.from, note: 'бывший sku с хвостом :id' });
+      await run(`UPDATE products SET sku = ? WHERE id = ?`, [a.to, a.id]);
       fixed += 1;
     }
     return c.json({ ok: true, fixed, scanned: actions.length });

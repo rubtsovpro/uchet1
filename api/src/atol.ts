@@ -25,8 +25,9 @@ export type FiscalKind = 'advance' | 'full' | 'refund' | 'refund_advance';
 const SELL_KINDS = new Set(['advance', 'full']);
 const REFUND_KINDS = new Set(['refund', 'refund_advance']);
 
-export function atolConfigured(cfg: AtolSettings = getAtolSettings()): boolean {
-  return Boolean(cfg.login && cfg.pass && cfg.group_code);
+export async function atolConfigured(cfg?: AtolSettings): Promise<boolean> {
+  const s = cfg ?? (await getAtolSettings());
+  return Boolean(s.login && s.pass && s.group_code);
 }
 
 async function notifyFiscalAmoNote(
@@ -84,8 +85,8 @@ function normalizeAtolPhone(raw: string): string {
 /** АТОЛ v5: в client обязательны email и phone. */
 function buildAtolClientContact(
   deal: Record<string, unknown>,
-  cfg: ReturnType<typeof getAtolSettings>,
-  org: ReturnType<typeof getOrgProfile>
+  cfg: Awaited<ReturnType<typeof getAtolSettings>>,
+  org: Awaited<ReturnType<typeof getOrgProfile>>
 ): Record<string, string> {
   const phone = normalizeAtolPhone(String(deal.buyer_phone || ''));
   const email =
@@ -107,8 +108,8 @@ function buildAtolClientContact(
   };
 }
 
-function getLastPaidPaymentAmount(dealId: string): number {
-  const row = get<{ amount: number }>(
+async function getLastPaidPaymentAmount(dealId: string): Promise<number> {
+  const row = await get<{ amount: number }>(
     `SELECT amount FROM deal_payments
      WHERE deal_id = ?
        AND lower(IFNULL(status,'')) IN ('paid','confirmed','success','accepted')
@@ -120,11 +121,11 @@ function getLastPaidPaymentAmount(dealId: string): number {
 }
 
 /** Уже пробитый/в очереди чек этого типа (не error/cancelled). */
-function findActiveFiscalSellReceipt(
+async function findActiveFiscalSellReceipt(
   dealId: string,
   kind: 'advance' | 'full'
-): Record<string, unknown> | null {
-  const row = get(
+): Promise<Record<string, unknown> | null> {
+  const row = await get(
     `SELECT id, kind, status, amount, created_at FROM fiscal_receipts
      WHERE deal_id = ? AND kind = ?
        AND IFNULL(status,'') NOT IN ('error','cancelled')
@@ -134,8 +135,8 @@ function findActiveFiscalSellReceipt(
   return row || null;
 }
 
-function getSuccessfulFiscalAmount(dealId: string, kind: 'advance' | 'full'): number {
-  const rows = all<{ amount: number; status: string }>(
+async function getSuccessfulFiscalAmount(dealId: string, kind: 'advance' | 'full'): Promise<number> {
+  const rows = await all<{ amount: number; status: string }>(
     `SELECT amount, status FROM fiscal_receipts
      WHERE deal_id = ? AND kind = ?
        AND IFNULL(status,'') NOT IN ('error','cancelled')`,
@@ -149,9 +150,9 @@ function getSuccessfulFiscalAmount(dealId: string, kind: 'advance' | 'full'): nu
 }
 
 /** Чек 1/2 не пробиваем повторно, если уже есть успешный или wait/sent. */
-function assertNoDuplicateFiscalSell(dealId: string, kind: FiscalKind): void {
+async function assertNoDuplicateFiscalSell(dealId: string, kind: FiscalKind): Promise<void> {
   if (kind !== 'advance' && kind !== 'full') return;
-  const existing = findActiveFiscalSellReceipt(dealId, kind);
+  const existing = await findActiveFiscalSellReceipt(dealId, kind);
   if (!existing) return;
   const st = String(existing.status || '').toLowerCase();
   if (!isSuccessfulFiscalStatus(st)) return;
@@ -248,13 +249,13 @@ function scaleReceiptItems(items: AtolReceiptItem[], targetTotal: number): AtolR
   return scaled;
 }
 
-function buildReceiptPayload(
+async function buildReceiptPayload(
   deal: Record<string, unknown> & { items?: Array<Record<string, unknown>> },
   kind: FiscalKind
 ) {
-  const orgId = organizationIdForDealRecord(deal) || undefined;
-  const org = getOrgProfile(orgId);
-  const cfg = getAtolSettingsForDeal({ ...deal, organization_id: orgId });
+  const orgId = await organizationIdForDealRecord(deal) || undefined;
+  const org = await getOrgProfile(orgId);
+  const cfg = await getAtolSettingsForDeal({ ...deal, organization_id: orgId });
   const items = Array.isArray(deal.items) ? deal.items : [];
   const vatRate = Number(org.vat_rate) || 5;
   const sellKind = baseSellKind(kind);
@@ -284,12 +285,12 @@ function buildReceiptPayload(
 
   let total = roundMoney(receiptItems.reduce((s, it) => s + Number(it.sum) || 0, 0));
   const dealId = String(deal.id || '');
-  const split = dealId ? getDealPaymentSplit(dealId) : null;
+  const split = dealId ? await getDealPaymentSplit(dealId) : null;
 
   // Сумма чека — по фактическому приходу денег (deal_payments), не deal.price.
   if (sellKind === 'advance') {
     const advanceDue = roundMoney(
-      (dealId ? getLastPaidPaymentAmount(dealId) : 0) || split?.paid_total || 0
+      (dealId ? await getLastPaidPaymentAmount(dealId) : 0) || split?.paid_total || 0
     );
     if (advanceDue <= 0) {
       throw new Error('Нет оплаченных платежей — сумма аванса 0, чек не отправлен.');
@@ -310,7 +311,7 @@ function buildReceiptPayload(
       total = advanceDue;
     }
   } else if (sellKind === 'full' && dealId) {
-    const advFiscal = getSuccessfulFiscalAmount(dealId, 'advance');
+    const advFiscal = await getSuccessfulFiscalAmount(dealId, 'advance');
     let fiscalTotal = total;
     if (split && split.paid_total > 0) {
       fiscalTotal = roundMoney(split.paid_total - advFiscal);
@@ -351,7 +352,7 @@ function buildReceiptPayload(
   return payload;
 }
 
-async function atolGetToken(cfg: AtolSettings = getAtolSettings()): Promise<string> {
+async function atolGetToken(cfg: AtolSettings): Promise<string> {
   const base = cfg.api_url.replace(/\/$/, '');
   const res = await fetch(`${base}/getToken`, {
     method: 'POST',
@@ -400,7 +401,7 @@ function vatSumForAmount(amount: number, vatType: string): number {
 async function atolSendDocument(
   path: 'sell' | 'sell_refund' | AtolCorrectionOperation,
   payload: Record<string, unknown>,
-  cfg: AtolSettings = getAtolSettings()
+  cfg: AtolSettings
 ): Promise<Record<string, unknown>> {
   const base = cfg.api_url.replace(/\/$/, '');
   const group = cfg.group_code;
@@ -420,8 +421,8 @@ async function atolSendDocument(
   return data;
 }
 
-export function listFiscalReceipts(dealId: string) {
-  return all(
+export async function listFiscalReceipts(dealId: string) {
+  return await all(
     `SELECT id, kind, status, amount, atol_uuid, external_id, error,
             parent_receipt_id, created_at, updated_at
      FROM fiscal_receipts WHERE deal_id = ? ORDER BY datetime(created_at) DESC`,
@@ -429,8 +430,8 @@ export function listFiscalReceipts(dealId: string) {
   );
 }
 
-export function getFiscalReceipt(id: string) {
-  return get('SELECT * FROM fiscal_receipts WHERE id = ?', [id]) || null;
+export async function getFiscalReceipt(id: string) {
+  return await get('SELECT * FROM fiscal_receipts WHERE id = ?', [id]) || null;
 }
 
 function isSuccessfulFiscalStatus(status: string): boolean {
@@ -441,13 +442,13 @@ function isSuccessfulFiscalStatus(status: string): boolean {
 /**
  * Найти исходный чек для возврата: явный id или последний успешный advance/full.
  */
-export function findRefundBaseReceipt(
+export async function findRefundBaseReceipt(
   dealId: string,
   opts?: { parent_receipt_id?: string; prefer?: 'advance' | 'full' }
-): Record<string, unknown> | null {
+): Promise<Record<string, unknown> | null> {
   const parentId = String(opts?.parent_receipt_id || '').trim();
   if (parentId) {
-    const row = get(
+    const row = await get(
       `SELECT * FROM fiscal_receipts WHERE id = ? AND deal_id = ?`,
       [parentId, dealId]
     ) as Record<string, unknown> | undefined;
@@ -460,7 +461,7 @@ export function findRefundBaseReceipt(
   const prefer = opts?.prefer;
   const order = prefer === 'advance' ? ['advance', 'full'] : ['full', 'advance'];
   for (const kind of order) {
-    const row = get(
+    const row = await get(
       `SELECT * FROM fiscal_receipts
        WHERE deal_id = ? AND kind = ?
          AND IFNULL(status,'') NOT IN ('error','cancelled')
@@ -498,7 +499,7 @@ async function ensureDealForFiscal(
     phoneFinal = normalizeDealPhone(fallbackRaw);
     if (phoneFinal) {
       // Подтянуть телефон плательщика (СБП/банк) в сделку, если в Amo пусто
-      run(
+      await run(
         `UPDATE crm_deals SET buyer_phone = ?, synced_at = datetime('now')
          WHERE id = ? AND IFNULL(buyer_phone,'') = ''`,
         [fallbackRaw.startsWith('+') ? fallbackRaw : `+${phoneFinal}`, id]
@@ -532,7 +533,7 @@ export async function prepareOrSendFiscalReceipt(input: {
   legal_entity?: string;
 }) {
   if (REFUND_KINDS.has(input.kind)) {
-    return prepareOrSendFiscalRefund({
+    return await prepareOrSendFiscalRefund({
       dealId: input.dealId,
       send: input.send,
       parent_receipt_id: input.parent_receipt_id,
@@ -544,7 +545,7 @@ export async function prepareOrSendFiscalReceipt(input: {
   const deal = await ensureDealForFiscal(input.dealId, {
     clientPhoneFallback: input.client_phone,
   });
-  const orgId = organizationIdForDealRecord(deal) || undefined;
+  const orgId = await organizationIdForDealRecord(deal) || undefined;
   const legal = String(input.legal_entity || '')
     .trim()
     .toLowerCase();
@@ -553,21 +554,21 @@ export async function prepareOrSendFiscalReceipt(input: {
     organization_id: orgId,
     ...(legal === 'mp' || legal === 'rp' ? { fiscal_legal_entity: legal } : {}),
   };
-  const atolCfg = getAtolSettingsForDeal(dealForAtol);
-  assertNoDuplicateFiscalSell(String(deal.id), input.kind);
+  const atolCfg = await getAtolSettingsForDeal(dealForAtol);
+  await assertNoDuplicateFiscalSell(String(deal.id), input.kind);
 
   const id = newGuid();
   const externalId = `${input.kind}_${deal.id}_${Date.now()}`;
-  let payload: ReturnType<typeof buildReceiptPayload>;
+  let payload: Awaited<ReturnType<typeof buildReceiptPayload>>;
   try {
-    payload = buildReceiptPayload(dealForAtol, input.kind);
+    payload = await buildReceiptPayload(dealForAtol, input.kind);
   } catch (e) {
     throw e instanceof Error ? e : new Error(String(e));
   }
   payload.external_id = externalId;
 
   const amount = Number(payload.receipt.total) || 0;
-  const wantSend = Boolean(input.send) && atolConfigured(atolCfg);
+  const wantSend = Boolean(input.send) && await atolConfigured(atolCfg);
 
   let status = 'prepared';
   let result: Record<string, unknown> = { mode: 'prepared', note: 'АТОл credentials не заданы — черновик' };
@@ -584,7 +585,7 @@ export async function prepareOrSendFiscalReceipt(input: {
       error = e instanceof Error ? e.message : String(e);
       result = { error };
     }
-  } else if (input.send && !atolConfigured(atolCfg)) {
+  } else if (input.send && !await atolConfigured(atolCfg)) {
     status = 'prepared';
     result = {
       mode: 'prepared',
@@ -592,7 +593,7 @@ export async function prepareOrSendFiscalReceipt(input: {
     };
   }
 
-  run(
+  await run(
     `INSERT INTO fiscal_receipts (
        id, deal_id, kind, external_id, atol_uuid, status, amount, payload_json, result_json, error,
        parent_receipt_id
@@ -612,7 +613,7 @@ export async function prepareOrSendFiscalReceipt(input: {
     ]
   );
 
-  const saved = getFiscalReceipt(id);
+  const saved = await getFiscalReceipt(id);
   if (saved && input.send) {
     await notifyFiscalAmoNote(String(deal.id), input.kind, saved as Record<string, unknown>);
   }
@@ -630,7 +631,7 @@ export async function prepareOrSendFiscalRefund(input: {
   kind?: 'refund' | 'refund_advance';
   legal_entity?: string;
 }) {
-  const deal = getDeal(input.dealId) as
+  const deal = await getDeal(input.dealId) as
     | (Record<string, unknown> & { items?: Array<Record<string, unknown>> })
     | null;
   if (!deal) throw new Error('Сделка не найдена');
@@ -642,7 +643,7 @@ export async function prepareOrSendFiscalRefund(input: {
         ? 'full'
         : undefined;
 
-  const base = findRefundBaseReceipt(String(deal.id), {
+  const base = await findRefundBaseReceipt(String(deal.id), {
     parent_receipt_id: input.parent_receipt_id,
     prefer,
   });
@@ -656,7 +657,7 @@ export async function prepareOrSendFiscalRefund(input: {
   const refundKind = refundKindForBase(baseKind);
   const id = newGuid();
   const externalId = `${refundKind}_${deal.id}_${Date.now()}`;
-  const orgId = organizationIdForDealRecord(deal as Record<string, unknown>) || undefined;
+  const orgId = await organizationIdForDealRecord(deal as Record<string, unknown>) || undefined;
 
   // Касса возврата = касса исходного чека (ИНН в payload), иначе явный legal, иначе org сделки.
   let fiscalLegal = '';
@@ -682,8 +683,8 @@ export async function prepareOrSendFiscalRefund(input: {
     organization_id: orgId,
     ...(fiscalLegal ? { fiscal_legal_entity: fiscalLegal } : {}),
   };
-  const atolCfg = getAtolSettingsForDeal(dealForAtol);
-  const payload = buildReceiptPayload(dealForAtol as DealForFiscal, refundKind);
+  const atolCfg = await getAtolSettingsForDeal(dealForAtol);
+  const payload = await buildReceiptPayload(dealForAtol as DealForFiscal, refundKind);
   payload.external_id = externalId;
 
   // Сумма — как у исходного чека, если есть; строки пропорционально подгоняем под total.
@@ -702,7 +703,7 @@ export async function prepareOrSendFiscalRefund(input: {
 
   const amount =
     Number((payload.receipt as { total?: number }).total) || baseAmount || 0;
-  const wantSend = Boolean(input.send) && atolConfigured(atolCfg);
+  const wantSend = Boolean(input.send) && await atolConfigured(atolCfg);
 
   let status = 'prepared';
   let result: Record<string, unknown> = {
@@ -724,7 +725,7 @@ export async function prepareOrSendFiscalRefund(input: {
       error = e instanceof Error ? e.message : String(e);
       result = { error, parent_receipt_id: base.id };
     }
-  } else if (input.send && !atolConfigured(atolCfg)) {
+  } else if (input.send && !await atolConfigured(atolCfg)) {
     status = 'prepared';
     result = {
       mode: 'prepared',
@@ -733,7 +734,7 @@ export async function prepareOrSendFiscalRefund(input: {
     };
   }
 
-  run(
+  await run(
     `INSERT INTO fiscal_receipts (
        id, deal_id, kind, external_id, atol_uuid, status, amount, payload_json, result_json, error,
        parent_receipt_id
@@ -753,7 +754,7 @@ export async function prepareOrSendFiscalRefund(input: {
     ]
   );
 
-  const saved = getFiscalReceipt(id);
+  const saved = await getFiscalReceipt(id);
   if (saved && input.send) {
     await notifyFiscalAmoNote(String(deal.id), refundKind, saved as Record<string, unknown>);
   }
@@ -791,17 +792,17 @@ export async function prepareOrSendFiscalCorrection(input: FiscalCorrectionInput
   const dealId = String(input.dealId || '').trim();
   let deal: (Record<string, unknown> & { items?: Array<Record<string, unknown>> }) | null = null;
   if (dealId) {
-    deal = getDeal(dealId) as
+    deal = await getDeal(dealId) as
       | (Record<string, unknown> & { items?: Array<Record<string, unknown>> })
       | null;
     if (!deal) throw new Error('Заказ не найден');
   }
 
-  const orgId = deal ? organizationIdForDealRecord(deal) || undefined : undefined;
-  const org = getOrgProfile(orgId);
+  const orgId = deal ? await organizationIdForDealRecord(deal) || undefined : undefined;
+  const org = await getOrgProfile(orgId);
   const cfg = deal
-    ? getAtolSettingsForDeal({ ...deal, organization_id: orgId })
-    : getAtolSettings();
+    ? await getAtolSettingsForDeal({ ...deal, organization_id: orgId })
+    : await getAtolSettings();
   const vatRate = Number(org.vat_rate) || 5;
   const vatType =
     String(input.vat_type || '').trim() ||
@@ -881,7 +882,7 @@ export async function prepareOrSendFiscalCorrection(input: FiscalCorrectionInput
     (payload.correction as Record<string, unknown>).client = client;
   }
 
-  const wantSend = Boolean(input.send) && atolConfigured(cfg);
+  const wantSend = Boolean(input.send) && await atolConfigured(cfg);
   let status = 'prepared';
   let result: Record<string, unknown> = {
     mode: 'prepared',
@@ -902,7 +903,7 @@ export async function prepareOrSendFiscalCorrection(input: FiscalCorrectionInput
       error = e instanceof Error ? e.message : String(e);
       result = { error, operation };
     }
-  } else if (input.send && !atolConfigured(cfg)) {
+  } else if (input.send && !await atolConfigured(cfg)) {
     status = 'prepared';
     result = {
       mode: 'prepared',
@@ -912,7 +913,7 @@ export async function prepareOrSendFiscalCorrection(input: FiscalCorrectionInput
   }
 
   const kind = operation === 'buy_correction' ? 'correction_expense' : 'correction_income';
-  run(
+  await run(
     `INSERT INTO fiscal_receipts (
        id, deal_id, kind, external_id, atol_uuid, status, amount, payload_json, result_json, error,
        parent_receipt_id
@@ -932,32 +933,33 @@ export async function prepareOrSendFiscalCorrection(input: FiscalCorrectionInput
     ]
   );
 
-  const saved = getFiscalReceipt(id);
+  const saved = await getFiscalReceipt(id);
   if (saved && input.send !== false) {
     await notifyFiscalAmoNote(dealId, kind, saved as Record<string, unknown>, 'wms:correction');
   }
   return saved;
 }
 
-export function atolStatusInfo() {
-  const profiles = listAtolProfileKeys().map((key) => {
-    const s = getAtolSettings(key);
+export async function atolStatusInfo() {
+  const org = await getOrgProfile();
+  const profiles = await Promise.all(listAtolProfileKeys().map(async (key) => {
+    const s = await getAtolSettings(key);
     return {
       profile: key,
       label: key === 'mp' ? 'БМП · Фогель / Стрела' : 'БРП · Москва',
-      configured: atolConfigured(s),
+      configured: await atolConfigured(s),
       group_code: s.group_code,
-      inn: s.inn || getOrgProfile().inn || '',
+      inn: s.inn || org.inn || '',
       payment_address: s.payment_address,
     };
-  });
-  const s = getAtolSettings();
+  }));
+  const s = await getAtolSettings();
   return {
     configured: profiles.some((p) => p.configured),
     profiles,
     api_url: s.api_url,
     group_code: s.group_code,
-    inn: s.inn || getOrgProfile().inn || '',
+    inn: s.inn || org.inn || '',
     sno: s.sno || 'usn_income',
     settings_path: '/settings/atol',
     payment_address: s.payment_address,
@@ -983,8 +985,8 @@ export async function testAtolConnection(profile: AtolProfileKey = 'rp'): Promis
   message: string;
   profile?: AtolProfileKey;
 }> {
-  const cfg = getAtolSettings(profile);
-  if (!atolConfigured(cfg)) {
+  const cfg = await getAtolSettings(profile);
+  if (!await atolConfigured(cfg)) {
     return {
       ok: false,
       configured: false,

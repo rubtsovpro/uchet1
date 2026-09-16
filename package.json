@@ -7,10 +7,14 @@
     "dev": "npm run dev --prefix api",
     "dev:api": "npm run dev --prefix api",
     "dev:web": "npm run dev --prefix web",
+    "dev:quasar": "npm run dev --prefix apps/web",
     "build": "npm run build --prefix api && npm run build --prefix web",
     "build:api": "npm run build --prefix api",
     "build:web": "npm run build --prefix web",
+    "build:quasar": "npm run build --prefix apps/web",
     "start": "npm run start --prefix api",
-    "seed": "npm run seed --prefix api"
+    "seed": "npm run seed --prefix api",
+    "pg:schema": "python3 tools/sqlite_schema_to_pg.py --sqlite data/warehouse.sqlite --out deploy/postgres/schema_from_sqlite.sql",
+    "pg:up": "docker compose -f deploy/postgres/docker-compose.yml up -d"
   }
 }

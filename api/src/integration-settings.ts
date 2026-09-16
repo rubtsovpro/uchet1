@@ -68,8 +68,8 @@ export type YandexPaySettings = {
   enabled: string;
 };
 
-function readMeta<T extends Record<string, unknown>>(key: string): Partial<T> {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
+async function readMeta<T extends Record<string, unknown>>(key: string): Promise<Partial<T>> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
   if (!row?.value) return {};
   try {
     const parsed = JSON.parse(row.value) as Partial<T>;
@@ -79,8 +79,8 @@ function readMeta<T extends Record<string, unknown>>(key: string): Partial<T> {
   }
 }
 
-function writeMeta(key: string, value: Record<string, unknown>): void {
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, JSON.stringify(value)]);
+async function writeMeta(key: string, value: Record<string, unknown>): Promise<void> {
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, JSON.stringify(value)]);
 }
 
 function pickStr(...vals: Array<string | undefined | null>): string {
@@ -143,8 +143,8 @@ const ATOL_PROFILE_PRESETS: Record<AtolProfileKey, Partial<AtolSettings>> = {
 
 const BMP_ORG_INN = '231295963240';
 
-function readAtolStore(): AtolStoreRaw {
-  return readMeta<AtolStoreRaw>(META_ATOL);
+async function readAtolStore(): Promise<AtolStoreRaw> {
+  return await readMeta<AtolStoreRaw>(META_ATOL);
 }
 
 function mergeAtolProfile(
@@ -198,8 +198,8 @@ function normalizeAtolStore(raw: AtolStoreRaw): Record<AtolProfileKey, AtolSetti
   };
 }
 
-export function getAtolSettings(profile: AtolProfileKey = 'rp'): AtolSettings {
-  const { rp, mp } = normalizeAtolStore(readAtolStore());
+export async function getAtolSettings(profile: AtolProfileKey = 'rp'): Promise<AtolSettings> {
+  const { rp, mp } = normalizeAtolStore(await readAtolStore());
   return profile === 'mp' ? mp : rp;
 }
 
@@ -208,11 +208,11 @@ export function listAtolProfileKeys(): AtolProfileKey[] {
 }
 
 /** Профиль АТОЛ по ИНН организации сделки. */
-export function resolveAtolProfileKey(input?: {
+export async function resolveAtolProfileKey(input?: {
   organization_id?: string | null;
   inn?: string | null;
   legal_entity?: string | null;
-}): AtolProfileKey {
+}): Promise<AtolProfileKey> {
   const legal = String(input?.legal_entity || '').trim().toLowerCase();
   if (legal === 'mp') return 'mp';
   if (legal === 'rp') return 'rp';
@@ -221,7 +221,7 @@ export function resolveAtolProfileKey(input?: {
   if (inn === '231215603728') return 'rp';
   const orgId = String(input?.organization_id || '').trim();
   if (orgId) {
-    const row = get<{ inn: string }>(
+    const row = await get<{ inn: string }>(
       `SELECT IFNULL(inn,'') AS inn FROM organizations WHERE id = ? LIMIT 1`,
       [orgId]
     );
@@ -232,20 +232,20 @@ export function resolveAtolProfileKey(input?: {
   return 'rp';
 }
 
-export function getAtolSettingsForDeal(deal: Record<string, unknown>): AtolSettings {
-  const key = resolveAtolProfileKey({
+export async function getAtolSettingsForDeal(deal: Record<string, unknown>): Promise<AtolSettings> {
+  const key = await resolveAtolProfileKey({
     organization_id: deal.organization_id as string | undefined,
     inn: deal.seller_inn as string | undefined,
     legal_entity: deal.fiscal_legal_entity as string | undefined,
   });
-  return getAtolSettings(key);
+  return await getAtolSettings(key);
 }
 
-export function saveAtolSettings(
+export async function saveAtolSettings(
   patch: Partial<Record<keyof AtolSettings, unknown>> & { profile?: AtolProfileKey }
-): AtolSettings {
+): Promise<AtolSettings> {
   const profile = (patch.profile === 'mp' ? 'mp' : 'rp') as AtolProfileKey;
-  const store = readAtolStore();
+  const store = await readAtolStore();
   const normalized = normalizeAtolStore(store);
   const cur = normalized[profile];
   const next: AtolSettings = {
@@ -266,7 +266,7 @@ export function saveAtolSettings(
     ...normalized,
     [profile]: next,
   };
-  writeMeta(META_ATOL, { profiles });
+  await writeMeta(META_ATOL, { profiles });
   return next;
 }
 
@@ -290,8 +290,9 @@ function atolProfilePublic(key: AtolProfileKey, s: AtolSettings) {
   };
 }
 
-export function atolSettingsPublic(s: AtolSettings = getAtolSettings()) {
-  const store = readAtolStore();
+export async function atolSettingsPublic(s?: AtolSettings) {
+  const settings = s ?? (await getAtolSettings());
+  const store = await readAtolStore();
   const normalized = normalizeAtolStore(store);
   const fromDb = Boolean(
     store.login ||
@@ -302,7 +303,7 @@ export function atolSettingsPublic(s: AtolSettings = getAtolSettings()) {
   );
   const profiles = listAtolProfileKeys().map((k) => atolProfilePublic(k, normalized[k]));
   return {
-    ...atolProfilePublic('rp', s),
+    ...atolProfilePublic('rp', settings),
     configured: profiles.some((p) => p.configured),
     profiles,
     source: fromDb ? 'db' : 'env',
@@ -326,8 +327,8 @@ const TOCHKA_DEFAULTS: TochkaBridgeSettings = {
   sbp_status_url: 'https://bank.pnevmopodveska1.ru/api/sbp_qr_status.php',
 };
 
-export function getTochkaBridgeSettings(): TochkaBridgeSettings {
-  const stored = readMeta<TochkaBridgeSettings>(META_TOCHKA);
+export async function getTochkaBridgeSettings(): Promise<TochkaBridgeSettings> {
+  const stored = await readMeta<TochkaBridgeSettings>(META_TOCHKA);
   return {
     bank_sbp_key: pickStr(
       stored.bank_sbp_key,
@@ -352,10 +353,10 @@ export function getTochkaBridgeSettings(): TochkaBridgeSettings {
   };
 }
 
-export function saveTochkaBridgeSettings(
+export async function saveTochkaBridgeSettings(
   patch: Partial<Record<keyof TochkaBridgeSettings, unknown>>
-): TochkaBridgeSettings {
-  const cur = getTochkaBridgeSettings();
+): Promise<TochkaBridgeSettings> {
+  const cur = await getTochkaBridgeSettings();
   const next: TochkaBridgeSettings = {
     bank_sbp_key: applySecret(cur.bank_sbp_key, patch.bank_sbp_key),
     overview_url:
@@ -367,20 +368,21 @@ export function saveTochkaBridgeSettings(
       pickStr(String(patch.sbp_status_url ?? ''), cur.sbp_status_url) ||
       TOCHKA_DEFAULTS.sbp_status_url,
   };
-  writeMeta(META_TOCHKA, next);
+  await writeMeta(META_TOCHKA, next);
   return next;
 }
 
-export function tochkaBridgePublic(s: TochkaBridgeSettings = getTochkaBridgeSettings()) {
-  const stored = readMeta<TochkaBridgeSettings>(META_TOCHKA);
+export async function tochkaBridgePublic(s?: TochkaBridgeSettings) {
+  const settings = s ?? (await getTochkaBridgeSettings());
+  const stored = await readMeta<TochkaBridgeSettings>(META_TOCHKA);
   return {
-    configured: Boolean(s.bank_sbp_key),
+    configured: Boolean(settings.bank_sbp_key),
     bank_sbp_key: '',
-    bank_sbp_key_set: Boolean(s.bank_sbp_key),
-    bank_sbp_key_hint: maskHint(s.bank_sbp_key),
-    overview_url: s.overview_url,
-    sbp_create_url: s.sbp_create_url,
-    sbp_status_url: s.sbp_status_url,
+    bank_sbp_key_set: Boolean(settings.bank_sbp_key),
+    bank_sbp_key_hint: maskHint(settings.bank_sbp_key),
+    overview_url: settings.overview_url,
+    sbp_create_url: settings.sbp_create_url,
+    sbp_status_url: settings.sbp_status_url,
     source: stored.bank_sbp_key ? 'db' : 'env',
     balances_path: '/money/tochka',
   };
@@ -394,9 +396,9 @@ const CDEK_DEFAULTS: CdekBridgeSettings = {
   widget_url: 'https://widget.pnevmopodveska1.ru/cdek/deal.php?l={lead_id}',
 };
 
-export function getCdekBridgeSettings(): CdekBridgeSettings {
-  const stored = readMeta<CdekBridgeSettings>(META_CDEK);
-  const tochka = getTochkaBridgeSettings();
+export async function getCdekBridgeSettings(): Promise<CdekBridgeSettings> {
+  const stored = await readMeta<CdekBridgeSettings>(META_CDEK);
+  const tochka = await getTochkaBridgeSettings();
   return {
     wms_key: pickStr(
       stored.wms_key,
@@ -410,29 +412,30 @@ export function getCdekBridgeSettings(): CdekBridgeSettings {
   };
 }
 
-export function saveCdekBridgeSettings(
+export async function saveCdekBridgeSettings(
   patch: Partial<Record<keyof CdekBridgeSettings, unknown>>
-): CdekBridgeSettings {
-  const cur = getCdekBridgeSettings();
+): Promise<CdekBridgeSettings> {
+  const cur = await getCdekBridgeSettings();
   const next: CdekBridgeSettings = {
     wms_key: applySecret(cur.wms_key, patch.wms_key),
     wms_url: pickStr(String(patch.wms_url ?? ''), cur.wms_url) || CDEK_DEFAULTS.wms_url,
     widget_url:
       pickStr(String(patch.widget_url ?? ''), cur.widget_url) || CDEK_DEFAULTS.widget_url,
   };
-  writeMeta(META_CDEK, next);
+  await writeMeta(META_CDEK, next);
   return next;
 }
 
-export function cdekBridgePublic(s: CdekBridgeSettings = getCdekBridgeSettings()) {
-  const stored = readMeta<CdekBridgeSettings>(META_CDEK);
+export async function cdekBridgePublic(s?: CdekBridgeSettings) {
+  const settings = s ?? (await getCdekBridgeSettings());
+  const stored = await readMeta<CdekBridgeSettings>(META_CDEK);
   return {
-    configured: Boolean(s.wms_key),
+    configured: Boolean(settings.wms_key),
     wms_key: '',
-    wms_key_set: Boolean(s.wms_key),
-    wms_key_hint: maskHint(s.wms_key),
-    wms_url: s.wms_url,
-    widget_url: s.widget_url,
+    wms_key_set: Boolean(settings.wms_key),
+    wms_key_hint: maskHint(settings.wms_key),
+    wms_url: settings.wms_url,
+    widget_url: settings.widget_url,
     source: stored.wms_key ? 'db' : 'env',
     widget_index: 'https://widget.pnevmopodveska1.ru/cdek/',
   };
@@ -440,36 +443,37 @@ export function cdekBridgePublic(s: CdekBridgeSettings = getCdekBridgeSettings()
 
 /* ——— DaData ——— */
 
-export function getDadataSettings(): DadataSettings {
-  const stored = readMeta<DadataSettings>(META_DADATA);
+export async function getDadataSettings(): Promise<DadataSettings> {
+  const stored = await readMeta<DadataSettings>(META_DADATA);
   return {
     api_key: pickStr(stored.api_key, process.env.DADATA_API_KEY, process.env.DADATA_TOKEN),
     secret: pickStr(stored.secret, process.env.DADATA_SECRET, process.env.DADATA_SECRET_KEY),
   };
 }
 
-export function saveDadataSettings(
+export async function saveDadataSettings(
   patch: Partial<Record<keyof DadataSettings, unknown>>
-): DadataSettings {
-  const cur = getDadataSettings();
+): Promise<DadataSettings> {
+  const cur = await getDadataSettings();
   const next: DadataSettings = {
     api_key: applySecret(cur.api_key, patch.api_key),
     secret: applySecret(cur.secret, patch.secret),
   };
-  writeMeta(META_DADATA, next);
+  await writeMeta(META_DADATA, next);
   return next;
 }
 
-export function dadataPublic(s: DadataSettings = getDadataSettings()) {
-  const stored = readMeta<DadataSettings>(META_DADATA);
+export async function dadataPublic(s?: DadataSettings) {
+  const settings = s ?? (await getDadataSettings());
+  const stored = await readMeta<DadataSettings>(META_DADATA);
   return {
-    configured: Boolean(s.api_key),
+    configured: Boolean(settings.api_key),
     api_key: '',
-    api_key_set: Boolean(s.api_key),
-    api_key_hint: maskHint(s.api_key),
+    api_key_set: Boolean(settings.api_key),
+    api_key_hint: maskHint(settings.api_key),
     secret: '',
-    secret_set: Boolean(s.secret),
-    secret_hint: maskHint(s.secret),
+    secret_set: Boolean(settings.secret),
+    secret_hint: maskHint(settings.secret),
     source: stored.api_key ? 'db' : 'env',
     profile_url: 'https://dadata.ru/profile/#info',
   };
@@ -501,8 +505,8 @@ const YANDEX_PAY_PROFILE_DEFAULTS: Omit<YandexPaySettings, 'organization_id'> = 
   enabled: '0',
 };
 
-function readYandexPayStore(): YandexPayStore {
-  return readMeta<YandexPayStore>(META_YANDEX_PAY) as YandexPayStore;
+async function readYandexPayStore(): Promise<YandexPayStore> {
+  return await readMeta<YandexPayStore>(META_YANDEX_PAY) as YandexPayStore;
 }
 
 /** Нормализовать store: перенести legacy flat → profiles. */
@@ -538,10 +542,10 @@ function emptyProfile(organizationId: string): YandexPaySettings {
 }
 
 /** Настройки Сплита для конкретного юрлица. */
-export function getYandexPaySettingsForOrg(organizationId?: string | null): YandexPaySettings | null {
+export async function getYandexPaySettingsForOrg(organizationId?: string | null): Promise<YandexPaySettings | null> {
   const orgId = String(organizationId || '').trim();
   if (!orgId) return null;
-  const { profiles } = normalizeYandexPayStore(readYandexPayStore());
+  const { profiles } = normalizeYandexPayStore(await readYandexPayStore());
   const p = profiles[orgId];
   if (!p) return null;
   return {
@@ -557,20 +561,22 @@ export function getYandexPaySettingsForOrg(organizationId?: string | null): Yand
 }
 
 /** Все профили (с organization_id). */
-export function listYandexPayProfiles(): YandexPaySettings[] {
-  const { profiles } = normalizeYandexPayStore(readYandexPayStore());
-  return Object.keys(profiles)
-    .sort()
-    .map((id) => getYandexPaySettingsForOrg(id)!)
-    .filter(Boolean);
+export async function listYandexPayProfiles(): Promise<YandexPaySettings[]> {
+  const { profiles } = normalizeYandexPayStore(await readYandexPayStore());
+  const list = await Promise.all(
+    Object.keys(profiles)
+      .sort()
+      .map((id) => getYandexPaySettingsForOrg(id))
+  );
+  return list.filter((p): p is YandexPaySettings => Boolean(p));
 }
 
 /**
  * @deprecated один профиль: первый enabled или первый любой / legacy.
  * Для оплаты используйте getYandexPaySettingsForOrg.
  */
-export function getYandexPaySettings(): YandexPaySettings {
-  const list = listYandexPayProfiles();
+export async function getYandexPaySettings(): Promise<YandexPaySettings> {
+  const list = await listYandexPayProfiles();
   const enabled = list.find((p) => p.enabled === '1' || p.enabled === 'true');
   if (enabled) return enabled;
   if (list[0]) return list[0];
@@ -590,13 +596,13 @@ export function getYandexPaySettings(): YandexPaySettings {
 }
 
 /** Сохранить / обновить профиль юрлица. organization_id обязателен. */
-export function saveYandexPaySettings(
+export async function saveYandexPaySettings(
   patch: Partial<Record<keyof YandexPaySettings, unknown>>
-): YandexPaySettings {
+): Promise<YandexPaySettings> {
   const orgId = pickStr(String(patch.organization_id ?? ''));
   if (!orgId) throw new Error('Выберите юрлицо (organization_id)');
 
-  const cur = getYandexPaySettingsForOrg(orgId) || emptyProfile(orgId);
+  const cur = await getYandexPaySettingsForOrg(orgId) || emptyProfile(orgId);
   const next: YandexPaySettings = {
     organization_id: orgId,
     merchant_id: pickStr(String(patch.merchant_id ?? ''), cur.merchant_id),
@@ -620,22 +626,22 @@ export function saveYandexPaySettings(
           : pickStr(String(patch.enabled ?? ''), cur.enabled, '0'),
   };
 
-  const store = readYandexPayStore();
+  const store = await readYandexPayStore();
   const { profiles } = normalizeYandexPayStore(store);
   const { organization_id: _oid, ...rest } = next;
   profiles[orgId] = rest;
   // пишем только profiles — без legacy flat
-  writeMeta(META_YANDEX_PAY, { profiles });
+  await writeMeta(META_YANDEX_PAY, { profiles });
   return next;
 }
 
-export function deleteYandexPayProfile(organizationId: string): { ok: true; organization_id: string } {
+export async function deleteYandexPayProfile(organizationId: string): Promise<{ ok: true; organization_id: string }> {
   const orgId = String(organizationId || '').trim();
   if (!orgId) throw new Error('organization_id required');
-  const store = readYandexPayStore();
+  const store = await readYandexPayStore();
   const { profiles } = normalizeYandexPayStore(store);
   delete profiles[orgId];
-  writeMeta(META_YANDEX_PAY, { profiles });
+  await writeMeta(META_YANDEX_PAY, { profiles });
   return { ok: true, organization_id: orgId };
 }
 
@@ -655,9 +661,9 @@ export function yandexPayProfilePublic(s: YandexPaySettings) {
   };
 }
 
-export function yandexPaySettingsPublic(s?: YandexPaySettings) {
-  const profiles = listYandexPayProfiles().map(yandexPayProfilePublic);
-  const one = s || getYandexPaySettings();
+export async function yandexPaySettingsPublic(s?: YandexPaySettings) {
+  const profiles = (await listYandexPayProfiles()).map(yandexPayProfilePublic);
+  const one = s || await getYandexPaySettings();
   return {
     ...yandexPayProfilePublic(one),
     profiles,
@@ -670,16 +676,16 @@ export function yandexPaySettingsPublic(s?: YandexPaySettings) {
 }
 
 /** Есть ли хотя бы один включённый профиль с ключами. */
-export function yandexPayAnyConfigured(): boolean {
-  return listYandexPayProfiles().some(
+export async function yandexPayAnyConfigured(): Promise<boolean> {
+  return (await listYandexPayProfiles()).some(
     (p) =>
       (p.enabled === '1' || p.enabled === 'true') &&
       Boolean(p.merchant_id && (p.api_key || p.env === 'sandbox'))
   );
 }
 
-export function getDeepseekSettings(): DeepseekSettings {
-  const stored = readMeta<DeepseekSettings>(META_DEEPSEEK);
+export async function getDeepseekSettings(): Promise<DeepseekSettings> {
+  const stored = await readMeta<DeepseekSettings>(META_DEEPSEEK);
   return {
     api_key: pickStr(stored.api_key, process.env.DEEPSEEK_API_KEY),
     base_url: pickStr(
@@ -695,10 +701,10 @@ export function getDeepseekSettings(): DeepseekSettings {
   };
 }
 
-export function saveDeepseekSettings(
+export async function saveDeepseekSettings(
   patch: Partial<Record<keyof DeepseekSettings, unknown>>
-): DeepseekSettings {
-  const cur = getDeepseekSettings();
+): Promise<DeepseekSettings> {
+  const cur = await getDeepseekSettings();
   const next: DeepseekSettings = {
     api_key: applySecret(cur.api_key, patch.api_key),
     base_url: pickStr(
@@ -712,12 +718,12 @@ export function saveDeepseekSettings(
       'deepseek/deepseek-vl2'
     ),
   };
-  writeMeta(META_DEEPSEEK, next);
+  await writeMeta(META_DEEPSEEK, next);
   return next;
 }
 
-export function deepseekPublic(s?: DeepseekSettings) {
-  const cur = s || getDeepseekSettings();
+export async function deepseekPublic(s?: DeepseekSettings) {
+  const cur = s || await getDeepseekSettings();
   const base = String(cur.base_url || '')
     .trim()
     .toLowerCase()

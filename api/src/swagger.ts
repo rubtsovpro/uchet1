@@ -22,12 +22,12 @@ export function swaggerEnabled(): boolean {
   return String(process.env.SWAGGER_ENABLED || '').trim() === '1';
 }
 
-function sessionActor(c: Context) {
-  return actorFromSession(getCookie(c, COOKIE_SID));
+async function sessionActor(c: Context) {
+  return await actorFromSession(getCookie(c, COOKIE_SID));
 }
 
-function isLoggedIn(c: Context): boolean {
-  if (sessionActor(c)) return true;
+async function isLoggedIn(c: Context): Promise<boolean> {
+  if (await sessionActor(c)) return true;
   return getCookie(c, LEGACY_COOKIE) === LEGACY_OK;
 }
 
@@ -73,7 +73,7 @@ export const swaggerGate: MiddlewareHandler = async (c, next) => {
   if (!swaggerEnabled()) {
     return c.json({ error: 'swagger disabled' }, 404);
   }
-  if (isLoggedIn(c) || basicOk(c)) {
+  if (await isLoggedIn(c) || basicOk(c)) {
     return next();
   }
   if (basicConfigured() && (c.req.header('authorization') || '').startsWith('Basic ')) {

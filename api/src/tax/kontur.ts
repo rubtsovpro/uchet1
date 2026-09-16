@@ -99,8 +99,8 @@ async function konturFetch(method: string, urlPath: string, init?: RequestInit):
 }
 
 export async function sendReportViaKontur(reportId: string, opts?: { dry_run?: boolean }) {
-  ensureTaxSchema();
-  const report = get<{
+  await ensureTaxSchema();
+  const report = await get<{
     id: string;
     organization_id: string;
     report_type: string;
@@ -113,19 +113,19 @@ export async function sendReportViaKontur(reportId: string, opts?: { dry_run?: b
   }
 
   const oid = report.organization_id;
-  const settings = getTaxSettings(oid);
+  const settings = await getTaxSettings(oid);
   const cfg = konturConfigStatus();
   const filingId = newGuid();
   const dry = opts?.dry_run === true || !cfg.configured;
 
-  run(
+  await run(
     `INSERT INTO tax_filings (id, organization_id, report_id, report_type, status)
      VALUES (?,?,?,?,?)`,
     [filingId, oid, reportId, report.report_type, dry ? 'dry_run' : 'uploading']
   );
 
   if (dry) {
-    run(
+    await run(
       `UPDATE tax_filings SET status='dry_run', errors_json=?, updated_at=datetime('now'), sent_at=datetime('now')
        WHERE id=?`,
       [
@@ -138,7 +138,7 @@ export async function sendReportViaKontur(reportId: string, opts?: { dry_run?: b
         filingId,
       ]
     );
-    run(`UPDATE tax_reports SET status='ready' WHERE id=?`, [reportId]);
+    await run(`UPDATE tax_reports SET status='ready' WHERE id=?`, [reportId]);
     return { filing_id: filingId, status: 'dry_run', draft_id: '', docflow_id: '' };
   }
 
@@ -164,14 +164,14 @@ export async function sendReportViaKontur(reportId: string, opts?: { dry_run?: b
   };
   if (!draftRes.ok || !draftJson.id) {
     const msg = JSON.stringify(draftJson).slice(0, 500);
-    run(
+    await run(
       `UPDATE tax_filings SET status='error', errors_json=?, updated_at=datetime('now') WHERE id=?`,
       [JSON.stringify([{ step: 'create_draft', message: msg }]), filingId]
     );
     throw new Error(`Kontur create draft: ${draftRes.status} ${msg}`);
   }
   const draftId = draftJson.id;
-  run(`UPDATE tax_filings SET kontur_draft_id=?, status='draft' WHERE id=?`, [draftId, filingId]);
+  await run(`UPDATE tax_filings SET kontur_draft_id=?, status='draft' WHERE id=?`, [draftId, filingId]);
 
   // 2) Upload content
   const buf = readFileSync(report.xml_path);
@@ -185,7 +185,7 @@ export async function sendReportViaKontur(reportId: string, opts?: { dry_run?: b
   );
   const upJson = (await upRes.json().catch(() => ({}))) as { id?: string };
   if (!upRes.ok || !upJson.id) {
-    run(
+    await run(
       `UPDATE tax_filings SET status='error', errors_json=?, updated_at=datetime('now') WHERE id=?`,
       [JSON.stringify([{ step: 'upload', status: upRes.status }]), filingId]
     );
@@ -227,22 +227,22 @@ export async function sendReportViaKontur(reportId: string, opts?: { dry_run?: b
     );
     const j = (await r.json().catch(() => ({}))) as { id?: string; error?: unknown };
     if (!r.ok) {
-      run(
+      await run(
         `UPDATE tax_filings SET status='error', errors_json=?, updated_at=datetime('now') WHERE id=?`,
         [JSON.stringify([{ step, status: r.status, body: j }]), filingId]
       );
       throw new Error(`Kontur ${step} failed: ${r.status}`);
     }
     if (j.id) {
-      run(`UPDATE tax_filings SET kontur_task_id=? WHERE id=?`, [j.id, filingId]);
+      await run(`UPDATE tax_filings SET kontur_task_id=? WHERE id=?`, [j.id, filingId]);
     }
   }
 
-  run(
+  await run(
     `UPDATE tax_filings SET status='sent', sent_at=datetime('now'), updated_at=datetime('now') WHERE id=?`,
     [filingId]
   );
-  run(`UPDATE tax_reports SET status='sent' WHERE id=?`, [reportId]);
+  await run(`UPDATE tax_reports SET status='sent' WHERE id=?`, [reportId]);
   return { filing_id: filingId, status: 'sent', draft_id: draftId, docflow_id: '' };
 }
 
@@ -260,20 +260,20 @@ function mapReportType(t: string): string {
   return m[t] || t;
 }
 
-export function listFilings(organizationId?: string | null) {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
-  return all(
+export async function listFilings(organizationId?: string | null) {
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
+  return await all(
     `SELECT * FROM tax_filings WHERE organization_id=? ORDER BY created_at DESC LIMIT 100`,
     [oid]
   );
 }
 
 export async function syncFilingStatuses(organizationId?: string | null) {
-  ensureTaxSchema();
-  const oid = resolveOrganizationId(organizationId);
+  await ensureTaxSchema();
+  const oid = await resolveOrganizationId(organizationId);
   const cfg = konturConfigStatus();
-  const open = all<{ id: string; kontur_draft_id: string; kontur_task_id: string }>(
+  const open = await all<{ id: string; kontur_draft_id: string; kontur_task_id: string }>(
     `SELECT id, kontur_draft_id, kontur_task_id FROM tax_filings
      WHERE organization_id=? AND status IN ('sent','draft','uploading','checking')`,
     [oid]
@@ -295,7 +295,7 @@ export async function syncFilingStatuses(organizationId?: string | null) {
         docflowId?: string;
       };
       if (j.status) {
-        run(
+        await run(
           `UPDATE tax_filings SET status=?, kontur_docflow_id=COALESCE(NULLIF(?,''), kontur_docflow_id),
              updated_at=datetime('now') WHERE id=?`,
           [String(j.status).toLowerCase(), j.docflowId || '', f.id]

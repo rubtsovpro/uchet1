@@ -25,10 +25,10 @@ export type AnalysisLine = {
   receipts: AnalysisReceipt[];
 };
 
-export function refreshThinSupplierOrderStatus(orderId: string): string | null {
+export async function refreshThinSupplierOrderStatus(orderId: string): Promise<string | null> {
   const id = String(orderId || '').trim();
   if (!id) return null;
-  const row = get<{ id: string; status: string; payload_json: string }>(
+  const row = await get<{ id: string; status: string; payload_json: string }>(
     `SELECT id, IFNULL(status,'') AS status, IFNULL(payload_json,'') AS payload_json
      FROM thin_journal_docs WHERE id = ? AND journal_key = 'supplier_orders'`,
     [id]
@@ -45,7 +45,7 @@ export function refreshThinSupplierOrderStatus(orderId: string): string | null {
     orderedMap.set(pid, (orderedMap.get(pid) || 0) + (Number(l.qty) || 0));
   }
 
-  const receivedRows = all<{ product_id: string; qty: number }>(
+  const receivedRows = await all<{ product_id: string; qty: number }>(
     `SELECT IFNULL(l.product_id,'') AS product_id, SUM(l.qty) AS qty
      FROM stock_doc_lines l
      JOIN stock_docs d ON d.id = l.doc_id
@@ -79,7 +79,7 @@ export function refreshThinSupplierOrderStatus(orderId: string): string | null {
   }
 
   if (next && next !== cur) {
-    run(
+    await run(
       `UPDATE thin_journal_docs SET status = ?, updated_at = datetime('now') WHERE id = ?`,
       [next, id]
     );
@@ -87,10 +87,10 @@ export function refreshThinSupplierOrderStatus(orderId: string): string | null {
   return next;
 }
 
-export function getSupplierOrderAnalysis(
+export async function getSupplierOrderAnalysis(
   orderId: string,
   mode: 'by_product' | 'by_line' = 'by_product'
-): {
+): Promise<{
   order: Record<string, unknown>;
   mode: string;
   lines: AnalysisLine[];
@@ -100,15 +100,22 @@ export function getSupplierOrderAnalysis(
     qty_remaining: number;
     amount_ordered: number;
   };
-} {
+}> {
   const id = String(orderId || '').trim();
   if (!id) throw new Error('order_id обязателен');
-  const order = getThinJournalDoc('supplier_orders', id);
+  const order = await getThinJournalDoc('supplier_orders', id);
   if (!order) throw new Error('Заказ поставщику не найден');
 
-  const orderedLines = Array.isArray(order.lines) ? order.lines : [];
+  const orderedLines = (Array.isArray(order.lines) ? order.lines : []) as Array<{
+    product_id?: string;
+    qty?: number;
+    sku?: string;
+    article?: string;
+    price?: number;
+    name?: string;
+  }>;
 
-  const receiptLines = all<{
+  const receiptLines = await all<{
     doc_id: string;
     number: string;
     doc_date: string;
@@ -131,7 +138,7 @@ export function getSupplierOrderAnalysis(
   const inboundIds = [...new Set(receiptLines.map((r) => r.doc_id))];
   if (inboundIds.length) {
     const ph = inboundIds.map(() => '?').join(',');
-    const list = all<{ id: string; number: string; inbound_doc_id: string }>(
+    const list = await all<{ id: string; number: string; inbound_doc_id: string }>(
       `SELECT id, IFNULL(number,'') AS number, IFNULL(inbound_doc_id,'') AS inbound_doc_id
        FROM purchase_discrepancy_acts WHERE inbound_doc_id IN (${ph})`,
       inboundIds
@@ -240,7 +247,7 @@ export function getSupplierOrderAnalysis(
     // товары только в приходе (излишек без заказа)
     for (const [pid, bucket] of receivedByProduct) {
       if (byPid.has(pid)) continue;
-      const p = get<{ sku: string; name: string }>(
+      const p = await get<{ sku: string; name: string }>(
         `SELECT IFNULL(sku,'') AS sku, IFNULL(name,'') AS name FROM products WHERE id = ?`,
         [pid]
       );
@@ -291,22 +298,22 @@ export function getSupplierOrderAnalysis(
 }
 
 export function mountSupplierOrderAnalysisRoutes(api: Hono): void {
-  api.get('/purchases/supplier-orders/:id/analysis', (c) => {
+  api.get('/purchases/supplier-orders/:id/analysis', async (c) => {
     try {
       const mode =
         String(c.req.query('mode') || 'by_product').toLowerCase() === 'by_line'
           ? 'by_line'
           : 'by_product';
-      return c.json(getSupplierOrderAnalysis(c.req.param('id'), mode));
+      return c.json(await getSupplierOrderAnalysis(c.req.param('id'), mode));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
     }
   });
 
-  api.post('/purchases/supplier-orders/:id/refresh-status', (c) => {
+  api.post('/purchases/supplier-orders/:id/refresh-status', async (c) => {
     try {
-      const status = refreshThinSupplierOrderStatus(c.req.param('id'));
-      const order = getThinJournalDoc('supplier_orders', c.req.param('id'));
+      const status = await refreshThinSupplierOrderStatus(c.req.param('id'));
+      const order = await getThinJournalDoc('supplier_orders', c.req.param('id'));
       return c.json({ ok: true, status, order });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);

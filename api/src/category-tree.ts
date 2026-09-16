@@ -68,9 +68,9 @@ export function nameKey(name: string): string {
     .replace(/\s+/g, ' ');
 }
 
-export function listCategoriesFlat(filters?: CategoryTreeFilters): CategoryFlat[] {
+export async function listCategoriesFlat(filters?: CategoryTreeFilters): Promise<CategoryFlat[]> {
   const { sql: where, params } = productCountWhere(filters);
-  return all<{
+  return (await all<{
     id: string;
     name: string;
     parent_id: string | null;
@@ -88,7 +88,7 @@ export function listCategoriesFlat(filters?: CategoryTreeFilters): CategoryFlat[
      ) pc ON pc.category_id = c.id
      ORDER BY c.name COLLATE NOCASE`,
     params
-  ).map((r) => ({
+  )).map((r) => ({
     id: String(r.id),
     name: String(r.name || ''),
     parent_id: normalizeParent(r.parent_id),
@@ -182,14 +182,14 @@ function resolveParentId(
   return null;
 }
 
-export function buildCategoryTree(filters?: CategoryTreeFilters): {
+export async function buildCategoryTree(filters?: CategoryTreeFilters): Promise<{
   roots: CategoryTreeNode[];
   total_categories: number;
   total_products_in_tree: number;
   uncategorized: number;
   raw_categories: number;
-} {
-  const flat = listCategoriesFlat(filters);
+}> {
+  const flat = await listCategoriesFlat(filters);
   const { merged, idToCanon } = mergeByName(flat);
   const canonIds = new Set(merged.map((g) => g.id));
 
@@ -246,12 +246,12 @@ export function buildCategoryTree(filters?: CategoryTreeFilters): {
 
   const { sql: where, params } = productCountWhere(filters);
   const uncategorized =
-    all<{ c: number }>(
+    (await all<{ c: number }>(
       `SELECT COUNT(*) AS c FROM products
        WHERE ${where}
          AND (category_id IS NULL OR TRIM(IFNULL(category_id,'')) = '')`,
       params
-    )[0]?.c ?? 0;
+    ))[0]?.c ?? 0;
 
   return {
     roots: prunedRoots,
@@ -263,10 +263,10 @@ export function buildCategoryTree(filters?: CategoryTreeFilters): {
 }
 
 /** Все GUID категории и её потомков (с учётом склейки одноимённых). */
-export function idsForCategoryFilter(categoryId: string): string[] {
+export async function idsForCategoryFilter(categoryId: string): Promise<string[]> {
   const id = String(categoryId || '').trim();
   if (!id || id === '__none__') return id ? [id] : [];
-  const { roots } = buildCategoryTree();
+  const { roots } = await buildCategoryTree();
   const find = (nodes: CategoryTreeNode[]): CategoryTreeNode | null => {
     for (const n of nodes) {
       if (n.id === id || n.ids.includes(id)) return n;

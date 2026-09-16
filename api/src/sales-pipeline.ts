@@ -20,12 +20,12 @@ const SUCCESS_NAME_RE = /успешн|реализован/i;
 const FAIL_NAME_RE = /не реализован|закрыто и не/i;
 
 /** Найти этап «Успешно реализовано» в воронке сделки (маппинг → эвристика по имени). */
-export function findSuccessStatusForDeal(dealId: string): {
+export async function findSuccessStatusForDeal(dealId: string): Promise<{
   statusId: string;
   statusName: string;
   pipelineId: string;
-} | null {
-  const deal = get<{ pipeline_id?: string; status_id?: string }>(
+} | null> {
+  const deal = await get<{ pipeline_id?: string; status_id?: string }>(
     `SELECT pipeline_id, status_id FROM crm_deals WHERE id = ?`,
     [dealId]
   );
@@ -33,10 +33,10 @@ export function findSuccessStatusForDeal(dealId: string): {
   const pipelineId = String(deal.pipeline_id || '').trim();
   if (!pipelineId) return null;
 
-  const mapped = mappedSuccessStatus(pipelineId);
+  const mapped = await mappedSuccessStatus(pipelineId);
   if (mapped) return mapped;
 
-  const statuses = all<{ id: string; name: string }>(
+  const statuses = await all<{ id: string; name: string }>(
     `SELECT id, name FROM crm_pipeline_statuses WHERE pipeline_id = ? ORDER BY sort, name`,
     [pipelineId]
   );
@@ -57,16 +57,16 @@ export function findSuccessStatusForDeal(dealId: string): {
  * После оплаты — только черновик «Передача на склад» (handoff) для резерва/отправки.
  * Старые warehouse_tasks «Авто после оплаты» больше не создаём — путали с переделкой на /pick.
  */
-export function ensureWarehouseTaskAfterPaid(input: {
+export async function ensureWarehouseTaskAfterPaid(input: {
   dealId: string;
   channel?: string;
   actorId?: string;
-}): { created: boolean; task: Record<string, unknown> | null; reason?: string; handoff?: Record<string, unknown> | null } {
+}): Promise<{ created: boolean; task: Record<string, unknown> | null; reason?: string; handoff?: Record<string, unknown> | null }> {
   const dealId = String(input.dealId || '').trim();
   if (!dealId) return { created: false, task: null, reason: 'no deal' };
 
   try {
-    const dealRow = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+    const dealRow = await get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
       `SELECT IFNULL(amo_channel,'') AS amo_channel,
               IFNULL(amo_shipment,'') AS amo_shipment,
               IFNULL(ship_channel,'') AS ship_channel
@@ -76,9 +76,9 @@ export function ensureWarehouseTaskAfterPaid(input: {
     if (!isReserveChannelDeal(dealRow) && !isShipChannelDeal(dealRow)) {
       return { created: false, task: null, reason: 'channel_skip_no_auto_task' };
     }
-    const handoff = ensureHandoffPickAfterPaid(dealId);
+    const handoff = await ensureHandoffPickAfterPaid(dealId);
     try {
-      ensureOrderDocChain(dealId);
+      await ensureOrderDocChain(dealId);
     } catch {
       /* дерево не блокирует передачу */
     }
@@ -100,17 +100,17 @@ export function ensureWarehouseTaskAfterPaid(input: {
 /**
  * Готовность закрыть заказ в «Успешно реализовано» (документы, оплата, перемещение, чеки).
  */
-export function getDealCloseReadiness(
+export async function getDealCloseReadiness(
   dealIdRaw: string,
   opts?: { sto_writeoff_on_close?: boolean }
-): {
+): Promise<{
   deal_id: string;
   ready: boolean;
   already_won: boolean;
   missing: string[];
   success: { status_id: string; status_name: string; pipeline_id: string } | null;
   checks: Record<string, boolean | string>;
-} {
+}> {
   const dealId = String(dealIdRaw || '').trim();
   if (!dealId) {
     return {
@@ -123,7 +123,7 @@ export function getDealCloseReadiness(
     };
   }
 
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) {
     return {
       deal_id: dealId,
@@ -135,7 +135,7 @@ export function getDealCloseReadiness(
     };
   }
 
-  const success = findSuccessStatusForDeal(dealId);
+  const success = await findSuccessStatusForDeal(dealId);
   const alreadyWon = !!(
     success &&
     rawStatusId(String(deal.status_id || '')) === rawStatusId(success.statusId)
@@ -148,8 +148,8 @@ export function getDealCloseReadiness(
   const sc = (rules.scenario_docs || {}) as Record<string, unknown>;
   const scheme = String(rules.payment_scheme || '');
   const allowUnpaidClose = scheme === 'cod' || scheme === 'credit';
-  const split = getDealPaymentSplit(dealId);
-  const paid = dealIsPaid(dealId) || !!rules.cash_received;
+  const split = await getDealPaymentSplit(dealId);
+  const paid = await dealIsPaid(dealId) || !!rules.cash_received;
   checks.paid = paid;
   checks.payment_scheme = scheme;
   if (
@@ -160,7 +160,7 @@ export function getDealCloseReadiness(
   }
 
   if (dealNeedsWorkorderBeforePayment(deal)) {
-    const gate = getDealWorkorderGate({ ...deal, id: dealId });
+    const gate = await getDealWorkorderGate({ ...deal, id: dealId });
     checks.workorder = !!gate.ok;
     if (!gate.ok) {
       missing.push(
@@ -173,7 +173,7 @@ export function getDealCloseReadiness(
     checks.workorder = true;
   }
 
-  const salesDocs = all<{ doc_type: string; number: string }>(
+  const salesDocs = await all<{ doc_type: string; number: string }>(
     `SELECT IFNULL(doc_type,'') AS doc_type, IFNULL(number,'') AS number
      FROM sales_docs WHERE deal_id = ?`,
     [dealId]
@@ -196,7 +196,7 @@ export function getDealCloseReadiness(
     if (!hasDoc('upd')) missing.push('УПД');
   }
   if (sc.pdn) {
-    const gate = getDealWorkorderGate({ ...deal, id: dealId });
+    const gate = await getDealWorkorderGate({ ...deal, id: dealId });
     checks.pdn = !!gate.pdn_ok;
     if (!gate.pdn_ok) missing.push('Согласие ПДн');
   }
@@ -212,7 +212,7 @@ export function getDealCloseReadiness(
 
   if (sc.transfer) {
     try {
-      const st = getDealStoPartsStatus(dealId) as {
+      const st = await getDealStoPartsStatus(dealId) as {
         summary?: { all_moved?: boolean; has_task?: boolean; latest_task_status?: string };
         flow?: {
           warehouse?: { done?: boolean };
@@ -243,7 +243,7 @@ export function getDealCloseReadiness(
   }
 
   const checksNeed = String(sc.checks ?? '0');
-  const fiscal = all<{ kind: string; status: string }>(
+  const fiscal = await all<{ kind: string; status: string }>(
     `SELECT IFNULL(kind,'') AS kind, IFNULL(status,'') AS status
      FROM fiscal_receipts WHERE deal_id = ?`,
     [dealId]
@@ -266,13 +266,13 @@ export function getDealCloseReadiness(
     if (paid && !hasFull && !allowUnpaidClose) missing.push('Чек полный');
   }
 
-  for (const b of getDealStockFlowBlockers(dealId, {
+  for (const b of await getDealStockFlowBlockers(dealId, {
     ignore_on_sto: !!opts?.sto_writeoff_on_close,
   })) {
     if (!missing.includes(b)) missing.push(b);
   }
   checks.stock_flow =
-    getDealStockFlowBlockers(dealId, { ignore_on_sto: !!opts?.sto_writeoff_on_close }).length === 0;
+    (await getDealStockFlowBlockers(dealId, { ignore_on_sto: !!opts?.sto_writeoff_on_close })).length === 0;
 
   const ready = !alreadyWon && missing.length === 0;
 
@@ -310,7 +310,7 @@ export async function promoteDealToSuccessAfterHanded(input: {
   const dealId = String(input.dealId || '').trim();
   if (!dealId) return { ok: false, reason: 'no deal' };
 
-  const dealChannel = get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
+  const dealChannel = await get<{ amo_channel: string; amo_shipment: string; ship_channel: string }>(
     `SELECT IFNULL(amo_channel,'') AS amo_channel,
             IFNULL(amo_shipment,'') AS amo_shipment,
             IFNULL(ship_channel,'') AS ship_channel
@@ -321,16 +321,16 @@ export async function promoteDealToSuccessAfterHanded(input: {
     return { ok: true, skipped: true, reason: 'reserve_channel_manual_close' };
   }
 
-  if (!dealIsPaid(dealId)) {
+  if (!await dealIsPaid(dealId)) {
     return { ok: false, skipped: true, reason: 'not_paid' };
   }
 
-  const target = findSuccessStatusForDeal(dealId);
+  const target = await findSuccessStatusForDeal(dealId);
   if (!target) {
     return { ok: false, skipped: true, reason: 'no_success_status_in_pipeline' };
   }
 
-  const deal = get<{ status_id?: string; status_name?: string }>(
+  const deal = await get<{ status_id?: string; status_name?: string }>(
     `SELECT status_id, status_name FROM crm_deals WHERE id = ?`,
     [dealId]
   );
@@ -354,7 +354,7 @@ export async function promoteDealToSuccessAfterHanded(input: {
     return { ok: false, reason: `Amo: ${amo.error}`, amo_synced: false };
   }
 
-  updateDealStage(dealId, {
+  await updateDealStage(dealId, {
     statusId: target.statusId,
     statusName: target.statusName,
     pipelineId: target.pipelineId,

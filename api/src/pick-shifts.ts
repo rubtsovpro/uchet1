@@ -97,8 +97,8 @@ export function localParts(tz: string, at = new Date()): {
   return { day, hm, minutes };
 }
 
-export function getPickShiftSettings(): PickShiftSettings {
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
+export async function getPickShiftSettings(): Promise<PickShiftSettings> {
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
   let base: PickShiftSettings = { ...DEFAULT_SETTINGS };
   if (row?.value) {
     try {
@@ -138,10 +138,10 @@ export function getPickShiftSettings(): PickShiftSettings {
   return base;
 }
 
-export function savePickShiftSettings(
+export async function savePickShiftSettings(
   patch: Partial<PickShiftSettings>
-): PickShiftSettings {
-  const cur = getPickShiftSettings();
+): Promise<PickShiftSettings> {
+  const cur = await getPickShiftSettings();
   const next: PickShiftSettings = {
     tz: patch.tz !== undefined ? String(patch.tz).trim().slice(0, 64) || cur.tz : cur.tz,
     morning_from:
@@ -163,7 +163,7 @@ export function savePickShiftSettings(
         ? Math.max(0, Math.min(24 * 60, Number(patch.idle_reauth_minutes) || 0))
         : cur.idle_reauth_minutes,
   };
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
     META_KEY,
     JSON.stringify(next),
   ]);
@@ -181,41 +181,41 @@ export function validatePinFormat(pin: string): void {
   }
 }
 
-export function setStaffPin(staffId: string, pin: string): void {
+export async function setStaffPin(staffId: string, pin: string): Promise<void> {
   if (staffId === '__admin__') {
     throw new Error('Системному admin PIN не задаётся');
   }
   validatePinFormat(pin);
-  run(
+  await run(
     `UPDATE staff SET pin_hash = ?, pin_set_at = datetime('now') WHERE id = ?`,
     [hashPassword(normalizePin(pin)), staffId]
   );
 }
 
-export function clearStaffPin(staffId: string): void {
-  run(`UPDATE staff SET pin_hash = '', pin_set_at = '' WHERE id = ?`, [staffId]);
+export async function clearStaffPin(staffId: string): Promise<void> {
+  await run(`UPDATE staff SET pin_hash = '', pin_set_at = '' WHERE id = ?`, [staffId]);
 }
 
-export function staffHasPin(staffId: string): boolean {
+export async function staffHasPin(staffId: string): Promise<boolean> {
   if (staffId === '__admin__') return false;
-  const row = get<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = ?', [staffId]);
+  const row = await get<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = ?', [staffId]);
   return Boolean(row?.pin_hash);
 }
 
-function staffPinHash(staffId: string): string {
+async function staffPinHash(staffId: string): Promise<string> {
   if (staffId === '__admin__') return '';
   return (
-    get<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = ?', [staffId])?.pin_hash ||
+    (await get<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = ?', [staffId]))?.pin_hash ||
     ''
   );
 }
 
-function staffPasswordHash(staffId: string): string {
+async function staffPasswordHash(staffId: string): Promise<string> {
   if (staffId === '__admin__') return '';
   return (
-    get<{ password_hash: string }>('SELECT password_hash FROM staff WHERE id = ?', [
+    (await get<{ password_hash: string }>('SELECT password_hash FROM staff WHERE id = ?', [
       staffId,
-    ])?.password_hash || ''
+    ]))?.password_hash || ''
   );
 }
 
@@ -225,13 +225,13 @@ function staffPasswordHash(staffId: string): string {
  * 2) иначе пароль сотрудника
  * Системный admin — без PIN (сессия достаточна).
  */
-export function verifyShiftIdentity(
+export async function verifyShiftIdentity(
   actor: Actor,
   opts: { pin?: string; password?: string }
-): void {
+): Promise<void> {
   if (actor.isSystemAdmin || actor.id === '__admin__') return;
 
-  const pinHash = staffPinHash(actor.id);
+  const pinHash = await staffPinHash(actor.id);
   if (pinHash) {
     const pin = normalizePin(String(opts.pin || ''));
     if (!pin) throw new Error('Введите PIN смены');
@@ -239,7 +239,7 @@ export function verifyShiftIdentity(
     return;
   }
 
-  const passHash = staffPasswordHash(actor.id);
+  const passHash = await staffPasswordHash(actor.id);
   if (!passHash) {
     throw new Error('Задайте PIN в «Персонал» или пароль для подтверждения смены');
   }
@@ -265,8 +265,8 @@ function mapShift(row: Record<string, unknown>): PickShiftRow {
   };
 }
 
-export function getOpenPickShift(staffId: string): PickShiftRow | null {
-  const row = get<Record<string, unknown>>(
+export async function getOpenPickShift(staffId: string): Promise<PickShiftRow | null> {
+  const row = await get<Record<string, unknown>>(
     `SELECT * FROM pick_shifts
      WHERE staff_id = ? AND ended_at = ''
      ORDER BY started_at DESC LIMIT 1`,
@@ -275,8 +275,8 @@ export function getOpenPickShift(staffId: string): PickShiftRow | null {
   return row ? mapShift(row) : null;
 }
 
-function hadDayShiftToday(staffId: string, day: string): boolean {
-  const row = get<{ c: number }>(
+async function hadDayShiftToday(staffId: string, day: string): Promise<boolean> {
+  const row = await get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM pick_shifts
      WHERE staff_id = ? AND day = ? AND kind = 'day'`,
     [staffId, day]
@@ -284,7 +284,10 @@ function hadDayShiftToday(staffId: string, day: string): boolean {
   return (row?.c ?? 0) > 0;
 }
 
-export function isInMorningWindow(settings = getPickShiftSettings(), at = new Date()): boolean {
+export async function isInMorningWindow(
+  settings: PickShiftSettings,
+  at = new Date()
+): Promise<boolean> {
   const { minutes } = localParts(settings.tz, at);
   const from = parseHm(settings.morning_from) ?? 6 * 60;
   const to = parseHm(settings.morning_to) ?? 10 * 60;
@@ -299,25 +302,25 @@ export type MorningAutoOffer = {
   reason: string;
 };
 
-export function morningAutoOffer(
+export async function morningAutoOffer(
   actor: Actor,
-  settings = getPickShiftSettings()
-): MorningAutoOffer {
+  settings: PickShiftSettings
+): Promise<MorningAutoOffer> {
   if (!settings.auto_morning) {
     return { offer: false, kind: 'day', reason: 'Автостарт выключен' };
   }
   if (actor.isSystemAdmin) {
     return { offer: false, kind: 'day', reason: 'Системный admin' };
   }
-  const open = getOpenPickShift(actor.id);
+  const open = await getOpenPickShift(actor.id);
   if (open) {
     return { offer: false, kind: open.kind, reason: 'Смена уже открыта' };
   }
-  if (!isInMorningWindow(settings)) {
+  if (!await isInMorningWindow(settings)) {
     return { offer: false, kind: 'day', reason: 'Вне утреннего окна' };
   }
   const { day } = localParts(settings.tz);
-  if (hadDayShiftToday(actor.id, day)) {
+  if (await hadDayShiftToday(actor.id, day)) {
     return { offer: false, kind: 'day', reason: 'Дневная смена сегодня уже была' };
   }
   return {
@@ -327,7 +330,7 @@ export function morningAutoOffer(
   };
 }
 
-export function startPickShift(
+export async function startPickShift(
   actor: Actor,
   opts: {
     kind?: string;
@@ -335,26 +338,26 @@ export function startPickShift(
     password?: string;
     auto?: boolean;
   }
-): PickShiftRow {
-  const settings = getPickShiftSettings();
+): Promise<PickShiftRow> {
+  const settings = await getPickShiftSettings();
   const kind: PickShiftKind = opts.kind === 'evening' ? 'evening' : 'day';
-  const open = getOpenPickShift(actor.id);
+  const open = await getOpenPickShift(actor.id);
   if (open) {
     throw new Error('Смена уже открыта — сначала завершите текущую');
   }
 
   if (opts.auto) {
     if (kind !== 'day') throw new Error('Автостарт только для дневной смены');
-    const offer = morningAutoOffer(actor, settings);
+    const offer = await morningAutoOffer(actor, settings);
     if (!offer.offer) throw new Error(offer.reason || 'Автостарт недоступен');
   }
 
-  verifyShiftIdentity(actor, { pin: opts.pin, password: opts.password });
+  await verifyShiftIdentity(actor, { pin: opts.pin, password: opts.password });
 
   const { day } = localParts(settings.tz);
   const now = new Date().toISOString();
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO pick_shifts (
       id, staff_id, staff_name, staff_login, kind, day,
       started_at, ended_at, pin_verified_at, last_activity_at, auto_started
@@ -372,73 +375,76 @@ export function startPickShift(
       opts.auto ? 1 : 0,
     ]
   );
-  return getOpenPickShift(actor.id)!;
+  return (await getOpenPickShift(actor.id))!;
 }
 
-export function endPickShift(actor: Actor): PickShiftRow | null {
-  const open = getOpenPickShift(actor.id);
+export async function endPickShift(actor: Actor): Promise<PickShiftRow | null> {
+  const open = await getOpenPickShift(actor.id);
   if (!open) return null;
   const now = new Date().toISOString();
-  run(
+  await run(
     `UPDATE pick_shifts SET ended_at = ?, last_activity_at = ? WHERE id = ?`,
     [now, now, open.id]
   );
   return mapShift({ ...open, ended_at: now, last_activity_at: now });
 }
 
-export function touchPickShiftActivity(staffId: string): void {
-  const open = getOpenPickShift(staffId);
+export async function touchPickShiftActivity(staffId: string): Promise<void> {
+  const open = await getOpenPickShift(staffId);
   if (!open) return;
-  run(`UPDATE pick_shifts SET last_activity_at = ? WHERE id = ?`, [
+  await run(`UPDATE pick_shifts SET last_activity_at = ? WHERE id = ?`, [
     new Date().toISOString(),
     open.id,
   ]);
 }
 
-export function needsIdleReauth(staffId: string, settings = getPickShiftSettings()): boolean {
+export async function needsIdleReauth(
+  staffId: string,
+  settings: PickShiftSettings
+): Promise<boolean> {
   if (!settings.idle_reauth_minutes) return false;
-  const open = getOpenPickShift(staffId);
+  const open = await getOpenPickShift(staffId);
   if (!open) return false;
   const last = Date.parse(open.last_activity_at || open.pin_verified_at || open.started_at);
   if (!Number.isFinite(last)) return false;
   return Date.now() - last > settings.idle_reauth_minutes * 60_000;
 }
 
-export function reauthPickShift(
+export async function reauthPickShift(
   actor: Actor,
   opts: { pin?: string; password?: string }
-): PickShiftRow {
-  const open = getOpenPickShift(actor.id);
+): Promise<PickShiftRow> {
+  const open = await getOpenPickShift(actor.id);
   if (!open) throw new Error('Нет открытой смены');
-  verifyShiftIdentity(actor, opts);
+  await verifyShiftIdentity(actor, opts);
   const now = new Date().toISOString();
-  run(
+  await run(
     `UPDATE pick_shifts SET pin_verified_at = ?, last_activity_at = ? WHERE id = ?`,
     [now, now, open.id]
   );
-  return getOpenPickShift(actor.id)!;
+  return (await getOpenPickShift(actor.id))!;
 }
 
-export function assertPickShiftForOps(actor: Actor | null): void {
+export async function assertPickShiftForOps(actor: Actor | null): Promise<void> {
   if (!actor) return;
   if (actor.isSystemAdmin || actor.role === 'admin' || actor.role === 'manager') return;
-  const settings = getPickShiftSettings();
+  const settings = await getPickShiftSettings();
   if (!settings.require_shift_for_ops) return;
   if (!['warehouse', 'courier'].includes(actor.role)) return;
-  const open = getOpenPickShift(actor.id);
+  const open = await getOpenPickShift(actor.id);
   if (!open) {
     throw new Error('Начните смену (и подтвердите PIN), чтобы работать с очередью');
   }
-  if (needsIdleReauth(actor.id, settings)) {
+  if (await needsIdleReauth(actor.id, settings)) {
     throw new Error('Смена простаивала — подтвердите PIN ещё раз');
   }
 }
 
-export function pickShiftStatusPayload(actor: Actor) {
-  const settings = getPickShiftSettings();
-  const shift = getOpenPickShift(actor.id);
-  const has_pin = staffHasPin(actor.id);
-  const morning = morningAutoOffer(actor, settings);
+export async function pickShiftStatusPayload(actor: Actor) {
+  const settings = await getPickShiftSettings();
+  const shift = await getOpenPickShift(actor.id);
+  const has_pin = await staffHasPin(actor.id);
+  const morning = await morningAutoOffer(actor, settings);
   const { day, hm } = localParts(settings.tz);
   return {
     shifts_disabled: PICK_SHIFTS_UI_DISABLED,
@@ -461,11 +467,11 @@ export function pickShiftStatusPayload(actor: Actor) {
     },
     local: { day, time: hm },
     morning_auto: morning,
-    needs_reauth: shift ? needsIdleReauth(actor.id, settings) : false,
+    needs_reauth: shift ? await needsIdleReauth(actor.id, settings) : false,
   };
 }
 
-export function listPickShifts(opts?: { day?: string; staff_id?: string; limit?: number }) {
+export async function listPickShifts(opts?: { day?: string; staff_id?: string; limit?: number }) {
   const limit = Math.min(500, Math.max(1, Number(opts?.limit) || 100));
   const where: string[] = [];
   const params: Array<string | number> = [];
@@ -481,5 +487,5 @@ export function listPickShifts(opts?: { day?: string; staff_id?: string; limit?:
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY started_at DESC LIMIT ?`;
   params.push(limit);
-  return all<Record<string, unknown>>(sql, params).map(mapShift);
+  return (await all<Record<string, unknown>>(sql, params)).map(mapShift);
 }

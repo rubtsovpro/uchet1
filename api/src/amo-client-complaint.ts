@@ -112,9 +112,9 @@ foreach (($res['body']['custom_fields_values'] ?? []) as $f) {
 }
 
 /** Для ЗН: колонка БД → CF payload → live Amo. */
-export function resolveAmoClientComplaintForDeal(
+export async function resolveAmoClientComplaintForDeal(
   deal: Record<string, unknown> | null | undefined
-): string {
+): Promise<string> {
   const fromDeal = extractAmoClientComplaint(deal);
   if (fromDeal) return fromDeal;
   const id = String(deal?.id || '').trim();
@@ -122,7 +122,7 @@ export function resolveAmoClientComplaintForDeal(
   const live = fetchAmoClientComplaintLive(id);
   if (live) {
     try {
-      run(`UPDATE crm_deals SET amo_client_complaint = ? WHERE id = ?`, [live, id]);
+      await run(`UPDATE crm_deals SET amo_client_complaint = ? WHERE id = ?`, [live, id]);
     } catch {
       /* колонка может ещё не быть на старом процессе */
     }
@@ -131,13 +131,13 @@ export function resolveAmoClientComplaintForDeal(
 }
 
 /** Сохранить жалобу при ingest, если пришла. */
-export function persistAmoClientComplaint(dealId: string, dealPayload: Record<string, unknown>): void {
+export async function persistAmoClientComplaint(dealId: string, dealPayload: Record<string, unknown>): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id) return;
   const v = extractAmoClientComplaint(dealPayload);
   if (!v) return;
   try {
-    run(`UPDATE crm_deals SET amo_client_complaint = ? WHERE id = ?`, [v, id]);
+    await run(`UPDATE crm_deals SET amo_client_complaint = ? WHERE id = ?`, [v, id]);
   } catch {
     /* ignore */
   }

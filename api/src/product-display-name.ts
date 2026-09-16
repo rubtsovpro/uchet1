@@ -202,15 +202,15 @@ export function fractalDisplayName(input: {
 }
 
 /** Категория + годы применимости для товара (по марке/модели строки). */
-export function lookupApplicabilityMeta(
+export async function lookupApplicabilityMeta(
   productId: string,
   mark: string,
   model: string
-): { category: string; years: string } {
+): Promise<{ category: string; years: string }> {
   const id = String(productId || '').trim();
   if (!id) return { category: '', years: '' };
 
-  const cat = get<{ name: string }>(
+  const cat = await get<{ name: string }>(
     `SELECT c.name AS name
      FROM products p
      LEFT JOIN categories c ON c.id = p.category_id
@@ -223,7 +223,7 @@ export function lookupApplicabilityMeta(
   const mo = String(model || '').trim();
   let years = '';
   if (m || mo) {
-    const row = get<{ years: string }>(
+    const row = await get<{ years: string }>(
       `SELECT IFNULL(years,'') AS years
        FROM product_applicability
        WHERE product_id = ?
@@ -285,7 +285,7 @@ function applicabilityNameFromLine(line: ApplicabilityLineInput): string {
  * Применимость для продаж: виджет, заказ, счёт, УПД, оплата.
  * Никогда не возвращает складское имя 1С.
  */
-export function applicabilityLineName(line: ApplicabilityLineInput): string {
+export async function applicabilityLineName(line: ApplicabilityLineInput): Promise<string> {
   const widgetName = applicabilityNameFromLine(line);
   const mark = String(line.mark || '').trim();
   const model = String(line.model || '').trim();
@@ -302,7 +302,7 @@ export function applicabilityLineName(line: ApplicabilityLineInput): string {
   let category = String(line.category || '').trim();
   let years = String(line.years || '').trim();
   if (productId && (!category || !years)) {
-    const meta = lookupApplicabilityMeta(productId, mark, model);
+    const meta = await lookupApplicabilityMeta(productId, mark, model);
     if (!category) category = meta.category;
     if (!years) years = meta.years;
   }
@@ -311,7 +311,7 @@ export function applicabilityLineName(line: ApplicabilityLineInput): string {
     String(line.name_1c || line.product_name_1c || line.product_name || '').trim();
   category = marketingCategoryLabel(category, inferFrom);
 
-  const fromDb = productId ? productPropsHighlight(productId) : null;
+  const fromDb = productId ? await productPropsHighlight(productId) : null;
   const side = String(line.prop_side || line.side || fromDb?.side || '').trim();
   const axis = String(line.prop_axis || line.axis || fromDb?.axis || '').trim();
   const drive = String(line.prop_drive || line.drive || fromDb?.drive || '').trim();
@@ -331,12 +331,12 @@ export function applicabilityLineName(line: ApplicabilityLineInput): string {
 }
 
 /** Заказ покупателя / UI сделки: display + складское имя отдельно. */
-export function customerOrderLineDisplayName(
+export async function customerOrderLineDisplayName(
   line: ApplicabilityLineInput
-): { display_name: string; name_1c: string; has_applicability: boolean } {
+): Promise<{ display_name: string; name_1c: string; has_applicability: boolean }> {
   const warehouseName = warehouseCatalogName(line);
   const widgetName = applicabilityNameFromLine(line);
-  const display_name = applicabilityLineName(line);
+  const display_name = await applicabilityLineName(line);
   const mark = String(line.mark || '').trim();
   const model = String(line.model || '').trim();
   const generation = String(line.generation || '').trim();
@@ -359,7 +359,7 @@ function catalogGuidFromProductId(productId: string): string {
 }
 
 /** Все id карточки для product_properties: bare GUID из сделки → scoped pnevmopodveska_2025::… */
-function productIdsForPropertiesLookup(productId: string): string[] {
+async function productIdsForPropertiesLookup(productId: string): Promise<string[]> {
   const id = String(productId || '').trim();
   if (!id) return [];
   const seen = new Set<string>();
@@ -376,7 +376,7 @@ function productIdsForPropertiesLookup(productId: string): string[] {
   if (guid && !id.includes('::')) {
     push(`pnevmopodveska_2025::${guid}`);
     push(`fogel_2025::${guid}`);
-    const rows = all<{ id: string }>(
+    const rows = await all<{ id: string }>(
       `SELECT id FROM products WHERE catalog_guid = ? LIMIT 4`,
       [guid]
     );
@@ -386,18 +386,18 @@ function productIdsForPropertiesLookup(productId: string): string[] {
 }
 
 /** Сторона / ось / привод из product_properties (как подсветка в виджете заказа). */
-export function productPropsHighlight(productId: string): {
+export async function productPropsHighlight(productId: string): Promise<{
   side: string;
   axis: string;
   drive: string;
   model_version: string;
-} {
-  const ids = productIdsForPropertiesLookup(productId);
+}> {
+  const ids = await productIdsForPropertiesLookup(productId);
   if (!ids.length) {
     return { side: '', axis: '', drive: '', model_version: '' };
   }
   const ph = ids.map(() => '?').join(',');
-  const rows = all<{ property: string; value: string }>(
+  const rows = await all<{ property: string; value: string }>(
     `SELECT property, IFNULL(value,'') AS value FROM product_properties
      WHERE product_id IN (${ph}) AND property IN ('Сторона','Ось','Привод','Версия модели')`,
     ids
@@ -415,10 +415,10 @@ export function productPropsHighlight(productId: string): {
 }
 
 /** « · Сторона: … · Ось: …» — как widgetNameHighlightHtml в amo/index.php. */
-export function salesDocLineCharacteristicsSuffix(it: Record<string, unknown>): string {
+export async function salesDocLineCharacteristicsSuffix(it: Record<string, unknown>): Promise<string> {
   const s = (v: unknown) => String(v ?? '').trim();
   const guid = s(it.product_guid || it.product_id);
-  const fromDb = productPropsHighlight(guid);
+  const fromDb = await productPropsHighlight(guid);
   const side = s(it.prop_side || it.side) || fromDb.side;
   const drive = s(it.prop_drive || it.drive) || fromDb.drive;
   const axis = s(it.prop_axis || it.axis) || fromDb.axis;
@@ -432,9 +432,9 @@ export function salesDocLineCharacteristicsSuffix(it: Record<string, unknown>): 
 }
 
 /** Счёт / УПД / ЗН / виджет документов — только коммерческое название. */
-export function salesDocLineDisplayName(it: Record<string, unknown>): string {
+export async function salesDocLineDisplayName(it: Record<string, unknown>): Promise<string> {
   const s = (v: unknown) => String(v ?? '').trim();
-  return applicabilityLineName({
+  return await applicabilityLineName({
     applicability_name: s(it.name),
     name_1c: s(it.name_1c),
     product_name_1c: s(it.product_name_1c),

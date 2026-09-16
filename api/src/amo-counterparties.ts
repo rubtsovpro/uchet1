@@ -55,12 +55,12 @@ function yieldEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function joinPhones(phones: string[] | undefined, fallback = ''): string {
+async function joinPhones(phones: string[] | undefined, fallback = ''): Promise<string> {
   const list = (phones && phones.length ? phones : fallback ? [fallback] : [])
     .map((p) => String(p || '').trim())
     .filter(Boolean);
   if (!list.length) return '';
-  return normalizePhoneForStorage(list.slice(0, 2).join('; '));
+  return await normalizePhoneForStorage(list.slice(0, 2).join('; '));
 }
 
 function companyLocalId(amoId: string): string {
@@ -71,23 +71,23 @@ function contactLocalId(amoId: string): string {
   return `amo:contact:${amoId}`;
 }
 
-function findExistingByAmo(kind: 'company' | 'contact', amoId: string) {
+async function findExistingByAmo(kind: 'company' | 'contact', amoId: string) {
   if (kind === 'company') {
-    return get<{ id: string; kind: string }>(
+    return await get<{ id: string; kind: string }>(
       `SELECT id, kind FROM counterparties WHERE amo_company_id = ? LIMIT 1`,
       [amoId]
     );
   }
-  return get<{ id: string; kind: string }>(
+  return await get<{ id: string; kind: string }>(
     `SELECT id, kind FROM counterparties WHERE amo_contact_id = ? LIMIT 1`,
     [amoId]
   );
 }
 
-function findExistingByInn(inn: string) {
+async function findExistingByInn(inn: string) {
   const digits = String(inn || '').replace(/\D/g, '');
   if (digits.length !== 10 && digits.length !== 12) return null;
-  return get<{ id: string; kind: string; amo_company_id: string }>(
+  return await get<{ id: string; kind: string; amo_company_id: string }>(
     `SELECT id, kind, IFNULL(amo_company_id,'') AS amo_company_id
      FROM counterparties
      WHERE REPLACE(REPLACE(IFNULL(inn,''),' ',''),'-','') = ?
@@ -106,18 +106,18 @@ function mergeKind(existing: string | undefined, fromAmo: 'buyer'): string {
   return fromAmo;
 }
 
-function upsertCompany(row: AmoCpRow): string {
+async function upsertCompany(row: AmoCpRow): Promise<string> {
   const amoId = String(row.id || '').trim();
   if (!amoId) return '';
   const name = String(row.name || '').trim() || `Компания Amo #${amoId}`;
   const inn = sanitizeBuyerInn(row.inn);
-  const phone = joinPhones(row.phones, row.phone || '');
+  const phone = await joinPhones(row.phones, row.phone || '');
   const email = String(row.email || (row.emails && row.emails[0]) || '').trim();
   const amoUrl = String(row.amo_url || '').trim();
 
-  let existing = findExistingByAmo('company', amoId);
+  let existing = await findExistingByAmo('company', amoId);
   if (!existing && inn) {
-    const byInn = findExistingByInn(inn);
+    const byInn = await findExistingByInn(inn);
     // Не цепляем к чужой уже привязанной компании Amo
     if (byInn && (!byInn.amo_company_id || byInn.amo_company_id === amoId)) {
       existing = byInn;
@@ -130,7 +130,7 @@ function upsertCompany(row: AmoCpRow): string {
   const partyKind = inn.length === 12 ? 'ip' : inn.length === 10 ? 'legal' : 'person';
 
   if (existing) {
-    run(
+    await run(
       `UPDATE counterparties SET
          name = CASE WHEN length(trim(?)) > 0 THEN ? ELSE name END,
          inn = CASE WHEN length(?) > 0 THEN ? ELSE inn END,
@@ -165,7 +165,7 @@ function upsertCompany(row: AmoCpRow): string {
       ]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO counterparties (
          id, name, inn, phone, kind, party_kind, is_partner, email, amo_company_id, amo_contact_id,
          amo_url, amo_entity, source, synced_at, is_active
@@ -176,21 +176,21 @@ function upsertCompany(row: AmoCpRow): string {
   return id;
 }
 
-function upsertContact(row: AmoCpRow): string {
+async function upsertContact(row: AmoCpRow): Promise<string> {
   const amoId = String(row.id || '').trim();
   if (!amoId) return '';
   const name = String(row.name || '').trim() || `Контакт Amo #${amoId}`;
   const inn = sanitizeBuyerInn(row.inn);
-  const phone = joinPhones(row.phones, row.phone || '');
+  const phone = await joinPhones(row.phones, row.phone || '');
   const email = String(row.email || (row.emails && row.emails[0]) || '').trim();
   const amoUrl = String(row.amo_url || '').trim();
 
-  const existing = findExistingByAmo('contact', amoId);
+  const existing = await findExistingByAmo('contact', amoId);
   const id = existing?.id || contactLocalId(amoId);
   const kind = mergeKind(existing?.kind, 'buyer');
 
   if (existing) {
-    run(
+    await run(
       `UPDATE counterparties SET
          name = CASE WHEN length(trim(?)) > 0 THEN ? ELSE name END,
          inn = CASE WHEN length(?) > 0 THEN ? ELSE inn END,
@@ -206,7 +206,7 @@ function upsertContact(row: AmoCpRow): string {
       [name, name, inn, inn, phone, phone, email, email, kind, amoId, amoUrl, amoUrl, id]
     );
   } else {
-    run(
+    await run(
       `INSERT INTO counterparties (
          id, name, inn, phone, kind, email, amo_company_id, amo_contact_id,
          amo_url, amo_entity, source, synced_at, is_active
@@ -217,30 +217,30 @@ function upsertContact(row: AmoCpRow): string {
   return id;
 }
 
-export function amoCounterpartiesMeta() {
+export async function amoCounterpartiesMeta() {
   return {
     companies:
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM counterparties WHERE IFNULL(amo_company_id,'') != ''`
-      )?.c ?? 0,
+      ))?.c ?? 0,
     contacts:
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         `SELECT COUNT(*) AS c FROM counterparties WHERE IFNULL(amo_contact_id,'') != ''`
-      )?.c ?? 0,
+      ))?.c ?? 0,
     links:
-      get<{ c: number }>(`SELECT COUNT(*) AS c FROM counterparty_amo_links`)?.c ?? 0,
+      (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM counterparty_amo_links`))?.c ?? 0,
     lastSync:
-      get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [
+      (await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [
         'amo_counterparties_synced_at',
-      ])?.value ?? null,
+      ]))?.value ?? null,
   };
 }
 
-export function listLinkedCounterparties(id: string): {
+export async function listLinkedCounterparties(id: string): Promise<{
   companies: Array<Record<string, unknown>>;
   contacts: Array<Record<string, unknown>>;
-} {
-  const contacts = all(
+}> {
+  const contacts = await all(
     `SELECT c.*
      FROM counterparty_amo_links l
      JOIN counterparties c ON c.id = l.contact_id
@@ -248,7 +248,7 @@ export function listLinkedCounterparties(id: string): {
      ORDER BY c.name`,
     [id]
   ) as Array<Record<string, unknown>>;
-  const companies = all(
+  const companies = await all(
     `SELECT c.*
      FROM counterparty_amo_links l
      JOIN counterparties c ON c.id = l.company_id
@@ -287,7 +287,7 @@ export async function syncCounterpartiesFromAmo(opts: {
 
     let upsertedCompanies = 0;
     for (const row of exp.companies || []) {
-      const localId = upsertCompany(row);
+      const localId = await upsertCompany(row);
       if (localId) {
         companyMap.set(String(row.id), localId);
         upsertedCompanies += 1;
@@ -297,7 +297,7 @@ export async function syncCounterpartiesFromAmo(opts: {
 
     let upsertedContacts = 0;
     for (const row of exp.contacts || []) {
-      const localId = upsertContact(row);
+      const localId = await upsertContact(row);
       if (localId) {
         contactMap.set(String(row.id), localId);
         upsertedContacts += 1;
@@ -305,18 +305,18 @@ export async function syncCounterpartiesFromAmo(opts: {
       if (upsertedContacts % 100 === 0) await yieldEventLoop();
     }
 
-    const resolveCompany = (amoId: string): string => {
+    const resolveCompany = async (amoId: string): Promise<string> => {
       if (companyMap.has(amoId)) return companyMap.get(amoId)!;
-      const row = findExistingByAmo('company', amoId);
+      const row = await findExistingByAmo('company', amoId);
       if (row) {
         companyMap.set(amoId, row.id);
         return row.id;
       }
       return '';
     };
-    const resolveContact = (amoId: string): string => {
+    const resolveContact = async (amoId: string): Promise<string> => {
       if (contactMap.has(amoId)) return contactMap.get(amoId)!;
-      const row = findExistingByAmo('contact', amoId);
+      const row = await findExistingByAmo('contact', amoId);
       if (row) {
         contactMap.set(amoId, row.id);
         return row.id;
@@ -326,10 +326,10 @@ export async function syncCounterpartiesFromAmo(opts: {
 
     let upsertedLinks = 0;
     for (const link of exp.links || []) {
-      const companyId = resolveCompany(String(link.company_id || ''));
-      const contactId = resolveContact(String(link.contact_id || ''));
+      const companyId = await resolveCompany(String(link.company_id || ''));
+      const contactId = await resolveContact(String(link.contact_id || ''));
       if (!companyId || !contactId) continue;
-      run(
+      await run(
         `INSERT INTO counterparty_amo_links (company_id, contact_id, synced_at)
          VALUES (?, ?, datetime('now'))
          ON CONFLICT(company_id, contact_id) DO UPDATE SET synced_at = datetime('now')`,
@@ -339,7 +339,7 @@ export async function syncCounterpartiesFromAmo(opts: {
       if (upsertedLinks % 100 === 0) await yieldEventLoop();
     }
 
-    run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
       'amo_counterparties_synced_at',
       new Date().toISOString(),
     ]);

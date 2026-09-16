@@ -430,7 +430,7 @@ import {
   parseOrgFacsimileFlags,
   resolveOrgSignPngPath,
   resolveOrgStampPngPath,
-  runWithOrgFacsimile,
+  runWithOrgFacsimileAsync,
   saveOrgPrintAsset,
   type OrgPrintAssetKind,
 } from './org-stamp.js';
@@ -871,10 +871,10 @@ mountSwagger(api);
 mountChatRoutes(api);
 mountSupplyChainRoutes(api);
 mountPurchaseIntakeRoutes(api);
-mountPurchaseDriveRoutes(api);
+await mountPurchaseDriveRoutes(api);
 mountProductionJobRoutes(api);
-mountProductCatalogApiRoutes(api);
-mountTaxRoutes(api);
+await mountProductCatalogApiRoutes(api);
+await mountTaxRoutes(api);
 mountWarehouseCellsRoutes(api);
 mountWarehouseInboundRoutes(api);
 mountSupplierOrderImportRoutes(api);
@@ -993,14 +993,14 @@ api.use('*', async (c, next) => {
     return next();
   }
   if (path.startsWith('/sync/') && c.req.method !== 'GET') {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     if (!canDo(actor, 'can_sync')) {
       return c.json({ error: 'Недостаточно прав: синхронизация 1С' }, 403);
     }
   }
   // Загрузка фото товара — экран фотографа (не весь раздел media)
   if (c.req.method === 'POST' && /^\/media\/products\/[^/]+\/photo\/?$/.test(path)) {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     if (!canAccessPhotoBySection(actor)) {
       return c.json({ error: 'Недостаточно прав: экран фотографа' }, 403);
     }
@@ -1020,7 +1020,7 @@ api.use('*', async (c, next) => {
     c.req.method === 'POST' &&
     /^\/crm\/deals\/[^/]+\/stock-flow\/return-complete\/?$/.test(path)
   ) {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     if (
       !canAccessSection(actor, 'pick') &&
       !canAccessSection(actor, 'crm') &&
@@ -1033,7 +1033,7 @@ api.use('*', async (c, next) => {
   }
   // Карта ячеек Основного для экрана /pick (селект «Куда положим»)
   if (c.req.method === 'GET' && path === '/warehouse/cells/map') {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     if (
       !canAccessSection(actor, 'pick') &&
       !canAccessSection(actor, 'warehouse') &&
@@ -1046,7 +1046,7 @@ api.use('*', async (c, next) => {
   }
   const section = sectionForApiPath(path);
   if (section) {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     if (section === 'photo') {
       if (!canAccessPhotoBySection(actor)) {
         return c.json({ error: 'Недостаточно прав: экран фотографа' }, 403);
@@ -1073,7 +1073,7 @@ api.use('*', async (c, next) => {
 
 /** Кладовщик / СТО / курьер / руководитель — задания склада без полного can_edit_docs. */
 function canOperateWarehouseTasks(
-  actor: ReturnType<typeof actorFromContext>
+  actor: Awaited<ReturnType<typeof actorFromContext>>
 ): boolean {
   if (!actor) return true;
   if (actor.isSystemAdmin || actor.role === 'admin') return true;
@@ -1081,17 +1081,17 @@ function canOperateWarehouseTasks(
   return canDo(actor, 'can_edit_docs');
 }
 
-function publicJsonKeyOk(c: {
+async function publicJsonKeyOk(c: {
   req: { query: (k: string) => string | undefined; header: (n: string) => string | undefined };
-}): boolean {
-  return Boolean(machineApiKeyOk(c, 'public'));
+}): Promise<boolean> {
+  return Boolean(await machineApiKeyOk(c, 'public'));
 }
 
-function findProductForExport(ref: string) {
+async function findProductForExport(ref: string) {
   const q = String(ref || '').trim();
   if (!q) return null;
   return (
-    get(
+    await get(
       `SELECT p.id, p.sku, p.code, p.name, p.brand, p.barcode, p.array_sku, p.is_active,
               p.package_width_cm, p.package_height_cm, p.package_length_cm, p.package_weight_g,
               u.short_name AS unit, c.name AS category, p.category_id
@@ -1105,9 +1105,9 @@ function findProductForExport(ref: string) {
   );
 }
 
-function buildProductExportJson(product: Record<string, unknown>) {
+async function buildProductExportJson(product: Record<string, unknown>) {
   const id = String(product.id);
-  const prices = all<{ price_type: string; price: number }>(
+  const prices = await all<{ price_type: string; price: number }>(
     `SELECT price_type, price FROM product_prices WHERE product_id = ?
      ORDER BY
        CASE price_type
@@ -1121,7 +1121,7 @@ function buildProductExportJson(product: Record<string, unknown>) {
        price_type`,
     [id]
   );
-  const lastPurchase = get<{
+  const lastPurchase = await get<{
     price: number;
     qty: number;
     doc_date: string;
@@ -1136,11 +1136,11 @@ function buildProductExportJson(product: Record<string, unknown>) {
      LIMIT 1`,
     [id]
   );
-  const properties = all<{ property: string; value: string }>(
+  const properties = await all<{ property: string; value: string }>(
     `SELECT property, value FROM product_properties WHERE product_id = ? ORDER BY property`,
     [id]
   );
-  const rests = all<{ warehouse: string; qty: number }>(
+  const rests = await all<{ warehouse: string; qty: number }>(
     `SELECT IFNULL(w.name, r.warehouse_id) AS warehouse, r.qty
      FROM product_store_rests r
      LEFT JOIN warehouses w ON w.id = r.warehouse_id
@@ -1195,8 +1195,8 @@ function buildProductExportJson(product: Record<string, unknown>) {
  *    /api/public/product.json?sku=MRAE21065&key=...
  *    /api/public/product/MRAE21065.json?key=...
  */
-api.get('/public/product.json', (c) => {
-  if (!publicJsonKeyOk(c) && !actorFromContext(c)) {
+api.get('/public/product.json', async (c) => {
+  if (!await publicJsonKeyOk(c) && !await actorFromContext(c)) {
     return c.json({ error: 'forbidden', hint: 'нужен ?key= своего клиента или вход в Учёт №1' }, 403);
   }
   const ref =
@@ -1205,28 +1205,28 @@ api.get('/public/product.json', (c) => {
     || c.req.query('barcode')
     || c.req.query('id')
     || '';
-  const product = findProductForExport(ref);
+  const product = await findProductForExport(ref);
   if (!product) return c.json({ ok: false, error: 'not found' }, 404);
-  return c.json(buildProductExportJson(product as Record<string, unknown>));
+  return c.json(await buildProductExportJson(product as Record<string, unknown>));
 });
 
-api.get('/public/product/:ref', (c) => {
-  if (!publicJsonKeyOk(c) && !actorFromContext(c)) {
+api.get('/public/product/:ref', async (c) => {
+  if (!await publicJsonKeyOk(c) && !await actorFromContext(c)) {
     return c.json({ error: 'forbidden', hint: 'нужен ?key= своего клиента или вход в Учёт №1' }, 403);
   }
   let ref = decodeURIComponent(c.req.param('ref') || '');
   if (ref.toLowerCase().endsWith('.json')) ref = ref.slice(0, -5);
-  const product = findProductForExport(ref);
+  const product = await findProductForExport(ref);
   if (!product) return c.json({ ok: false, error: 'not found' }, 404);
-  return c.json(buildProductExportJson(product as Record<string, unknown>));
+  return c.json(await buildProductExportJson(product as Record<string, unknown>));
 });
 
 /** Для карточки товара: шаблон постоянной ссылки (ключ — свой у каждого клиента). */
-api.get('/products/:id/json-link', (c) => {
-  const actor = actorFromContext(c);
+api.get('/products/:id/json-link', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const id = c.req.param('id');
-  const product = get<{ id: string; sku: string; code: string }>(
+  const product = await get<{ id: string; sku: string; code: string }>(
     `SELECT id, sku, code FROM products WHERE id = ?`,
     [id]
   );
@@ -1242,13 +1242,13 @@ api.get('/products/:id/json-link', (c) => {
     url: `${base}/api/public/product/${sku}.json`,
     url_query: `${base}/api/public/product.json?sku=${sku}`,
     hint: 'Добавьте ?key=ВАШ_КЛЮЧ или заголовок x-wms-ingest-key (свой ключ клиента в Помощь → Интеграции и API)',
-    keys_active: countActiveIntegrationApiKeys(),
-    env_fallback: hasAnyMachineApiKey(),
+    keys_active: await countActiveIntegrationApiKeys(),
+    env_fallback: await hasAnyMachineApiKey(),
   });
 });
 
 api.get('/money/tochka', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canAccessSection(actor, 'money')) {
     return c.json({ error: 'Недостаточно прав: раздел Деньги' }, 403);
   }
@@ -1261,8 +1261,8 @@ api.get('/money/tochka', async (c) => {
 });
 
 /** Журнал кассы: чеки АТОЛ, оплаты СБП, ссылки на оплату. */
-api.get('/kassa/journal', (c) => {
-  const actor = actorFromContext(c);
+api.get('/kassa/journal', async (c) => {
+  const actor = await actorFromContext(c);
   if (
     !isAdminActor(actor) &&
     !canAccessSection(actor, 'kassa') &&
@@ -1275,12 +1275,12 @@ api.get('/kassa/journal', (c) => {
   const day = c.req.query('day') || '';
   const page = Number(c.req.query('page') || 1);
   const limit = Number(c.req.query('limit') || 50);
-  return c.json(listKassaJournal({ q, source, day, page, limit }));
+  return c.json(await listKassaJournal({ q, source, day, page, limit }));
 });
 
 /** Дашборд кассы: остатки по кассам + статусы АТОЛ/ОФД/Точка. */
 api.get('/kassa/overview', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (
     !isAdminActor(actor) &&
     !canAccessSection(actor, 'kassa') &&
@@ -1306,12 +1306,12 @@ api.get('/kassa/overview', async (c) => {
   );
 });
 
-api.get('/me', (c) => {
+api.get('/me', async (c) => {
   const host = c.req.header('x-forwarded-host') || c.req.header('host');
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) {
     // legacy cookie
-    const extras = meProfileExtras('__admin__');
+    const extras = await meProfileExtras('__admin__');
     return c.json({
       id: '__admin__',
       name: 'Админ (системный)',
@@ -1345,7 +1345,7 @@ api.get('/me', (c) => {
     (actor.role === 'warehouse' ||
       actor.role === 'courier' ||
       (hasPick && !mainUi && !hasPhoto));
-  const extras = meProfileExtras(actor.id);
+  const extras = await meProfileExtras(actor.id);
   const pickSiteLock = actorPickSiteLock(actor);
   return c.json({
     id: actor.id,
@@ -1358,7 +1358,7 @@ api.get('/me', (c) => {
     home_path: homePathForLogin(host, actor),
     picker_only: pickerOnly,
     pick_site_lock: pickSiteLock || '',
-    pick_site_label: pickSiteLock ? pickSiteLabel(pickSiteLock) : '',
+    pick_site_label: pickSiteLock ? await pickSiteLabel(pickSiteLock) : '',
     photographer_only: photographerOnly,
     department: actor.department || '',
     purchase_intake: canUsePurchaseIntake(actor),
@@ -1367,32 +1367,32 @@ api.get('/me', (c) => {
 });
 
 api.patch('/me', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req.json<{ phone?: string }>().catch(() => ({} as { phone?: string }));
   try {
     const phone =
-      body.phone !== undefined ? updateOwnPhone(actor.id, String(body.phone || '')) : undefined;
-    auditFromContext(c, {
+      body.phone !== undefined ? await updateOwnPhone(actor.id, String(body.phone || '')) : undefined;
+    await auditFromContext(c, {
       action: 'staff.profile',
       entity: 'staff',
       entityId: actor.id,
       summary: `Профиль: телефон`,
       after: { phone },
     });
-    return c.json({ ok: true, ...meProfileExtras(actor.id), phone: phone ?? meProfileExtras(actor.id).phone });
+    return c.json({ ok: true, ...await meProfileExtras(actor.id), phone: phone ?? (await meProfileExtras(actor.id)).phone });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
 api.post('/me/password', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req.json<{ old_password?: string; new_password?: string }>();
   try {
-    changeOwnPassword(actor.id, String(body.old_password || ''), String(body.new_password || ''));
-    auditFromContext(c, {
+    await changeOwnPassword(actor.id, String(body.old_password || ''), String(body.new_password || ''));
+    await auditFromContext(c, {
       action: 'auth.password_change',
       entity: 'staff',
       entityId: actor.id,
@@ -1405,31 +1405,31 @@ api.post('/me/password', async (c) => {
 });
 
 api.post('/me/pin', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req
     .json<{ pin?: string | null; current_password?: string; current_pin?: string }>()
     .catch(() => ({} as { pin?: string | null; current_password?: string; current_pin?: string }));
   try {
-    changeOwnPin(actor.id, {
+    await changeOwnPin(actor.id, {
       pin: body.pin,
       current_password: body.current_password,
       current_pin: body.current_pin,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: body.pin === null || String(body.pin || '').trim() === '' ? 'auth.pin_clear' : 'auth.pin_set',
       entity: 'staff',
       entityId: actor.id,
       summary: `Свой PIN: ${actor.name}`,
     });
-    return c.json({ ok: true, ...meProfileExtras(actor.id) });
+    return c.json({ ok: true, ...await meProfileExtras(actor.id) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
 api.post('/me/avatar', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   let buf: Buffer | null = null;
   const contentType = (c.req.header('content-type') || '').toLowerCase();
@@ -1456,41 +1456,41 @@ api.post('/me/avatar', async (c) => {
   if (!buf?.length) return c.json({ error: 'Нужен файл (поле file) или image_base64' }, 400);
   try {
     const result = await saveOwnAvatar(actor.id, buf);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'staff.avatar',
       entity: 'staff',
       entityId: actor.id,
       summary: `Аватар: ${actor.name}`,
       after: result,
     });
-    return c.json({ ok: true, ...result, ...meProfileExtras(actor.id) });
+    return c.json({ ok: true, ...result, ...await meProfileExtras(actor.id) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'upload failed' }, 400);
   }
 });
 
-api.delete('/me/avatar', (c) => {
-  const actor = actorFromContext(c);
+api.delete('/me/avatar', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  clearOwnAvatar(actor.id);
-  auditFromContext(c, {
+  await clearOwnAvatar(actor.id);
+  await auditFromContext(c, {
     action: 'staff.avatar_clear',
     entity: 'staff',
     entityId: actor.id,
     summary: `Аватар удалён: ${actor.name}`,
   });
-  return c.json({ ok: true, ...meProfileExtras(actor.id) });
+  return c.json({ ok: true, ...await meProfileExtras(actor.id) });
 });
 
 /** Публичная раздача локального аватара (и для чатов). */
-api.get('/staff/:id/avatar', (c) => {
+api.get('/staff/:id/avatar', async (c) => {
   const id = String(c.req.param('id') || '').trim();
   if (!id) return c.json({ error: 'not found' }, 404);
-  const remote = publicAvatarUrl(id);
+  const remote = await publicAvatarUrl(id);
   if (remote && /^https?:\/\//i.test(remote)) {
     return c.redirect(remote, 302);
   }
-  const local = resolveLocalAvatarPath(id);
+  const local = await resolveLocalAvatarPath(id);
   if (!local) return c.json({ error: 'no avatar' }, 404);
   const data = fs.readFileSync(local.path);
   return c.body(new Uint8Array(data), 200, {
@@ -1499,13 +1499,13 @@ api.get('/staff/:id/avatar', (c) => {
   });
 });
 
-function bookmarkUserId(actor: ReturnType<typeof actorFromContext>): string {
+function bookmarkUserId(actor: Awaited<ReturnType<typeof actorFromContext>>): string {
   return actor?.id || '__admin__';
 }
 
-api.get('/me/bookmarks', (c) => {
-  const userId = bookmarkUserId(actorFromContext(c));
-  const items = all<{
+api.get('/me/bookmarks', async (c) => {
+  const userId = bookmarkUserId(await actorFromContext(c));
+  const items = await all<{
     id: string;
     title: string;
     path: string;
@@ -1520,7 +1520,7 @@ api.get('/me/bookmarks', (c) => {
 });
 
 api.post('/me/bookmarks', async (c) => {
-  const userId = bookmarkUserId(actorFromContext(c));
+  const userId = bookmarkUserId(await actorFromContext(c));
   let body: { title?: string; path?: string; tab_id?: string } = {};
   try {
     body = await c.req.json();
@@ -1531,49 +1531,49 @@ api.post('/me/bookmarks', async (c) => {
   const title = String(body.title || 'Закладка').trim().slice(0, 120) || 'Закладка';
   const tabId = String(body.tab_id || '').trim().slice(0, 200);
   if (!path || !path.startsWith('/')) return c.json({ error: 'path required' }, 400);
-  const existing = get<{ id: string }>(
+  const existing = await get<{ id: string }>(
     `SELECT id FROM user_bookmarks WHERE user_id = ? AND path = ?`,
     [userId, path]
   );
   if (existing) {
-    run(`UPDATE user_bookmarks SET title = ?, tab_id = ? WHERE id = ?`, [title, tabId, existing.id]);
+    await run(`UPDATE user_bookmarks SET title = ?, tab_id = ? WHERE id = ?`, [title, tabId, existing.id]);
     return c.json({
       ok: true,
-      item: get(`SELECT id, title, path, tab_id, created_at FROM user_bookmarks WHERE id = ?`, [existing.id]),
+      item: await get(`SELECT id, title, path, tab_id, created_at FROM user_bookmarks WHERE id = ?`, [existing.id]),
     });
   }
-  const count = get<{ n: number }>(`SELECT COUNT(*) AS n FROM user_bookmarks WHERE user_id = ?`, [userId]);
+  const count = await get<{ n: number }>(`SELECT COUNT(*) AS n FROM user_bookmarks WHERE user_id = ?`, [userId]);
   if ((count?.n || 0) >= 40) return c.json({ error: 'Слишком много закладок (лимит 40)' }, 400);
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO user_bookmarks (id, user_id, title, path, tab_id) VALUES (?, ?, ?, ?, ?)`,
     [id, userId, title, path, tabId]
   );
   return c.json({
     ok: true,
-    item: get(`SELECT id, title, path, tab_id, created_at FROM user_bookmarks WHERE id = ?`, [id]),
+    item: await get(`SELECT id, title, path, tab_id, created_at FROM user_bookmarks WHERE id = ?`, [id]),
   });
 });
 
-api.delete('/me/bookmarks/:id', (c) => {
-  const userId = bookmarkUserId(actorFromContext(c));
+api.delete('/me/bookmarks/:id', async (c) => {
+  const userId = bookmarkUserId(await actorFromContext(c));
   const id = c.req.param('id');
-  const row = get<{ id: string }>(`SELECT id FROM user_bookmarks WHERE id = ? AND user_id = ?`, [id, userId]);
+  const row = await get<{ id: string }>(`SELECT id FROM user_bookmarks WHERE id = ? AND user_id = ?`, [id, userId]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  run(`DELETE FROM user_bookmarks WHERE id = ? AND user_id = ?`, [id, userId]);
+  await run(`DELETE FROM user_bookmarks WHERE id = ? AND user_id = ?`, [id, userId]);
   return c.json({ ok: true });
 });
 
 api.delete('/me/bookmarks', async (c) => {
-  const userId = bookmarkUserId(actorFromContext(c));
+  const userId = bookmarkUserId(await actorFromContext(c));
   const path = String(c.req.query('path') || '').trim();
   if (!path) return c.json({ error: 'path required' }, 400);
-  run(`DELETE FROM user_bookmarks WHERE user_id = ? AND path = ?`, [userId, path]);
+  await run(`DELETE FROM user_bookmarks WHERE user_id = ? AND path = ?`, [userId, path]);
   return c.json({ ok: true });
 });
 
-api.get('/audit', (c) => {
-  const actor = actorFromContext(c);
+api.get('/audit', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const canSettings = isAdminActor(actor) || canAccessSection(actor, 'settings');
   const canStaff = isAdminActor(actor) || canAccessSection(actor, 'staff');
@@ -1595,14 +1595,14 @@ api.get('/audit', (c) => {
   const limit = Number(c.req.query('limit') || 50);
   if (dealScoped) {
     return c.json(
-      listAuditForDeal(dealId, {
+      await listAuditForDeal(dealId, {
         page,
         limit: Math.min(limit || 80, 200),
       })
     );
   }
   return c.json(
-    listAudit({
+    await listAudit({
       q: canSettings || canStaff ? c.req.query('q') || '' : '',
       action: canSettings || canStaff ? c.req.query('action') || '' : '',
       entity,
@@ -1618,8 +1618,8 @@ api.get('/audit', (c) => {
 });
 
 /** KPI активности: действия по сотруднику / дню (из audit_log). */
-api.get('/audit/kpi', (c) => {
-  const actor = actorFromContext(c);
+api.get('/audit/kpi', async (c) => {
+  const actor = await actorFromContext(c);
   if (
     !isAdminActor(actor)
     && !canAccessSection(actor, 'settings')
@@ -1629,7 +1629,7 @@ api.get('/audit/kpi', (c) => {
     return c.json({ error: 'Недостаточно прав: KPI истории' }, 403);
   }
   return c.json(
-    auditKpi({
+    await auditKpi({
       from: c.req.query('from') || '',
       to: c.req.query('to') || '',
       actorId: c.req.query('actor_id') || '',
@@ -1638,13 +1638,13 @@ api.get('/audit/kpi', (c) => {
   );
 });
 
-function isAdminActor(actor: ReturnType<typeof actorFromContext>): boolean {
+function isAdminActor(actor: Awaited<ReturnType<typeof actorFromContext>>): boolean {
   return !!(actor && (actor.isSystemAdmin || actor.role === 'admin'));
 }
 
 /** Heartbeat: кто где сидит (для всех авторизованных) + IP/UA/регион. */
 api.post('/presence/heartbeat', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req.json().catch(() => ({})) as {
     path?: string;
@@ -1652,7 +1652,7 @@ api.post('/presence/heartbeat', async (c) => {
     section?: string;
   };
   const client = await enrichClientMeta(c);
-  touchPresence({
+  await touchPresence({
     actor,
     path: body.path,
     title: body.title,
@@ -1663,18 +1663,18 @@ api.post('/presence/heartbeat', async (c) => {
 });
 
 /** Список онлайн — только админам. */
-api.get('/presence/online', (c) => {
-  const actor = actorFromContext(c);
+api.get('/presence/online', async (c) => {
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor)) {
     return c.json({ error: 'Только для администраторов' }, 403);
   }
-  const items = listOnlinePresence();
+  const items = await listOnlinePresence();
   return c.json({ items, total: items.length, online_sec: 120 });
 });
 
 /** Сбросить все сессии пользователя (кик) — только админ. */
-api.post('/presence/kick/:actorId', (c) => {
-  const actor = actorFromContext(c);
+api.post('/presence/kick/:actorId', async (c) => {
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor)) {
     return c.json({ error: 'Только для администраторов' }, 403);
   }
@@ -1684,14 +1684,14 @@ api.post('/presence/kick/:actorId', (c) => {
     return c.json({ error: 'Системный admin так не сбрасывается' }, 400);
   }
   const name =
-    get<{ name: string; login: string }>(
+    await get<{ name: string; login: string }>(
       `SELECT IFNULL(name,'') AS name, IFNULL(login,'') AS login FROM staff WHERE id = ?`,
       [targetId]
     ) || null;
   const label = String(name?.name || name?.login || targetId).trim();
-  const sessionsRemoved = destroySessionsForActor(targetId);
-  clearPresence(targetId);
-  auditFromContext(c, {
+  const sessionsRemoved = await destroySessionsForActor(targetId);
+  await clearPresence(targetId);
+  await auditFromContext(c, {
     action: 'auth.session_kick',
     entity: 'staff',
     entityId: targetId,
@@ -1706,37 +1706,37 @@ api.post('/presence/kick/:actorId', (c) => {
   });
 });
 
-api.get('/stats', (c) => {
-  const products = get<{ c: number }>('SELECT COUNT(*) AS c FROM products WHERE is_active = 1')?.c ?? 0;
-  const warehouses = get<{ c: number }>('SELECT COUNT(*) AS c FROM warehouses WHERE is_active = 1')?.c ?? 0;
-  const docs = get<{ c: number }>('SELECT COUNT(*) AS c FROM stock_docs')?.c ?? 0;
-  const skuQty = get<{ s: number }>('SELECT COALESCE(SUM(qty),0) AS s FROM stock_balances')?.s ?? 0;
-  const counts = catalogCounts();
+api.get('/stats', async (c) => {
+  const products = (await get<{ c: number }>('SELECT COUNT(*) AS c FROM products WHERE is_active = 1'))?.c ?? 0;
+  const warehouses = (await get<{ c: number }>('SELECT COUNT(*) AS c FROM warehouses WHERE is_active = 1'))?.c ?? 0;
+  const docs = (await get<{ c: number }>('SELECT COUNT(*) AS c FROM stock_docs'))?.c ?? 0;
+  const skuQty = (await get<{ s: number }>('SELECT COALESCE(SUM(qty),0) AS s FROM stock_balances'))?.s ?? 0;
+  const counts = await catalogCounts();
   return c.json({
     products,
     warehouses,
     docs,
     skuQty,
     odata: counts,
-    hs: hsSyncMeta(),
-    media: mediaSyncMeta(),
-    dicts: dictMeta(),
-    staff: staffMeta(),
-    docs1c: docsSyncMeta(),
-    crm: dealsMeta(),
-    disk: diskStats(process.env.WMS_DATA_DIR || '/'),
+    hs: await hsSyncMeta(),
+    media: await mediaSyncMeta(),
+    dicts: await dictMeta(),
+    staff: await staffMeta(),
+    docs1c: await docsSyncMeta(),
+    crm: await dealsMeta(),
+    disk: await diskStats(process.env.WMS_DATA_DIR || '/'),
   });
 });
 
-api.get('/crm/pipelines', (c) => c.json({ items: listPipelines(), meta: dealsMeta() }));
+api.get('/crm/pipelines', async (c) => c.json({ items: await listPipelines(), meta: await dealsMeta() }));
 
 /** Список ответственных для фильтра заказов (до /crm/deals/:id). */
-api.get('/crm/deals/responsibles', (c) => {
+api.get('/crm/deals/responsibles', async (c) => {
   const pipelineId = (c.req.query('pipeline_id') || '').trim();
   const orgCompanyId = (c.req.query('company_id') || '').trim();
   const queuedRaw = (c.req.query('queued_to_1c') || '').trim();
   return c.json(
-    listDealResponsibles({
+    await listDealResponsibles({
       pipelineId: pipelineId || undefined,
       orgCompanyId: orgCompanyId || undefined,
       queuedTo1c: queuedRaw === '1' || queuedRaw === 'true',
@@ -1744,7 +1744,7 @@ api.get('/crm/deals/responsibles', (c) => {
   );
 });
 
-api.get('/crm/deals', (c) => {
+api.get('/crm/deals', async (c) => {
   const q = (c.req.query('q') || '').trim();
   const pipelineId = (c.req.query('pipeline_id') || '').trim();
   const statusId = (c.req.query('status_id') || '').trim();
@@ -1760,7 +1760,7 @@ api.get('/crm/deals', (c) => {
   const page = Math.max(1, Number(c.req.query('page') || 1) || 1);
   const limit = Math.min(500, Math.max(1, Number(c.req.query('limit') || 50) || 50));
   return c.json(
-    listDeals({
+    await listDeals({
       q,
       pipelineId: pipelineId || undefined,
       statusId: statusId || undefined,
@@ -1780,7 +1780,7 @@ api.get('/crm/deals', (c) => {
 });
 
 /** Канбан-доска: колонки = этапы воронки. */
-api.get('/crm/deals/board', (c) => {
+api.get('/crm/deals/board', async (c) => {
   const pipelineId = (c.req.query('pipeline_id') || '').trim();
   const q = (c.req.query('q') || '').trim();
   const orgCompanyId = (c.req.query('company_id') || '').trim();
@@ -1801,43 +1801,43 @@ api.get('/crm/deals/board', (c) => {
     queueStatus: queueStatus || undefined,
   };
   if (!pipelineId) {
-    const pipes = listPipelines();
+    const pipes = await listPipelines();
     const first =
       pipes.find((p) => Number(p.deals_count) > 0) || pipes.find((p) => !p.is_archive) || pipes[0];
     if (!first) return c.json({ pipeline: null, columns: [], total: 0, pipelines: pipes });
     return c.json({
-      ...listDealsBoard({ pipelineId: String(first.id), ...boardOpts }),
+      ...await listDealsBoard({ pipelineId: String(first.id), ...boardOpts }),
       pipelines: pipes,
       selected_pipeline_id: String(first.id),
     });
   }
   return c.json({
-    ...listDealsBoard({ pipelineId, ...boardOpts }),
-    pipelines: listPipelines(),
+    ...await listDealsBoard({ pipelineId, ...boardOpts }),
+    pipelines: await listPipelines(),
     selected_pipeline_id: pipelineId,
   });
 });
 
-api.get('/crm/deals/:id', (c) => {
-  const deal = getDeal(c.req.param('id'));
+api.get('/crm/deals/:id', async (c) => {
+  const deal = await getDeal(c.req.param('id'));
   if (!deal) return c.json({ error: 'not found' }, 404);
   return c.json(deal);
 });
 
 /** Структура подчинения документов по заказу покупателя (сделка). */
-api.get('/crm/deals/:id/doc-tree', (c) => {
-  const tree = buildOrderDocTree(c.req.param('id'));
+api.get('/crm/deals/:id/doc-tree', async (c) => {
+  const tree = await buildOrderDocTree(c.req.param('id'));
   if (!tree) return c.json({ error: 'not found' }, 404);
   return c.json(tree);
 });
 
 /** Готовность к счёту юрлица: свободный остаток (без резерва WAIT-PAY). */
-api.get('/crm/deals/:id/invoice-stock', (c) => {
+api.get('/crm/deals/:id/invoice-stock', async (c) => {
   const dealId = String(c.req.param('id') || '').trim();
-  const deal = getDeal(dealId);
+  const deal = await getDeal(dealId);
   if (!deal) return c.json({ error: 'not found' }, 404);
   const preferred = String(c.req.query('warehouse_id') || '').trim();
-  const st = getDealInvoiceStockStatus(dealId, preferred || undefined);
+  const st = await getDealInvoiceStockStatus(dealId, preferred || undefined);
   return c.json({
     deal_id: dealId,
     ok: st.ok,
@@ -1850,11 +1850,11 @@ api.get('/crm/deals/:id/invoice-stock', (c) => {
 
 /** Зарезервировать товар под счёт — отключено (WAIT-PAY больше не используем). */
 api.post('/sales-docs/:id/reserve-stock', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав на документы' }, 403);
   }
-  const doc = getSalesDoc(c.req.param('id'));
+  const doc = await getSalesDoc(c.req.param('id'));
   if (!doc) return c.json({ error: 'not found' }, 404);
   if (String(doc.doc_type || '') !== 'invoice') {
     return c.json({ error: 'Резерв только для счёта на оплату' }, 400);
@@ -1871,22 +1871,22 @@ api.post('/sales-docs/:id/reserve-stock', async (c) => {
 
 /** Черновик заказа на перемещение по сделке — можно до оплаты (без резерва). */
 api.post('/crm/deals/:id/transfer-order-draft', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = String(c.req.param('id') || '').trim();
   if (!dealId) return c.json({ error: 'deal id required' }, 400);
   try {
-    const deal = getDeal(dealId) as Record<string, unknown> | null;
+    const deal = await getDeal(dealId) as Record<string, unknown> | null;
     if (!deal) return c.json({ error: 'not found' }, 404);
-    const xfer = ensureDealTransferOrderDraft(dealId);
+    const xfer = await ensureDealTransferOrderDraft(dealId);
     const who = String(actor?.name || actor?.login || '').trim() || 'Сотрудник';
-    const split = getDealPaymentSplit(dealId);
+    const split = await getDealPaymentSplit(dealId);
     const unpaid = Number(split.due_total) > 0.009;
     const unpaidNote = unpaid ? ' · деньги от клиента ещё не приняты' : '';
     if (xfer.created || xfer.already) {
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'deal.transfer_order_draft',
         entity: 'crm_deal',
         entityId: dealId,
@@ -1910,28 +1910,28 @@ api.post('/crm/deals/:id/transfer-order-draft', async (c) => {
 });
 
 /** Готовность закрыть заказ («Успешно реализовано»). */
-api.get('/crm/deals/:id/close-readiness', (c) => {
+api.get('/crm/deals/:id/close-readiness', async (c) => {
   const dealId = String(c.req.param('id') || '').trim();
   if (!dealId) return c.json({ error: 'id required' }, 400);
-  return c.json(getDealCloseReadiness(dealId));
+  return c.json(await getDealCloseReadiness(dealId));
 });
 
 /** Закрыть заказ в «Успешно реализовано» (те же гейты, что PATCH /stage). */
 api.post('/crm/deals/:id/close-success', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const dealId = String(c.req.param('id') || '').trim();
-  const actorName = actorDisplayName(actor) || actor.login || 'Учёт №1';
-  let readiness = getDealCloseReadiness(dealId, { sto_writeoff_on_close: true });
+  const actorName = await actorDisplayName(actor) || actor.login || 'Учёт №1';
+  let readiness = await getDealCloseReadiness(dealId, { sto_writeoff_on_close: true });
   if (readiness.already_won) {
     let writeoff = null;
     try {
-      writeoff = writeOffStoOnDealSuccess(dealId, {
+      writeoff = await writeOffStoOnDealSuccess(dealId, {
         createdBy: actorName,
         requireSuccess: true,
       });
       if (writeoff.written_off) {
-        auditFromContext(c, {
+        await auditFromContext(c, {
           action: 'deal.sto_sale_writeoff',
           entity: 'crm_deal',
           entityId: dealId,
@@ -1956,7 +1956,7 @@ api.post('/crm/deals/:id/close-success', async (c) => {
       400
     );
   }
-  const before = getDeal(dealId);
+  const before = await getDeal(dealId);
   if (!before) return c.json({ error: 'not found' }, 404);
   const b = before as Record<string, unknown>;
   const statusId = readiness.success.status_id;
@@ -1974,7 +1974,7 @@ api.post('/crm/deals/:id/close-success', async (c) => {
     }
     amoSynced = !amo.skipped;
   }
-  const result = updateDealStage(dealId, {
+  const result = await updateDealStage(dealId, {
     statusId,
     statusName: readiness.success.status_name,
     pipelineId,
@@ -1983,12 +1983,12 @@ api.post('/crm/deals/:id/close-success', async (c) => {
 
   let writeoff = null;
   try {
-    writeoff = writeOffStoOnDealSuccess(dealId, {
+    writeoff = await writeOffStoOnDealSuccess(dealId, {
       createdBy: actorName,
       requireSuccess: true,
     });
     if (writeoff.written_off) {
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'deal.sto_sale_writeoff',
         entity: 'crm_deal',
         entityId: dealId,
@@ -2000,7 +2000,7 @@ api.post('/crm/deals/:id/close-success', async (c) => {
     writeoff = { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'crm.deal_stage',
     entity: 'crm_deal',
     entityId: dealId,
@@ -2023,13 +2023,13 @@ api.post('/crm/deals/:id/close-success', async (c) => {
 });
 
 /** Готовность к расходной / УПД+списание: структура цепочки + остатки. */
-api.get('/crm/deals/:id/ship-readiness', (c) => {
+api.get('/crm/deals/:id/ship-readiness', async (c) => {
   const dealId = String(c.req.param('id') || '').trim();
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return c.json({ error: 'not found' }, 404);
-  const tree = buildOrderDocTree(dealId);
+  const tree = await buildOrderDocTree(dealId);
   const preferred = String(c.req.query('warehouse_id') || '').trim();
-  const { needs, missing } = planDealStockNeeds(deal, preferred);
+  const { needs, missing } = await planDealStockNeeds(deal, preferred);
   const structureMissing = Array.isArray(tree?.missing) ? tree!.missing.map(String) : [];
   return c.json({
     deal_id: dealId,
@@ -2047,21 +2047,21 @@ api.get('/crm/deals/:id/ship-readiness', (c) => {
 });
 
 /** Заказы на перемещение по заказу покупателя (для вкладки цепочки). */
-api.get('/crm/deals/:id/transfer-orders', (c) => {
-  const items = listDealTransferOrdersDetailed(c.req.param('id'));
+api.get('/crm/deals/:id/transfer-orders', async (c) => {
+  const items = await listDealTransferOrdersDetailed(c.req.param('id'));
   return c.json({ items, total: items.length });
 });
 
-api.get('/transfer-orders/:id', (c) => {
-  const row = getDealTransferOrderDetail(c.req.param('id'));
+api.get('/transfer-orders/:id', async (c) => {
+  const row = await getDealTransferOrderDetail(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   return c.json(row);
 });
 
-function ensureTransferOrderWarehouseTask(
+async function ensureTransferOrderWarehouseTask(
   idRaw: string,
   actorId?: string
-): {
+): Promise<{
   warehouse_task_id: string;
   warehouse_task_number: string;
   created: boolean;
@@ -2069,10 +2069,10 @@ function ensureTransferOrderWarehouseTask(
   from_label: string;
   to_label: string;
   comment: string;
-} {
+}> {
   const id = String(idRaw || '').trim();
   if (!id) throw new Error('not found');
-  const detail = getDealTransferOrderDetail(id);
+  const detail = await getDealTransferOrderDetail(id);
   if (!detail) throw new Error('not found');
 
   let taskId = String(detail.warehouse_task_id || '').trim();
@@ -2085,7 +2085,7 @@ function ensureTransferOrderWarehouseTask(
     `Перемещение ${String(detail.number || id)}`;
 
   if (taskId) {
-    const existing = getTask(taskId);
+    const existing = await getTask(taskId);
     if (!existing) throw new Error('Задание склада не найдено');
     return {
       warehouse_task_id: taskId,
@@ -2098,7 +2098,7 @@ function ensureTransferOrderWarehouseTask(
     };
   }
 
-  const isSto = get<{ id: string }>(
+  const isSto = await get<{ id: string }>(
     `SELECT id FROM sto_transfer_requests WHERE id = ? OR number = ? LIMIT 1`,
     [id, id]
   );
@@ -2116,7 +2116,7 @@ function ensureTransferOrderWarehouseTask(
   const lines = (Array.isArray(detail.lines) ? detail.lines : []) as Array<
     Record<string, unknown>
   >;
-  const task = createTaskFromTransfer({
+  const task = await createTaskFromTransfer({
     stock_doc_id: stockDocId,
     stock_doc_number: String(detail.stock_doc_number || ''),
     from_label: fromLabel || 'склад',
@@ -2136,7 +2136,7 @@ function ensureTransferOrderWarehouseTask(
   taskId = String(task.id);
   taskNumber = String(task.number || '');
 
-  const thin = get<{ payload_json: string }>(
+  const thin = await get<{ payload_json: string }>(
     `SELECT IFNULL(payload_json,'') AS payload_json FROM thin_journal_docs
      WHERE id = ? AND journal_key = 'transfer_orders'`,
     [id]
@@ -2150,7 +2150,7 @@ function ensureTransferOrderWarehouseTask(
     }
     p.warehouse_task_id = taskId;
     p.warehouse_task_number = taskNumber;
-    run(
+    await run(
       `UPDATE thin_journal_docs SET payload_json = ?, updated_at = datetime('now') WHERE id = ?`,
       [JSON.stringify(p), id]
     );
@@ -2169,15 +2169,15 @@ function ensureTransferOrderWarehouseTask(
 
 /** Пуш кладовщикам: пикинг по заказу на перемещение → /pick?task=… */
 api.post('/transfer-orders/:id/push-pick', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const id = c.req.param('id');
   try {
-    ensureWebPushSchema();
-    const ensured = ensureTransferOrderWarehouseTask(id, String(actor.id || ''));
+    await ensureWebPushSchema();
+    const ensured = await ensureTransferOrderWarehouseTask(id, String(actor.id || ''));
     const push = await requestWarehousePickPush({
       taskId: ensured.warehouse_task_id,
       taskNumber: ensured.warehouse_task_number,
@@ -2187,7 +2187,7 @@ api.post('/transfer-orders/:id/push-pick', async (c) => {
       transferOrderId: id,
       comment: ensured.comment,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'transfer.push_pick',
       entity: 'transfer_order',
       entityId: id,
@@ -2217,14 +2217,14 @@ api.post('/transfer-orders/:id/push-pick', async (c) => {
 
 /** Досоздать недостающие документы цепочки (перемещение-черновик, операция по карте). */
 api.post('/crm/deals/:id/doc-chain/ensure', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    const result = ensureOrderDocChain(c.req.param('id'));
+    const result = await ensureOrderDocChain(c.req.param('id'));
     if (!result.tree) return c.json({ error: 'not found' }, 404);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'crm.doc_chain_ensure',
       entity: 'deal',
       entityId: c.req.param('id'),
@@ -2239,7 +2239,7 @@ api.post('/crm/deals/:id/doc-chain/ensure', async (c) => {
 
 /** Добавить позицию в заказ (по product_id / sku / code). */
 api.post('/crm/deals/:id/items', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -2257,12 +2257,12 @@ api.post('/crm/deals/:id/items', async (c) => {
     model?: string;
     generation?: string;
   };
-  const result = addDealItem(dealId, body);
+  const result = await addDealItem(dealId, body);
   if (!result.ok) {
     const status = result.error === 'not found' ? 404 : 400;
     return c.json({ error: result.error }, status);
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'crm.deal_item_add',
     entity: 'crm_deal',
     entityId: dealId,
@@ -2286,7 +2286,7 @@ api.post('/crm/deals/:id/items', async (c) => {
 
 /** Добавить выбранные услуги к позиции товара (после предложения в UI). */
 api.post('/crm/deals/:id/items/:itemId/suggested-services', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -2298,7 +2298,7 @@ api.post('/crm/deals/:id/items/:itemId/suggested-services', async (c) => {
     model?: string;
     generation?: string;
   };
-  const result = acceptDealItemServiceSuggestions(dealId, itemId, body.services || [], {
+  const result = await acceptDealItemServiceSuggestions(dealId, itemId, body.services || [], {
     mark: body.mark,
     model: body.model,
     generation: body.generation,
@@ -2307,7 +2307,7 @@ api.post('/crm/deals/:id/items/:itemId/suggested-services', async (c) => {
     const status = result.error === 'not found' ? 404 : 400;
     return c.json({ error: result.error }, status);
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'crm.deal_item_services_accept',
     entity: 'crm_deal',
     entityId: dealId,
@@ -2317,19 +2317,19 @@ api.post('/crm/deals/:id/items/:itemId/suggested-services', async (c) => {
   return c.json({ ok: true, items: result.items, deal: result.deal });
 });
 
-api.get('/products/:id/service-links', (c) => {
+api.get('/products/:id/service-links', async (c) => {
   const id = c.req.param('id');
-  const row = get('SELECT id FROM products WHERE id = ?', [id]);
+  const row = await get('SELECT id FROM products WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  ensureProductServiceLinksSchema();
+  await ensureProductServiceLinksSchema();
   return c.json({
-    items: listProductServiceLinks(id),
-    default_install: ensureDefaultInstallService(),
+    items: await listProductServiceLinks(id),
+    default_install: await ensureDefaultInstallService(),
   });
 });
 
 api.put('/products/:id/service-links', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
@@ -2348,14 +2348,14 @@ api.put('/products/:id/service-links', async (c) => {
     if (body.install_price !== undefined) {
       const ip =
         body.install_price === null ? 0 : Math.max(0, Number(body.install_price) || 0);
-      ensureProductServiceLinksSchema();
-      run('UPDATE products SET install_price = ? WHERE id = ?', [ip, id]);
-      if (ip > 0) linkInstallService(id, { price: ip });
+      await ensureProductServiceLinksSchema();
+      await run('UPDATE products SET install_price = ? WHERE id = ?', [ip, id]);
+      if (ip > 0) await linkInstallService(id, { price: ip });
     }
     const items =
       body.links != null
-        ? setProductServiceLinks(id, body.links)
-        : listProductServiceLinks(id);
+        ? await setProductServiceLinks(id, body.links)
+        : await listProductServiceLinks(id);
     return c.json({ ok: true, items });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -2363,14 +2363,14 @@ api.put('/products/:id/service-links', async (c) => {
 });
 
 api.post('/products/:id/link-install-service', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
   const id = c.req.param('id');
   const body = (await c.req.json().catch(() => ({}))) as { price?: number };
   try {
-    const link = linkInstallService(id, { price: body.price });
+    const link = await linkInstallService(id, { price: body.price });
     return c.json({ ok: true, link });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -2378,16 +2378,16 @@ api.post('/products/:id/link-install-service', async (c) => {
 });
 
 api.patch('/crm/deals/:id/items/:itemId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
   const itemId = c.req.param('itemId');
   const body = (await c.req.json().catch(() => ({}))) as { qty?: number; price?: number };
-  const result = updateDealItem(dealId, itemId, body);
+  const result = await updateDealItem(dealId, itemId, body);
   if (!result.ok) return c.json({ error: result.error }, 404);
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'crm.deal_item_update',
     entity: 'crm_deal',
     entityId: dealId,
@@ -2403,18 +2403,18 @@ api.patch('/crm/deals/:id/items/:itemId', async (c) => {
 });
 
 api.delete('/crm/deals/:id/items/:itemId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
   const itemId = c.req.param('itemId');
-  const result = deleteDealItem(dealId, itemId);
+  const result = await deleteDealItem(dealId, itemId);
   if (!result.ok) return c.json({ error: result.error }, 404);
   const label = String(
     result.deleted.name || result.deleted.sku || result.deleted.code || 'позиция'
   ).trim();
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'crm.deal_item_delete',
     entity: 'crm_deal',
     entityId: dealId,
@@ -2426,7 +2426,7 @@ api.delete('/crm/deals/:id/items/:itemId', async (c) => {
 
 /** Скан марки на сборке: сверка артикула с позицией заказа → запись марки/склада/поставщика. */
 api.post('/crm/deals/:id/scan-unit', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -2438,10 +2438,10 @@ api.post('/crm/deals/:id/scan-unit', async (c) => {
   };
   const serial = String(body.serial || body.barcode || body.code || '').trim();
   try {
-    const row = assignDealUnitByScan(c.req.param('id'), serial, {
+    const row = await assignDealUnitByScan(c.req.param('id'), serial, {
       item_id: body.item_id,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'crm.deal_scan_unit',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
@@ -2461,7 +2461,7 @@ api.post('/crm/deals/:id/scan-unit', async (c) => {
 
 /** Перенос сделки на другой этап + синк в AmoCRM. */
 api.patch('/crm/deals/:id/stage', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -2473,20 +2473,20 @@ api.patch('/crm/deals/:id/stage', async (c) => {
   const statusId = String(body.status_id || '').trim();
   if (!statusId) return c.json({ error: 'status_id required' }, 400);
   const dealId = c.req.param('id');
-  const before = getDeal(dealId);
+  const before = await getDeal(dealId);
   if (!before) return c.json({ error: 'not found' }, 404);
   const b = before as Record<string, unknown>;
 
   // «Успешно реализовано» — только при оплате (и ЗН на месте), не для наложки/кредита
-  const successTarget = findSuccessStatusForDeal(dealId);
+  const successTarget = await findSuccessStatusForDeal(dealId);
   const goingSuccess =
     !!successTarget && rawStatusId(statusId) === rawStatusId(successTarget.statusId);
   if (goingSuccess) {
     const rules = buildDealSaleRules(b);
     const scheme = String(rules.payment_scheme || '');
     const allowUnpaidClose = scheme === 'cod' || scheme === 'credit';
-    const split = getDealPaymentSplit(dealId);
-    if (!allowUnpaidClose && (Number(split.due_total) > 0.009 || (Number(split.total) > 0.009 && !dealIsPaid(dealId)))) {
+    const split = await getDealPaymentSplit(dealId);
+    if (!allowUnpaidClose && (Number(split.due_total) > 0.009 || (Number(split.total) > 0.009 && !await dealIsPaid(dealId)))) {
       return c.json(
         {
           error:
@@ -2496,7 +2496,7 @@ api.patch('/crm/deals/:id/stage', async (c) => {
       );
     }
     if (dealNeedsWorkorderBeforePayment(b)) {
-      const gate = getDealWorkorderGate({ ...b, id: dealId });
+      const gate = await getDealWorkorderGate({ ...b, id: dealId });
       if (!gate.ok) {
         return c.json(
           {
@@ -2531,7 +2531,7 @@ api.patch('/crm/deals/:id/stage', async (c) => {
     amoSynced = !amo.skipped;
   }
 
-  const result = updateDealStage(dealId, {
+  const result = await updateDealStage(dealId, {
     statusId,
     statusName: body.status_name,
     pipelineId,
@@ -2541,14 +2541,14 @@ api.patch('/crm/deals/:id/stage', async (c) => {
   let writeoff: Record<string, unknown> | null = null;
   if (goingSuccess) {
     try {
-      writeoff = writeOffStoOnDealSuccess(dealId, {
+      writeoff = await writeOffStoOnDealSuccess(dealId, {
         createdBy: actor
-          ? actorDisplayName(actor) || actor.login || 'Учёт №1'
+          ? await actorDisplayName(actor) || actor.login || 'Учёт №1'
           : 'Учёт №1',
         requireSuccess: true,
       }) as Record<string, unknown>;
       if (writeoff?.written_off) {
-        auditFromContext(c, {
+        await auditFromContext(c, {
           action: 'deal.sto_sale_writeoff',
           entity: 'crm_deal',
           entityId: dealId,
@@ -2561,7 +2561,7 @@ api.patch('/crm/deals/:id/stage', async (c) => {
     }
   }
 
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'crm.deal_stage',
     entity: 'crm_deal',
     entityId: dealId,
@@ -2579,7 +2579,7 @@ api.patch('/crm/deals/:id/stage', async (c) => {
 
 /** QR СБП на оплату заказа (Точка через bank). */
 api.post('/crm/deals/:id/sbp-qr', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -2597,7 +2597,7 @@ api.post('/crm/deals/:id/sbp-qr', async (c) => {
       account: body.account,
       ttlSec: body.ttl_sec,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.sbp_qr',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
@@ -2610,25 +2610,25 @@ api.post('/crm/deals/:id/sbp-qr', async (c) => {
   }
 });
 
-api.get('/crm/deals/:id/payments', (c) =>
-  c.json({ items: listDealPayments(c.req.param('id')) })
+api.get('/crm/deals/:id/payments', async (c) =>
+  c.json({ items: await listDealPayments(c.req.param('id')) })
 );
 
-api.get('/payments/:id', (c) => {
-  const row = getDealPayment(c.req.param('id'));
+api.get('/payments/:id', async (c) => {
+  const row = await getDealPayment(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   return c.json(row);
 });
 
-api.delete('/payments/:id', (c) => {
-  const actor = actorFromContext(c);
+api.delete('/payments/:id', async (c) => {
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const id = c.req.param('id');
-  const row = deleteDealPayment(id);
+  const row = await deleteDealPayment(id);
   if (!row) return c.json({ error: 'not found' }, 404);
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'deal.payment_delete',
     entity: 'deal_payment',
     entityId: id,
@@ -2644,8 +2644,8 @@ api.delete('/payments/:id', (c) => {
   return c.json({ ok: true, id, deal_id: row.deal_id });
 });
 
-api.get('/payments/:id/image.png', (c) => {
-  const row = getDealPayment(c.req.param('id'));
+api.get('/payments/:id/image.png', async (c) => {
+  const row = await getDealPayment(c.req.param('id'));
   if (!row || !row.image_png_base64) return c.json({ error: 'not found' }, 404);
   const buf = Buffer.from(String(row.image_png_base64), 'base64');
   c.header('Content-Type', 'image/png');
@@ -2655,13 +2655,13 @@ api.get('/payments/:id/image.png', (c) => {
 
 /** Пометить оплату оплаченной → сделка paid (шлюз склада). */
 api.post('/payments/:id/mark-paid', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    const r = markDealPaymentPaid({ paymentId: c.req.param('id'), source: 'manual' });
-    auditFromContext(c, {
+    const r = await markDealPaymentPaid({ paymentId: c.req.param('id'), source: 'manual' });
+    await auditFromContext(c, {
       action: 'deal.payment_paid',
       entity: 'deal_payment',
       entityId: c.req.param('id'),
@@ -2675,13 +2675,13 @@ api.post('/payments/:id/mark-paid', async (c) => {
 });
 
 api.post('/crm/deals/:id/mark-paid', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    const r = markDealPaymentPaid({ dealId: c.req.param('id'), source: 'manual' });
-    auditFromContext(c, {
+    const r = await markDealPaymentPaid({ dealId: c.req.param('id'), source: 'manual' });
+    await auditFromContext(c, {
       action: 'deal.mark_paid',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
@@ -2696,7 +2696,7 @@ api.post('/crm/deals/:id/mark-paid', async (c) => {
 
 /** Покупатель заказа (тип / ФИО / ИНН / телефон) — для УПД и документов, с пушем в Amo. */
 api.patch('/crm/deals/:id/buyer', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -2729,11 +2729,11 @@ api.patch('/crm/deals/:id/buyer', async (c) => {
     if (body.company_id === undefined || String(body.company_id || '').trim() === '') {
       body.company_id = '';
     }
-    updateDealBuyer(dealId, body);
-    const dealBefore = getDeal(dealId);
-    const existedId = resolveCounterpartyIdForDeal(dealBefore as Record<string, unknown> | null);
-    const deal = getDeal(dealId);
-    const cpId = ensureCounterpartyForDeal(deal as Record<string, unknown> | null);
+    await updateDealBuyer(dealId, body);
+    const dealBefore = await getDeal(dealId);
+    const existedId = await resolveCounterpartyIdForDeal(dealBefore as Record<string, unknown> | null);
+    const deal = await getDeal(dealId);
+    const cpId = await ensureCounterpartyForDeal(deal as Record<string, unknown> | null);
     const created = !!cpId && !existedId;
     if (cpId) {
       const kind = String(body.buyer_kind || (deal as { buyer_kind?: string })?.buyer_kind || '')
@@ -2831,7 +2831,7 @@ api.patch('/crm/deals/:id/buyer', async (c) => {
       }
       if (sets.length) {
         params.push(cpId);
-        run(`UPDATE counterparties SET ${sets.join(', ')} WHERE id = ?`, params);
+        await run(`UPDATE counterparties SET ${sets.join(', ')} WHERE id = ?`, params);
       }
       if (name || phone || inn || bank) {
         await pushCounterpartyToAmo({
@@ -2888,7 +2888,7 @@ api.patch('/crm/deals/:id/buyer', async (c) => {
         forceName: true,
       });
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.buyer_update',
       entity: 'crm_deal',
       entityId: dealId,
@@ -2901,7 +2901,7 @@ api.patch('/crm/deals/:id/buyer', async (c) => {
     });
     return c.json({
       ok: true,
-      deal: getDeal(dealId),
+      deal: await getDeal(dealId),
       counterparty_id: cpId,
       created,
       reused: !!cpId && !created,
@@ -2913,7 +2913,7 @@ api.patch('/crm/deals/:id/buyer', async (c) => {
 
 /** Приём наличных (СТО / самовывоз): оплата kind=cash + сделка paid + приход в кассу. */
 api.post('/crm/deals/:id/accept-cash', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -2925,7 +2925,7 @@ api.post('/crm/deals/:id/accept-cash', async (c) => {
   };
   try {
     const who = String(actor?.name || actor?.login || '').trim();
-    const r = acceptDealCashPayment({
+    const r = await acceptDealCashPayment({
       dealId: c.req.param('id'),
       amount: body.amount,
       covers: body.covers,
@@ -2934,7 +2934,7 @@ api.post('/crm/deals/:id/accept-cash', async (c) => {
       actorName: who,
       actorId: actor?.id && actor.id !== '__admin__' ? actor.id : undefined,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.accept_cash',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
@@ -2958,14 +2958,14 @@ api.post('/crm/deals/:id/accept-cash', async (c) => {
 
 // Webhook оплаты: X-Wms-Key / ?key= — ключ клиента (scope payment) или env BANK / WMS_INGEST_KEY.
 api.post('/webhooks/payment-paid', async (c) => {
-  if (!machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
+  if (!await machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as {
     payment_id?: string;
     deal_id?: string;
     qrc_id?: string;
   };
   try {
-    const r = markDealPaymentPaid({
+    const r = await markDealPaymentPaid({
       paymentId: body.payment_id,
       dealId: body.deal_id,
       qrcId: body.qrc_id,
@@ -2979,12 +2979,12 @@ api.post('/webhooks/payment-paid', async (c) => {
 
 /** Т‑Банк Forma (рассрочка): уведомления signed/approved → оплата + колокольчик. */
 api.post('/webhooks/tbank-forma', async (c) => {
-  if (!machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
+  if (!await machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   try {
     const { applyTbankFormaWebhook } = await import('./tbank-forma.js');
     const r = await applyTbankFormaWebhook(body);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'webhook.tbank_forma',
       entity: 'crm_deal',
       entityId: String((r as { deal_id?: string }).deal_id || ''),
@@ -2998,34 +2998,34 @@ api.post('/webhooks/tbank-forma', async (c) => {
 });
 
 api.get('/notifications', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor?.id) return c.json({ error: 'unauthorized' }, 401);
   const { listStaffNotifications } = await import('./staff-notifications.js');
-  return c.json(listStaffNotifications(actor.id, { limit: Number(c.req.query('limit') || 20) || 20 }));
+  return c.json(await listStaffNotifications(actor.id, { limit: Number(c.req.query('limit') || 20) || 20 }));
 });
 
 /** Начальная страница: очередь задач по роли (фото / склад / курьер). Админ — всё. */
 api.get('/home/inbox', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   try {
     const { buildHomeInbox } = await import('./home-inbox.js');
     const companyId = String(c.req.query('company_id') || '').trim();
-    return c.json(buildHomeInbox(actor, { companyId }));
+    return c.json(await buildHomeInbox(actor, { companyId }));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'inbox' }, 500);
   }
 });
 
 api.post('/notifications/read', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor?.id) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as { ids?: string[] };
   const { markStaffNotificationsRead, listStaffNotifications } = await import(
     './staff-notifications.js'
   );
-  markStaffNotificationsRead(actor.id, body.ids);
-  return c.json(listStaffNotifications(actor.id, { limit: 20 }));
+  await markStaffNotificationsRead(actor.id, body.ids);
+  return c.json(await listStaffNotifications(actor.id, { limit: 20 }));
 });
 
 /**
@@ -3034,7 +3034,7 @@ api.post('/notifications/read', async (c) => {
  * Amo шлёт form-urlencoded — отвечаем быстро «OK».
  */
 api.post('/webhooks/amo', async (c) => {
-  if (!machineApiKeyOk(c, 'webhook')) {
+  if (!await machineApiKeyOk(c, 'webhook')) {
     return c.json({ error: 'unauthorized' }, 401);
   }
 
@@ -3053,7 +3053,7 @@ api.post('/webhooks/amo', async (c) => {
     body = {};
   }
 
-  if (!isAmoWebhookEnabled()) {
+  if (!await isAmoWebhookEnabled()) {
     // ключ верный, но переключатель выкл — Amo не должен отписывать (200)
     return c.text('OK', 200, { 'Content-Type': 'text/plain; charset=utf-8' });
   }
@@ -3061,13 +3061,13 @@ api.post('/webhooks/amo', async (c) => {
   const parsed = parseAmoWebhookPayload(body, formKeys);
   const bodyRef = body;
   const keysRef = formKeys.slice();
-  setImmediate(() => {
+  setImmediate(async () => {
     try {
-      recordAmoWebhookHit(parsed);
+      await recordAmoWebhookHit(parsed);
       if (parsed.entities.includes('deals') || parsed.entities.includes('other')) {
         const patches = parseAmoWebhookDeals(bodyRef, keysRef);
         const needFull = patches.length
-          ? applyAmoDealWebhookPatches(patches)
+          ? await applyAmoDealWebhookPatches(patches)
           : parsed.ids.map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean);
         // Лимит на хук: шторм Amo + полный export валил sqlite/event loop (502).
         // Override: AMO_WEBHOOK_SYNC_MAX (1…20), по умолчанию 8.
@@ -3077,7 +3077,7 @@ api.post('/webhooks/amo', async (c) => {
         );
         const uniq = [...new Set(needFull)].slice(0, syncMax);
         for (const dealId of uniq) {
-          syncDealFromAmo1cBackground(dealId);
+          await syncDealFromAmo1cBackground(dealId);
         }
       }
     } catch (e) {
@@ -3087,18 +3087,18 @@ api.post('/webhooks/amo', async (c) => {
   return c.text('OK', 200, { 'Content-Type': 'text/plain; charset=utf-8' });
 });
 
-api.get('/webhooks/amo', (c) => {
-  if (!machineApiKeyOk(c, 'webhook')) return c.json({ error: 'unauthorized' }, 401);
+api.get('/webhooks/amo', async (c) => {
+  if (!await machineApiKeyOk(c, 'webhook')) return c.json({ error: 'unauthorized' }, 401);
   return c.json({
     ok: true,
-    enabled: isAmoWebhookEnabled(),
+    enabled: await isAmoWebhookEnabled(),
     hint: 'POST webhook for leads/contacts (products from amo1c SQL)',
   });
 });
 
 /** Опрос Точки по незакрытым QR → auto mark paid (Accepted). Для UI сделки. */
 api.post('/payments/poll-tochka', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -3109,7 +3109,7 @@ api.post('/payments/poll-tochka', async (c) => {
       limit: body.limit,
     });
     if (r.marked > 0) {
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'deal.payment_poll',
         entity: 'deal_payment',
         entityId: body.deal_id || '',
@@ -3128,7 +3128,7 @@ api.post('/payments/poll-tochka', async (c) => {
  * Auth: X-Wms-Key / ?key= — ключ клиента (payment) или env.
  */
 api.post('/cron/poll-sbp', async (c) => {
-  if (!machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
+  if (!await machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
   try {
     const r = await pollPendingSbpPayments({ limit: 50 });
     return c.json(r);
@@ -3137,7 +3137,7 @@ api.post('/cron/poll-sbp', async (c) => {
   }
 });
 api.get('/cron/poll-sbp', async (c) => {
-  if (!machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
+  if (!await machineApiKeyOk(c, 'payment')) return c.json({ error: 'unauthorized' }, 401);
   try {
     const r = await pollPendingSbpPayments({ limit: 50 });
     return c.json(r);
@@ -3147,39 +3147,39 @@ api.get('/cron/poll-sbp', async (c) => {
 });
 
 /** Cron: истечение ссылок на оплату → возврат резерва со склада «Ожидание оплаты». */
-function cronAuthOk(c: {
+async function cronAuthOk(c: {
   req: {
     header: (n: string) => string | undefined;
     query: (n: string) => string | undefined;
   };
-}): boolean {
-  return Boolean(machineApiKeyOk(c, 'payment'));
+}): Promise<boolean> {
+  return Boolean(await machineApiKeyOk(c, 'payment'));
 }
 
 /** Виджет Amo / machine key — создание и PDF документов продажи. */
-function salesDocsWidgetAuthOk(c: Context): boolean {
-  if (machineApiKeyOk(c, 'payment')) return true;
-  const actor = actorFromContext(c);
+async function salesDocsWidgetAuthOk(c: Context): Promise<boolean> {
+  if (await machineApiKeyOk(c, 'payment')) return true;
+  const actor = await actorFromContext(c);
   return !!(actor && (canDo(actor, 'can_edit_docs') || actor.role === 'admin'));
 }
 
 /** Виджет Amo / machine key — промежуточная ссылка на оплату с резервом. */
-function paymentLinkWidgetAuthOk(c: Context): boolean {
-  return salesDocsWidgetAuthOk(c);
+async function paymentLinkWidgetAuthOk(c: Context): Promise<boolean> {
+  return await salesDocsWidgetAuthOk(c);
 }
 
-api.post('/cron/expire-payment-reserves', (c) => {
-  if (!cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
-  return c.json(expireDuePaymentLinks(100));
+api.post('/cron/expire-payment-reserves', async (c) => {
+  if (!await cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
+  return c.json(await expireDuePaymentLinks(100));
 });
-api.get('/cron/expire-payment-reserves', (c) => {
-  if (!cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
-  return c.json(expireDuePaymentLinks(100));
+api.get('/cron/expire-payment-reserves', async (c) => {
+  if (!await cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
+  return c.json(await expireDuePaymentLinks(100));
 });
 
 /** Ежедневная подтяжка курсов ЦБ РФ (USD/CNY и internet-валюты). */
 api.post('/cron/sync-cbr-rates', async (c) => {
-  if (!cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
+  if (!await cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
   try {
     const force = c.req.query('force') === '1';
     const r = await syncRatesFromCbr({ force });
@@ -3189,7 +3189,7 @@ api.post('/cron/sync-cbr-rates', async (c) => {
   }
 });
 api.get('/cron/sync-cbr-rates', async (c) => {
-  if (!cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
+  if (!await cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
   try {
     const force = c.req.query('force') === '1';
     const r = await syncRatesFromCbr({ force });
@@ -3200,20 +3200,20 @@ api.get('/cron/sync-cbr-rates', async (c) => {
 });
 
 /** Cron: списание со СТО по успешным сделкам (Автосервис / Самовывоз). */
-api.post('/cron/sto-sale-writeoffs', (c) => {
-  if (!cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
+api.post('/cron/sto-sale-writeoffs', async (c) => {
+  if (!await cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
   const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 80) || 80));
-  return c.json(runStoSaleWriteoffCron(limit));
+  return c.json(await runStoSaleWriteoffCron(limit));
 });
-api.get('/cron/sto-sale-writeoffs', (c) => {
-  if (!cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
+api.get('/cron/sto-sale-writeoffs', async (c) => {
+  if (!await cronAuthOk(c)) return c.json({ error: 'unauthorized' }, 401);
   const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 80) || 80));
-  return c.json(runStoSaleWriteoffCron(limit));
+  return c.json(await runStoSaleWriteoffCron(limit));
 });
 
 /** Создать / получить активную промежуточную ссылку на оплату по сделке. */
 api.post('/crm/deals/:id/payment-link', async (c) => {
-  if (!paymentLinkWidgetAuthOk(c)) {
+  if (!await paymentLinkWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -3231,7 +3231,7 @@ api.post('/crm/deals/:id/payment-link', async (c) => {
       sourceWarehouseId: body.source_warehouse_id,
       organizationId: body.organization_id,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.payment_link',
       entity: 'payment_link',
       entityId: String(r.link.id || ''),
@@ -3241,7 +3241,7 @@ api.post('/crm/deals/:id/payment-link', async (c) => {
     return c.json({
       ok: true,
       url: r.url,
-      widget_url: amoWidgetPayUrl({
+      widget_url: await amoWidgetPayUrl({
         dealId,
         organizationId: body.organization_id || String(r.link.organization_id || ''),
       }),
@@ -3257,14 +3257,14 @@ api.post('/crm/deals/:id/payment-link', async (c) => {
   }
 });
 
-api.get('/crm/deals/:id/payment-links', (c) => {
+api.get('/crm/deals/:id/payment-links', async (c) => {
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
-  const widgetUrl = amoWidgetPayUrl({
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
+  const widgetUrl = await amoWidgetPayUrl({
     dealId,
-    organizationId: deal ? organizationIdForDealRecord(deal) : undefined,
+    organizationId: deal ? await organizationIdForDealRecord(deal) : undefined,
   });
-  const items = listPaymentLinksForDeal(dealId).map((row) => ({
+  const items = (await listPaymentLinksForDeal(dealId)).map((row) => ({
     ...row,
     url: paymentLinkPublicUrl(String((row as { token: string }).token)),
   }));
@@ -3273,7 +3273,7 @@ api.get('/crm/deals/:id/payment-links', (c) => {
 
 /** SMS клиенту со ссылкой на оплату (создаст ссылку, если ещё нет активной). */
 api.post('/crm/deals/:id/payment-link/sms', async (c) => {
-  if (!paymentLinkWidgetAuthOk(c)) {
+  if (!await paymentLinkWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -3291,8 +3291,8 @@ api.post('/crm/deals/:id/payment-link/sms', async (c) => {
 });
 
 /** Публичная страница оплаты (JSON). */
-api.get('/public/pay/:token', (c) => {
-  const view = getPublicPaymentLinkView(c.req.param('token'));
+api.get('/public/pay/:token', async (c) => {
+  const view = await getPublicPaymentLinkView(c.req.param('token'));
   if (!view) return c.json({ error: 'not found' }, 404);
   return c.json(view);
 });
@@ -3300,21 +3300,21 @@ api.get('/public/pay/:token', (c) => {
 /** Публичное согласие ПДн (SMS-подпись). */
 api.get('/public/pdn/:token', async (c) => {
   const token = c.req.param('token');
-  const session = getPdnSignByToken(token);
+  const session = await getPdnSignByToken(token);
   if (!session) return c.json({ error: 'not found' }, 404);
   try {
     await markPdnOpened(c, token);
   } catch {
     /* уже открыто / истекло — всё равно отдать view */
   }
-  const fresh = getPdnSignByToken(token);
+  const fresh = await getPdnSignByToken(token);
   if (!fresh) return c.json({ error: 'not found' }, 404);
-  return c.json(publicPdnView(fresh));
+  return c.json(await publicPdnView(fresh));
 });
 
 api.get('/public/pdn/:token/suggest-fio', async (c) => {
   const token = c.req.param('token');
-  const session = getPdnSignByToken(token);
+  const session = await getPdnSignByToken(token);
   if (!session) return c.json({ error: 'not found' }, 404);
   if (session.status === 'expired' || session.status === 'revoked' || session.status === 'signed') {
     return c.json({ items: [] });
@@ -3364,8 +3364,8 @@ api.post('/public/pdn/:token/confirm', async (c) => {
   }
 });
 
-api.get('/public/pay/:token/qr.png', (c) => {
-  const buf = getPublicPaymentQrPng(c.req.param('token'));
+api.get('/public/pay/:token/qr.png', async (c) => {
+  const buf = await getPublicPaymentQrPng(c.req.param('token'));
   if (!buf) return c.json({ error: 'not found' }, 404);
   c.header('Content-Type', 'image/png');
   c.header('Cache-Control', 'no-store');
@@ -3508,11 +3508,11 @@ api.post('/public/pay/:token/question', async (c) => {
   }
 });
 
-api.get('/fiscal/status', (c) => c.json(atolStatusInfo()));
+api.get('/fiscal/status', async (c) => c.json(await atolStatusInfo()));
 
 /** Разовая панель: чек коррекции (неприменение ККТ / предписание ФНС). */
 api.post('/fiscal/correction', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -3545,7 +3545,7 @@ api.post('/fiscal/correction', async (c) => {
       client_phone: body.client_phone,
       send: body.send !== false,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'fiscal.correction',
       entity: body.deal_id ? 'crm_deal' : 'fiscal_receipt',
       entityId: body.deal_id || String(receipt?.id || ''),
@@ -3557,20 +3557,20 @@ api.post('/fiscal/correction', async (c) => {
         atol_uuid: receipt?.atol_uuid,
       },
     });
-    return c.json({ ok: true, receipt, atol: atolStatusInfo() });
+    return c.json({ ok: true, receipt, atol: await atolStatusInfo() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'correction failed' }, 400);
   }
 });
 
-api.get('/crm/deals/:id/fiscal', (c) =>
-  c.json({ items: listFiscalReceipts(c.req.param('id')), atol: atolStatusInfo() })
+api.get('/crm/deals/:id/fiscal', async (c) =>
+  c.json({ items: await listFiscalReceipts(c.req.param('id')), atol: await atolStatusInfo() })
 );
 
 /** Чек 1 / 2 / возврат. send по умолчанию true. */
 api.post('/crm/deals/:id/fiscal/:kind', async (c) => {
-  const actor = actorFromContext(c);
-  const machinePay = machineApiKeyOk(c, 'payment');
+  const actor = await actorFromContext(c);
+  const machinePay = await machineApiKeyOk(c, 'payment');
   if (!machinePay && (!actor || (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin'))) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -3594,7 +3594,7 @@ api.post('/crm/deals/:id/fiscal/:kind', async (c) => {
       client_phone: body.client_phone,
       legal_entity: body.legal_entity,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'fiscal.receipt',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
@@ -3606,21 +3606,21 @@ api.post('/crm/deals/:id/fiscal/:kind', async (c) => {
         parent_receipt_id: body.parent_receipt_id || null,
       },
     });
-    return c.json({ ok: true, receipt, atol: atolStatusInfo() });
+    return c.json({ ok: true, receipt, atol: await atolStatusInfo() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'fiscal failed' }, 400);
   }
 });
 
-api.get('/fiscal/receipts/:id', (c) => {
-  const row = getFiscalReceipt(c.req.param('id'));
+api.get('/fiscal/receipts/:id', async (c) => {
+  const row = await getFiscalReceipt(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   return c.json(row);
 });
 
 /** Отметка: деньги по возврату уже вернули покупателю (Точка/банк вручную). */
 api.post('/crm/deals/:id/money-refunded', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -3635,11 +3635,11 @@ api.post('/crm/deals/:id/money-refunded', async (c) => {
     String(actor?.name || actor?.login || '');
   try {
     const { markDealMoneyRefunded } = await import('./return-money.js');
-    const result = markDealMoneyRefunded(c.req.param('id'), {
+    const result = await markDealMoneyRefunded(c.req.param('id'), {
       id: String(actor?.id || ''),
       name: actorName,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.money_refunded',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
@@ -3648,28 +3648,28 @@ api.post('/crm/deals/:id/money-refunded', async (c) => {
       }`,
       after: result,
     });
-    return c.json({ ok: true, ...result, deal: getDeal(c.req.param('id')) });
+    return c.json({ ok: true, ...result, deal: await getDeal(c.req.param('id')) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
 api.delete('/crm/deals/:id/money-refunded', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
     const { clearDealMoneyRefunded } = await import('./return-money.js');
-    const result = clearDealMoneyRefunded(c.req.param('id'));
-    auditFromContext(c, {
+    const result = await clearDealMoneyRefunded(c.req.param('id'));
+    await auditFromContext(c, {
       action: 'deal.money_refunded_clear',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
       summary: `Снята отметка «деньги возвращены» · заказ ${c.req.param('id')}`,
       after: result,
     });
-    return c.json({ ok: true, deal_id: result.deal_id, deal: getDeal(c.req.param('id')) });
+    return c.json({ ok: true, deal_id: result.deal_id, deal: await getDeal(c.req.param('id')) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -3677,7 +3677,7 @@ api.delete('/crm/deals/:id/money-refunded', async (c) => {
 
 /** Варианты возврата денег через Точку (СБП / карта / ПП на подпись). */
 api.get('/crm/deals/:id/tochka-refund/options', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -3691,7 +3691,7 @@ api.get('/crm/deals/:id/tochka-refund/options', async (c) => {
 
 /** Возврат по тому же СБП / карте (эквайринг). */
 api.post('/crm/deals/:id/tochka-refund', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -3713,14 +3713,14 @@ api.post('/crm/deals/:id/tochka-refund', async (c) => {
       markDone: body.mark_done !== false,
       actor: { id: String(actor?.id || ''), name: String(actor?.name || actor?.login || '') },
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.tochka_refund',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
       summary: `Возврат Точка (${result.channel}) · ${result.amount} ₽ · заказ ${c.req.param('id')}`,
       after: result,
     });
-    return c.json({ ...result, deal: getDeal(c.req.param('id')) });
+    return c.json({ ...result, deal: await getDeal(c.req.param('id')) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -3728,7 +3728,7 @@ api.post('/crm/deals/:id/tochka-refund', async (c) => {
 
 /** Платёжное поручение на подпись в Точке (безнал / ТВД). */
 api.post('/crm/deals/:id/tochka-payment-for-sign', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -3764,7 +3764,7 @@ api.post('/crm/deals/:id/tochka-payment-for-sign', async (c) => {
       customerCode: body.customer_code,
       actor: { id: String(actor?.id || ''), name: String(actor?.name || actor?.login || '') },
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.tochka_payment_for_sign',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
@@ -3779,14 +3779,14 @@ api.post('/crm/deals/:id/tochka-payment-for-sign', async (c) => {
 
 /** ТВД → ПП на подпись / возврат по исх. платежу. */
 api.post('/parity/journals/money_refund_requests/:id/tochka-payment-for-sign', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   try {
     const { loadTvdDealId, createDealPaymentForSign } = await import('./tochka-refunds.js');
-    const tvd = loadTvdDealId(c.req.param('id'));
+    const tvd = await loadTvdDealId(c.req.param('id'));
     const result = await createDealPaymentForSign({
       dealId: tvd.deal_id,
       amount: body.amount != null ? Number(body.amount) : tvd.amount,
@@ -3803,7 +3803,7 @@ api.post('/parity/journals/money_refund_requests/:id/tochka-payment-for-sign', a
       customerCode: body.customer_code != null ? String(body.customer_code) : undefined,
       actor: { id: String(actor?.id || ''), name: String(actor?.name || actor?.login || '') },
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'tvd.tochka_payment_for_sign',
       entity: 'money_refund_request',
       entityId: c.req.param('id'),
@@ -3817,7 +3817,7 @@ api.post('/parity/journals/money_refund_requests/:id/tochka-payment-for-sign', a
 });
 
 api.post('/parity/journals/money_refund_requests/:id/tochka-refund', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -3830,7 +3830,7 @@ api.post('/parity/journals/money_refund_requests/:id/tochka-refund', async (c) =
   };
   try {
     const { loadTvdDealId, refundDealOriginal } = await import('./tochka-refunds.js');
-    const tvd = loadTvdDealId(c.req.param('id'));
+    const tvd = await loadTvdDealId(c.req.param('id'));
     const result = await refundDealOriginal({
       dealId: tvd.deal_id,
       channel: body.channel || 'auto',
@@ -3840,7 +3840,7 @@ api.post('/parity/journals/money_refund_requests/:id/tochka-refund', async (c) =
       markDone: body.mark_done !== false,
       actor: { id: String(actor?.id || ''), name: String(actor?.name || actor?.login || '') },
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'tvd.tochka_refund',
       entity: 'money_refund_request',
       entityId: c.req.param('id'),
@@ -3854,7 +3854,7 @@ api.post('/parity/journals/money_refund_requests/:id/tochka-refund', async (c) =
 });
 
 api.post('/crm/deals/sync', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_sync')) {
     return c.json({ error: 'Недостаточно прав: синхронизация' }, 403);
   }
@@ -3869,7 +3869,7 @@ api.post('/crm/deals/sync', async (c) => {
       limit: body.limit ?? 800,
       dealId: body.deal_id,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'crm.deals_sync',
       entity: 'crm_deal',
       entityId: body.deal_id ? String(body.deal_id) : '',
@@ -3878,7 +3878,7 @@ api.post('/crm/deals/sync', async (c) => {
         : `Синк сделок Amo: ${result.deals}, воронок ${result.pipelines}`,
       after: result,
     });
-    return c.json({ ok: true, ...result, meta: dealsMeta() });
+    return c.json({ ok: true, ...result, meta: await dealsMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'deals sync failed' }, 500);
   }
@@ -3886,7 +3886,7 @@ api.post('/crm/deals/sync', async (c) => {
 
 /** Подтянуть канал/отправку/оплату из Amo для заказов с пустым каналом. */
 api.post('/crm/deals/backfill-amo-channels', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_sync') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав: синхронизация' }, 403);
   }
@@ -3903,13 +3903,13 @@ api.post('/crm/deals/backfill-amo-channels', async (c) => {
   ];
   const params: Array<string | number> = [];
   if (queuedOnly) where.push(`IFNULL(queued_to_1c,0) = 1`);
-  const ids = all<{ id: string }>(
+  const ids = (await all<{ id: string }>(
     `SELECT id FROM crm_deals
      WHERE ${where.join(' AND ')}
      ORDER BY datetime(IFNULL(queued_at, updated_at)) DESC
      LIMIT ?`,
     [...params, limit]
-  ).map((r) => String(r.id));
+  )).map((r) => String(r.id));
 
   let filled = 0;
   let still_empty = 0;
@@ -3918,7 +3918,7 @@ api.post('/crm/deals/backfill-amo-channels', async (c) => {
   for (const dealId of ids) {
     try {
       await syncDealsFromAmo1cAsync({ dealId, limit: 1 });
-      const row = get<{ amo_channel: string }>(
+      const row = await get<{ amo_channel: string }>(
         `SELECT amo_channel FROM crm_deals WHERE id = ?`,
         [dealId]
       );
@@ -3932,7 +3932,7 @@ api.post('/crm/deals/backfill-amo-channels', async (c) => {
     }
   }
   const who = String(actor?.name || actor?.login || '').trim() || 'Сотрудник';
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'crm.deals_backfill_amo_channels',
     entity: 'crm_deal',
     entityId: '',
@@ -3952,7 +3952,7 @@ api.post('/crm/deals/backfill-amo-channels', async (c) => {
 
 /** Компании + контакты Amo (+ связи) → counterparties. */
 api.post('/crm/counterparties/sync', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_sync')) {
     return c.json({ error: 'Недостаточно прав: синхронизация' }, 403);
   }
@@ -3965,23 +3965,23 @@ api.post('/crm/counterparties/sync', async (c) => {
       limit: body.limit ?? 5000,
       pages: body.pages ?? 40,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'crm.counterparties_sync',
       entity: 'counterparty',
       summary: `Синк Amo компаний/контактов: компаний ${result.upsertedCompanies}, контактов ${result.upsertedContacts}, связей ${result.upsertedLinks}`,
       after: result,
     });
-    return c.json({ ok: true, ...result, meta: amoCounterpartiesMeta() });
+    return c.json({ ok: true, ...result, meta: await amoCounterpartiesMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'counterparties sync failed' }, 500);
   }
 });
 
-api.get('/crm/counterparties/sync/meta', (c) => c.json(amoCounterpartiesMeta()));
+api.get('/crm/counterparties/sync/meta', async (c) => c.json(await amoCounterpartiesMeta()));
 
 /** Dual-write из amo1c при «Отправить в 1С» (ключ клиента scope=ingest или env). */
 api.post('/crm/deals/ingest', async (c) => {
-  if (!machineApiKeyOk(c, 'ingest')) {
+  if (!await machineApiKeyOk(c, 'ingest')) {
     return c.json({ error: 'forbidden' }, 403);
   }
   const body = await c.req.json().catch(() => ({})) as {
@@ -3992,15 +3992,15 @@ api.post('/crm/deals/ingest', async (c) => {
     return c.json({ error: 'deal required' }, 400);
   }
   const dealId = String(body.deal.id);
-  const before = getDeal(dealId);
-  upsertDealRecord(body.deal);
+  const before = await getDeal(dealId);
+  await upsertDealRecord(body.deal);
 
   // Кто нажал «в 1С» в Amo — queued_by; иначе ответственный.
   const queuedBy = String(body.deal.queued_by || '').replace(/\u00a0/g, ' ').trim();
   const respAmoId = String(body.deal.responsible_user_id || '').trim();
   let ingestActor: { id: string; login: string; name: string } | null = null;
   if (queuedBy) {
-    const st = get<{ id: string; login: string; name: string }>(
+    const st = await get<{ id: string; login: string; name: string }>(
       `SELECT id, IFNULL(login,'') AS login, name FROM staff
        WHERE replace(name, char(160), ' ') = ? OR name = ?
        ORDER BY CASE WHEN IFNULL(login,'') != '' THEN 0 ELSE 1 END
@@ -4011,7 +4011,7 @@ api.post('/crm/deals/ingest', async (c) => {
       ? { id: st.id, login: st.login, name: st.name }
       : { id: '', login: '', name: queuedBy };
   } else if (respAmoId) {
-    const st = get<{ id: string; login: string; name: string }>(
+    const st = await get<{ id: string; login: string; name: string }>(
       `SELECT id, IFNULL(login,'') AS login, name FROM staff WHERE amo_id = ? LIMIT 1`,
       [respAmoId]
     );
@@ -4020,7 +4020,7 @@ api.post('/crm/deals/ingest', async (c) => {
 
   const dealName = String(body.deal.name || dealId).replace(/\s+/g, ' ').trim();
   const whoBit = queuedBy ? ` · отправил ${queuedBy}` : '';
-  writeAudit({
+  await writeAudit({
     action: 'crm.deal_ingest',
     entity: 'crm_deal',
     entityId: dealId,
@@ -4052,7 +4052,7 @@ api.post('/crm/deals/ingest', async (c) => {
 
 /** Заказ на производство из виджета amo1c (ключ ingest). */
 api.post('/crm/production/jobs', async (c) => {
-  if (!machineApiKeyOk(c, 'ingest')) {
+  if (!await machineApiKeyOk(c, 'ingest')) {
     return c.json({ error: 'forbidden' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -4063,14 +4063,14 @@ api.post('/crm/production/jobs', async (c) => {
     queue_send?: boolean;
   };
   try {
-    let job = createProductionJob({
+    let job = await createProductionJob({
       kind: body.kind || 'assemble',
       deal_id: body.deal_id,
       comment: body.comment,
       lines: body.lines || [],
     });
     if (body.queue_send) {
-      job = queueProductionSend(String(job.id));
+      job = await queueProductionSend(String(job.id));
     }
     return c.json({ ok: true, job }, 201);
   } catch (e) {
@@ -4078,22 +4078,22 @@ api.post('/crm/production/jobs', async (c) => {
   }
 });
 
-api.get('/org-profile', (c) => {
-  const profile = getOrgProfile();
+api.get('/org-profile', async (c) => {
+  const profile = await getOrgProfile();
   return c.json({ ...profile, ...orgPrintAssetsMeta(profile.inn) });
 });
 
 api.put('/org-profile', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = await c.req.json().catch(() => ({})) as Record<string, string | number>;
   if (typeof body.phone === 'string') {
-    body.phone = normalizePhoneForStorage(body.phone);
+    body.phone = await normalizePhoneForStorage(body.phone);
   }
-  const saved = saveOrgProfile(body as Record<string, string>);
-  auditFromContext(c, {
+  const saved = await saveOrgProfile(body as Record<string, string>);
+  await auditFromContext(c, {
     action: 'org.profile_save',
     entity: 'org_profile',
     summary: 'Реквизиты организации для печати счетов/УПД',
@@ -4126,11 +4126,11 @@ async function readImageUploadBody(c: Context): Promise<Buffer | null> {
 
 /** Загрузить скан печати (М.П.) для текущего org-profile (по ИНН). */
 api.post('/org-profile/stamp', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const profile = getOrgProfile();
+  const profile = await getOrgProfile();
   let buf: Buffer | null = null;
   try {
     buf = await readImageUploadBody(c);
@@ -4140,7 +4140,7 @@ api.post('/org-profile/stamp', async (c) => {
   if (!buf?.length) return c.json({ error: 'Нужен файл изображения (file) или image_base64' }, 400);
   try {
     const r = saveOrgPrintAsset(profile.inn, 'stamp', buf);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'org.stamp_upload',
       entity: 'org_profile',
       summary: `Печать загружена · ИНН ${r.inn}`,
@@ -4153,11 +4153,11 @@ api.post('/org-profile/stamp', async (c) => {
 
 /** Загрузить скан подписи (факсимиле) для текущего org-profile. */
 api.post('/org-profile/signature', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const profile = getOrgProfile();
+  const profile = await getOrgProfile();
   let buf: Buffer | null = null;
   try {
     buf = await readImageUploadBody(c);
@@ -4167,7 +4167,7 @@ api.post('/org-profile/signature', async (c) => {
   if (!buf?.length) return c.json({ error: 'Нужен файл изображения (file) или image_base64' }, 400);
   try {
     const r = saveOrgPrintAsset(profile.inn, 'sign', buf);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'org.signature_upload',
       entity: 'org_profile',
       summary: `Подпись загружена · ИНН ${r.inn}`,
@@ -4178,22 +4178,22 @@ api.post('/org-profile/signature', async (c) => {
   }
 });
 
-api.delete('/org-profile/stamp', (c) => {
-  const actor = actorFromContext(c);
+api.delete('/org-profile/stamp', async (c) => {
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const profile = getOrgProfile();
+  const profile = await getOrgProfile();
   deleteOrgPrintAsset(profile.inn, 'stamp');
   return c.json({ ok: true, ...orgPrintAssetsMeta(profile.inn) });
 });
 
-api.delete('/org-profile/signature', (c) => {
-  const actor = actorFromContext(c);
+api.delete('/org-profile/signature', async (c) => {
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const profile = getOrgProfile();
+  const profile = await getOrgProfile();
   deleteOrgPrintAsset(profile.inn, 'sign');
   return c.json({ ok: true, ...orgPrintAssetsMeta(profile.inn) });
 });
@@ -4226,9 +4226,9 @@ api.get('/public/org-assets/:inn/:kind', (c) => {
   }
 });
 
-api.get('/ui-settings', (c) => {
-  const s = getUiSettings();
-  const waitWh = ensureWaitingPaymentWarehouse();
+api.get('/ui-settings', async (c) => {
+  const s = await getUiSettings();
+  const waitWh = await ensureWaitingPaymentWarehouse();
   return c.json({
     ...s,
     phone_formats: PHONE_FORMATS.map((id) => ({
@@ -4243,7 +4243,7 @@ api.get('/ui-settings', (c) => {
 });
 
 api.put('/ui-settings', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -4254,20 +4254,20 @@ api.put('/ui-settings', async (c) => {
     payment_link_default_warehouse_id?: string;
     payment_link_default_organization_id?: string;
   };
-  const saved = saveUiSettings({
+  const saved = await saveUiSettings({
     phone_format: body.phone_format as PhoneFormat | undefined,
     payment_link_timer_minutes: body.payment_link_timer_minutes,
     payment_link_reserve_enabled: body.payment_link_reserve_enabled,
     payment_link_default_warehouse_id: body.payment_link_default_warehouse_id,
     payment_link_default_organization_id: body.payment_link_default_organization_id,
   });
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'ui.settings_save',
     entity: 'ui_settings',
     summary: `Настройки UI: телефоны ${PHONE_FORMAT_LABELS[saved.phone_format]}, таймер оплаты ${saved.payment_link_timer_minutes} мин`,
     after: saved,
   });
-  const waitWh = ensureWaitingPaymentWarehouse();
+  const waitWh = await ensureWaitingPaymentWarehouse();
   return c.json({
     ...saved,
     phone_formats: PHONE_FORMATS.map((id) => ({
@@ -4282,17 +4282,17 @@ api.put('/ui-settings', async (c) => {
 });
 
 /** Настройки ссылки на оплату (алиас под раздел настроек). */
-api.get('/payment-link-settings', (c) => {
-  const s = getPaymentLinkSettings();
+api.get('/payment-link-settings', async (c) => {
+  const s = await getPaymentLinkSettings();
   return c.json({
     ...s,
-    waiting_payment_warehouse: ensureWaitingPaymentWarehouse(),
+    waiting_payment_warehouse: await ensureWaitingPaymentWarehouse(),
     default_timer_minutes: DEFAULT_PAYMENT_LINK_TIMER_MINUTES,
   });
 });
 
 api.put('/payment-link-settings', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -4302,9 +4302,9 @@ api.put('/payment-link-settings', async (c) => {
     payment_link_default_warehouse_id?: string;
     payment_link_default_organization_id?: string;
   };
-  const saved = savePaymentLinkSettings(body);
-  ensureWaitingPaymentWarehouse();
-  auditFromContext(c, {
+  const saved = await savePaymentLinkSettings(body);
+  await ensureWaitingPaymentWarehouse();
+  await auditFromContext(c, {
     action: 'payment_link.settings',
     entity: 'ui_settings',
     summary: `Ссылка на оплату: таймер ${saved.payment_link_timer_minutes} мин, резерв выкл`,
@@ -4312,14 +4312,14 @@ api.put('/payment-link-settings', async (c) => {
   });
   return c.json({
     ...saved,
-    waiting_payment_warehouse: ensureWaitingPaymentWarehouse(),
+    waiting_payment_warehouse: await ensureWaitingPaymentWarehouse(),
     default_timer_minutes: DEFAULT_PAYMENT_LINK_TIMER_MINUTES,
   });
 });
 
 /** Шаблоны документов (Google Doc + макросы {{…}}). */
-api.get('/settings/doc-templates', (c) => {
-  const actor = actorFromContext(c);
+api.get('/settings/doc-templates', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (
     !isAdminActor(actor) &&
@@ -4329,11 +4329,11 @@ api.get('/settings/doc-templates', (c) => {
   ) {
     return c.json({ error: 'Нет доступа' }, 403);
   }
-  return c.json(docTemplatesPublic());
+  return c.json(await docTemplatesPublic());
 });
 
 api.put('/settings/doc-templates', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять шаблоны может админ или менеджер' }, 403);
@@ -4341,38 +4341,38 @@ api.put('/settings/doc-templates', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     templates?: Array<Record<string, unknown>>;
   };
-  const saved = saveDocTemplatesConfig({
+  const saved = await saveDocTemplatesConfig({
     templates: Array.isArray(body.templates) ? body.templates : undefined,
   });
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'doc_templates.save',
     entity: 'doc_templates',
     summary: `Шаблоны документов: ${saved.templates.length}`,
     after: { count: saved.templates.length },
   });
-  return c.json(docTemplatesPublic());
+  return c.json(await docTemplatesPublic());
 });
 
 api.post('/settings/doc-templates', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять шаблоны может админ или менеджер' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const row = upsertDocTemplate(body);
-  auditFromContext(c, {
+  const row = await upsertDocTemplate(body);
+  await auditFromContext(c, {
     action: 'doc_templates.upsert',
     entity: 'doc_templates',
     entityId: row.id,
     summary: `Шаблон: ${row.title}`,
     after: row,
   });
-  return c.json({ ...docTemplatesPublic(), template: row });
+  return c.json({ ...await docTemplatesPublic(), template: row });
 });
 
 api.delete('/settings/doc-templates/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Удалять шаблоны может админ или менеджер' }, 403);
@@ -4380,18 +4380,18 @@ api.delete('/settings/doc-templates/:id', async (c) => {
   const id = String(c.req.param('id') || '').trim();
   const ok = deleteDocTemplate(id);
   if (!ok) return c.json({ error: 'not found' }, 404);
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'doc_templates.delete',
     entity: 'doc_templates',
     entityId: id,
     summary: `Удалён шаблон ${id}`,
   });
-  return c.json(docTemplatesPublic());
+  return c.json(await docTemplatesPublic());
 });
 
 /** Содержимое Drive-папки «Шаблоны». */
 api.get('/settings/doc-templates/drive', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (
     !isAdminActor(actor) &&
@@ -4410,7 +4410,7 @@ api.get('/settings/doc-templates/drive', async (c) => {
 
 /** Подтянуть Google Doc → TXT бланка СТО (печать/PDF). */
 api.post('/settings/doc-templates/:id/pull', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Подтягивать шаблоны может админ или менеджер' }, 403);
@@ -4425,14 +4425,14 @@ api.post('/settings/doc-templates/:id/pull', async (c) => {
       organizationId: String(body.organization_id || c.req.query('organization_id') || ''),
       sellerInn: String(body.seller_inn || c.req.query('seller_inn') || ''),
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'doc_templates.pull',
       entity: 'doc_templates',
       entityId: id,
       summary: `Подтянут ${r.txt_file} (${r.bytes} B)`,
       after: r,
     });
-    return c.json({ ...docTemplatesPublic(), ok: true, pull: r });
+    return c.json({ ...await docTemplatesPublic(), ok: true, pull: r });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -4440,17 +4440,17 @@ api.post('/settings/doc-templates/:id/pull', async (c) => {
 
 /* ——— Интеграции: СДЭК / АТОЛ / Точка (ключи в UI, секреты в meta / bank) ——— */
 
-api.get('/settings/warranty', (c) => {
-  const actor = actorFromContext(c);
+api.get('/settings/warranty', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  return c.json({ ok: true, ...getWarrantySettings() });
+  return c.json({ ok: true, ...await getWarrantySettings() });
 });
 
 api.put('/settings/warranty', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Недостаточно прав' }, 403);
@@ -4459,8 +4459,8 @@ api.put('/settings/warranty', async (c) => {
   if (!Array.isArray(body.lines)) {
     return c.json({ error: 'lines[] обязателен' }, 400);
   }
-  const saved = saveWarrantySettings({ lines: body.lines });
-  writeAudit({
+  const saved = await saveWarrantySettings({ lines: body.lines });
+  await writeAudit({
     actor,
     action: 'settings.warranty.save',
     entity: 'meta',
@@ -4471,29 +4471,29 @@ api.put('/settings/warranty', async (c) => {
   return c.json({ ok: true, ...saved });
 });
 
-api.get('/settings/integrations/atol', (c) => {
-  const actor = actorFromContext(c);
+api.get('/settings/integrations/atol', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  return c.json({ ok: true, ...atolSettingsPublic(), status: atolStatusInfo() });
+  return c.json({ ok: true, ...await atolSettingsPublic(), status: await atolStatusInfo() });
 });
 
-api.get('/settings/integrations/yandex-pay', (c) => {
-  const actor = actorFromContext(c);
+api.get('/settings/integrations/yandex-pay', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const orgs = listOrganizations({ activeOnly: true }).map((o) => ({
+  const orgs = (await listOrganizations({ activeOnly: true })).map((o) => ({
     id: o.id,
     name: o.name,
     short_name: o.short_name,
     inn: o.inn,
     is_default: o.is_default,
   }));
-  const pub = yandexPaySettingsPublic();
+  const pub = await yandexPaySettingsPublic();
   return c.json({
     ok: true,
     ...pub,
@@ -4503,15 +4503,15 @@ api.get('/settings/integrations/yandex-pay', (c) => {
 });
 
 api.put('/settings/integrations/yandex-pay', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять Яндекс Сплит может админ или менеджер' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   try {
-    const saved = saveYandexPaySettings(body);
-    auditFromContext(c, {
+    const saved = await saveYandexPaySettings(body);
+    await auditFromContext(c, {
       action: 'integrations.yandex_pay_save',
       entity: 'integration_yandex_pay',
       summary: `Яндекс Сплит: юрлицо ${saved.organization_id}, merchant ${saved.merchant_id ? 'задан' : 'нет'}, env ${saved.env}`,
@@ -4522,14 +4522,14 @@ api.put('/settings/integrations/yandex-pay', async (c) => {
         enabled: saved.enabled,
       },
     });
-    const orgs = listOrganizations({ activeOnly: true }).map((o) => ({
+    const orgs = (await listOrganizations({ activeOnly: true })).map((o) => ({
       id: o.id,
       name: o.name,
       short_name: o.short_name,
       inn: o.inn,
       is_default: o.is_default,
     }));
-    const pub = yandexPaySettingsPublic(saved);
+    const pub = await yandexPaySettingsPublic(saved);
     return c.json({
       ok: true,
       ...pub,
@@ -4542,44 +4542,44 @@ api.put('/settings/integrations/yandex-pay', async (c) => {
 });
 
 api.delete('/settings/integrations/yandex-pay/:organizationId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Удалять профиль может админ или менеджер' }, 403);
   }
   try {
-    const r = deleteYandexPayProfile(c.req.param('organizationId'));
-    auditFromContext(c, {
+    const r = await deleteYandexPayProfile(c.req.param('organizationId'));
+    await auditFromContext(c, {
       action: 'integrations.yandex_pay_delete',
       entity: 'integration_yandex_pay',
       entityId: r.organization_id,
       summary: `Яндекс Сплит: удалён профиль юрлица ${r.organization_id}`,
     });
-    return c.json({ ...yandexPaySettingsPublic(), ...r, ok: true });
+    return c.json({ ...await yandexPaySettingsPublic(), ...r, ok: true });
   } catch (e) {
     return c.json({ ok: false, error: e instanceof Error ? e.message : 'delete failed' }, 400);
   }
 });
 
 api.put('/settings/integrations/atol', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять АТОЛ может админ или менеджер' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const saved = saveAtolSettings(body);
-  auditFromContext(c, {
+  const saved = await saveAtolSettings(body);
+  await auditFromContext(c, {
     action: 'integrations.atol_save',
     entity: 'integration_atol',
     summary: `АТОЛ: ${saved.login ? 'логин задан' : 'без логина'}, группа ${saved.group_code || '—'}`,
     after: { group_code: saved.group_code, inn: saved.inn, sno: saved.sno, configured: Boolean(saved.login && saved.pass && saved.group_code) },
   });
-  return c.json({ ok: true, ...atolSettingsPublic(saved), status: atolStatusInfo() });
+  return c.json({ ok: true, ...await atolSettingsPublic(saved), status: await atolStatusInfo() });
 });
 
 api.post('/settings/integrations/atol/test', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
@@ -4589,12 +4589,12 @@ api.post('/settings/integrations/atol/test', async (c) => {
 });
 
 api.get('/settings/integrations/tochka', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const bridge = tochkaBridgePublic();
+  const bridge = await tochkaBridgePublic();
   let bank = await fetchTochkaBankAppSettings();
   if (bank.ok === false && !bridge.configured) {
     bank = {
@@ -4606,12 +4606,12 @@ api.get('/settings/integrations/tochka', async (c) => {
     ok: true,
     bridge,
     bank,
-    bank_settings_url: bankSettingsApiUrl(),
+    bank_settings_url: await bankSettingsApiUrl(),
   });
 });
 
 api.put('/settings/integrations/tochka', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять Точку может админ или менеджер' }, 403);
@@ -4619,12 +4619,12 @@ api.put('/settings/integrations/tochka', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const bridgePatch = (body.bridge || body) as Record<string, unknown>;
   const bankPatch = (body.bank || {}) as Record<string, unknown>;
-  const bridgeSaved = saveTochkaBridgeSettings(bridgePatch);
+  const bridgeSaved = await saveTochkaBridgeSettings(bridgePatch);
   let bank = await fetchTochkaBankAppSettings();
   if (Object.keys(bankPatch).length > 0) {
     bank = await saveTochkaBankAppSettings(bankPatch);
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'integrations.tochka_save',
     entity: 'integration_tochka',
     summary: `Точка: мост ${bridgeSaved.bank_sbp_key ? 'ключ задан' : 'без ключа'}`,
@@ -4636,14 +4636,14 @@ api.put('/settings/integrations/tochka', async (c) => {
   });
   return c.json({
     ok: true,
-    bridge: tochkaBridgePublic(bridgeSaved),
+    bridge: await tochkaBridgePublic(bridgeSaved),
     bank,
-    bank_settings_url: bankSettingsApiUrl(),
+    bank_settings_url: await bankSettingsApiUrl(),
   });
 });
 
 api.post('/settings/integrations/tochka/test', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
@@ -4664,12 +4664,12 @@ api.post('/settings/integrations/tochka/test', async (c) => {
 });
 
 api.get('/settings/integrations/cdek', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'settings')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const bridge = cdekBridgePublic();
+  const bridge = await cdekBridgePublic();
   let widget: Awaited<ReturnType<typeof fetchCdekSettings>> | { ok: false; error: string };
   try {
     widget = await fetchCdekSettings();
@@ -4680,12 +4680,12 @@ api.get('/settings/integrations/cdek', async (c) => {
     ok: true,
     bridge,
     widget,
-    configured: cdekConfigured(),
+    configured: await cdekConfigured(),
   });
 });
 
 api.put('/settings/integrations/cdek', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять СДЭК может админ или менеджер' }, 403);
@@ -4693,9 +4693,9 @@ api.put('/settings/integrations/cdek', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const bridgePatch = (body.bridge || {}) as Record<string, unknown>;
   const widgetPatch = (body.widget || {}) as Record<string, unknown>;
-  let bridgeSaved = cdekBridgePublic();
+  let bridgeSaved = await cdekBridgePublic();
   if (Object.keys(bridgePatch).length > 0) {
-    bridgeSaved = cdekBridgePublic(saveCdekBridgeSettings(bridgePatch));
+    bridgeSaved = await cdekBridgePublic(await saveCdekBridgeSettings(bridgePatch));
   }
   let widget: Awaited<ReturnType<typeof saveCdekSettings>> | { ok: false; error: string } = {
     ok: false,
@@ -4714,7 +4714,7 @@ api.put('/settings/integrations/cdek', async (c) => {
       widget = { ok: false, error: e instanceof Error ? e.message : 'cdek settings failed' };
     }
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'integrations.cdek_save',
     entity: 'integration_cdek',
     summary: `СДЭК: мост ${bridgeSaved.configured ? 'ключ задан' : 'без ключа'}`,
@@ -4728,25 +4728,25 @@ api.put('/settings/integrations/cdek', async (c) => {
     ok: true,
     bridge: bridgeSaved,
     widget,
-    configured: cdekConfigured(),
+    configured: await cdekConfigured(),
   });
 });
 
-api.get('/settings/integrations/dadata', (c) => {
-  const actor = actorFromContext(c);
+api.get('/settings/integrations/dadata', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  return c.json(dadataPublic());
+  return c.json(await dadataPublic());
 });
 
 api.put('/settings/integrations/dadata', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять DaData может админ или менеджер' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const saved = dadataPublic(saveDadataSettings(body));
-  auditFromContext(c, {
+  const saved = await dadataPublic(await saveDadataSettings(body));
+  await auditFromContext(c, {
     action: 'integrations.dadata_save',
     entity: 'integration_dadata',
     summary: `DaData: ${saved.configured ? 'ключ задан' : 'без ключа'}`,
@@ -4755,21 +4755,21 @@ api.put('/settings/integrations/dadata', async (c) => {
   return c.json({ ok: true, ...saved });
 });
 
-api.get('/settings/integrations/deepseek', (c) => {
-  const actor = actorFromContext(c);
+api.get('/settings/integrations/deepseek', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  return c.json(deepseekPublic());
+  return c.json(await deepseekPublic());
 });
 
 api.put('/settings/integrations/deepseek', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять DeepSeek может админ или менеджер' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const saved = deepseekPublic(saveDeepseekSettings(body));
-  auditFromContext(c, {
+  const saved = await deepseekPublic(await saveDeepseekSettings(body));
+  await auditFromContext(c, {
     action: 'integrations.deepseek_save',
     entity: 'integration_deepseek',
     summary: `DeepSeek: ${saved.configured ? 'ключ задан' : 'без ключа'}`,
@@ -4779,9 +4779,9 @@ api.put('/settings/integrations/deepseek', async (c) => {
 });
 
 api.post('/settings/integrations/deepseek/test', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  const s = getDeepseekSettings();
+  const s = await getDeepseekSettings();
   if (!s.api_key) return c.json({ ok: false, error: 'Нет API-ключа' }, 400);
   let base = String(s.base_url || '').replace(/\/+$/, '');
   if (!base) return c.json({ ok: false, error: 'Не задан Base URL' }, 400);
@@ -4820,16 +4820,16 @@ api.post('/settings/integrations/deepseek/test', async (c) => {
 
 /** Локальный OCR документов (on-prem, фото не уходят наружу). */
 api.get('/settings/integrations/ocr-local', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const { ocrLocalPublic, ocrLocalHealth, getOcrLocalSettings } = await import('./doc-ocr-local.js');
-  const pub = ocrLocalPublic();
-  const health = await ocrLocalHealth(getOcrLocalSettings());
+  const pub = await ocrLocalPublic();
+  const health = await ocrLocalHealth(await getOcrLocalSettings());
   return c.json({ ...pub, health });
 });
 
 api.put('/settings/integrations/ocr-local', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять OCR может админ или менеджер' }, 403);
@@ -4839,11 +4839,11 @@ api.put('/settings/integrations/ocr-local', async (c) => {
     base_url?: string;
   };
   const { saveOcrLocalSettings, ocrLocalPublic, ocrLocalHealth } = await import('./doc-ocr-local.js');
-  const saved = saveOcrLocalSettings({
+  const saved = await saveOcrLocalSettings({
     mode: body.mode as 'local' | 'cloud' | 'off' | undefined,
     base_url: body.base_url,
   });
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'integrations.ocr_local_save',
     entity: 'ocr_local',
     summary: `OCR mode=${saved.mode}`,
@@ -4854,30 +4854,30 @@ api.put('/settings/integrations/ocr-local', async (c) => {
 });
 
 api.post('/settings/integrations/ocr-local/test', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const { ocrLocalHealth, getOcrLocalSettings } = await import('./doc-ocr-local.js');
-  const health = await ocrLocalHealth(getOcrLocalSettings());
+  const health = await ocrLocalHealth(await getOcrLocalSettings());
   return c.json(health, health.ok ? 200 : 400);
 });
 
 api.post('/settings/integrations/dadata/test', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const r = await testDadataConnection();
   return c.json(r, r.ok ? 200 : 400);
 });
 
 /** API-ключи сотрудников: у каждого свой (Помощь → Интеграции и API). */
-api.get('/settings/integrations/api-keys', (c) => {
-  const actor = actorFromContext(c);
+api.get('/settings/integrations/api-keys', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const isAdmin = isAdminActor(actor);
   const items = isAdmin
-    ? listIntegrationApiKeys()
-    : listIntegrationApiKeys({ staffId: actor.id });
+    ? await listIntegrationApiKeys()
+    : await listIntegrationApiKeys({ staffId: actor.id });
   const staffRows = isAdmin
-    ? all<{ id: string; name: string; login: string; role: string }>(
+    ? await all<{ id: string; name: string; login: string; role: string }>(
         `SELECT id, IFNULL(name,'') AS name, IFNULL(login,'') AS login, IFNULL(role,'') AS role
          FROM staff
          WHERE is_active = 1 AND can_login = 1
@@ -4893,7 +4893,7 @@ api.get('/settings/integrations/api-keys', (c) => {
       ];
   return c.json({
     items,
-    active_count: countActiveIntegrationApiKeys(),
+    active_count: await countActiveIntegrationApiKeys(),
     can_manage_all: isAdmin,
     staff: staffRows,
     sections: API_KEY_SECTION_CHECKS,
@@ -4910,7 +4910,7 @@ api.get('/settings/integrations/api-keys', (c) => {
 });
 
 api.post('/settings/integrations/api-keys', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const isAdmin = isAdminActor(actor);
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -4927,14 +4927,14 @@ api.post('/settings/integrations/api-keys', async (c) => {
   if (!staffId) staffId = actor.id;
   const scopes = body.all === true ? ['all'] : body.scopes;
   try {
-    const created = createIntegrationApiKey({
+    const created = await createIntegrationApiKey({
       staffId,
       name: body.name || '',
       scopes,
       note: body.note,
       createdBy: String(actor.login || actor.name || actor.id || ''),
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'integrations.api_key_create',
       entity: 'integration_api_key',
       entityId: created.key.id,
@@ -4960,17 +4960,17 @@ api.post('/settings/integrations/api-keys', async (c) => {
 });
 
 api.post('/settings/integrations/api-keys/:id/revoke', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const id = c.req.param('id');
-  const existing = listIntegrationApiKeys().find((k) => k.id === id);
+  const existing = (await listIntegrationApiKeys()).find((k) => k.id === id);
   if (!existing) return c.json({ error: 'not found' }, 404);
   if (!isAdminActor(actor) && existing.staff_id !== actor.id) {
     return c.json({ error: 'Можно отозвать только свой ключ' }, 403);
   }
-  const revoked = revokeIntegrationApiKey(id);
+  const revoked = await revokeIntegrationApiKey(id);
   if (!revoked) return c.json({ error: 'not found' }, 404);
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'integrations.api_key_revoke',
     entity: 'integration_api_key',
     entityId: revoked.id,
@@ -4980,17 +4980,17 @@ api.post('/settings/integrations/api-keys/:id/revoke', async (c) => {
   return c.json({ ok: true, item: revoked });
 });
 
-api.get('/settings/integrations/amo', (c) => {
-  const actor = actorFromContext(c);
+api.get('/settings/integrations/amo', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'integrations') && !canAccessSection(actor, 'crm')) {
     return c.json({ error: 'Нет доступа' }, 403);
   }
-  return c.json(amoBridgePublic());
+  return c.json(await amoBridgePublic());
 });
 
 api.put('/settings/integrations/amo', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять Amo может админ или менеджер' }, 403);
@@ -5001,17 +5001,17 @@ api.put('/settings/integrations/amo', async (c) => {
     branch_company?: Record<string, string>;
     staff_mappings?: Array<{ staff_id: string; amo_id: string }>;
   };
-  const saved = saveAmoIntegrationSettings({
+  const saved = await saveAmoIntegrationSettings({
     stages: body.stages,
     pipeline_company: body.pipeline_company,
     branch_company: body.branch_company,
   });
   let staffUpdated = 0;
   if (Array.isArray(body.staff_mappings)) {
-    staffUpdated = saveStaffAmoMappings(body.staff_mappings).updated;
+    staffUpdated = (await saveStaffAmoMappings(body.staff_mappings)).updated;
   }
-  const pub = amoBridgePublic();
-  auditFromContext(c, {
+  const pub = await amoBridgePublic();
+  await auditFromContext(c, {
     action: 'integrations.amo_save',
     entity: 'integration_amo',
     summary: `Amo: этапы ${Object.keys(saved.stages.success_after_handed).length}, филиалов→орг ${Object.keys(saved.branch_company).length}, сотрудников ${staffUpdated}`,
@@ -5026,7 +5026,7 @@ api.put('/settings/integrations/amo', async (c) => {
 
 /** Вкл/выкл хук Amo (сделки · контакты) + подписка в AmoCRM. Товары — SQL amo1c. */
 api.put('/settings/integrations/amo/webhook', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Переключать хук может админ или менеджер' }, 403);
@@ -5035,7 +5035,7 @@ api.put('/settings/integrations/amo/webhook', async (c) => {
   const enabled = Boolean(body.enabled);
   const r = await setAmoWebhookEnabled(enabled);
   if (!r.ok) return c.json({ error: r.error || 'failed' }, 400);
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'integrations.amo_webhook',
     entity: 'integration_amo',
     summary: enabled
@@ -5047,27 +5047,27 @@ api.put('/settings/integrations/amo/webhook', async (c) => {
       amo_subscribed: r.amo_subscribed,
     },
   });
-  return c.json({ ...r, bridge: amoBridgePublic().bridge });
+  return c.json({ ...r, bridge: (await amoBridgePublic()).bridge });
 });
 
-api.get('/settings/integrations/amo/sale-rules', (c) => {
-  const actor = actorFromContext(c);
+api.get('/settings/integrations/amo/sale-rules', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'integrations') && !canAccessSection(actor, 'crm')) {
     return c.json({ error: 'Нет доступа' }, 403);
   }
-  return c.json(amoBridgePublic().sale_rules);
+  return c.json((await amoBridgePublic()).sale_rules);
 });
 
 api.put('/settings/integrations/amo/sale-rules', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Сохранять правила Amo может админ или менеджер' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const saved = saveAmoSaleRulesConfig(body as Parameters<typeof saveAmoSaleRulesConfig>[0]);
-  auditFromContext(c, {
+  const saved = await saveAmoSaleRulesConfig(body as Parameters<typeof saveAmoSaleRulesConfig>[0]);
+  await auditFromContext(c, {
     action: 'integrations.amo_sale_rules_save',
     entity: 'integration_amo',
     summary: `Amo правила: полей ${saved.fields.length}, сценариев ${saved.scenarios.length}, lock=${saved.lock_fields ? 1 : 0}`,
@@ -5077,30 +5077,30 @@ api.put('/settings/integrations/amo/sale-rules', async (c) => {
       lock_fields: saved.lock_fields,
     },
   });
-  return c.json({ ok: true, ...amoBridgePublic().sale_rules });
+  return c.json({ ok: true, ...(await amoBridgePublic()).sale_rules });
 });
 
 api.post('/settings/integrations/amo/sale-rules/check', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'integrations') && !canAccessSection(actor, 'crm')) {
     return c.json({ error: 'Нет доступа' }, 403);
   }
-  const result = checkAmoSaleConfigDrift();
-  return c.json({ ...result, sale_rules: amoBridgePublic().sale_rules });
+  const result = await checkAmoSaleConfigDrift();
+  return c.json({ ...result, sale_rules: (await amoBridgePublic()).sale_rules });
 });
 
 api.post('/settings/integrations/amo/sale-rules/alerts/seen', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as { id?: string; all?: boolean };
-  if (body.all) markAllAmoIntegrationAlertsSeen();
-  else if (body.id) markAmoIntegrationAlertSeen(String(body.id));
-  return c.json({ ok: true, sale_rules: amoBridgePublic().sale_rules });
+  if (body.all) await markAllAmoIntegrationAlertsSeen();
+  else if (body.id) await markAmoIntegrationAlertSeen(String(body.id));
+  return c.json({ ok: true, sale_rules: (await amoBridgePublic()).sale_rules });
 });
 
 api.get('/dadata/party', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const q = String(c.req.query('q') || '').trim();
   const count = Math.min(20, Math.max(1, Number(c.req.query('count')) || 8));
@@ -5113,7 +5113,7 @@ api.get('/dadata/party', async (c) => {
 });
 
 api.get('/dadata/fio', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const q = String(c.req.query('q') || '').trim();
   const count = Math.min(20, Math.max(1, Number(c.req.query('count')) || 8));
@@ -5126,7 +5126,7 @@ api.get('/dadata/fio', async (c) => {
 });
 
 api.get('/dadata/address', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const q = String(c.req.query('q') || '').trim();
   const count = Math.min(20, Math.max(1, Number(c.req.query('count')) || 8));
@@ -5139,7 +5139,7 @@ api.get('/dadata/address', async (c) => {
 });
 
 api.post('/dadata/party/find', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as { inn?: string; query?: string };
   const inn = String(body.inn || body.query || '').replace(/\D/g, '');
@@ -5153,10 +5153,10 @@ api.post('/dadata/party/find', async (c) => {
 });
 
 api.post('/counterparties/:id/dadata-fill', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const id = c.req.param('id');
-  const row = get<Record<string, unknown>>('SELECT * FROM counterparties WHERE id = ?', [id]);
+  const row = await get<Record<string, unknown>>('SELECT * FROM counterparties WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
   const body = (await c.req.json().catch(() => ({}))) as {
     inn?: string;
@@ -5185,18 +5185,18 @@ api.post('/counterparties/:id/dadata-fill', async (c) => {
     const kpp = String(party.kpp || '').replace(/\D/g, '');
     const ogrn = String(party.ogrn || '').replace(/\D/g, '');
     const address = String(party.address || '').trim();
-    if (name) run('UPDATE counterparties SET name = ? WHERE id = ?', [name, id]);
-    if (nameFull) run('UPDATE counterparties SET name_full = ? WHERE id = ?', [nameFull, id]);
-    if (inn) run('UPDATE counterparties SET inn = ? WHERE id = ?', [inn, id]);
-    run('UPDATE counterparties SET kpp = ? WHERE id = ?', [kpp, id]);
-    run('UPDATE counterparties SET ogrn = ? WHERE id = ?', [ogrn, id]);
-    run('UPDATE counterparties SET address = ? WHERE id = ?', [address, id]);
-    run('UPDATE counterparties SET dadata_synced_at = datetime(?) WHERE id = ?', [
+    if (name) await run('UPDATE counterparties SET name = ? WHERE id = ?', [name, id]);
+    if (nameFull) await run('UPDATE counterparties SET name_full = ? WHERE id = ?', [nameFull, id]);
+    if (inn) await run('UPDATE counterparties SET inn = ? WHERE id = ?', [inn, id]);
+    await run('UPDATE counterparties SET kpp = ? WHERE id = ?', [kpp, id]);
+    await run('UPDATE counterparties SET ogrn = ? WHERE id = ?', [ogrn, id]);
+    await run('UPDATE counterparties SET address = ? WHERE id = ?', [address, id]);
+    await run('UPDATE counterparties SET dadata_synced_at = datetime(?) WHERE id = ?', [
       new Date().toISOString(),
       id,
     ]);
-    const after = get('SELECT * FROM counterparties WHERE id = ?', [id]);
-    auditFromContext(c, {
+    const after = await get('SELECT * FROM counterparties WHERE id = ?', [id]);
+    await auditFromContext(c, {
       action: 'counterparty.dadata_fill',
       entity: 'counterparty',
       entityId: id,
@@ -5210,14 +5210,14 @@ api.post('/counterparties/:id/dadata-fill', async (c) => {
   }
 });
 
-api.get('/counterparties/dadata/stats', (c) => {
-  const actor = actorFromContext(c);
+api.get('/counterparties/dadata/stats', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  return c.json(dadataEnrichStats());
+  return c.json(await dadataEnrichStats());
 });
 
 api.post('/counterparties/dadata/enrich', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor?.role !== 'manager') {
     return c.json({ error: 'Массовое обогащение — админ или менеджер' }, 403);
@@ -5231,7 +5231,7 @@ api.post('/counterparties/dadata/enrich', async (c) => {
       limit: body.limit,
       overwriteName: body.overwrite_name === true,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'counterparties.dadata_enrich',
       entity: 'counterparty',
       summary: `DaData пакет: обновлено ${result.updated} из ${result.scanned}`,
@@ -5242,22 +5242,22 @@ api.post('/counterparties/dadata/enrich', async (c) => {
         errors: result.errors,
       },
     });
-    return c.json({ ok: true, ...result, stats: dadataEnrichStats() });
+    return c.json({ ok: true, ...result, stats: await dadataEnrichStats() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'enrich failed' }, 400);
   }
 });
 
-api.get('/doc-numbering', (c) => c.json(getDocNumberingState()));
+api.get('/doc-numbering', async (c) => c.json(await getDocNumberingState()));
 
 api.post('/doc-numbering/sync-from-1c', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
     const state = await syncDocNumberingFrom1c();
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'doc.numbering_sync',
       entity: 'doc_numbering',
       summary: `Нумерация из 1С: расход ${state.last_out_1c}, приход ${state.last_in_1c}`,
@@ -5270,7 +5270,7 @@ api.post('/doc-numbering/sync-from-1c', async (c) => {
 });
 
 api.put('/doc-numbering', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -5282,8 +5282,8 @@ api.put('/doc-numbering', async (c) => {
     last_upd_krd?: string | number;
   };
   try {
-    const state = applyDocNumberingPatch(body);
-    auditFromContext(c, {
+    const state = await applyDocNumberingPatch(body);
+    await auditFromContext(c, {
       action: 'doc.numbering_set',
       entity: 'doc_numbering',
       summary: 'Ручная установка последних номеров документов',
@@ -5295,13 +5295,13 @@ api.put('/doc-numbering', async (c) => {
   }
 });
 
-api.get('/sales-docs', (c) => {
+api.get('/sales-docs', async (c) => {
   const type = (c.req.query('type') || '').trim() as SalesDocType | '';
   const q = (c.req.query('q') || '').trim();
   const dealId = (c.req.query('deal_id') || '').trim();
   const companyId = (c.req.query('company_id') || '').trim();
   const { page, limit } = parsePage(c, 50);
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
   if (coFilter.mode === 'none') {
     return c.json({
       items: [],
@@ -5312,7 +5312,7 @@ api.get('/sales-docs', (c) => {
       labels: { invoice: 'Счёт', upd: 'УПД', sf: 'СФ', workorder: 'Заказ-наряд' },
     });
   }
-  const result = listSalesDocs({
+  const result = await listSalesDocs({
     type:
       type === 'invoice' ||
       type === 'upd' ||
@@ -5346,10 +5346,10 @@ api.get('/contract-templates', (c) => {
 });
 
 /** Превью бланка договора (без записи в БД). */
-api.get('/contract-templates/:id/preview', (c) => {
+api.get('/contract-templates/:id/preview', async (c) => {
   const id = c.req.param('id');
-  const orgId = resolveOrganizationId(c.req.query('organization_id'));
-  const org = getOrgProfile(orgId);
+  const orgId = await resolveOrganizationId(c.req.query('organization_id'));
+  const org = await getOrgProfile(orgId);
   const docDate = new Date().toISOString().slice(0, 10);
   if (id === CONTRACT_TEMPLATE_ID) {
     const html = renderSaleContractHtml({
@@ -5366,7 +5366,7 @@ api.get('/contract-templates/:id/preview', (c) => {
   }
   const sto = getStoDocTemplate(id);
   if (sto?.isContract) {
-    const html = renderStoTemplateHtml(id, {
+    const html = await renderStoTemplateHtml(id, {
       number: '____',
       docDate,
       org,
@@ -5399,19 +5399,19 @@ api.get('/sto-doc-templates/:id/print', async (c) => {
   const id = c.req.param('id');
   const t = getStoDocTemplate(id);
   if (!t) return c.html('<p>Шаблон не найден</p>', 404);
-  const orgId = resolveOrganizationId(c.req.query('organization_id'));
-  const org = getOrgProfile(orgId);
+  const orgId = await resolveOrganizationId(c.req.query('organization_id'));
+  const org = await getOrgProfile(orgId);
   // Текст из кэша / локального txt (Drive — только «Подтянуть» в настройках)
   const dealId = String(c.req.query('deal_id') || '').trim();
-  const deal = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+  const deal = dealId ? (await getDeal(dealId) as Record<string, unknown> | null) : null;
   const number = String(c.req.query('number') || (deal?.number as string) || '').trim() || '____';
   const dealItems = Array.isArray((deal as { items?: unknown[] } | null)?.items)
     ? ((deal as { items: Array<Record<string, unknown>> }).items as Array<Record<string, unknown>>)
     : [];
   const { workLines, partLines } = splitStoWorkPartLines(dealItems);
-  const actor = actorFromContext(c);
-  const garage = dealId ? garageForDeal(dealId) : { counterparty_id: '', vehicles: [] };
-  const html = renderStoTemplateHtml(id, {
+  const actor = await actorFromContext(c);
+  const garage = dealId ? await garageForDeal(dealId) : { counterparty_id: '', vehicles: [] };
+  const html = await renderStoTemplateHtml(id, {
     number,
     docDate: new Date().toISOString().slice(0, 10),
     org,
@@ -5440,8 +5440,8 @@ api.get('/sto-doc-templates/:id/print', async (c) => {
     ...contactFieldsFromDeal(deal, {
       docDate: new Date().toISOString().slice(0, 10),
     }),
-    ...staffFieldsFromDeal(deal, { staffName: actorDisplayName(actor), actorOnly: true }),
-    ...handoverFieldsFromDeal(deal),
+    ...await staffFieldsFromDeal(deal, { staffName: await actorDisplayName(actor), actorOnly: true }),
+    ...await handoverFieldsFromDeal(deal),
   });
   if (!html) return c.html('<p>Текст шаблона не найден</p>', 404);
   return c.html(html);
@@ -5464,11 +5464,11 @@ api.get('/sto-doc-templates/:id/source', async (c) => {
 });
 
 /** Рекомендуемый шаблон договора для заказа. */
-api.get('/crm/deals/:id/contract-template-suggestion', (c) => {
-  const deal = getDeal(c.req.param('id')) as Record<string, unknown> | null;
+api.get('/crm/deals/:id/contract-template-suggestion', async (c) => {
+  const deal = await getDeal(c.req.param('id')) as Record<string, unknown> | null;
   if (!deal) return c.json({ error: 'not found' }, 404);
   const buyerInn = String(c.req.query('buyer_inn') || '').trim();
-  const template_id = suggestContractTemplateId(deal, {
+  const template_id = await suggestContractTemplateId(deal, {
     organizationId: String(c.req.query('organization_id') || ''),
     buyerInn,
   });
@@ -5501,23 +5501,23 @@ api.get('/crm/deals/:id/contract-template-suggestion', (c) => {
 });
 
 /** Чек-лист приёма/выдачи по сделке (JSON для вкладки «Доп. документы»). */
-api.get('/crm/deals/:id/sto-checklist', (c) => {
+api.get('/crm/deals/:id/sto-checklist', async (c) => {
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return c.json({ error: 'not found' }, 404);
-  const wo = findDealWorkorderForChecklist(dealId);
+  const wo = await findDealWorkorderForChecklist(dealId);
   return c.json(dealStoChecklistPayload(deal, wo));
 });
 
 api.patch('/crm/deals/:id/sto-checklist', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return c.json({ error: 'not found' }, 404);
-  const wo = findDealWorkorderForChecklist(dealId);
+  const wo = await findDealWorkorderForChecklist(dealId);
   if (!wo) {
     return c.json({ error: 'Сначала создайте заказ-наряд во вкладке «Документы»' }, 400);
   }
@@ -5527,10 +5527,10 @@ api.patch('/crm/deals/:id/sto-checklist', async (c) => {
     admin_name?: string;
   };
   try {
-    updateSalesDocStoChecklist(wo.id, body);
-    const next = findDealWorkorderForChecklist(dealId);
+    await updateSalesDocStoChecklist(wo.id, body);
+    const next = await findDealWorkorderForChecklist(dealId);
     const payload = dealStoChecklistPayload(deal, next);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.sto_checklist',
       entity: 'crm_deal',
       entityId: dealId,
@@ -5546,7 +5546,7 @@ api.patch('/crm/deals/:id/sto-checklist', async (c) => {
 /** Мета пакета СТО: состав бланков + поля, которые уйдут в «________». */
 api.get('/crm/deals/:id/sto-pack-meta', async (c) => {
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId);
+  const deal = await getDeal(dealId);
   if (!deal) return c.json({ error: 'not found' }, 404);
   const meta = await inspectDealStoFullPack(dealId, {
     organizationId: String(c.req.query('organization_id') || ''),
@@ -5558,7 +5558,7 @@ api.get('/crm/deals/:id/sto-pack-meta', async (c) => {
 /** Один PDF: пакет СТО (физ: договор+ЗН+ПДн; юр: +приложения) ×2 экз. */
 api.get('/crm/deals/:id/sto-pack.pdf', async (c) => {
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId);
+  const deal = await getDeal(dealId);
   if (!deal) return c.json({ error: 'not found' }, 404);
   try {
     const facsimile = parseOrgFacsimileFlags({
@@ -5568,11 +5568,11 @@ api.get('/crm/deals/:id/sto-pack.pdf', async (c) => {
       signs: c.req.query('signs'),
       sign: c.req.query('sign'),
     });
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const result = await buildDealStoFullPackPdf(dealId, {
       organizationId: String(c.req.query('organization_id') || ''),
       facsimile,
-      staffName: actorDisplayName(actor),
+      staffName: await actorDisplayName(actor),
       actor,
     });
     if (!result) return c.json({ error: 'не удалось собрать пакет' }, 500);
@@ -5593,7 +5593,7 @@ api.get('/crm/deals/:id/sto-pack.pdf', async (c) => {
 /** PDF согласия на обработку ПДн (только физлицо) ×1 экз. */
 api.get('/crm/deals/:id/sto-pdn.pdf', async (c) => {
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId);
+  const deal = await getDeal(dealId);
   if (!deal) return c.json({ error: 'not found' }, 404);
   try {
     const facsimile = parseOrgFacsimileFlags({
@@ -5623,22 +5623,22 @@ api.get('/crm/deals/:id/sto-pdn.pdf', async (c) => {
 });
 
 /** Подписанные сканы/фото согласия ПДн (список). */
-api.get('/crm/deals/:id/pdn-scans', (c) => {
-  const actor = actorFromContext(c);
+api.get('/crm/deals/:id/pdn-scans', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   return c.json(pdnScansSummary(dealId));
 });
 
 /** Загрузить подписанное согласие ПДн (multipart: file / files, несколько фото/PDF). */
 api.post('/crm/deals/:id/pdn-scans', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   const contentType = (c.req.header('content-type') || '').toLowerCase();
   if (!contentType.includes('multipart/form-data')) {
     return c.json({ error: 'Нужен multipart/form-data с полем file' }, 400);
@@ -5663,16 +5663,16 @@ api.post('/crm/deals/:id/pdn-scans', async (c) => {
     }
     const summary = pdnScansSummary(dealId);
     if (summary.scans_ok) {
-      const wo = getDealWorkorder(dealId);
+      const wo = await getDealWorkorder(dealId);
       if (wo?.id) {
         try {
-          updateSalesDocStoChecklist(String(wo.id), { checks: { pdn: true } });
+          await updateSalesDocStoChecklist(String(wo.id), { checks: { pdn: true } });
         } catch {
           /* чек-лист не блокирует загрузку */
         }
       }
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.pdn_scans',
       entity: 'deal',
       entityId: dealId,
@@ -5687,10 +5687,10 @@ api.post('/crm/deals/:id/pdn-scans', async (c) => {
 
 /** Отдать файл подписанного ПДн. */
 api.get('/crm/deals/:id/pdn-scans/:fileId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   const file = readPdnScan(dealId, c.req.param('fileId'));
   if (!file) return c.json({ error: 'Файл не найден' }, 404);
   return new Response(new Uint8Array(file.buf), {
@@ -5703,16 +5703,16 @@ api.get('/crm/deals/:id/pdn-scans/:fileId', async (c) => {
 
 /** Удалить файл подписанного ПДн. */
 api.delete('/crm/deals/:id/pdn-scans/:fileId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   const ok = deletePdnScan(dealId, c.req.param('fileId'));
   if (!ok) return c.json({ error: 'Файл не найден' }, 404);
   const summary = pdnScansSummary(dealId);
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'deal.pdn_scans_delete',
     entity: 'deal',
     entityId: dealId,
@@ -5723,22 +5723,22 @@ api.delete('/crm/deals/:id/pdn-scans/:fileId', async (c) => {
 });
 
 /** Статус SMS-подписи согласия ПДн. */
-api.get('/crm/deals/:id/pdn-sms', (c) => {
-  const actor = actorFromContext(c);
+api.get('/crm/deals/:id/pdn-sms', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
-  return c.json(pdnSmsSummary(dealId));
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  return c.json(await pdnSmsSummary(dealId));
 });
 
 /** Отправить клиенту SMS со ссылкой на согласие ПДн (pdn.uchetn1.ru). */
 api.post('/crm/deals/:id/pdn-sms/send', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   try {
     const { session, sms_id } = await createAndSendPdnSmsLink({
       dealId,
@@ -5752,7 +5752,7 @@ api.post('/crm/deals/:id/pdn-sms/send', async (c) => {
         sms_id,
         token: session.token,
         url: session.link_url,
-        ...pdnSmsSummary(dealId),
+        ...await pdnSmsSummary(dealId),
       },
       201
     );
@@ -5762,34 +5762,34 @@ api.post('/crm/deals/:id/pdn-sms/send', async (c) => {
 });
 
 /** Журнал SMS-подписи ПДн (для суда / проверки). */
-api.get('/crm/deals/:id/pdn-sms/events', (c) => {
-  const actor = actorFromContext(c);
+api.get('/crm/deals/:id/pdn-sms/events', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
-  const summary = pdnSmsSummary(dealId);
-  const session = getLatestPdnSignForDeal(dealId);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const summary = await pdnSmsSummary(dealId);
+  const session = await getLatestPdnSignForDeal(dealId);
   if (!session) return c.json({ ...summary, events: [] });
   return c.json({
     ...summary,
     session_id: session.id,
     consent_sha256: session.consent_sha256,
-    events: listPdnSignEvents(session.id),
+    events: await listPdnSignEvents(session.id),
   });
 });
 
 /** Фото авто при приёме (все ракурсы) — список. */
-api.get('/crm/deals/:id/car-photos', (c) => {
-  const actor = actorFromContext(c);
+api.get('/crm/deals/:id/car-photos', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   return c.json(dealCarPhotosSummary(dealId));
 });
 
 /** Задача «сфотать авто» + push приёмщикам. */
 api.post('/crm/deals/:id/car-photos/request', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   if (
     !canDo(actor, 'can_edit_docs') &&
@@ -5799,10 +5799,10 @@ api.post('/crm/deals/:id/car-photos/request', async (c) => {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   const body = (await c.req.json().catch(() => ({}))) as { note?: string; kind?: string };
   try {
-    ensureWebPushSchema();
+    await ensureWebPushSchema();
     const kindRaw = String(body.kind || 'car').toLowerCase();
     const kind = kindRaw === 'sts' ? 'sts' : kindRaw === 'both' ? 'both' : 'car';
     const r = await requestCarPhotoShoot({
@@ -5812,7 +5812,7 @@ api.post('/crm/deals/:id/car-photos/request', async (c) => {
       createdBy: String(actor.id || ''),
       createdByName: String(actor.name || actor.login || ''),
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: kind === 'sts' ? 'deal.sts_photos_request' : 'deal.car_photos_request',
       entity: 'crm_deal',
       entityId: dealId,
@@ -5825,39 +5825,39 @@ api.post('/crm/deals/:id/car-photos/request', async (c) => {
   }
 });
 
-api.get('/car-photo-tasks', (c) => {
-  const actor = actorFromContext(c);
+api.get('/car-photo-tasks', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   if (!canUseCarPhotoReception(actor) && !canDo(actor, 'can_edit_docs')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  ensureWebPushSchema();
-  return c.json({ items: listOpenCarPhotoTasks(50) });
+  await ensureWebPushSchema();
+  return c.json({ items: await listOpenCarPhotoTasks(50) });
 });
 
-api.get('/car-photo-tasks/:id', (c) => {
-  const actor = actorFromContext(c);
+api.get('/car-photo-tasks/:id', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   if (!canUseCarPhotoReception(actor) && !canDo(actor, 'can_edit_docs')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const task = getCarPhotoTask(c.req.param('id'));
+  const task = await getCarPhotoTask(c.req.param('id'));
   if (!task) return c.json({ error: 'not found' }, 404);
   return c.json({ task });
 });
 
 /** Приёмщик: «Готово» — закрыть задачу фотоотчёта вручную. */
 api.post('/car-photo-tasks/:id/complete', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   if (!canUseCarPhotoReception(actor) && !canDo(actor, 'can_edit_docs')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  ensureWebPushSchema();
+  await ensureWebPushSchema();
   const taskId = c.req.param('id');
-  const task = closeCarPhotoTask(taskId);
+  const task = await closeCarPhotoTask(taskId);
   if (!task) return c.json({ error: 'Задача не найдена' }, 404);
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'deal.car_photos_task_done',
     entity: 'crm_deal',
     entityId: task.deal_id,
@@ -5869,17 +5869,17 @@ api.post('/car-photo-tasks/:id/complete', async (c) => {
 
 /** Закрыть открытую задачу по сделке (если открыли без task id). */
 api.post('/crm/deals/:id/car-photos/complete', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   if (!canUseCarPhotoReception(actor) && !canDo(actor, 'can_edit_docs')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  ensureWebPushSchema();
+  await ensureWebPushSchema();
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
-  const task = closeOpenCarPhotoTaskForDeal(dealId);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  const task = await closeOpenCarPhotoTaskForDeal(dealId);
   if (!task) return c.json({ ok: true, task: null, message: 'Открытой задачи нет' });
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'deal.car_photos_task_done',
     entity: 'crm_deal',
     entityId: dealId,
@@ -5889,8 +5889,8 @@ api.post('/crm/deals/:id/car-photos/complete', async (c) => {
   return c.json({ ok: true, task });
 });
 
-api.get('/push/vapid-public-key', (c) => {
-  const actor = actorFromContext(c);
+api.get('/push/vapid-public-key', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   try {
     return c.json({ publicKey: getVapidPublicKey() });
@@ -5900,14 +5900,14 @@ api.get('/push/vapid-public-key', (c) => {
 });
 
 api.post('/push/subscribe', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor?.id) return c.json({ error: 'Unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as {
     endpoint?: string;
     keys?: { p256dh?: string; auth?: string };
   };
   try {
-    const id = upsertPushSubscription({
+    const id = await upsertPushSubscription({
       staffId: String(actor.id),
       endpoint: String(body.endpoint || ''),
       p256dh: String(body.keys?.p256dh || ''),
@@ -5921,16 +5921,16 @@ api.post('/push/subscribe', async (c) => {
 });
 
 api.delete('/push/subscribe', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor?.id) return c.json({ error: 'Unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as { endpoint?: string };
-  deletePushSubscription(String(body.endpoint || ''), String(actor.id));
+  await deletePushSubscription(String(body.endpoint || ''), String(actor.id));
   return c.json({ ok: true });
 });
 
 /** Загрузить фото авто (multipart: file / files, optional side). */
 api.post('/crm/deals/:id/car-photos', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (
     !canDo(actor, 'can_edit_docs') &&
     actor?.role !== 'admin' &&
@@ -5939,7 +5939,7 @@ api.post('/crm/deals/:id/car-photos', async (c) => {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   const contentType = (c.req.header('content-type') || '').toLowerCase();
   if (!contentType.includes('multipart/form-data')) {
     return c.json({ error: 'Нужен multipart/form-data с полем file' }, 400);
@@ -5967,7 +5967,7 @@ api.post('/crm/deals/:id/car-photos', async (c) => {
       saved.push(ph);
       // дублируем в дело ЗН, если заказ-наряд уже есть
       try {
-        const wo = findDealWorkorderForChecklist(dealId);
+        const wo = await findDealWorkorderForChecklist(dealId);
         if (wo?.id) {
           await saveWoIntakePhoto(wo.id, buf, mime);
         }
@@ -5977,8 +5977,8 @@ api.post('/crm/deals/:id/car-photos', async (c) => {
     }
     if (mileageDigits) {
       try {
-        const cur = (getDeal(dealId) || {}) as Record<string, unknown>;
-        setDealVehicle(dealId, {
+        const cur = (await getDeal(dealId) || {}) as Record<string, unknown>;
+        await setDealVehicle(dealId, {
           car_plate: String(cur.car_plate || ''),
           car_vin: String(cur.car_vin || ''),
           car_brand: String(cur.car_brand || ''),
@@ -5998,7 +5998,7 @@ api.post('/crm/deals/:id/car-photos', async (c) => {
           car_authority_details: String(cur.car_authority_details || ''),
           car_mileage: mileageDigits,
         });
-        syncDealVehicleOntoWorkorders(dealId);
+        await syncDealVehicleOntoWorkorders(dealId);
       } catch {
         /* mileage optional */
       }
@@ -6006,18 +6006,18 @@ api.post('/crm/deals/:id/car-photos', async (c) => {
     const summary = dealCarPhotosSummary(dealId);
     if (summary.photos_ok) {
       try {
-        const wo = findDealWorkorderForChecklist(dealId);
-        if (wo?.id) updateSalesDocStoChecklist(wo.id, { checks: { photos: true } });
+        const wo = await findDealWorkorderForChecklist(dealId);
+        if (wo?.id) await updateSalesDocStoChecklist(wo.id, { checks: { photos: true } });
       } catch {
         /* ignore */
       }
       try {
-        completeCarPhotoTaskForDeal(dealId, 'car');
+        await completeCarPhotoTaskForDeal(dealId, 'car');
       } catch {
         /* optional */
       }
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.car_photos',
       entity: 'crm_deal',
       entityId: dealId,
@@ -6033,10 +6033,10 @@ api.post('/crm/deals/:id/car-photos', async (c) => {
 });
 
 api.get('/crm/deals/:id/car-photos/:photoId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   const file = await readDealCarPhoto(dealId, c.req.param('photoId'));
   if (!file) return c.json({ error: 'Фото не найдено' }, 404);
   return new Response(new Uint8Array(file.buf), {
@@ -6048,12 +6048,12 @@ api.get('/crm/deals/:id/car-photos/:photoId', async (c) => {
 });
 
 api.delete('/crm/deals/:id/car-photos/:photoId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   const photoId = c.req.param('photoId');
   const before = dealCarPhotosSummary(dealId);
   const victim = before.items.find((p) => p.id === photoId);
@@ -6062,8 +6062,8 @@ api.delete('/crm/deals/:id/car-photos/:photoId', async (c) => {
   const summary = dealCarPhotosSummary(dealId);
   if (!summary.photos_ok) {
     try {
-      const wo = findDealWorkorderForChecklist(dealId);
-      if (wo?.id) updateSalesDocStoChecklist(wo.id, { checks: { photos: false } });
+      const wo = await findDealWorkorderForChecklist(dealId);
+      if (wo?.id) await updateSalesDocStoChecklist(wo.id, { checks: { photos: false } });
     } catch {
       /* ignore */
     }
@@ -6071,7 +6071,7 @@ api.delete('/crm/deals/:id/car-photos/:photoId', async (c) => {
   const when = victim?.created_at
     ? String(victim.created_at).replace('T', ' ').slice(0, 16)
     : '';
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'deal.car_photos_delete',
     entity: 'crm_deal',
     entityId: dealId,
@@ -6083,11 +6083,11 @@ api.delete('/crm/deals/:id/car-photos/:photoId', async (c) => {
 });
 
 /** Запчасти клиента (привёз свои) — список / фото. Только Автосервис / СТО. */
-api.get('/crm/deals/:id/client-parts', (c) => {
-  const actor = actorFromContext(c);
+api.get('/crm/deals/:id/client-parts', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return c.json({ error: 'not found' }, 404);
   if (!resolveIsSto(deal)) {
     return c.json({ error: 'ЗЧ клиента только для канала Автосервис' }, 400);
@@ -6096,12 +6096,12 @@ api.get('/crm/deals/:id/client-parts', (c) => {
 });
 
 api.put('/crm/deals/:id/client-parts', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return c.json({ error: 'not found' }, 404);
   if (!resolveIsSto(deal)) {
     return c.json({ error: 'ЗЧ клиента только для канала Автосервис' }, 400);
@@ -6116,16 +6116,16 @@ api.put('/crm/deals/:id/client-parts', async (c) => {
     source: 'manual',
   });
   if (saved.items.length) {
-    const wo = getDealWorkorder(dealId);
+    const wo = await getDealWorkorder(dealId);
     if (wo?.id) {
       try {
-        updateSalesDocStoChecklist(String(wo.id), { checks: { client_parts: true } });
+        await updateSalesDocStoChecklist(String(wo.id), { checks: { client_parts: true } });
       } catch {
         /* ignore */
       }
     }
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'deal.client_parts',
     entity: 'deal',
     entityId: dealId,
@@ -6137,12 +6137,12 @@ api.put('/crm/deals/:id/client-parts', async (c) => {
 
 /** Фото + текст → DeepSeek → список ЗЧ клиента. */
 api.post('/crm/deals/:id/client-parts/recognize', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return c.json({ error: 'not found' }, 404);
   if (!resolveIsSto(deal)) {
     return c.json({ error: 'ЗЧ клиента только для канала Автосервис' }, 400);
@@ -6185,16 +6185,16 @@ api.post('/crm/deals/:id/client-parts/recognize', async (c) => {
     }
     const saved = await recognizeClientParts({ dealId, note, images, savePhotos: true });
     if (saved.items.length) {
-      const wo = getDealWorkorder(dealId);
+      const wo = await getDealWorkorder(dealId);
       if (wo?.id) {
         try {
-          updateSalesDocStoChecklist(String(wo.id), { checks: { client_parts: true } });
+          await updateSalesDocStoChecklist(String(wo.id), { checks: { client_parts: true } });
         } catch {
           /* ignore */
         }
       }
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.client_parts_recognize',
       entity: 'deal',
       entityId: dealId,
@@ -6208,10 +6208,10 @@ api.post('/crm/deals/:id/client-parts/recognize', async (c) => {
 });
 
 api.get('/crm/deals/:id/client-parts/photos/:photoId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   const file = readClientPartPhoto(dealId, c.req.param('photoId'));
   if (!file) return c.json({ error: 'Фото не найдено' }, 404);
   return new Response(new Uint8Array(file.buf), {
@@ -6223,12 +6223,12 @@ api.get('/crm/deals/:id/client-parts/photos/:photoId', async (c) => {
 });
 
 api.delete('/crm/deals/:id/client-parts/photos/:photoId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'not found' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'not found' }, 404);
   const ok = deleteClientPartPhoto(dealId, c.req.param('photoId'));
   if (!ok) return c.json({ error: 'Фото не найдено' }, 404);
   return c.json({ ...clientPartsSummary(dealId), ok: true });
@@ -6240,7 +6240,7 @@ api.get('/crm/deals/:id/sto-extra/:file', async (c) => {
   // Hono: `:templateId.pdf` даёт param `templateId.pdf` = `sto-no-show.pdf`, не `templateId`.
   const file = String(c.req.param('file') || c.req.param('templateId.pdf') || '').trim();
   const templateId = file.replace(/\.pdf$/i, '').trim();
-  const deal = getDeal(dealId);
+  const deal = await getDeal(dealId);
   if (!deal) return c.json({ error: 'not found' }, 404);
   if (!isStoExtraDealTemplateId(templateId)) {
     return c.json(
@@ -6259,7 +6259,7 @@ api.get('/crm/deals/:id/sto-extra/:file', async (c) => {
     const result = await buildDealStoExtraPdf(dealId, templateId, {
       organizationId: String(c.req.query('organization_id') || ''),
       facsimile,
-      staffName: actorDisplayName(actorFromContext(c)),
+      staffName: await actorDisplayName(await actorFromContext(c)),
     });
     if (!result) return c.json({ error: 'не удалось собрать PDF' }, 500);
     const download =
@@ -6279,7 +6279,7 @@ api.get('/crm/deals/:id/sto-extra/:file', async (c) => {
 
 /** Создать договор (из сделки или бланк). */
 api.post('/contracts', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав на документы' }, 403);
   }
@@ -6294,7 +6294,7 @@ api.post('/contracts', async (c) => {
     comment?: string;
   };
   try {
-    const doc = createContractDoc({
+    const doc = await createContractDoc({
       dealId: body.deal_id,
       organizationId: body.organization_id,
       templateId: body.template_id,
@@ -6305,7 +6305,7 @@ api.post('/contracts', async (c) => {
       comment: body.comment,
       createdBy: actor?.login || actor?.name || '',
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sales_doc.create',
       entity: 'sales_doc',
       entityId: String(doc?.id || ''),
@@ -6318,31 +6318,31 @@ api.post('/contracts', async (c) => {
   }
 });
 
-api.post('/company/ensure-client-orgs', (c) => {
-  const actor = actorFromContext(c);
+api.post('/company/ensure-client-orgs', async (c) => {
+  const actor = await actorFromContext(c);
   if (actor?.role !== 'admin' && !canDo(actor, 'can_edit_docs')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const result = ensureClientOrgContours();
-  return c.json({ ok: true, ...result, snapshot: listClientOrgSnapshot() });
+  const result = await ensureClientOrgContours();
+  return c.json({ ok: true, ...result, snapshot: await listClientOrgSnapshot() });
 });
 
 /** Позиции заказа + КН (клиентское наименование) для виджета Документы.
  *  Важно: ДО /sales-docs/:id — иначе «deal-lines» съедается как id. */
-api.get('/sales-docs/deal-lines', (c) => {
-  if (!salesDocsWidgetAuthOk(c)) {
+api.get('/sales-docs/deal-lines', async (c) => {
+  if (!await salesDocsWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав на документы' }, 403);
   }
   const dealId = String(c.req.query('deal_id') || '').trim();
   const counterpartyId = String(c.req.query('counterparty_id') || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
-  const deal = getDeal(dealId) as
+  const deal = await getDeal(dealId) as
     | (Record<string, unknown> & { items?: Array<Record<string, unknown>> })
     | null;
   if (!deal) return c.json({ error: 'Сделка не найдена' }, 404);
   const items = Array.isArray(deal.items) ? deal.items : [];
   const knMap = counterpartyId
-    ? mapDocClientNames(
+    ? await mapDocClientNames(
         counterpartyId,
         items.map((it) => ({
           product_guid: String(it.product_guid || it.product_id || ''),
@@ -6350,7 +6350,7 @@ api.get('/sales-docs/deal-lines', (c) => {
         }))
       )
     : {};
-  const lines = items.map((it, idx) => {
+  const lines = await Promise.all(items.map(async (it, idx) => {
     const productGuid = String(it.product_guid || it.product_id || '').trim();
     const sku = String(it.sku || it.code || '').trim();
     const skuKey = sku.toUpperCase().replace(/\s+/g, '');
@@ -6362,7 +6362,7 @@ api.get('/sales-docs/deal-lines', (c) => {
     const rawName = String(it.name || '').trim();
     const baseName =
       (rawName && !/^не\s*найдено:/i.test(rawName) ? rawName : '') ||
-      salesDocLineDisplayName(it) ||
+      await salesDocLineDisplayName(it) ||
       String(it.display_name || '')
         .replace(/^не\s*найдено:\s*/i, '')
         .replace(/^.+?\s+[—–-]\s+/, '')
@@ -6380,7 +6380,7 @@ api.get('/sales-docs/deal-lines', (c) => {
       amount: Number(it.amount) || 0,
       unit: String(it.unit || 'шт'),
     };
-  });
+  }));
   return c.json({
     ok: true,
     deal_id: dealId,
@@ -6391,10 +6391,10 @@ api.get('/sales-docs/deal-lines', (c) => {
 });
 
 api.post('/sales-docs/client-product-names', async (c) => {
-  if (!salesDocsWidgetAuthOk(c)) {
+  if (!await salesDocsWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав на документы' }, 403);
   }
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   const body = (await c.req.json().catch(() => ({}))) as {
     counterparty_id?: string;
     product_guid?: string;
@@ -6409,7 +6409,7 @@ api.post('/sales-docs/client-product-names', async (c) => {
   const counterpartyId = String(body.counterparty_id || '').trim();
   if (!counterpartyId) return c.json({ error: 'counterparty_id обязателен' }, 400);
   const updatedBy =
-    actorDisplayName(actor) || actor?.login || actor?.name || 'amo-widget';
+    await actorDisplayName(actor) || actor?.login || actor?.name || 'amo-widget';
   const batch = Array.isArray(body.items)
     ? body.items
     : [
@@ -6421,7 +6421,7 @@ api.post('/sales-docs/client-product-names', async (c) => {
       ];
   const saved: Array<{ product_guid: string; sku: string; client_name: string }> = [];
   for (const row of batch) {
-    const res = upsertDocClientName({
+    const res = await upsertDocClientName({
       counterpartyId,
       productGuid: String(row.product_guid || ''),
       productSku: String(row.sku || ''),
@@ -6440,24 +6440,24 @@ api.post('/sales-docs/client-product-names', async (c) => {
   return c.json({ ok: true, items: saved });
 });
 
-api.get('/sales-docs/:id', (c) => {
+api.get('/sales-docs/:id', async (c) => {
   const id = c.req.param('id');
-  let doc = getSalesDoc(id);
+  let doc = await getSalesDoc(id);
   if (!doc) return c.json({ error: 'not found' }, 404);
   if (String(doc.doc_type) === 'contract') {
-    doc = fillContractBuyerFromDeal(id) || doc;
+    doc = await fillContractBuyerFromDeal(id) || doc;
   } else if (['invoice', 'upd', 'sf'].includes(String(doc.doc_type))) {
-    doc = fillSalesDocBuyerFromDeal(id) || doc;
+    doc = await fillSalesDocBuyerFromDeal(id) || doc;
   }
   const dealId = String((doc as { deal_id?: string }).deal_id || '').trim();
-  const garage = dealId ? garageForDeal(dealId) : { counterparty_id: '', vehicles: [] };
+  const garage = dealId ? await garageForDeal(dealId) : { counterparty_id: '', vehicles: [] };
   const payload: Record<string, unknown> = {
     ...doc,
     buyer_counterparty_id: garage.counterparty_id,
     garage_vehicles: garage.vehicles,
   };
   if (String(doc.doc_type) === 'workorder') {
-    const deal = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+    const deal = dealId ? (await getDeal(dealId) as Record<string, unknown> | null) : null;
     const legal = dealIsLegalEntity(deal);
     const state = parseStoChecklistJson((doc as { checklist_json?: string }).checklist_json);
     const intakePhotos = woIntakePhotosSummary(id);
@@ -6467,7 +6467,7 @@ api.get('/sales-docs/:id', (c) => {
       state,
       progress: stoChecklistProgress(state, { legal }),
       legal: legal ? 1 : 0,
-      staff_picks: listStoChecklistStaffPicks(),
+      staff_picks: await listStoChecklistStaffPicks(),
     };
     payload.intake_photos = intakePhotos;
   }
@@ -6475,10 +6475,10 @@ api.get('/sales-docs/:id', (c) => {
 });
 
 /** Фотофиксация приёма — список по заказ-наряду. */
-api.get('/sales-docs/:id/intake-photos', (c) => {
-  const actor = actorFromContext(c);
+api.get('/sales-docs/:id/intake-photos', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
-  const doc = getSalesDoc(c.req.param('id'));
+  const doc = await getSalesDoc(c.req.param('id'));
   if (!doc) return c.json({ error: 'not found' }, 404);
   if (String(doc.doc_type) !== 'workorder') {
     return c.json({ error: 'Фото осмотра только на заказ-наряде' }, 400);
@@ -6488,12 +6488,12 @@ api.get('/sales-docs/:id/intake-photos', (c) => {
 
 /** Загрузить фото осмотра в дело ЗН (multipart: file / files). */
 api.post('/sales-docs/:id/intake-photos', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const docId = c.req.param('id');
-  const doc = getSalesDoc(docId);
+  const doc = await getSalesDoc(docId);
   if (!doc) return c.json({ error: 'not found' }, 404);
   if (String(doc.doc_type) !== 'workorder') {
     return c.json({ error: 'Фото осмотра только на заказ-наряде' }, 400);
@@ -6523,12 +6523,12 @@ api.post('/sales-docs/:id/intake-photos', async (c) => {
     const summary = woIntakePhotosSummary(docId);
     if (summary.photos_ok) {
       try {
-        updateSalesDocStoChecklist(docId, { checks: { photos: true } });
+        await updateSalesDocStoChecklist(docId, { checks: { photos: true } });
       } catch {
         /* чек-лист не блокирует загрузку */
       }
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sales_doc.intake_photos',
       entity: 'sales_doc',
       entityId: docId,
@@ -6543,9 +6543,9 @@ api.post('/sales-docs/:id/intake-photos', async (c) => {
 
 /** Отдать фото осмотра. */
 api.get('/sales-docs/:id/intake-photos/:photoId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
-  const doc = getSalesDoc(c.req.param('id'));
+  const doc = await getSalesDoc(c.req.param('id'));
   if (!doc) return c.json({ error: 'not found' }, 404);
   const file = readWoIntakePhoto(c.req.param('id'), c.req.param('photoId'));
   if (!file) return c.json({ error: 'Фото не найдено' }, 404);
@@ -6559,12 +6559,12 @@ api.get('/sales-docs/:id/intake-photos/:photoId', async (c) => {
 
 /** Удалить фото осмотра. */
 api.delete('/sales-docs/:id/intake-photos/:photoId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const docId = c.req.param('id');
-  const doc = getSalesDoc(docId);
+  const doc = await getSalesDoc(docId);
   if (!doc) return c.json({ error: 'not found' }, 404);
   if (String(doc.doc_type) !== 'workorder') {
     return c.json({ error: 'Фото осмотра только на заказ-наряде' }, 400);
@@ -6574,12 +6574,12 @@ api.delete('/sales-docs/:id/intake-photos/:photoId', async (c) => {
   const summary = woIntakePhotosSummary(docId);
   if (!summary.photos_ok) {
     try {
-      updateSalesDocStoChecklist(docId, { checks: { photos: false } });
+      await updateSalesDocStoChecklist(docId, { checks: { photos: false } });
     } catch {
       /* ignore */
     }
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'sales_doc.intake_photos_delete',
     entity: 'sales_doc',
     entityId: docId,
@@ -6591,7 +6591,7 @@ api.delete('/sales-docs/:id/intake-photos/:photoId', async (c) => {
 
 /** Чек-лист приёма/выдачи СТО на заказ-наряде. */
 api.patch('/sales-docs/:id/sto-checklist', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -6601,9 +6601,9 @@ api.patch('/sales-docs/:id/sto-checklist', async (c) => {
     admin_name?: string;
   };
   try {
-    const doc = updateSalesDocStoChecklist(c.req.param('id'), body);
+    const doc = await updateSalesDocStoChecklist(c.req.param('id'), body);
     const state = parseStoChecklistJson((doc as { checklist_json?: string } | null)?.checklist_json);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sales_doc.sto_checklist',
       entity: 'sales_doc',
       entityId: c.req.param('id'),
@@ -6617,14 +6617,14 @@ api.patch('/sales-docs/:id/sto-checklist', async (c) => {
 });
 
 /** Интерактивный / печатный чек-лист СТО по заказ-наряду. */
-api.get('/sales-docs/:id/sto-checklist', (c) => {
-  const doc = getSalesDoc(c.req.param('id'));
+api.get('/sales-docs/:id/sto-checklist', async (c) => {
+  const doc = await getSalesDoc(c.req.param('id'));
   if (!doc) return c.html('<p>Документ не найден</p>', 404);
   if (String(doc.doc_type) !== 'workorder') {
     return c.html('<p>Чек-лист доступен только для заказ-наряда</p>', 400);
   }
   const dealId = String((doc as { deal_id?: string }).deal_id || '').trim();
-  const deal = dealId ? (getDeal(dealId) as Record<string, unknown> | null) : null;
+  const deal = dealId ? (await getDeal(dealId) as Record<string, unknown> | null) : null;
   const legal = dealIsLegalEntity(deal);
   const state = parseStoChecklistJson((doc as { checklist_json?: string }).checklist_json);
   const html = renderStoChecklistInteractiveHtml({
@@ -6639,16 +6639,16 @@ api.get('/sales-docs/:id/sto-checklist', (c) => {
     legal,
     state,
     interactive: c.req.query('print') !== '1',
-    staffPicks: listStoChecklistStaffPicks(),
+    staffPicks: await listStoChecklistStaffPicks(),
   });
   return c.html(html);
 });
 
 api.get('/sales-docs/:id/print', async (c) => {
   const id = c.req.param('id');
-  const preview = getSalesDoc(id);
+  const preview = await getSalesDoc(id);
   if (preview && String(preview.doc_type) === 'contract') {
-    fillContractBuyerFromDeal(id);
+    await fillContractBuyerFromDeal(id);
   }
   const facsimile = parseOrgFacsimileFlags({
     stamps: c.req.query('stamps'),
@@ -6657,8 +6657,8 @@ api.get('/sales-docs/:id/print', async (c) => {
     signs: c.req.query('signs'),
     sign: c.req.query('sign'),
   });
-  let html = runWithOrgFacsimile(facsimile, () =>
-    renderSalesDocPrintHtml(id, { staffName: actorDisplayName(actorFromContext(c)) })
+  let html = await runWithOrgFacsimileAsync(facsimile, async () =>
+    await renderSalesDocPrintHtml(id, { staffName: await actorDisplayName(await actorFromContext(c)) })
   );
   if (!html) return c.html('<p>Документ не найден</p>', 404);
   const autoprint =
@@ -6673,8 +6673,8 @@ api.get('/sales-docs/:id/print', async (c) => {
     }
   }
   if (preview && String(preview.doc_type || '') === 'workorder') {
-    markSalesDocPrinted(id, {
-      actor: actorFromContext(c),
+    await markSalesDocPrinted(id, {
+      actor: await actorFromContext(c),
       via: autoprint ? 'print' : 'html',
     });
   }
@@ -6683,7 +6683,7 @@ api.get('/sales-docs/:id/print', async (c) => {
 
 /** QR оплаты по ГОСТ ST00012 (PNG) для счёта. */
 api.get('/sales-docs/:id/payment-qr.png', async (c) => {
-  const doc = getSalesDoc(c.req.param('id'));
+  const doc = await getSalesDoc(c.req.param('id'));
   if (!doc) return c.json({ error: 'not found' }, 404);
   if (String(doc.doc_type) !== 'invoice') {
     return c.json({ error: 'QR оплаты только для счёта' }, 400);
@@ -6715,20 +6715,20 @@ api.get('/sales-docs/:id/payment-qr.png', async (c) => {
 });
 
 /** Реестр УПД (позиции) — JSON для экрана /upd. */
-api.get('/sales-docs/upd/next-number', (c) => {
+api.get('/sales-docs/upd/next-number', async (c) => {
   const organizationId = (c.req.query('organization_id') || '').trim();
-  return c.json({ next: peekNextOrdinalUpdNumber(organizationId) });
+  return c.json({ next: await peekNextOrdinalUpdNumber(organizationId) });
 });
 
 /** Реестр УПД (позиции) — JSON для экрана /upd. */
-api.get('/sales-docs/upd/registry', (c) => {
+api.get('/sales-docs/upd/registry', async (c) => {
   const q = (c.req.query('q') || '').trim();
   const companyId = (c.req.query('company_id') || '').trim();
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
   if (coFilter.mode === 'none') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const { rows, truncated } = listUpdRegistryRows({
+  const { rows, truncated } = await listUpdRegistryRows({
     q: q || undefined,
     companyId: coFilter.mode === 'one' ? coFilter.id : companyId || undefined,
     companyIds: coFilter.mode === 'in' ? coFilter.ids : undefined,
@@ -6741,7 +6741,7 @@ api.get('/sales-docs/upd/registry.pdf', async (c) => {
   try {
     const q = (c.req.query('q') || '').trim();
     const companyId = (c.req.query('company_id') || '').trim();
-    const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+    const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
     if (coFilter.mode === 'none') {
       return c.json({ error: 'Недостаточно прав' }, 403);
     }
@@ -6768,9 +6768,9 @@ api.get('/sales-docs/upd/registry.pdf', async (c) => {
 api.get('/sales-docs/:id/pdf', async (c) => {
   try {
     const docId = c.req.param('id');
-    const docRow = getSalesDoc(docId);
+    const docRow = await getSalesDoc(docId);
     if (!docRow) return c.json({ error: 'not found' }, 404);
-    if (String(docRow.doc_type || '') === 'workorder' && !ensureWorkorderCarPlate(docId)) {
+    if (String(docRow.doc_type || '') === 'workorder' && !await ensureWorkorderCarPlate(docId)) {
       return c.json(
         { error: 'Сначала укажите гос. номер автомобиля на заказ-наряде — затем можно скачать PDF' },
         400
@@ -6785,12 +6785,12 @@ api.get('/sales-docs/:id/pdf', async (c) => {
     });
     const result = await renderSalesDocPdf(docId, {
       facsimile,
-      staffName: actorDisplayName(actorFromContext(c)),
+      staffName: await actorDisplayName(await actorFromContext(c)),
     });
     if (!result) return c.json({ error: 'not found' }, 404);
     if (String(docRow.doc_type || '') === 'workorder') {
-      markSalesDocPrinted(docId, {
-        actor: actorFromContext(c),
+      await markSalesDocPrinted(docId, {
+        actor: await actorFromContext(c),
         via: 'pdf',
       });
     }
@@ -6809,10 +6809,10 @@ api.get('/sales-docs/:id/pdf', async (c) => {
 });
 
 api.post('/sales-docs/from-deal', async (c) => {
-  if (!salesDocsWidgetAuthOk(c)) {
+  if (!await salesDocsWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав на документы' }, 403);
   }
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   const body = await c.req.json().catch(() => ({})) as {
     deal_id?: string;
     doc_type?: string;
@@ -6838,7 +6838,7 @@ api.post('/sales-docs/from-deal', async (c) => {
   const dealId = String(body.deal_id || '').trim();
   const docType = String(body.doc_type || '').trim() as SalesDocType;
   const createdBy =
-    actorDisplayName(actor) ||
+    await actorDisplayName(actor) ||
     actor?.login ||
     actor?.name ||
     String(body.created_by || '').trim() ||
@@ -6850,7 +6850,7 @@ api.post('/sales-docs/from-deal', async (c) => {
   try {
     const doc =
       docType === 'contract'
-        ? createContractDoc({
+        ? await createContractDoc({
             dealId,
             organizationId: body.organization_id,
             templateId: body.template_id,
@@ -6861,7 +6861,7 @@ api.post('/sales-docs/from-deal', async (c) => {
             comment: body.comment,
             createdBy,
           })
-        : createSalesDocFromDeal({
+        : await createSalesDocFromDeal({
             dealId,
             docType,
             vatRate: body.vat_rate,
@@ -6889,7 +6889,7 @@ api.post('/sales-docs/from-deal', async (c) => {
         : `${regenerated ? 'Обновлён' : 'Создан'} ${salesDocTypeLabel(docType)} · заказ ${dealId}${
             docRow?.total != null ? ` · ${docRow.total} ₽` : ''
           }`;
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: regenerated ? 'sales_doc.regenerate' : 'sales_doc.create',
       entity: 'sales_doc',
       entityId: String(docRow?.id || ''),
@@ -6908,10 +6908,10 @@ api.post('/sales-docs/from-deal', async (c) => {
  * СТО физлицо → ЗН; СТО юрлицо → счёт+ЗН+УПД; продажа юрлицо → счёт+УПД; продажа физлицо → счёт.
  */
 api.post('/sales-docs/pack-from-deal', async (c) => {
-  if (!salesDocsWidgetAuthOk(c)) {
+  if (!await salesDocsWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав на документы' }, 403);
   }
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   const body = await c.req.json().catch(() => ({})) as {
     deal_id?: string;
     types?: string[];
@@ -6924,10 +6924,10 @@ api.post('/sales-docs/pack-from-deal', async (c) => {
   };
   const dealId = String(body.deal_id || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
-  const deal = getDeal(dealId);
+  const deal = await getDeal(dealId);
   if (!deal) return c.json({ error: 'Сделка не найдена' }, 404);
   const createdBy =
-    actorDisplayName(actor) ||
+    await actorDisplayName(actor) ||
     actor?.login ||
     actor?.name ||
     String(body.created_by || '').trim() ||
@@ -6940,7 +6940,7 @@ api.post('/sales-docs/pack-from-deal', async (c) => {
     ? types
     : (dealSalesDocPackTypes(deal as Record<string, unknown>) as SalesDocType[]);
   try {
-    const docs = createSalesDocPackFromDeal({
+    const docs = await createSalesDocPackFromDeal({
       dealId,
       types: resolvedTypes,
       vatRate: body.vat_rate,
@@ -6961,7 +6961,7 @@ api.post('/sales-docs/pack-from-deal', async (c) => {
               deal_id: dealId,
             })
           : `${salesDocTypeLabel(doc.doc_type as SalesDocType)} из заказа ${dealId} (пакет)`;
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'sales_doc.create',
         entity: 'sales_doc',
         entityId: String(doc.id || ''),
@@ -6982,7 +6982,7 @@ api.post('/sales-docs/pack-from-deal', async (c) => {
 
 /** Признак СТО на заказе покупателя (какие документы печатать). */
 api.patch('/crm/deals/:id/sto', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -6991,9 +6991,9 @@ api.patch('/crm/deals/:id/sto', async (c) => {
   const isSto =
     raw === true || raw === 1 || raw === '1' || String(raw).toLowerCase() === 'true';
   try {
-    setDealIsSto(c.req.param('id'), isSto);
-    const deal = getDeal(c.req.param('id'));
-    auditFromContext(c, {
+    await setDealIsSto(c.req.param('id'), isSto);
+    const deal = await getDeal(c.req.param('id'));
+    await auditFromContext(c, {
       action: 'crm.deal_set_sto',
       entity: 'crm_deal',
       entityId: c.req.param('id'),
@@ -7008,7 +7008,7 @@ api.patch('/crm/deals/:id/sto', async (c) => {
 
 /** Канал реализации / СТО / способ отправки / филиал → Учёт + CF сделки в Amo. */
 api.patch('/crm/deals/:id/amo-sale-fields', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -7047,9 +7047,9 @@ api.patch('/crm/deals/:id/amo-sale-fields', async (c) => {
     );
   }
   try {
-    setDealAmoSaleFields(dealId, patch);
+    await setDealAmoSaleFields(dealId, patch);
     const amoPush = await pushDealSaleFieldsToAmo({ dealId, fields: patch });
-    const deal = getDeal(dealId);
+    const deal = await getDeal(dealId);
     const bits: string[] = [];
     if (patch.amo_channel !== undefined) bits.push(`канал «${patch.amo_channel || '—'}»`);
     if (patch.amo_shipment !== undefined) bits.push(`отправка «${patch.amo_shipment || '—'}»`);
@@ -7059,7 +7059,7 @@ api.patch('/crm/deals/:id/amo-sale-fields', async (c) => {
       bits.push(`способ оплаты «${patch.amo_pay_method || '—'}»`);
     if (patch.amo_branch !== undefined) bits.push(`филиал «${patch.amo_branch || '—'}»`);
     if (patch.amo_sto !== undefined) bits.push(`СТО «${patch.amo_sto || '—'}»`);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'crm.deal_amo_sale_fields',
       entity: 'crm_deal',
       entityId: dealId,
@@ -7079,7 +7079,7 @@ api.patch('/crm/deals/:id/amo-sale-fields', async (c) => {
 
 /** Тихий sync одной сделки из Amo при открытии карточки. */
 api.post('/crm/deals/:id/refresh-from-amo', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_sync') && !canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -7089,7 +7089,7 @@ api.post('/crm/deals/:id/refresh-from-amo', async (c) => {
     const result = await syncDealsFromAmo1cAsync({ dealId, limit: 1 });
     const who = String(actor?.name || actor?.login || '').trim() || 'Сотрудник';
     const n = Number(result?.deals) || 0;
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'crm.deal_refresh_from_amo',
       entity: 'crm_deal',
       entityId: dealId,
@@ -7097,7 +7097,7 @@ api.post('/crm/deals/:id/refresh-from-amo', async (c) => {
         `${who} обновил заказ из Amo` + (n > 0 ? ' · данные подтянуты' : ' · без изменений'),
       after: result,
     });
-    return c.json({ ok: true, ...result, deal: getDeal(dealId) });
+    return c.json({ ok: true, ...result, deal: await getDeal(dealId) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'refresh failed' }, 500);
   }
@@ -7105,20 +7105,20 @@ api.post('/crm/deals/:id/refresh-from-amo', async (c) => {
 
 /** Контур (филиал) на заказе — только до выписки счёта; пуш CF «Филиал» в Amo. */
 api.patch('/crm/deals/:id/org-company', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as { org_company_id?: string };
   try {
     const dealId = c.req.param('id');
-    const saved = setDealOrgCompany(dealId, String(body.org_company_id || ''));
+    const saved = await setDealOrgCompany(dealId, String(body.org_company_id || ''));
     const amoPush = await pushDealSaleFieldsToAmo({
       dealId,
       fields: { amo_branch: saved.amo_branch },
     });
-    const deal = getDeal(dealId);
-    auditFromContext(c, {
+    const deal = await getDeal(dealId);
+    await auditFromContext(c, {
       action: 'crm.deal_org_company',
       entity: 'crm_deal',
       entityId: dealId,
@@ -7141,7 +7141,7 @@ api.patch('/crm/deals/:id/org-company', async (c) => {
 
 /** Автомобиль на заказе (для заказ-наряда: гос. номер, VIN, СТС…). */
 api.patch('/crm/deals/:id/vehicle', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const bodyKeys = Object.keys(body);
   const intakeKeys = [
@@ -7167,7 +7167,7 @@ api.patch('/crm/deals/:id/vehicle', async (c) => {
   }
   try {
     const dealId = c.req.param('id');
-    const cur = (getDeal(dealId) || {}) as Record<string, unknown>;
+    const cur = (await getDeal(dealId) || {}) as Record<string, unknown>;
     /** Частичный PATCH (только owner и т.п.) не должен затирать госномер/VIN. */
     const fromBodyOrCur = (key: string): string => {
       if (Object.prototype.hasOwnProperty.call(body, key)) {
@@ -7228,7 +7228,7 @@ api.patch('/crm/deals/:id/vehicle', async (c) => {
         intakePatch.car_completeness = String(raw ?? '').trim();
       }
     }
-    setDealVehicle(dealId, {
+    await setDealVehicle(dealId, {
       ...scrubbed,
       car_mileage: mileage,
       ...(Object.prototype.hasOwnProperty.call(body, 'car_brought_by')
@@ -7242,17 +7242,17 @@ api.patch('/crm/deals/:id/vehicle', async (c) => {
         : {}),
       ...intakePatch,
     });
-    syncDealVehicleOntoWorkorders(dealId);
+    await syncDealVehicleOntoWorkorders(dealId);
     if (body.clear_sts === true) {
       clearStsImagesForDeal(dealId);
     }
-    let garageVehicle = null as ReturnType<typeof upsertCounterpartyVehicle> | null;
+    let garageVehicle = null as Awaited<ReturnType<typeof upsertCounterpartyVehicle>> | null;
     const saveGarage = body.save_garage !== false;
     if (saveGarage && (scrubbed.car_plate || scrubbed.car_vin)) {
-      const dealRow = getDeal(dealId);
-      const cpId = ensureCounterpartyForDeal(dealRow as Record<string, unknown> | null);
+      const dealRow = await getDeal(dealId);
+      const cpId = await ensureCounterpartyForDeal(dealRow as Record<string, unknown> | null);
       if (cpId) {
-        garageVehicle = upsertCounterpartyVehicle(cpId, {
+        garageVehicle = await upsertCounterpartyVehicle(cpId, {
           id: String(body.garage_vehicle_id || ''),
           ...scrubbed,
           car_mileage: mileage,
@@ -7268,9 +7268,9 @@ api.patch('/crm/deals/:id/vehicle', async (c) => {
         }
       }
     }
-    const deal = getDeal(dealId);
-    const garage = garageForDeal(dealId, { ensure: true });
-    auditFromContext(c, {
+    const deal = await getDeal(dealId);
+    const garage = await garageForDeal(dealId, { ensure: true });
+    await auditFromContext(c, {
       action: 'crm.deal_vehicle',
       entity: 'crm_deal',
       entityId: dealId,
@@ -7298,14 +7298,14 @@ api.patch('/crm/deals/:id/vehicle', async (c) => {
 
 /** Фото СТС (лицевая / оборот) — просмотр сохранённого файла. ?thumb=1 — лёгкое превью. */
 api.get('/crm/deals/:id/vehicle/sts/:side', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const dealId = c.req.param('id');
   const sideRaw = String(c.req.param('side') || '').toLowerCase();
   const side: StsSide | null =
     sideRaw === 'front' || sideRaw === 'back' ? sideRaw : null;
   if (!side) return c.json({ error: 'side = front|back' }, 400);
-  if (!getDeal(dealId)) return c.json({ error: 'Заказ покупателя не найден' }, 404);
+  if (!await getDeal(dealId)) return c.json({ error: 'Заказ покупателя не найден' }, 404);
   const wantThumb =
     c.req.query('thumb') === '1' ||
     c.req.query('thumb') === 'true' ||
@@ -7336,14 +7336,14 @@ api.get('/crm/deals/:id/vehicle/sts/:side', async (c) => {
 
 /** Фото СТС конкретного авто в гараже. ?thumb=1 — лёгкое превью. */
 api.get('/counterparties/vehicles/:vehicleId/sts/:side', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'Unauthorized' }, 401);
   const vehicleId = String(c.req.param('vehicleId') || '').trim();
   const sideRaw = String(c.req.param('side') || '').toLowerCase();
   const side: StsSide | null =
     sideRaw === 'front' || sideRaw === 'back' ? sideRaw : null;
   if (!side) return c.json({ error: 'side = front|back' }, 400);
-  if (!vehicleId || !get('SELECT id FROM counterparty_vehicles WHERE id = ?', [vehicleId])) {
+  if (!vehicleId || !await get('SELECT id FROM counterparty_vehicles WHERE id = ?', [vehicleId])) {
     return c.json({ error: 'Авто не найдено' }, 404);
   }
   const wantThumb =
@@ -7379,7 +7379,7 @@ api.get('/counterparties/vehicles/:vehicleId/sts/:side', async (c) => {
  * Опционально распознать поля и сохранить на сделку + на авто гаража.
  */
 api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (
     !canDo(actor, 'can_edit_docs') &&
     actor?.role !== 'admin' &&
@@ -7388,7 +7388,7 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId);
+  const deal = await getDeal(dealId);
   if (!deal) return c.json({ error: 'Заказ покупателя не найден' }, 404);
   const body = (await c.req.json().catch(() => ({}))) as {
     images?: Array<{ mime?: string; data_base64?: string }>;
@@ -7463,7 +7463,7 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
     let recognized = false;
     if (wantRecognize) {
       const { getOcrLocalSettings, ocrLocalHealth } = await import('./doc-ocr-local.js');
-      const ocrCfg = getOcrLocalSettings();
+      const ocrCfg = await getOcrLocalSettings();
       if (ocrCfg.mode === 'off') {
         warn = 'OCR выключен (Настройки → OCR документов). Поля можно ввести вручную.';
       } else if (ocrCfg.mode === 'local') {
@@ -7491,10 +7491,10 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
             warn = e instanceof Error ? e.message : String(e);
           }
         }
-      } else if (!deepseekConfigured()) {
+      } else if (!await deepseekConfigured()) {
         warn =
           'Фото на месте, но ключ не задан: Настройки → DeepSeek / СТС (OpenRouter + deepseek/deepseek-vl2).';
-      } else if (!deepseekVisionEndpointOk()) {
+      } else if (!await deepseekVisionEndpointOk()) {
         warn = deepseekVisionHint();
       } else {
         try {
@@ -7547,7 +7547,7 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
     }
 
     let saved = false;
-    let garageVehicle: ReturnType<typeof upsertCounterpartyVehicle> | null = null;
+    let garageVehicle: Awaited<ReturnType<typeof upsertCounterpartyVehicle>> | null = null;
     const hasFields = Object.values(vehicle).some((v) => v);
     if (body.apply !== false && hasFields) {
       const cur = deal as Record<string, unknown>;
@@ -7556,14 +7556,14 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
         ...mergeStsVehicleOcr(cur, vehicle),
         car_mileage: String(cur.car_mileage || ''),
       };
-      setDealVehicle(dealId, merged);
-      syncDealVehicleOntoWorkorders(dealId);
+      await setDealVehicle(dealId, merged);
+      await syncDealVehicleOntoWorkorders(dealId);
       vehicle = sanitizeStsVehicle(merged);
       saved = true;
       try {
-        const cpId = ensureCounterpartyForDeal(deal as Record<string, unknown>);
+        const cpId = await ensureCounterpartyForDeal(deal as Record<string, unknown>);
         if (cpId && (vehicle.car_plate || vehicle.car_vin)) {
-          garageVehicle = upsertCounterpartyVehicle(cpId, {
+          garageVehicle = await upsertCounterpartyVehicle(cpId, {
             id: garageVehicleId,
             ...vehicle,
             car_mileage: String(cur.car_mileage || ''),
@@ -7584,12 +7584,12 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
         : stsMediaInfo(dealId);
 
     try {
-      if (photos.front && photos.back) completeCarPhotoTaskForDeal(dealId, 'sts');
+      if (photos.front && photos.back) await completeCarPhotoTaskForDeal(dealId, 'sts');
     } catch {
       /* optional */
     }
 
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'crm.deal_vehicle_ocr',
       entity: 'crm_deal',
       entityId: dealId,
@@ -7639,7 +7639,7 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
           photos,
           warn,
           garage_vehicle_id: garageVehicle?.id || garageVehicleId || '',
-          deal: getDeal(dealId),
+          deal: await getDeal(dealId),
         },
         422
       );
@@ -7655,7 +7655,7 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
       photos,
       warn,
       garage_vehicle_id: garageVehicle?.id || garageVehicleId || '',
-      deal: getDeal(dealId),
+      deal: await getDeal(dealId),
     });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -7667,12 +7667,12 @@ api.post('/crm/deals/:id/vehicle/ocr', async (c) => {
  * Фото только в OCR (RAM), на диск / в гараж не сохраняем (регламент ПДн).
  */
 api.post('/crm/deals/:id/passport/ocr', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
-  const deal = getDeal(dealId);
+  const deal = await getDeal(dealId);
   if (!deal) return c.json({ error: 'Заказ покупателя не найден' }, 404);
   const body = (await c.req.json().catch(() => ({}))) as {
     images?: Array<{ mime?: string; data_base64?: string }>;
@@ -7699,7 +7699,7 @@ api.post('/crm/deals/:id/passport/ocr', async (c) => {
       './doc-ocr-local.js'
     );
     const { looksLikePersonFio } = await import('./person-fio.js');
-    const ocrCfg = getOcrLocalSettings();
+    const ocrCfg = await getOcrLocalSettings();
     if (ocrCfg.mode === 'off') {
       return c.json(
         { error: 'OCR выключен (Настройки → OCR документов). Введите ФИО вручную.' },
@@ -7732,13 +7732,13 @@ api.post('/crm/deals/:id/passport/ocr', async (c) => {
     const result = await recognizePassportViaLocal(jpegImages, ocrCfg);
     let fio = String(result.fields.fio || '').trim();
     const passport = String(result.fields.passport || '').trim();
-    if (fio && !looksLikePersonFio(fio)) {
+    if (fio && !await looksLikePersonFio(fio)) {
       // всё равно отдаём в UI — менеджер поправит; в сделку не пишем сомнительное
     }
     let saved = false;
-    if (body.apply !== false && (looksLikePersonFio(fio) || passport)) {
+    if (body.apply !== false && (await looksLikePersonFio(fio) || passport)) {
       const patch: { buyer_name?: string; buyer_passport?: string } = {};
-      if (looksLikePersonFio(fio)) patch.buyer_name = fio;
+      if (await looksLikePersonFio(fio)) patch.buyer_name = fio;
       if (passport) {
         const curPass = String((deal as { buyer_passport?: string }).buyer_passport || '').trim();
         // OCR даёт серию/номер; если уже был длинный текст «кем выдан» — не затираем целиком пустым коротким, а подставляем если пусто или только цифры
@@ -7749,11 +7749,11 @@ api.post('/crm/deals/:id/passport/ocr', async (c) => {
         }
       }
       if (Object.keys(patch).length) {
-        updateDealBuyer(dealId, patch);
+        await updateDealBuyer(dealId, patch);
         saved = true;
       }
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'crm.deal_passport_ocr',
       entity: 'crm_deal',
       entityId: dealId,
@@ -7787,7 +7787,7 @@ api.post('/crm/deals/:id/passport/ocr', async (c) => {
       saved,
       photo_stored: false,
       warn: result.warn || '',
-      deal: getDeal(dealId),
+      deal: await getDeal(dealId),
     });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -7796,20 +7796,20 @@ api.post('/crm/deals/:id/passport/ocr', async (c) => {
 
 /** Наименование покупателя (ЗН/счёт/УПД…) → документы сделки + контрагент; в Amo — поле «Покупатель», не Название. */
 api.patch('/sales-docs/:id/counterparty-name', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as { name?: string };
   try {
     const id = c.req.param('id');
-    const renamed = renameSalesDocBuyerName(id, String(body.name || ''));
+    const renamed = await renameSalesDocBuyerName(id, String(body.name || ''));
     // если карточки ещё не было (физлицо) — создать и переименовать
     if (!renamed.counterparty_id && renamed.deal_id) {
-      const deal = getDeal(renamed.deal_id);
-      const cpId = ensureCounterpartyForDeal(deal as Record<string, unknown> | null);
+      const deal = await getDeal(renamed.deal_id);
+      const cpId = await ensureCounterpartyForDeal(deal as Record<string, unknown> | null);
       if (cpId) {
-        run(`UPDATE counterparties SET name = ? WHERE id = ?`, [renamed.name, cpId]);
+        await run(`UPDATE counterparties SET name = ? WHERE id = ?`, [renamed.name, cpId]);
         renamed.counterparty_id = cpId;
       }
     }
@@ -7828,8 +7828,8 @@ api.patch('/sales-docs/:id/counterparty-name', async (c) => {
         forceName: true,
       });
     }
-    const doc = getSalesDoc(id);
-    auditFromContext(c, {
+    const doc = await getSalesDoc(id);
+    await auditFromContext(c, {
       action: 'sales.doc_counterparty_name',
       entity: 'sales_doc',
       entityId: id,
@@ -7854,7 +7854,7 @@ api.patch('/sales-docs/:id/counterparty-name', async (c) => {
 
 /** № и дата УПД (ручная правка без перегенерации строк). */
 api.patch('/sales-docs/:id/header', async (c) => {
-  if (!salesDocsWidgetAuthOk(c)) {
+  if (!await salesDocsWidgetAuthOk(c)) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -7862,8 +7862,8 @@ api.patch('/sales-docs/:id/header', async (c) => {
     doc_date?: string;
   };
   try {
-    const doc = updateSalesDocHeader(c.req.param('id'), body);
-    auditFromContext(c, {
+    const doc = await updateSalesDocHeader(c.req.param('id'), body);
+    await auditFromContext(c, {
       action: 'sales_doc.header',
       entity: 'sales_doc',
       entityId: c.req.param('id'),
@@ -7878,7 +7878,7 @@ api.patch('/sales-docs/:id/header', async (c) => {
 
 /** Реквизиты покупателя в договоре (в лице, ИНН, КПП, банк…). */
 api.patch('/sales-docs/:id/buyer', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -7899,8 +7899,8 @@ api.patch('/sales-docs/:id/buyer', async (c) => {
   };
   try {
     const id = c.req.param('id');
-    updateSalesDocBuyer(id, body);
-    const doc = getSalesDoc(id);
+    await updateSalesDocBuyer(id, body);
+    const doc = await getSalesDoc(id);
     const dealId = String(doc?.deal_id || '').trim();
     let amo: Awaited<ReturnType<typeof pushContractBuyerToAmoContact>> | null = null;
     if (dealId) {
@@ -7922,7 +7922,7 @@ api.patch('/sales-docs/:id/buyer', async (c) => {
         },
       });
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sales.doc_buyer',
       entity: 'sales_doc',
       entityId: id,
@@ -7945,16 +7945,16 @@ api.patch('/sales-docs/:id/buyer', async (c) => {
 
 /** Тип договора: 01 физлицо / 02 юрлицо·ИП. */
 api.patch('/sales-docs/:id/contract-template', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as { template_id?: string };
   try {
     const id = c.req.param('id');
-    updateSalesDocContractTemplate(id, String(body.template_id || ''));
-    const doc = getSalesDoc(id);
-    auditFromContext(c, {
+    await updateSalesDocContractTemplate(id, String(body.template_id || ''));
+    const doc = await getSalesDoc(id);
+    await auditFromContext(c, {
       action: 'sales.doc_contract_template',
       entity: 'sales_doc',
       entityId: id,
@@ -7969,7 +7969,7 @@ api.patch('/sales-docs/:id/contract-template', async (c) => {
 
 /** Автомобиль в заказ-наряде (правка перед печатью). */
 api.patch('/sales-docs/:id/vehicle', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -7992,15 +7992,15 @@ api.patch('/sales-docs/:id/vehicle', async (c) => {
       car_sts_number: String(body.car_sts_number || ''),
     });
     const docId = c.req.param('id');
-    updateSalesDocVehicle(docId, {
+    await updateSalesDocVehicle(docId, {
       ...body,
       ...scrubbed,
       car_mileage: String(body.car_mileage || ''),
     });
-    const docAfterVehicle = getSalesDoc(docId);
+    const docAfterVehicle = await getSalesDoc(docId);
     const dealIdForSync = String(docAfterVehicle?.deal_id || '').trim();
     if (dealIdForSync && String(docAfterVehicle?.doc_type || '') === 'workorder') {
-      setDealVehicle(dealIdForSync, {
+      await setDealVehicle(dealIdForSync, {
         ...scrubbed,
         car_mileage: String(body.car_mileage || ''),
       });
@@ -8009,15 +8009,15 @@ api.patch('/sales-docs/:id/vehicle', async (c) => {
       const dealId0 = dealIdForSync;
       if (dealId0) clearStsImagesForDeal(dealId0);
     }
-    let garageVehicle = null as ReturnType<typeof upsertCounterpartyVehicle> | null;
+    let garageVehicle = null as Awaited<ReturnType<typeof upsertCounterpartyVehicle>> | null;
     const saveGarage = body.save_garage !== false;
     if (saveGarage && (scrubbed.car_plate || scrubbed.car_vin)) {
-      const docRow = getSalesDoc(docId);
+      const docRow = await getSalesDoc(docId);
       const dealId = String(docRow?.deal_id || '').trim();
-      const deal = dealId ? getDeal(dealId) : null;
-      const cpId = ensureCounterpartyForDeal(deal as Record<string, unknown> | null);
+      const deal = dealId ? await getDeal(dealId) : null;
+      const cpId = await ensureCounterpartyForDeal(deal as Record<string, unknown> | null);
       if (cpId) {
-        garageVehicle = upsertCounterpartyVehicle(cpId, {
+        garageVehicle = await upsertCounterpartyVehicle(cpId, {
           id: String(body.garage_vehicle_id || ''),
           ...scrubbed,
           car_mileage: String(body.car_mileage || ''),
@@ -8034,11 +8034,11 @@ api.patch('/sales-docs/:id/vehicle', async (c) => {
         }
       }
     }
-    const doc = getSalesDoc(docId);
+    const doc = await getSalesDoc(docId);
     const garage = doc?.deal_id
-      ? garageForDeal(String(doc.deal_id), { ensure: true })
+      ? await garageForDeal(String(doc.deal_id), { ensure: true })
       : { counterparty_id: '', vehicles: [] };
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sales.doc_vehicle',
       entity: 'sales_doc',
       entityId: docId,
@@ -8062,16 +8062,16 @@ api.patch('/sales-docs/:id/vehicle', async (c) => {
 });
 
 /** Гараж авто контрагента */
-api.get('/counterparties/:id/vehicles', (c) => {
+api.get('/counterparties/:id/vehicles', async (c) => {
   const id = c.req.param('id');
-  if (!get('SELECT id FROM counterparties WHERE id = ?', [id])) {
+  if (!await get('SELECT id FROM counterparties WHERE id = ?', [id])) {
     return c.json({ error: 'Контрагент не найден' }, 404);
   }
-  return c.json({ items: listCounterpartyVehicles(id) });
+  return c.json({ items: await listCounterpartyVehicles(id) });
 });
 
 api.post('/counterparties/:id/vehicles', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -8093,61 +8093,61 @@ api.post('/counterparties/:id/vehicles', async (c) => {
       car_sts_date: String(body.car_sts_date || ''),
       car_sts_number: String(body.car_sts_number || ''),
     });
-    const item = upsertCounterpartyVehicle(c.req.param('id'), {
+    const item = await upsertCounterpartyVehicle(c.req.param('id'), {
       id: String(body.id || ''),
       ...scrubbed,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'counterparty.vehicle_upsert',
       entity: 'counterparty',
       entityId: c.req.param('id'),
       summary: `Авто контрагента: ${item.car_plate || item.car_vin || item.id}`,
       after: item,
     });
-    return c.json({ ok: true, item, items: listCounterpartyVehicles(c.req.param('id')) });
+    return c.json({ ok: true, item, items: await listCounterpartyVehicles(c.req.param('id')) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
 api.delete('/counterparties/:id/vehicles/:vehicleId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    deleteCounterpartyVehicle(c.req.param('id'), c.req.param('vehicleId'));
-    auditFromContext(c, {
+    await deleteCounterpartyVehicle(c.req.param('id'), c.req.param('vehicleId'));
+    await auditFromContext(c, {
       action: 'counterparty.vehicle_delete',
       entity: 'counterparty',
       entityId: c.req.param('id'),
       summary: `Удалено авто ${c.req.param('vehicleId')}`,
     });
-    return c.json({ ok: true, items: listCounterpartyVehicles(c.req.param('id')) });
+    return c.json({ ok: true, items: await listCounterpartyVehicles(c.req.param('id')) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
-api.get('/crm/deals/:id/garage', (c) => {
+api.get('/crm/deals/:id/garage', async (c) => {
   const dealId = c.req.param('id');
-  if (!getDeal(dealId)) return c.json({ error: 'Заказ покупателя не найден' }, 404);
-  return c.json(garageForDeal(dealId));
+  if (!await getDeal(dealId)) return c.json({ error: 'Заказ покупателя не найден' }, 404);
+  return c.json(await garageForDeal(dealId));
 });
 
 /** Удалить авто из гаража клиента (по заказу). */
 api.delete('/crm/deals/:id/garage/:vehicleId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = c.req.param('id');
   const vehicleId = String(c.req.param('vehicleId') || '').trim();
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return c.json({ error: 'Заказ покупателя не найден' }, 404);
   if (!vehicleId) return c.json({ error: 'Не указано авто' }, 400);
   try {
-    const garage = garageForDeal(dealId, { ensure: false });
+    const garage = await garageForDeal(dealId, { ensure: false });
     const cpId = String(garage.counterparty_id || '').trim();
     if (!cpId) return c.json({ error: 'Контрагент заказа не найден' }, 400);
     const gone = (garage.vehicles || []).find((v) => String(v.id) === vehicleId);
@@ -8167,9 +8167,9 @@ api.delete('/crm/deals/:id/garage/:vehicleId', async (c) => {
     const wasOnDeal =
       (dealVin && goneVin && dealVin === goneVin) ||
       (dealPlate && gonePlate && dealPlate === gonePlate);
-    deleteCounterpartyVehicle(cpId, vehicleId);
+    await deleteCounterpartyVehicle(cpId, vehicleId);
     if (wasOnDeal) {
-      setDealVehicle(dealId, {
+      await setDealVehicle(dealId, {
         car_plate: '',
         car_vin: '',
         car_brand: '',
@@ -8186,15 +8186,15 @@ api.delete('/crm/deals/:id/garage/:vehicleId', async (c) => {
         car_owner_house: '',
         car_owner_flat: '',
       });
-      syncDealVehicleOntoWorkorders(dealId);
+      await syncDealVehicleOntoWorkorders(dealId);
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.garage_vehicle_delete',
       entity: 'deal',
       entityId: dealId,
       summary: `Удалено авто гаража ${vehicleId}${wasOnDeal ? ' (снято с заказа)' : ''}`,
     });
-    return c.json({ ok: true, ...garageForDeal(dealId, { ensure: false }), cleared_deal: wasOnDeal });
+    return c.json({ ok: true, ...await garageForDeal(dealId, { ensure: false }), cleared_deal: wasOnDeal });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -8202,7 +8202,7 @@ api.delete('/crm/deals/:id/garage/:vehicleId', async (c) => {
 
 /** УПД (товары+услуги) + проведённая расходная (только товары → склад). */
 api.post('/sales-docs/upd-and-writeoff-from-deal', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав на документы' }, 403);
   }
@@ -8219,7 +8219,7 @@ api.post('/sales-docs/upd-and-writeoff-from-deal', async (c) => {
   const dealId = String(body.deal_id || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
   try {
-    const result = createUpdAndWriteOffFromDeal({
+    const result = await createUpdAndWriteOffFromDeal({
       dealId,
       vatRate: body.vat_rate,
       buyerName: body.buyer_name,
@@ -8230,7 +8230,7 @@ api.post('/sales-docs/upd-and-writeoff-from-deal', async (c) => {
       number: body.number,
       doc_date: body.doc_date,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sales_doc.create',
       entity: 'sales_doc',
       entityId: String(result.upd?.id || ''),
@@ -8243,7 +8243,7 @@ api.post('/sales-docs/upd-and-writeoff-from-deal', async (c) => {
       },
     });
     if (result.stock_doc_id) {
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'doc.create',
         entity: 'stock_doc',
         entityId: result.stock_doc_id,
@@ -8260,20 +8260,20 @@ api.post('/sync/docs', async (c) => {
   const body = await c.req.json().catch(() => ({})) as { kinds?: Array<'in' | 'out'> };
   const kinds = body.kinds?.length ? body.kinds : (['in', 'out'] as Array<'in' | 'out'>);
   try {
-    const result = await withCatalogSyncLock('docs', () => syncDocsFromOdata(kinds));
+    const result = await withCatalogSyncLock('docs', async () => await syncDocsFromOdata(kinds));
     let order_chain_odata = null as Awaited<ReturnType<typeof probeOrderChainOdata>> | null;
     try {
       order_chain_odata = await probeOrderChainOdata();
     } catch {
       order_chain_odata = null;
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sync.docs',
       entity: 'stock_doc',
       summary: `Документы 1С: приход ${result.inHeaders}/${result.inLines} стр., расход ${result.outHeaders}/${result.outLines} стр.`,
       after: { ...result, order_chain_odata },
     });
-    return c.json({ ok: true, ...result, order_chain_odata, meta: docsSyncMeta() });
+    return c.json({ ok: true, ...result, order_chain_odata, meta: await docsSyncMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'docs sync failed' }, 500);
   }
@@ -8312,7 +8312,7 @@ api.post('/sync/odata', async (c) => {
       }
       return { odata: { ...odata, organizations }, hs, hsError };
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sync.odata',
       entity: 'sync',
       summary: `OData: складов ${result.odata.warehouses}, категорий ${result.odata.categories}, товаров ${result.odata.products}, орг ${result.odata.organizations}`,
@@ -8323,8 +8323,8 @@ api.post('/sync/odata', async (c) => {
       ...result.odata,
       hs: result.hs,
       hsError: result.hsError,
-      counts: catalogCounts(),
-      hsMeta: hsSyncMeta(),
+      counts: await catalogCounts(),
+      hsMeta: await hsSyncMeta(),
     });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'sync failed' }, 500);
@@ -8336,14 +8336,14 @@ api.post('/sync/hs', async (c) => {
     return c.json({ error: 'HS не настроен (HS_BASE_URL / HS_USER / HS_PASS)' }, 500);
   }
   try {
-    const result = await withCatalogSyncLock('hs', () => syncApplicabilityAndProperties());
-    auditFromContext(c, {
+    const result = await withCatalogSyncLock('hs', async () => await syncApplicabilityAndProperties());
+    await auditFromContext(c, {
       action: 'sync.hs',
       entity: 'sync',
       summary: `HS полный: товаров ${result.productsUpserted}, цен ${result.prices}, остатков ${result.restRows}`,
       after: result,
     });
-    return c.json({ ok: true, ...result, hsMeta: hsSyncMeta(), dicts: dictMeta() });
+    return c.json({ ok: true, ...result, hsMeta: await hsSyncMeta(), dicts: await dictMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'hs sync failed' }, 500);
   }
@@ -8354,14 +8354,14 @@ api.post('/sync/prices', async (c) => {
     return c.json({ error: 'HS не настроен (HS_BASE_URL / HS_USER / HS_PASS)' }, 500);
   }
   try {
-    const result = await withCatalogSyncLock('prices', () => syncPricesOnly());
-    auditFromContext(c, {
+    const result = await withCatalogSyncLock('prices', async () => await syncPricesOnly());
+    await auditFromContext(c, {
       action: 'sync.prices',
       entity: 'price',
       summary: `Синк цен из 1С: ${result.prices} строк`,
       after: result,
     });
-    return c.json({ ok: true, ...result, hsMeta: hsSyncMeta(), dicts: dictMeta() });
+    return c.json({ ok: true, ...result, hsMeta: await hsSyncMeta(), dicts: await dictMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'prices sync failed' }, 500);
   }
@@ -8372,30 +8372,30 @@ api.post('/sync/rests', async (c) => {
     return c.json({ error: 'HS не настроен (HS_BASE_URL / HS_USER / HS_PASS)' }, 500);
   }
   try {
-    const result = await withCatalogSyncLock('rests', () => syncRestsOnly());
-    auditFromContext(c, {
+    const result = await withCatalogSyncLock('rests', async () => await syncRestsOnly());
+    await auditFromContext(c, {
       action: 'sync.rests',
       entity: 'stock',
       summary: `Синк остатков из 1С: ${result.restRows} строк`,
       after: result,
     });
-    return c.json({ ok: true, ...result, hsMeta: hsSyncMeta() });
+    return c.json({ ok: true, ...result, hsMeta: await hsSyncMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'rests sync failed' }, 500);
   }
 });
 
-api.get('/employees', (c) => c.json(all('SELECT * FROM employees ORDER BY name')));
+api.get('/employees', async (c) => c.json(await all('SELECT * FROM employees ORDER BY name')));
 
-api.get('/staff', (c) => {
-  const actor = actorFromContext(c);
+api.get('/staff', async (c) => {
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor) && !canAccessSection(actor, 'staff')) {
     return c.json({ error: 'Недостаточно прав: персонал' }, 403);
   }
   const q = (c.req.query('q') || '').trim().toLowerCase();
   const role = (c.req.query('role') || '').trim();
   const access = (c.req.query('access') || 'on').trim().toLowerCase(); // on | off | all
-  let rows = all<Record<string, unknown>>(`SELECT * FROM staff`);
+  let rows = await all<Record<string, unknown>>(`SELECT * FROM staff`);
   // Не тащим служебный мусор из 1С (wsuser / без роли и без логина)
   const isGhost = (r: Record<string, unknown>) => {
     const name = String(r.name || '').trim().toLowerCase();
@@ -8436,15 +8436,15 @@ api.get('/staff', (c) => {
       return hay.includes(q);
     });
   }
-  ensureCompaniesSchema();
+  await ensureCompaniesSchema();
   return c.json({
     items: rows.map(publicStaffRow),
-    meta: staffMeta(),
+    meta: await staffMeta(),
     roles: STAFF_ROLES,
     role_catalog: rolesCatalog(),
     sections: STAFF_SECTIONS,
-    departments: listDepartments(),
-    companies: listCompanies({ activeOnly: true }).map((c) => ({
+    departments: await listDepartments(),
+    companies: (await listCompanies({ activeOnly: true })).map((c) => ({
       id: c.id,
       name: c.name,
       code: c.code,
@@ -8452,8 +8452,8 @@ api.get('/staff', (c) => {
   });
 });
 
-api.get('/staff/roles', (c) => {
-  const actor = actorFromContext(c);
+api.get('/staff/roles', async (c) => {
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor) && !canAccessSection(actor, 'staff')) {
     return c.json({ error: 'Недостаточно прав: персонал' }, 403);
   }
@@ -8461,17 +8461,17 @@ api.get('/staff/roles', (c) => {
 });
 
 /** Матрица доступов: сотрудники × разделы. */
-api.get('/staff/access-matrix', (c) => {
-  const actor = actorFromContext(c);
+api.get('/staff/access-matrix', async (c) => {
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor) && !canAccessSection(actor, 'staff')) {
     return c.json({ error: 'Недостаточно прав: персонал' }, 403);
   }
-  return c.json(accessMatrixSnapshot());
+  return c.json(await accessMatrixSnapshot());
 });
 
 /** Галочка в матрице: открыть / закрыть раздел сотруднику. */
 api.patch('/staff/access-matrix', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor)) {
     return c.json({ error: 'Только администратор может менять матрицу доступов' }, 403);
   }
@@ -8486,8 +8486,8 @@ api.patch('/staff/access-matrix', async (c) => {
     return c.json({ error: 'Нужны staff_id и section' }, 400);
   }
   try {
-    const row = setStaffSectionAccess(staffId, section, body.allowed !== false);
-    auditFromContext(c, {
+    const row = await setStaffSectionAccess(staffId, section, body.allowed !== false);
+    await auditFromContext(c, {
       action: 'staff.access_matrix',
       entity: 'staff',
       entityId: staffId,
@@ -8500,29 +8500,29 @@ api.patch('/staff/access-matrix', async (c) => {
   }
 });
 
-api.get('/staff/departments', (c) => {
-  const actor = actorFromContext(c);
+api.get('/staff/departments', async (c) => {
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor) && !canAccessSection(actor, 'staff')) {
     return c.json({ error: 'Недостаточно прав: персонал' }, 403);
   }
   return c.json({
-    items: listDepartments(),
+    items: await listDepartments(),
     sections: STAFF_SECTIONS,
   });
 });
 
 api.post('/staff/departments', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor)) {
     return c.json({ error: 'Только администратор может менять отделы' }, 403);
   }
   const body = await c.req.json<{ name?: string; notes?: string }>();
   try {
-    const row = upsertDepartment(String(body.name || ''), {
+    const row = await upsertDepartment(String(body.name || ''), {
       overlay: emptyDeptOverlay(),
       notes: body.notes,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'staff.dept.create',
       entity: 'staff_department',
       entityId: row.name,
@@ -8536,7 +8536,7 @@ api.post('/staff/departments', async (c) => {
 });
 
 api.put('/staff/departments/:name', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor)) {
     return c.json({ error: 'Только администратор может менять права отделов' }, 403);
   }
@@ -8547,7 +8547,7 @@ api.put('/staff/departments/:name', async (c) => {
     rename?: string;
   }>();
   try {
-    const prevList = listDepartments();
+    const prevList = await listDepartments();
     const prev = prevList.find((d) => d.name === normDepartmentName(name));
     if (!prev && !normDepartmentName(name)) {
       return c.json({ error: 'Укажите отдел' }, 400);
@@ -8562,9 +8562,9 @@ api.put('/staff/departments/:name', async (c) => {
         ? parseDeptOverlay(JSON.stringify({ ...prev?.overlay, ...body.overlay }))
         : prev?.overlay || emptyDeptOverlay();
       const notes = body.notes !== undefined ? body.notes : prev?.notes || '';
-      upsertDepartment(renameTo, { overlay, notes });
-      run(`UPDATE staff SET department = ? WHERE trim(department) = ?`, [renameTo, baseName]);
-      deleteDepartmentConfig(baseName);
+      await upsertDepartment(renameTo, { overlay, notes });
+      await run(`UPDATE staff SET department = ? WHERE trim(department) = ?`, [renameTo, baseName]);
+      await deleteDepartmentConfig(baseName);
       target = renameTo;
     } else {
       const overlay = body.overlay
@@ -8582,14 +8582,14 @@ api.put('/staff/departments/:name', async (c) => {
         body.overlay !== undefined
           ? parseDeptOverlay(JSON.stringify(body.overlay))
           : overlay;
-      upsertDepartment(target, {
+      await upsertDepartment(target, {
         overlay: finalOverlay,
         notes: body.notes,
       });
     }
 
-    const after = listDepartments().find((d) => d.name === target)!;
-    auditFromContext(c, {
+    const after = (await listDepartments()).find((d) => d.name === target)!;
+    await auditFromContext(c, {
       action: 'staff.dept.update',
       entity: 'staff_department',
       entityId: target,
@@ -8603,26 +8603,26 @@ api.put('/staff/departments/:name', async (c) => {
   }
 });
 
-api.delete('/staff/departments/:name', (c) => {
-  const actor = actorFromContext(c);
+api.delete('/staff/departments/:name', async (c) => {
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor)) {
     return c.json({ error: 'Только администратор может удалять настройки отделов' }, 403);
   }
   const name = decodeURIComponent(c.req.param('name') || '');
-  const before = listDepartments().find((d) => d.name === normDepartmentName(name));
-  deleteDepartmentConfig(name);
-  auditFromContext(c, {
+  const before = (await listDepartments()).find((d) => d.name === normDepartmentName(name));
+  await deleteDepartmentConfig(name);
+  await auditFromContext(c, {
     action: 'staff.dept.delete',
     entity: 'staff_department',
     entityId: normDepartmentName(name),
     summary: `Сброшены права отдела: ${normDepartmentName(name)}`,
     before: before || null,
   });
-  return c.json({ ok: true, items: listDepartments() });
+  return c.json({ ok: true, items: await listDepartments() });
 });
 
 api.post('/staff', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor)) {
     return c.json({ error: 'Только администратор может добавлять сотрудников' }, 403);
   }
@@ -8637,7 +8637,7 @@ api.post('/staff', async (c) => {
     department?: string;
   }>();
   try {
-    const row = createStaffManual({
+    const row = await createStaffManual({
       name: String(body.name || ''),
       email: body.email,
       login: body.login,
@@ -8647,14 +8647,14 @@ api.post('/staff', async (c) => {
       department: body.department,
     });
     if (body.password) {
-      setStaffPassword(String(row.id), String(body.password));
+      await setStaffPassword(String(row.id), String(body.password));
       row.has_password = true;
       row.password_hash = undefined;
     }
     const after = publicStaffRow(
-      get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [String(row.id)])!
+      (await get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [String(row.id)]))!
     );
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'staff.create',
       entity: 'staff',
       entityId: String(after.id),
@@ -8667,32 +8667,32 @@ api.post('/staff', async (c) => {
   }
 });
 
-api.post('/staff/sync', (c) => {
-  const actor = actorFromContext(c);
+api.post('/staff/sync', async (c) => {
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor)) {
     return c.json({ error: 'Только администратор может синхронизировать персонал' }, 403);
   }
   try {
-    const result = syncStaffFromAmoAnd1c();
-    auditFromContext(c, {
+    const result = await syncStaffFromAmoAnd1c();
+    await auditFromContext(c, {
       action: 'staff.sync',
       entity: 'staff',
       summary: `Синк персонала: Amo ${result.amoUsers}, 1С ${result.hsEmployees}, записей ${result.upserted}`,
       after: result,
     });
-    return c.json({ ok: true, ...result, meta: staffMeta() });
+    return c.json({ ok: true, ...result, meta: await staffMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'staff sync failed' }, 500);
   }
 });
 
 api.patch('/staff/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (actor && !isAdminActor(actor)) {
     return c.json({ error: 'Только администратор может менять права' }, 403);
   }
   const id = c.req.param('id');
-  const row = get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [id]);
+  const row = await get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'Не найдено' }, 404);
   const body = await c.req.json<{
     role?: string;
@@ -8749,7 +8749,7 @@ api.patch('/staff/:id', async (c) => {
       rights.can_edit_docs = Boolean(body.rights.can_edit_docs);
     }
     if (body.rights.company_ids !== undefined) {
-      const allowedCos = new Set(listCompanies({ activeOnly: false }).map((c) => c.id));
+      const allowedCos = new Set((await listCompanies({ activeOnly: false })).map((c) => c.id));
       rights.company_ids = body.rights.company_ids
         .map((x) => String(x || '').trim())
         .filter((id) => allowedCos.has(id));
@@ -8780,19 +8780,19 @@ api.patch('/staff/:id', async (c) => {
   let department = String(row.department || '');
   if (body.department !== undefined) department = normDepartmentName(body.department);
 
-  run(
+  await run(
     `UPDATE staff SET role = ?, rights_json = ?, can_login = ?, is_active = ?, notes = ?, login = ?, name = ?, email = ?, department = ? WHERE id = ?`,
     [role, JSON.stringify(rights), canLogin, isActive, notes, login, name, email, department, id]
   );
 
   if (body.can_login === false || body.can_login === 0 || isActive === 0) {
-    destroySessionsForActor(id);
+    await destroySessionsForActor(id);
   }
 
   if (body.password) {
     try {
-      setStaffPassword(id, body.password);
-      auditFromContext(c, {
+      await setStaffPassword(id, body.password);
+      await auditFromContext(c, {
         action: 'auth.password_set',
         entity: 'staff',
         entityId: id,
@@ -8806,16 +8806,16 @@ api.patch('/staff/:id', async (c) => {
   if (body.pin !== undefined) {
     try {
       if (body.pin === null || String(body.pin).trim() === '') {
-        clearStaffPin(id);
-        auditFromContext(c, {
+        await clearStaffPin(id);
+        await auditFromContext(c, {
           action: 'auth.pin_clear',
           entity: 'staff',
           entityId: id,
           summary: `PIN смены сброшен: ${name}`,
         });
       } else {
-        setStaffPin(id, String(body.pin));
-        auditFromContext(c, {
+        await setStaffPin(id, String(body.pin));
+        await auditFromContext(c, {
           action: 'auth.pin_set',
           entity: 'staff',
           entityId: id,
@@ -8827,8 +8827,8 @@ api.patch('/staff/:id', async (c) => {
     }
   }
 
-  const after = publicStaffRow(get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [id])!);
-  auditFromContext(c, {
+  const after = publicStaffRow((await get<Record<string, unknown>>('SELECT * FROM staff WHERE id = ?', [id]))!);
+  await auditFromContext(c, {
     action: 'staff.update',
     entity: 'staff',
     entityId: id,
@@ -8839,59 +8839,59 @@ api.patch('/staff/:id', async (c) => {
   return c.json(after);
 });
 
-api.post('/sync/dicts', (c) => {
+api.post('/sync/dicts', async (c) => {
   try {
-    const result = rebuildDictionaries();
-    return c.json({ ok: true, ...result, dicts: dictMeta() });
+    const result = await rebuildDictionaries();
+    return c.json({ ok: true, ...result, dicts: await dictMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'dicts rebuild failed' }, 500);
   }
 });
 
-api.get('/dicts/properties', (c) => {
+api.get('/dicts/properties', async (c) => {
   const q = (c.req.query('q') || '').trim();
   if (q) {
     const like = `%${q}%`;
     return c.json(
-      all(
+      await all(
         `SELECT * FROM dict_properties WHERE name LIKE ? ORDER BY name`,
         [like]
       )
     );
   }
-  return c.json(all('SELECT * FROM dict_properties ORDER BY name'));
+  return c.json(await all('SELECT * FROM dict_properties ORDER BY name'));
 });
 
-api.get('/dicts/properties/:id/values', (c) => {
+api.get('/dicts/properties/:id/values', async (c) => {
   const id = c.req.param('id');
   return c.json(
-    all(
+    await all(
       `SELECT * FROM dict_property_values WHERE property_id = ? ORDER BY value`,
       [id]
     )
   );
 });
 
-api.get('/dicts/marks', (c) => {
+api.get('/dicts/marks', async (c) => {
   const q = (c.req.query('q') || '').trim();
   if (q) {
     return c.json(
-      all(`SELECT * FROM dict_marks WHERE name LIKE ? ORDER BY name`, [`%${q}%`])
+      await all(`SELECT * FROM dict_marks WHERE name LIKE ? ORDER BY name`, [`%${q}%`])
     );
   }
-  return c.json(all('SELECT * FROM dict_marks ORDER BY name'));
+  return c.json(await all('SELECT * FROM dict_marks ORDER BY name'));
 });
 
-api.get('/dicts/marks/:id/models', (c) => {
+api.get('/dicts/marks/:id/models', async (c) => {
   const id = c.req.param('id');
   return c.json(
-    all(`SELECT * FROM dict_models WHERE mark_id = ? ORDER BY name`, [id])
+    await all(`SELECT * FROM dict_models WHERE mark_id = ? ORDER BY name`, [id])
   );
 });
 
 /** Марки и комбинации применимости (для быстрого создания товара). */
-api.get('/dicts/applicability/combos', (c) => {
-  const appCombos = all<{
+api.get('/dicts/applicability/combos', async (c) => {
+  const appCombos = await all<{
     mark: string;
     model: string;
     generation: string;
@@ -8914,7 +8914,7 @@ api.get('/dicts/applicability/combos', (c) => {
 });
 
 /** Поколения из применимости (каскад после марки/модели). */
-api.get('/dicts/applicability/generations', (c) => {
+api.get('/dicts/applicability/generations', async (c) => {
   const mark = (c.req.query('mark') || '').trim();
   const model = (c.req.query('model') || '').trim();
   if (!mark) return c.json([]);
@@ -8925,7 +8925,7 @@ api.get('/dicts/applicability/generations', (c) => {
     params.push(model, model);
   }
   return c.json(
-    all<{ name: string; products_count: number }>(
+    await all<{ name: string; products_count: number }>(
       `SELECT generation AS name, COUNT(DISTINCT product_id) AS products_count
        FROM product_applicability
        WHERE ${where.join(' AND ')}
@@ -8936,39 +8936,39 @@ api.get('/dicts/applicability/generations', (c) => {
   );
 });
 
-api.get('/dicts/brands', (c) => {
+api.get('/dicts/brands', async (c) => {
   const q = (c.req.query('q') || '').trim();
   if (q) {
     return c.json(
-      all(`SELECT * FROM dict_brands WHERE name LIKE ? ORDER BY name`, [`%${q}%`])
+      await all(`SELECT * FROM dict_brands WHERE name LIKE ? ORDER BY name`, [`%${q}%`])
     );
   }
-  return c.json(all('SELECT * FROM dict_brands ORDER BY name'));
+  return c.json(await all('SELECT * FROM dict_brands ORDER BY name'));
 });
 
-api.get('/dicts/generations', (c) =>
-  c.json(all('SELECT * FROM dict_generations ORDER BY name'))
+api.get('/dicts/generations', async (c) =>
+  c.json(await all('SELECT * FROM dict_generations ORDER BY name'))
 );
 
-api.get('/dicts/price-types', (c) => {
+api.get('/dicts/price-types', async (c) => {
   const q = (c.req.query('q') || '').trim();
   if (q) {
     return c.json(
-      all(`SELECT * FROM dict_price_types WHERE name LIKE ? ORDER BY name`, [`%${q}%`])
+      await all(`SELECT * FROM dict_price_types WHERE name LIKE ? ORDER BY name`, [`%${q}%`])
     );
   }
-  return c.json(all('SELECT * FROM dict_price_types ORDER BY name'));
+  return c.json(await all('SELECT * FROM dict_price_types ORDER BY name'));
 });
 
 api.post('/dicts/price-types', async (c) => {
   const body = await c.req.json<{ name?: string }>();
   const name = (body.name || '').trim();
   if (!name) return c.json({ error: 'name required' }, 400);
-  const exists = get('SELECT id FROM dict_price_types WHERE name = ?', [name]);
+  const exists = await get('SELECT id FROM dict_price_types WHERE name = ?', [name]);
   if (exists) return c.json({ error: 'Такой тип цены уже есть' }, 409);
   const id = newGuid();
-  run('INSERT INTO dict_price_types (id, name, products_count) VALUES (?, ?, 0)', [id, name]);
-  auditFromContext(c, {
+  await run('INSERT INTO dict_price_types (id, name, products_count) VALUES (?, ?, 0)', [id, name]);
+  await auditFromContext(c, {
     action: 'price_type.create',
     entity: 'price_type',
     entityId: id,
@@ -8979,34 +8979,34 @@ api.post('/dicts/price-types', async (c) => {
 
 api.patch('/dicts/price-types/:id', async (c) => {
   const id = c.req.param('id');
-  const row = get<{ id: string; name: string }>('SELECT * FROM dict_price_types WHERE id = ?', [id]);
+  const row = await get<{ id: string; name: string }>('SELECT * FROM dict_price_types WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
   const body = await c.req.json<{ name?: string }>();
   const name = (body.name || '').trim();
   if (!name) return c.json({ error: 'name required' }, 400);
   if (name === row.name) return c.json(row);
-  const clash = get('SELECT id FROM dict_price_types WHERE name = ? AND id != ?', [name, id]);
+  const clash = await get('SELECT id FROM dict_price_types WHERE name = ? AND id != ?', [name, id]);
   if (clash) return c.json({ error: 'Такой тип цены уже есть' }, 409);
-  run('BEGIN');
+  await run('BEGIN');
   try {
-    run('UPDATE product_prices SET price_type = ? WHERE price_type = ?', [name, row.name]);
-    run('UPDATE dict_price_types SET name = ? WHERE id = ?', [name, id]);
+    await run('UPDATE product_prices SET price_type = ? WHERE price_type = ?', [name, row.name]);
+    await run('UPDATE dict_price_types SET name = ? WHERE id = ?', [name, id]);
     const count =
-      get<{ c: number }>(
+      (await get<{ c: number }>(
         'SELECT COUNT(DISTINCT product_id) AS c FROM product_prices WHERE price_type = ?',
         [name]
-      )?.c ?? 0;
-    run('UPDATE dict_price_types SET products_count = ? WHERE id = ?', [count, id]);
-    run('COMMIT');
+      ))?.c ?? 0;
+    await run('UPDATE dict_price_types SET products_count = ? WHERE id = ?', [count, id]);
+    await run('COMMIT');
   } catch (e) {
     try {
-      run('ROLLBACK');
+      await run('ROLLBACK');
     } catch {
       /* ignore */
     }
     throw e;
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'price_type.rename',
     entity: 'price_type',
     entityId: id,
@@ -9014,19 +9014,19 @@ api.patch('/dicts/price-types/:id', async (c) => {
     before: { name: row.name },
     after: { name },
   });
-  return c.json(get('SELECT * FROM dict_price_types WHERE id = ?', [id]));
+  return c.json(await get('SELECT * FROM dict_price_types WHERE id = ?', [id]));
 });
 
 api.delete('/dicts/price-types/:id', async (c) => {
   const id = c.req.param('id');
-  const row = get<{ id: string; name: string }>('SELECT * FROM dict_price_types WHERE id = ?', [id]);
+  const row = await get<{ id: string; name: string }>('SELECT * FROM dict_price_types WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  const links = priceTypeLinkInfo(row.name);
+  const links = await priceTypeLinkInfo(row.name);
   if (links.linked) {
     return c.json({ error: LINKED_DELETE_MSG, has_links: true, link_counts: links.counts }, 409);
   }
-  run('DELETE FROM dict_price_types WHERE id = ?', [id]);
-  auditFromContext(c, {
+  await run('DELETE FROM dict_price_types WHERE id = ?', [id]);
+  await auditFromContext(c, {
     action: 'price_type.delete',
     entity: 'price_type',
     entityId: id,
@@ -9036,10 +9036,10 @@ api.delete('/dicts/price-types/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-api.get('/dicts/meta', (c) => c.json(dictMeta()));
+api.get('/dicts/meta', async (c) => c.json(await dictMeta()));
 
 api.post('/sync/media', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_sync')) {
     return c.json({ error: 'Недостаточно прав: синхронизация 1С' }, 403);
   }
@@ -9059,7 +9059,7 @@ api.post('/sync/media', async (c) => {
       replace: !!body.replace,
       productIds: body.product_id ? [body.product_id] : undefined,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'media.sync',
       entity: body.product_id ? 'product' : 'media',
       entityId: body.product_id ? String(body.product_id) : '',
@@ -9068,14 +9068,14 @@ api.post('/sync/media', async (c) => {
         : `Синк фото: загружено ${result.uploaded || 0}, пусто ${result.empty || 0}`,
       after: result,
     });
-    return c.json({ ok: true, ...result, media: mediaSyncMeta() });
+    return c.json({ ok: true, ...result, media: await mediaSyncMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'media sync failed' }, 500);
   }
 });
 
 api.post('/sync/media-orient', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_sync')) {
     return c.json({ error: 'Недостаточно прав: синхронизация 1С' }, 403);
   }
@@ -9088,35 +9088,35 @@ api.post('/sync/media-orient', async (c) => {
       limit: body.limit ?? 300,
       productId: body.product_id,
     });
-    return c.json({ ok: true, ...result, media: mediaSyncMeta() });
+    return c.json({ ok: true, ...result, media: await mediaSyncMeta() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'orient backfill failed' }, 500);
   }
 });
 
-api.get('/sync/odata/status', (c) =>
-  c.json({ ...catalogCounts(), hs: hsSyncMeta(), media: mediaSyncMeta() })
+api.get('/sync/odata/status', async (c) =>
+  c.json({ ...await catalogCounts(), hs: await hsSyncMeta(), media: await mediaSyncMeta() })
 );
 
 /* ——— фото / медиа покрытие ——— */
-api.get('/media/coverage', (c) => {
+api.get('/media/coverage', async (c) => {
   const companyIdRaw = (c.req.query('company_id') || '').trim();
-  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  const companyParsed = await parseRequestedCompanyId(companyIdRaw);
   if (!companyParsed.ok) {
     return c.json({ error: companyParsed.error }, 400);
   }
   const companyId = companyParsed.id;
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
   const deptCompanyId =
     coFilter.mode === 'one' ? coFilter.id : companyId || '';
   return c.json(
-    mediaCoverageByCategory({
-      source_departments: sourceDepartmentsForCompany(deptCompanyId),
+    await mediaCoverageByCategory({
+      source_departments: await sourceDepartmentsForCompany(deptCompanyId),
     })
   );
 });
 
-api.get('/media/products', (c) => {
+api.get('/media/products', async (c) => {
   const statusRaw = (c.req.query('status') || 'all').trim();
   const status =
     statusRaw === 'with' ||
@@ -9125,16 +9125,16 @@ api.get('/media/products', (c) => {
       ? statusRaw
       : 'all';
   const companyIdRaw = (c.req.query('company_id') || '').trim();
-  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  const companyParsed = await parseRequestedCompanyId(companyIdRaw);
   if (!companyParsed.ok) {
     return c.json({ error: companyParsed.error }, 400);
   }
   const companyId = companyParsed.id;
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
   const deptCompanyId =
     coFilter.mode === 'one' ? coFilter.id : companyId || '';
   return c.json(
-    listMediaProducts({
+    await listMediaProducts({
       q: (c.req.query('q') || '').trim() || undefined,
       category_id: (c.req.query('category_id') || '').trim() || undefined,
       status,
@@ -9142,19 +9142,19 @@ api.get('/media/products', (c) => {
       limit: Number(c.req.query('limit') || 50) || 50,
       sort: (c.req.query('sort') || '').trim() || undefined,
       dir: (c.req.query('dir') || '').trim() || undefined,
-      source_departments: sourceDepartmentsForCompany(deptCompanyId),
+      source_departments: await sourceDepartmentsForCompany(deptCompanyId),
     })
   );
 });
 
 /** Очередь фотографа: остаток > 0 и нет фото. */
-api.get('/media/photo-queue', (c) => {
-  const actor = actorFromContext(c);
+api.get('/media/photo-queue', async (c) => {
+  const actor = await actorFromContext(c);
   if (!canAccessPhotoScreen(actor)) {
     return c.json({ error: 'Недостаточно прав: экран фотографа' }, 403);
   }
   const companyIdRaw = (c.req.query('company_id') || '').trim();
-  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  const companyParsed = await parseRequestedCompanyId(companyIdRaw);
   if (!companyParsed.ok) {
     return c.json({ error: companyParsed.error }, 400);
   }
@@ -9163,18 +9163,18 @@ api.get('/media/photo-queue', (c) => {
   const deptCompanyId =
     coFilter.mode === 'one' ? coFilter.id : companyId || '';
   return c.json(
-    listPhotographerQueue({
+    await listPhotographerQueue({
       q: (c.req.query('q') || '').trim() || undefined,
       warehouse_id: (c.req.query('warehouse_id') || '').trim() || undefined,
       category_id: (c.req.query('category_id') || '').trim() || undefined,
       offset: Number(c.req.query('offset') || 0) || 0,
       limit: Number(c.req.query('limit') || 1) || 1,
-      source_departments: sourceDepartmentsForCompany(deptCompanyId),
+      source_departments: await sourceDepartmentsForCompany(deptCompanyId),
     })
   );
 });
 
-function canUploadProductPhoto(actor: ReturnType<typeof actorFromContext>): boolean {
+function canUploadProductPhoto(actor: Awaited<ReturnType<typeof actorFromContext>>): boolean {
   if (!actor) return true;
   if (canDo(actor, 'can_edit_products')) return true;
   if (canAccessPhotoBySection(actor) || canAccessSection(actor, 'media')) return true;
@@ -9186,7 +9186,7 @@ function canUploadProductPhoto(actor: ReturnType<typeof actorFromContext>): bool
 
 /** Ручная загрузка фото (камера / файл / пачка) → S3. */
 api.post('/media/products/:id/photo', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canUploadProductPhoto(actor)) {
     return c.json({ error: 'Недостаточно прав: загрузка фото' }, 403);
   }
@@ -9234,7 +9234,7 @@ api.post('/media/products/:id/photo', async (c) => {
   }
 
   try {
-    assertPhotoShiftForUpload(actor);
+    await assertPhotoShiftForUpload(actor);
     const items = [];
     let uploaded = 0;
     let skipped = 0;
@@ -9244,7 +9244,7 @@ api.post('/media/products/:id/photo', async (c) => {
       if (result.new_file) uploaded += 1;
       else skipped += 1;
       if (actor && result.new_file) {
-        recordPhotoShiftUpload(actor.id, { newFile: true });
+        await recordPhotoShiftUpload(actor.id, { newFile: true });
       }
     }
     const last = items[items.length - 1];
@@ -9256,7 +9256,7 @@ api.post('/media/products/:id/photo', async (c) => {
         : uploaded === 1 && buffers.length === 1
           ? `Добавлено фото (${Math.round((last?.size || 0) / 1024)} КБ)`
           : `Добавлено фото: ${uploaded} шт.${skipped ? `, уже были ${skipped}` : ''}`;
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'media.upload',
       entity: 'product',
       entityId: id,
@@ -9270,7 +9270,7 @@ api.post('/media/products/:id/photo', async (c) => {
       uploaded,
       skipped,
       count: items.length,
-      shift: actor ? photoShiftStatusPayload(actor).shift : null,
+      shift: actor ? (await photoShiftStatusPayload(actor)).shift : null,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'upload failed';
@@ -9283,16 +9283,16 @@ api.post('/media/products/:id/photo', async (c) => {
 
 /** Ссылка на видео к товару. */
 api.post('/media/products/:id/video-link', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canUploadProductPhoto(actor)) {
     return c.json({ error: 'Недостаточно прав: загрузка медиа' }, 403);
   }
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => ({})) as { url?: string; title?: string };
   try {
-    assertPhotoShiftForUpload(actor);
-    const result = addProductVideoLink(id, String(body.url || ''), String(body.title || ''));
-    auditFromContext(c, {
+    await assertPhotoShiftForUpload(actor);
+    const result = await addProductVideoLink(id, String(body.url || ''), String(body.title || ''));
+    await auditFromContext(c, {
       action: 'media.video_link',
       entity: 'product',
       entityId: id,
@@ -9307,16 +9307,16 @@ api.post('/media/products/:id/video-link', async (c) => {
 });
 
 api.delete('/media/products/:id/media/:mediaId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canUploadProductPhoto(actor)) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const id = c.req.param('id');
   const mediaId = c.req.param('mediaId');
-  const batch = deleteProductMediaBatch(id, [mediaId]);
+  const batch = await deleteProductMediaBatch(id, [mediaId]);
   if (!batch.deleted) return c.json({ error: 'not found' }, 404);
   const kind = Object.keys(batch.kinds)[0] || 'image';
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'media.delete',
     entity: 'product',
     entityId: id,
@@ -9328,7 +9328,7 @@ api.delete('/media/products/:id/media/:mediaId', async (c) => {
 
 /** Удаление пачки фото/видео с карточки товара. */
 api.post('/media/products/:id/photos/delete', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canUploadProductPhoto(actor)) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -9340,7 +9340,7 @@ api.post('/media/products/:id/photos/delete', async (c) => {
       ? body.media_ids
       : [];
   if (!ids.length) return c.json({ error: 'Укажите ids фото для удаления' }, 400);
-  const batch = deleteProductMediaBatch(id, ids.map(String));
+  const batch = await deleteProductMediaBatch(id, ids.map(String));
   if (!batch.deleted) return c.json({ error: 'Ничего не удалено' }, 404);
   const imgN = batch.kinds.image || 0;
   const vidN = batch.kinds.video || 0;
@@ -9348,7 +9348,7 @@ api.post('/media/products/:id/photos/delete', async (c) => {
     imgN ? `фото ${imgN}` : '',
     vidN ? `видео ${vidN}` : '',
   ].filter(Boolean);
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'media.delete',
     entity: 'product',
     entityId: id,
@@ -9365,7 +9365,7 @@ api.post('/media/products/:id/photos/delete', async (c) => {
 
 /** Порядок фото: первое в списке = титульное (превью в списках). */
 api.post('/media/products/:id/photos/reorder', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canUploadProductPhoto(actor)) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -9377,8 +9377,8 @@ api.post('/media/products/:id/photos/reorder', async (c) => {
       ? body.media_ids
       : [];
   try {
-    const result = reorderProductMediaImages(id, ids.map(String));
-    auditFromContext(c, {
+    const result = await reorderProductMediaImages(id, ids.map(String));
+    await auditFromContext(c, {
       action: 'media.reorder',
       entity: 'product',
       entityId: id,
@@ -9393,46 +9393,46 @@ api.post('/media/products/:id/photos/reorder', async (c) => {
 });
 
 /** Статус смены фотографа. */
-api.get('/media/photo/shift', (c) => {
-  const actor = actorFromContext(c);
+api.get('/media/photo/shift', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canAccessPhotoScreen(actor)) {
     return c.json({ error: 'Недостаточно прав: экран фотографа' }, 403);
   }
-  return c.json(photoShiftStatusPayload(actor));
+  return c.json(await photoShiftStatusPayload(actor));
 });
 
 api.post('/media/photo/shift/start', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canAccessPhotoScreen(actor)) {
     return c.json({ error: 'Недостаточно прав: экран фотографа' }, 403);
   }
   try {
-    const shift = startPhotoShift(actor);
-    auditFromContext(c, {
+    const shift = await startPhotoShift(actor);
+    await auditFromContext(c, {
       action: 'photo_shift.start',
       entity: 'photo_shift',
       entityId: shift.id,
       summary: `Смена фотографа начата: ${actor.name}`,
       after: shift,
     });
-    return c.json({ ok: true, ...photoShiftStatusPayload(actor) });
+    return c.json({ ok: true, ...await photoShiftStatusPayload(actor) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'start failed' }, 400);
   }
 });
 
 api.post('/media/photo/shift/end', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canAccessPhotoScreen(actor)) {
     return c.json({ error: 'Недостаточно прав: экран фотографа' }, 403);
   }
   try {
-    const ended = endPhotoShift(actor);
+    const ended = await endPhotoShift(actor);
     if (ended) {
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'photo_shift.end',
         entity: 'photo_shift',
         entityId: ended.id,
@@ -9440,15 +9440,15 @@ api.post('/media/photo/shift/end', async (c) => {
         after: ended,
       });
     }
-    return c.json({ ok: true, ended, ...photoShiftStatusPayload(actor) });
+    return c.json({ ok: true, ended, ...await photoShiftStatusPayload(actor) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'end failed' }, 400);
   }
 });
 
 /** Отчёт по сменам фотографа: по сотруднику и дню. */
-api.get('/media/photo/report', (c) => {
-  const actor = actorFromContext(c);
+api.get('/media/photo/report', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canManagePhotoReport(actor)) {
     return c.json({ error: 'Недостаточно прав: отчёт фотографа' }, 403);
@@ -9462,7 +9462,7 @@ api.get('/media/photo/report', (c) => {
     staffId = actor.id;
   }
   return c.json(
-    photoShiftsReport({
+    await photoShiftsReport({
       from: (c.req.query('from') || '').trim() || undefined,
       to: (c.req.query('to') || '').trim() || undefined,
       staff_id: staffId,
@@ -9471,8 +9471,8 @@ api.get('/media/photo/report', (c) => {
   );
 });
 
-api.get('/media/photo/shifts', (c) => {
-  const actor = actorFromContext(c);
+api.get('/media/photo/shifts', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'staff') && actor.role !== 'photographer') {
     return c.json({ error: 'Недостаточно прав' }, 403);
@@ -9482,7 +9482,7 @@ api.get('/media/photo/shifts', (c) => {
     staffId = actor.id;
   }
   return c.json({
-    items: listPhotoShifts({
+    items: await listPhotoShifts({
       day: (c.req.query('day') || '').trim() || undefined,
       staff_id: staffId,
       limit: Number(c.req.query('limit') || 100),
@@ -9491,9 +9491,9 @@ api.get('/media/photo/shifts', (c) => {
 });
 
 /* ——— catalogs ——— */
-api.get('/categories', (c) => {
+api.get('/categories', async (c) => {
   const wantAll = c.req.query('all') === '1' || c.req.query('all') === 'true';
-  const rows = all<{
+  const rows = await all<{
     id: string;
     name: string;
     parent_id: string | null;
@@ -9526,26 +9526,26 @@ api.get('/categories', (c) => {
   return c.json(deduped);
 });
 
-api.get('/categories/tree', (c) => {
+api.get('/categories/tree', async (c) => {
   const isMainQ = (c.req.query('is_main') || '').trim();
   const itemKind = (c.req.query('item_kind') || '').trim().toLowerCase();
   const companyIdRaw = (c.req.query('company_id') || '').trim();
-  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  const companyParsed = await parseRequestedCompanyId(companyIdRaw);
   if (!companyParsed.ok) {
     return c.json({ error: companyParsed.error }, 400);
   }
   const companyId = companyParsed.id;
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
   const deptCompanyId =
     coFilter.mode === 'one' ? coFilter.id : companyId || '';
   return c.json(
-    buildCategoryTree({
+    await buildCategoryTree({
       is_main: isMainQ === '0' || isMainQ === '1' ? (isMainQ as '0' | '1') : undefined,
       item_kind:
         itemKind === 'product' || itemKind === 'service'
           ? (itemKind as 'product' | 'service')
           : undefined,
-      source_departments: sourceDepartmentsForCompany(deptCompanyId),
+      source_departments: await sourceDepartmentsForCompany(deptCompanyId),
     })
   );
 });
@@ -9554,7 +9554,7 @@ api.post('/categories', async (c) => {
   const body = await c.req.json<{ name: string; parent_id?: string }>();
   if (!body.name?.trim()) return c.json({ error: 'name required' }, 400);
   const id = newGuid();
-  run('INSERT INTO categories (id, name, parent_id) VALUES (?, ?, ?)', [
+  await run('INSERT INTO categories (id, name, parent_id) VALUES (?, ?, ?)', [
     id,
     body.name.trim(),
     body.parent_id ?? null,
@@ -9562,20 +9562,20 @@ api.post('/categories', async (c) => {
   return c.json({ id }, 201);
 });
 
-api.delete('/categories/:id', (c) => {
+api.delete('/categories/:id', async (c) => {
   const id = c.req.param('id');
-  const row = get('SELECT * FROM categories WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM categories WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  const links = categoryLinkInfo(id);
+  const links = await categoryLinkInfo(id);
   if (links.linked) {
     return c.json({ error: LINKED_DELETE_MSG, has_links: true, link_counts: links.counts }, 409);
   }
   try {
-    hardDeleteCategory(id);
+    await hardDeleteCategory(id);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 409);
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'category.delete',
     entity: 'category',
     entityId: id,
@@ -9585,11 +9585,11 @@ api.delete('/categories/:id', (c) => {
   return c.json({ ok: true });
 });
 
-api.get('/units', (c) => c.json(all('SELECT * FROM units ORDER BY name')));
+api.get('/units', async (c) => c.json(await all('SELECT * FROM units ORDER BY name')));
 api.post('/units', async (c) => {
   const body = await c.req.json<{ name: string; short_name: string }>();
   const id = newGuid();
-  run('INSERT INTO units (id, name, short_name) VALUES (?, ?, ?)', [
+  await run('INSERT INTO units (id, name, short_name) VALUES (?, ?, ?)', [
     id,
     body.name.trim(),
     body.short_name.trim(),
@@ -9597,8 +9597,8 @@ api.post('/units', async (c) => {
   return c.json({ id }, 201);
 });
 
-api.get('/warehouses', (c) => {
-  ensureCompaniesSchema();
+api.get('/warehouses', async (c) => {
+  await ensureCompaniesSchema();
   const archived = (c.req.query('archived') || '0').trim();
   const companyId = (c.req.query('company_id') || '').trim();
   const withTotals =
@@ -9606,7 +9606,7 @@ api.get('/warehouses', (c) => {
     (c.req.query('totals') || '').trim().toLowerCase() === 'true';
   const params: string[] = [];
   let where = '1=1';
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
   if (coFilter.mode === 'none') {
     return c.json([]);
   }
@@ -9619,15 +9619,15 @@ api.get('/warehouses', (c) => {
   }
   if (archived === '1') where += ' AND is_active = 0';
   else if (archived !== 'all') where += ' AND is_active = 1';
-  let rows: Array<Record<string, unknown>> = all(
+  let rows: Array<Record<string, unknown>> = await all(
     `SELECT * FROM warehouses WHERE ${where} ORDER BY is_active DESC, name`,
     params
   );
   let hsPodveskaIds = new Set<string>();
   try {
-    const raw = get<{ value: string }>(
+    const raw = (await get<{ value: string }>(
       `SELECT value FROM meta WHERE key = 'hs_podveska_store_ids'`
-    )?.value;
+    ))?.value;
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
     if (Array.isArray(parsed)) {
       hsPodveskaIds = new Set(
@@ -9637,9 +9637,9 @@ api.get('/warehouses', (c) => {
   } catch {
     hsPodveskaIds = new Set();
   }
-  rows = rows.map((w) => {
+  rows = await Promise.all(rows.map(async (w) => {
     const id = String(w.id);
-    const links = warehouseLinkInfo(id);
+    const links = await warehouseLinkInfo(id);
     return {
       ...w,
       has_links: links.linked,
@@ -9648,7 +9648,7 @@ api.get('/warehouses', (c) => {
       from_1c_podveska: hsPodveskaIds.has(id),
       hs_source: hsPodveskaIds.has(id) ? 'pnevmopodveska_2025' : '',
     };
-  });
+  }));
   // Склады из 1С Подвески — выше в списке
   rows.sort((a, b) => {
     const aa = a.from_1c_podveska ? 0 : 1;
@@ -9658,7 +9658,7 @@ api.get('/warehouses', (c) => {
   });
   if (!withTotals) return c.json(rows);
 
-  const totals = warehouseStockMoneyTotals();
+  const totals = await warehouseStockMoneyTotals();
   const byId = new Map(totals.map((t) => [t.warehouse_id, t]));
   return c.json(
     rows.map((w) => {
@@ -9681,23 +9681,23 @@ api.get('/warehouses', (c) => {
  * СТО: позиции/кол-во только по сделкам (без «сирот»).
  * Отложено под СТО: deals_count = 0 (не склад сделок).
  * Резерв СТО (STO-RSV): сделки + черновики; склад всегда в списке (даже без FIFO-оценки). */
-api.get('/warehouses/stock-totals', (c) => {
-  const dealsByWh = openDealsCountByWarehouse();
+api.get('/warehouses/stock-totals', async (c) => {
+  const dealsByWh = await openDealsCountByWarehouse();
   const stoId = String(
-    get<{ id: string }>(`SELECT id FROM warehouses WHERE code = 'STO' LIMIT 1`)?.id || ''
+    (await get<{ id: string }>(`SELECT id FROM warehouses WHERE code = 'STO' LIMIT 1`))?.id || ''
   );
-  const stoLinked = stoId ? dealLinkedStockOnWarehouse(stoId) : null;
-  const rsvRows = all<{ id: string; name: string }>(
+  const stoLinked = stoId ? await dealLinkedStockOnWarehouse(stoId) : null;
+  const rsvRows = await all<{ id: string; name: string }>(
     `SELECT id, IFNULL(name,'') AS name FROM warehouses WHERE UPPER(IFNULL(code,'')) LIKE 'STO-RSV-%'`
   );
   const rsvIds = new Set(rsvRows.map((r) => String(r.id)));
   const byId = new Map(
-    warehouseStockMoneyTotals().map((t) => [String(t.warehouse_id), { ...t }])
+    (await warehouseStockMoneyTotals()).map((t) => [String(t.warehouse_id), { ...t }])
   );
   for (const r of rsvRows) {
     const wid = String(r.id);
     if (byId.has(wid)) continue;
-    const bal = get<{ lines: number; qty: number }>(
+    const bal = await get<{ lines: number; qty: number }>(
       `SELECT COUNT(*) AS lines, IFNULL(SUM(qty),0) AS qty
        FROM stock_balances WHERE warehouse_id = ? AND qty > 0`,
       [wid]
@@ -9716,7 +9716,7 @@ api.get('/warehouses/stock-totals', (c) => {
   return c.json({
     method: 'fifo_inbound',
     currency: 'RUB',
-    items: [...byId.values()].map((t) => {
+    items: await Promise.all([...byId.values()].map(async (t) => {
       const wid = String(t.warehouse_id);
       let deals_count = dealsByWh.get(wid) || 0;
       if (stoId && wid === stoId && stoLinked) {
@@ -9731,9 +9731,9 @@ api.get('/warehouses/stock-totals', (c) => {
         };
       }
       if (rsvIds.has(wid)) {
-        const pending = pendingHandoffInboundSummary(wid);
-        const linked = dealLinkedStockOnWarehouse(wid);
-        const bal = get<{ lines: number; qty: number }>(
+        const pending = await pendingHandoffInboundSummary(wid);
+        const linked = await dealLinkedStockOnWarehouse(wid);
+        const bal = await get<{ lines: number; qty: number }>(
           `SELECT COUNT(*) AS lines, IFNULL(SUM(qty),0) AS qty
            FROM stock_balances WHERE warehouse_id = ? AND qty > 0`,
           [wid]
@@ -9744,7 +9744,7 @@ api.get('/warehouses/stock-totals', (c) => {
           ...t,
           lines,
           qty,
-          deals_count: countStoDealReserveDeals(wid),
+          deals_count: await countStoDealReserveDeals(wid),
           pending_inbound: pending,
           deal_linked_only: true,
         };
@@ -9753,22 +9753,22 @@ api.get('/warehouses/stock-totals', (c) => {
         ...t,
         deals_count,
       };
-    }),
+    })),
   });
 });
 
 api.post('/warehouses', async (c) => {
-  ensureCompaniesSchema();
-  const actor = actorFromContext(c);
+  await ensureCompaniesSchema();
+  const actor = await actorFromContext(c);
   const body = await c.req.json<{ name: string; code?: string; company_id?: string }>();
   if (!body.name?.trim()) return c.json({ error: 'name required' }, 400);
   const id = newGuid();
   // Код как в 1С: авто WH-000001 (ручной код — только если явно передали)
-  const code = (body.code || '').trim() || nextCode('WH');
-  const companyId = resolveCompanyId(body.company_id);
+  const code = (body.code || '').trim() || await nextCode('WH');
+  const companyId = await resolveCompanyId(body.company_id);
   const createdBy = actor?.id || '';
   try {
-    run(
+    await run(
       `INSERT INTO warehouses (id, name, code, is_active, company_id, created_at, created_by, updated_at)
        VALUES (?, ?, ?, 1, ?, datetime('now'), ?, datetime('now'))`,
       [id, body.name.trim(), code, companyId, createdBy]
@@ -9776,8 +9776,8 @@ api.post('/warehouses', async (c) => {
   } catch {
     return c.json({ error: 'Код склада уже существует' }, 409);
   }
-  const created = get(`SELECT * FROM warehouses WHERE id = ?`, [id]);
-  auditFromContext(c, {
+  const created = await get(`SELECT * FROM warehouses WHERE id = ?`, [id]);
+  await auditFromContext(c, {
     action: 'warehouse.create',
     entity: 'warehouse',
     entityId: id,
@@ -9787,9 +9787,9 @@ api.post('/warehouses', async (c) => {
   return c.json(created, 201);
 });
 
-function warehouseDetail(id: string) {
-  ensureCompaniesSchema();
-  const row = get(
+async function warehouseDetail(id: string) {
+  await ensureCompaniesSchema();
+  const row = await get(
     `SELECT w.*,
             IFNULL(c.name,'') AS company_name,
             CASE
@@ -9807,7 +9807,7 @@ function warehouseDetail(id: string) {
   let createdAt = String(row.created_at || '');
   let createdByName = String(row.created_by_name || '');
   if (!createdAt || !createdByName) {
-    const audit = get<{ created_at: string; actor_name: string; actor_id: string }>(
+    const audit = await get<{ created_at: string; actor_name: string; actor_id: string }>(
       `SELECT created_at, IFNULL(actor_name,'') AS actor_name, IFNULL(actor_id,'') AS actor_id
        FROM audit_log
        WHERE entity = 'warehouse' AND entity_id = ? AND action = 'warehouse.create'
@@ -9835,9 +9835,9 @@ function warehouseDetail(id: string) {
 /** PDF · остатки выбранного склада (печать из экрана «Остатки»). */
 api.get('/warehouses/:id/balances.pdf', async (c) => {
   const id = c.req.param('id');
-  const wh = get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [id]);
+  const wh = await get<{ id: string }>(`SELECT id FROM warehouses WHERE id = ?`, [id]);
   if (!wh) return c.json({ error: 'not found' }, 404);
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), c.req.query('company_id'));
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), c.req.query('company_id'));
   if (coFilter.mode === 'none') return c.json({ error: 'forbidden' }, 403);
   try {
     const result = await renderWarehouseBalancesPdf({
@@ -9861,12 +9861,12 @@ api.get('/warehouses/:id/balances.pdf', async (c) => {
   }
 });
 
-api.get('/warehouses/:id', (c) => {
+api.get('/warehouses/:id', async (c) => {
   const id = c.req.param('id');
   if (id === 'stock-totals') return c.json({ error: 'not found' }, 404);
-  const detail = warehouseDetail(id);
+  const detail = await warehouseDetail(id);
   if (!detail) return c.json({ error: 'not found' }, 404);
-  const links = warehouseLinkInfo(id);
+  const links = await warehouseLinkInfo(id);
   return c.json({
     ...detail,
     has_links: links.linked,
@@ -9875,9 +9875,9 @@ api.get('/warehouses/:id', (c) => {
   });
 });
 
-api.get('/warehouses/:id/movements', (c) => {
+api.get('/warehouses/:id/movements', async (c) => {
   const id = c.req.param('id');
-  const wh = get(`SELECT id FROM warehouses WHERE id = ?`, [id]);
+  const wh = await get(`SELECT id FROM warehouses WHERE id = ?`, [id]);
   if (!wh) return c.json({ error: 'not found' }, 404);
   const { page, limit, offset } = parsePage(c, 50);
   const type = (c.req.query('type') || '').trim();
@@ -9886,7 +9886,7 @@ api.get('/warehouses/:id/movements', (c) => {
   );
   const where = [`(d.warehouse_id = ? OR IFNULL(d.warehouse_to_id,'') = ?)`];
   const params: Array<string | number> = [id, id];
-  if (!isAdminActor(actorFromContext(c))) {
+  if (!isAdminActor(await actorFromContext(c))) {
     where.push('IFNULL(d.admin_only, 0) = 0');
   }
   if (!includeDrafts) {
@@ -9898,11 +9898,11 @@ api.get('/warehouses/:id/movements', (c) => {
   }
   const whereSql = where.join(' AND ');
   const total =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM stock_docs d WHERE ${whereSql}`,
       params
-    )?.c ?? 0;
-  const items = all(
+    ))?.c ?? 0;
+  const items = await all(
     `SELECT d.id, d.doc_type, d.number, d.doc_date, d.posted, d.comment, d.amount, d.created_at,
             d.warehouse_id, d.warehouse_to_id,
             IFNULL(w.name,'') AS warehouse,
@@ -9930,10 +9930,10 @@ api.get('/warehouses/:id/movements', (c) => {
 
 /** Коррекция остатков — только администраторы Учёта. */
 api.post('/stock/adjustments', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor)) return c.json({ error: 'forbidden' }, 403);
-  ensureStockAdjustmentsSchema();
+  await ensureStockAdjustmentsSchema();
   const body = (await c.req.json().catch(() => ({}))) as {
     warehouse_id?: string;
     product_id?: string;
@@ -9941,7 +9941,7 @@ api.post('/stock/adjustments', async (c) => {
     comment?: string;
   };
   try {
-    const adjustment = createStockAdjustment({
+    const adjustment = await createStockAdjustment({
       warehouse_id: String(body.warehouse_id || ''),
       product_id: String(body.product_id || ''),
       qty_after: Number(body.qty_after),
@@ -9955,14 +9955,14 @@ api.post('/stock/adjustments', async (c) => {
   }
 });
 
-api.get('/stock/adjustments', (c) => {
-  const actor = actorFromContext(c);
+api.get('/stock/adjustments', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor)) return c.json({ error: 'forbidden' }, 403);
-  ensureStockAdjustmentsSchema();
+  await ensureStockAdjustmentsSchema();
   const warehouseId = (c.req.query('warehouse_id') || '').trim();
   const { page, limit, offset } = parsePage(c, 50);
-  const { items, total } = listStockAdjustments({
+  const { items, total } = await listStockAdjustments({
     warehouse_id: warehouseId || undefined,
     limit,
     offset,
@@ -9977,9 +9977,9 @@ api.get('/stock/adjustments', (c) => {
 });
 
 api.patch('/warehouses/:id', async (c) => {
-  ensureCompaniesSchema();
+  await ensureCompaniesSchema();
   const id = c.req.param('id');
-  const row = get('SELECT * FROM warehouses WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM warehouses WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
   const body = await c.req.json<{
     name?: string;
@@ -10003,13 +10003,13 @@ api.patch('/warehouses/:id', async (c) => {
   }
   if (patchSets.length) {
     patchSets.push("updated_at = datetime('now')");
-    run(`UPDATE warehouses SET ${patchSets.join(', ')} WHERE id = ?`, [...patchParams, id]);
+    await run(`UPDATE warehouses SET ${patchSets.join(', ')} WHERE id = ?`, [...patchParams, id]);
   }
   if (body.is_active != null) {
     const active = body.is_active === true || body.is_active === 1 ? 1 : 0;
     if (active === 0) {
       try {
-        archiveWarehouse(id);
+        await archiveWarehouse(id);
       } catch (e) {
         const err = e as Error & { status?: number; stock_qty?: number; has_stock?: boolean };
         if (err.status === 409) {
@@ -10025,11 +10025,11 @@ api.patch('/warehouses/:id', async (c) => {
         throw e;
       }
     } else {
-      run('UPDATE warehouses SET is_active = ? WHERE id = ?', [active, id]);
+      await run('UPDATE warehouses SET is_active = ? WHERE id = ?', [active, id]);
     }
   }
-  const next = get('SELECT * FROM warehouses WHERE id = ?', [id]);
-  auditFromContext(c, {
+  const next = await get('SELECT * FROM warehouses WHERE id = ?', [id]);
+  await auditFromContext(c, {
     action:
       body.is_active === false || body.is_active === 0
         ? 'warehouse.archive'
@@ -10042,16 +10042,16 @@ api.patch('/warehouses/:id', async (c) => {
     before: row,
     after: next,
   });
-  return c.json(withDeleteMeta('warehouse', next as Record<string, unknown>));
+  return c.json(await withDeleteMeta('warehouse', next as Record<string, unknown>));
 });
 
-api.post('/warehouses/:id/archive', (c) => {
+api.post('/warehouses/:id/archive', async (c) => {
   const id = c.req.param('id');
-  const row = get('SELECT * FROM warehouses WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM warehouses WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
   let next;
   try {
-    next = archiveWarehouse(id);
+    next = await archiveWarehouse(id);
   } catch (e) {
     const err = e as Error & { status?: number; stock_qty?: number; has_stock?: boolean };
     if (err.status === 409) {
@@ -10066,7 +10066,7 @@ api.post('/warehouses/:id/archive', (c) => {
     }
     throw e;
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'warehouse.archive',
     entity: 'warehouse',
     entityId: id,
@@ -10074,23 +10074,23 @@ api.post('/warehouses/:id/archive', (c) => {
     before: row,
     after: next,
   });
-  return c.json(withDeleteMeta('warehouse', next as Record<string, unknown>));
+  return c.json(await withDeleteMeta('warehouse', next as Record<string, unknown>));
 });
 
-api.delete('/warehouses/:id', (c) => {
+api.delete('/warehouses/:id', async (c) => {
   const id = c.req.param('id');
-  const row = get('SELECT * FROM warehouses WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM warehouses WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  const links = warehouseLinkInfo(id);
+  const links = await warehouseLinkInfo(id);
   if (links.linked) {
     return c.json({ error: LINKED_DELETE_MSG, has_links: true, link_counts: links.counts }, 409);
   }
   try {
-    hardDeleteWarehouse(id);
+    await hardDeleteWarehouse(id);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 409);
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'warehouse.delete',
     entity: 'warehouse',
     entityId: id,
@@ -10104,11 +10104,11 @@ api.delete('/warehouses/:id', (c) => {
 const PAGE_LIMIT_MAX = 500;
 
 /** API-ключ без сессии UI: company_id обязателен (или company_id=all). */
-function requireMachineCompanyId(
+async function requireMachineCompanyId(
   c: Parameters<typeof actorFromContext>[0],
   companyIdRaw: string
 ) {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   // actorFromContext подмешивает machine-key как Actor — не путать с сессией UI
   const isMachine =
     !!actor &&
@@ -10149,7 +10149,7 @@ function parsePage(c: { req: { query: (k: string) => string | undefined } }, def
   return { page, limit, offset, requested, overMax, max: PAGE_LIMIT_MAX };
 }
 
-api.get('/counterparties', (c) => {
+api.get('/counterparties', async (c) => {
   const q = (c.req.query('q') || '').trim();
   const kind = (c.req.query('kind') || '').trim(); // supplier | buyer | both | ''
   const partyKind = (c.req.query('party_kind') || '').trim().toLowerCase(); // legal | ip | person | partner(legacy) | ''
@@ -10251,8 +10251,8 @@ api.get('/counterparties', (c) => {
        GROUP BY counterparty_id
      ) sd ON sd.cid = cp.id`;
   const total =
-    get<{ c: number }>(`SELECT COUNT(*) AS c ${fromSql} ${whereSql}`, params)?.c ?? 0;
-  const items = all(
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c ${fromSql} ${whereSql}`, params))?.c ?? 0;
+  const items = await all(
     `SELECT cp.*, (${partyKindExpr}) AS party_kind_effective,
             (${kindEffectiveExpr}) AS kind_effective,
             ${docsCountExpr} AS docs_count
@@ -10299,7 +10299,7 @@ api.post('/counterparties', async (c) => {
       : String(body.inn || '').replace(/\D/g, '').length === 12
         ? 'ip'
         : '';
-  const phone = normalizePhoneForStorage(body.phone ?? '');
+  const phone = await normalizePhoneForStorage(body.phone ?? '');
   const inn = String(body.inn ?? '').trim();
   const kpp = partyKind === 'legal' ? String(body.kpp ?? '').trim() : '';
   const ogrn = String(body.ogrn ?? '').trim();
@@ -10310,7 +10310,7 @@ api.post('/counterparties', async (c) => {
   const isPartner =
     body.is_partner === true || body.is_partner === 1 || body.is_partner === '1' ? 1 : 0;
   const createdAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
-  run(
+  await run(
     `INSERT INTO counterparties (id, name, inn, phone, kind, party_kind, is_partner, kpp, ogrn, address, name_full, email, dadata_synced_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -10330,8 +10330,8 @@ api.post('/counterparties', async (c) => {
       createdAt,
     ]
   );
-  const created = get('SELECT * FROM counterparties WHERE id = ?', [id]);
-  auditFromContext(c, {
+  const created = await get('SELECT * FROM counterparties WHERE id = ?', [id]);
+  await auditFromContext(c, {
     action: 'counterparty.create',
     entity: 'counterparty',
     entityId: id,
@@ -10349,21 +10349,21 @@ api.post('/counterparties', async (c) => {
   return c.json(created || { id, name: body.name.trim(), inn, phone, kind, email }, 201);
 });
 
-api.get('/counterparties/:id', (c) => {
+api.get('/counterparties/:id', async (c) => {
   const id = c.req.param('id');
-  const row = get('SELECT * FROM counterparties WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM counterparties WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
   const docsTotal =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       'SELECT COUNT(*) AS c FROM stock_docs WHERE counterparty_id = ?',
       [id]
-    )?.c ?? 0;
+    ))?.c ?? 0;
   const docsLimit = Math.min(200, Math.max(1, Number(c.req.query('docs_limit')) || 50));
   const docsPages = Math.max(1, Math.ceil(docsTotal / docsLimit));
   let docsPage = Math.max(1, Number(c.req.query('docs_page')) || 1);
   if (docsPage > docsPages) docsPage = docsPages;
   const docsOffset = (docsPage - 1) * docsLimit;
-  const docs = all(
+  const docs = await all(
     `SELECT d.id, d.doc_type, d.number, d.doc_date, d.posted, d.amount, d.source,
             w.name AS warehouse
      FROM stock_docs d
@@ -10373,8 +10373,8 @@ api.get('/counterparties/:id', (c) => {
      LIMIT ? OFFSET ?`,
     [id, docsLimit, docsOffset]
   );
-  const links = counterpartyLinkInfo(id);
-  const amoLinks = listLinkedCounterparties(id);
+  const links = await counterpartyLinkInfo(id);
+  const amoLinks = await listLinkedCounterparties(id);
   return c.json({
     ...row,
     docs,
@@ -10392,7 +10392,7 @@ api.get('/counterparties/:id', (c) => {
 
 api.patch('/counterparties/:id', async (c) => {
   const id = c.req.param('id');
-  const row = get<Record<string, unknown>>('SELECT * FROM counterparties WHERE id = ?', [id]);
+  const row = await get<Record<string, unknown>>('SELECT * FROM counterparties WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
   const body = await c.req.json<{
     name?: string;
@@ -10425,29 +10425,29 @@ api.patch('/counterparties/:id', async (c) => {
   if (body.name != null) {
     const name = body.name.trim();
     if (!name) return c.json({ error: 'name не может быть пустым' }, 400);
-    run('UPDATE counterparties SET name = ? WHERE id = ?', [name, id]);
+    await run('UPDATE counterparties SET name = ? WHERE id = ?', [name, id]);
   }
   if (body.inn != null) {
-    run('UPDATE counterparties SET inn = ? WHERE id = ?', [body.inn.trim(), id]);
+    await run('UPDATE counterparties SET inn = ? WHERE id = ?', [body.inn.trim(), id]);
   }
   if (body.kpp != null) {
-    run('UPDATE counterparties SET kpp = ? WHERE id = ?', [body.kpp.trim(), id]);
+    await run('UPDATE counterparties SET kpp = ? WHERE id = ?', [body.kpp.trim(), id]);
   }
   if (body.ogrn != null) {
-    run('UPDATE counterparties SET ogrn = ? WHERE id = ?', [body.ogrn.trim(), id]);
+    await run('UPDATE counterparties SET ogrn = ? WHERE id = ?', [body.ogrn.trim(), id]);
   }
   if (body.address != null) {
-    run('UPDATE counterparties SET address = ? WHERE id = ?', [body.address.trim(), id]);
+    await run('UPDATE counterparties SET address = ? WHERE id = ?', [body.address.trim(), id]);
   }
   if (body.name_full != null) {
-    run('UPDATE counterparties SET name_full = ? WHERE id = ?', [body.name_full.trim(), id]);
+    await run('UPDATE counterparties SET name_full = ? WHERE id = ?', [body.name_full.trim(), id]);
   }
   if (body.email != null) {
-    run('UPDATE counterparties SET email = ? WHERE id = ?', [body.email.trim(), id]);
+    await run('UPDATE counterparties SET email = ? WHERE id = ?', [body.email.trim(), id]);
   }
   if (body.phone != null) {
-    run('UPDATE counterparties SET phone = ? WHERE id = ?', [
-      normalizePhoneForStorage(body.phone),
+    await run('UPDATE counterparties SET phone = ? WHERE id = ?', [
+      await normalizePhoneForStorage(body.phone),
       id,
     ]);
   }
@@ -10456,29 +10456,29 @@ api.patch('/counterparties/:id', async (c) => {
     if (!['supplier', 'buyer', 'both'].includes(kind)) {
       return c.json({ error: 'kind: supplier | buyer | both' }, 400);
     }
-    run('UPDATE counterparties SET kind = ? WHERE id = ?', [kind, id]);
+    await run('UPDATE counterparties SET kind = ? WHERE id = ?', [kind, id]);
   }
   if (body.party_kind != null) {
     const pk = String(body.party_kind).trim().toLowerCase();
     if (pk && !['person', 'ip', 'legal'].includes(pk)) {
       return c.json({ error: 'party_kind: person | ip | legal' }, 400);
     }
-    run('UPDATE counterparties SET party_kind = ? WHERE id = ?', [pk, id]);
+    await run('UPDATE counterparties SET party_kind = ? WHERE id = ?', [pk, id]);
     if (pk === 'person' || pk === 'ip') {
-      run('UPDATE counterparties SET kpp = ? WHERE id = ?', ['', id]);
+      await run('UPDATE counterparties SET kpp = ? WHERE id = ?', ['', id]);
     }
   }
   if (body.is_partner != null) {
     const partner = body.is_partner === true || body.is_partner === 1 || body.is_partner === '1' ? 1 : 0;
-    run('UPDATE counterparties SET is_partner = ? WHERE id = ?', [partner, id]);
+    await run('UPDATE counterparties SET is_partner = ? WHERE id = ?', [partner, id]);
   }
   if (body.is_main != null) {
     const main = body.is_main === true || body.is_main === 1 || body.is_main === '1' ? 1 : 0;
-    run('UPDATE counterparties SET is_main = ? WHERE id = ?', [main, id]);
+    await run('UPDATE counterparties SET is_main = ? WHERE id = ?', [main, id]);
   }
   if (body.lead_time_days != null) {
     const days = Math.max(0, Math.floor(Number(body.lead_time_days) || 0));
-    run('UPDATE counterparties SET lead_time_days = ? WHERE id = ?', [days, id]);
+    await run('UPDATE counterparties SET lead_time_days = ? WHERE id = ?', [days, id]);
   }
   if (body.barcode_prefix != null) {
     const pref = String(body.barcode_prefix || '')
@@ -10486,11 +10486,11 @@ api.patch('/counterparties/:id', async (c) => {
       .toUpperCase()
       .replace(/[^A-Z0-9]/g, '')
       .slice(0, 8);
-    run('UPDATE counterparties SET barcode_prefix = ? WHERE id = ?', [pref, id]);
+    await run('UPDATE counterparties SET barcode_prefix = ? WHERE id = ?', [pref, id]);
   }
   if (body.is_active != null) {
     const active = body.is_active === true || body.is_active === 1 ? 1 : 0;
-    run('UPDATE counterparties SET is_active = ? WHERE id = ?', [active, id]);
+    await run('UPDATE counterparties SET is_active = ? WHERE id = ?', [active, id]);
   }
   // банковские / директор — если пришли с формы
   const bankBody = body as {
@@ -10501,30 +10501,30 @@ api.patch('/counterparties/:id', async (c) => {
     ks?: string;
   };
   if (bankBody.director != null) {
-    run('UPDATE counterparties SET director = ? WHERE id = ?', [String(bankBody.director).trim(), id]);
+    await run('UPDATE counterparties SET director = ? WHERE id = ?', [String(bankBody.director).trim(), id]);
   }
   if (bankBody.bank != null) {
-    run('UPDATE counterparties SET bank = ? WHERE id = ?', [String(bankBody.bank).trim(), id]);
+    await run('UPDATE counterparties SET bank = ? WHERE id = ?', [String(bankBody.bank).trim(), id]);
   }
   if (bankBody.bik != null) {
-    run('UPDATE counterparties SET bik = ? WHERE id = ?', [
+    await run('UPDATE counterparties SET bik = ? WHERE id = ?', [
       String(bankBody.bik).replace(/\D/g, ''),
       id,
     ]);
   }
   if (bankBody.rs != null) {
-    run('UPDATE counterparties SET rs = ? WHERE id = ?', [
+    await run('UPDATE counterparties SET rs = ? WHERE id = ?', [
       String(bankBody.rs).replace(/\D/g, ''),
       id,
     ]);
   }
   if (bankBody.ks != null) {
-    run('UPDATE counterparties SET ks = ? WHERE id = ?', [
+    await run('UPDATE counterparties SET ks = ? WHERE id = ?', [
       String(bankBody.ks).replace(/\D/g, ''),
       id,
     ]);
   }
-  const after = get('SELECT name, inn, phone, kind, is_active FROM counterparties WHERE id = ?', [id]);
+  const after = await get('SELECT name, inn, phone, kind, is_active FROM counterparties WHERE id = ?', [id]);
   const amoPush = await pushCounterpartyToAmo({
     counterpartyId: id,
     buyer: {
@@ -10542,7 +10542,7 @@ api.patch('/counterparties/:id', async (c) => {
       ks: bankBody.ks,
     },
   });
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'counterparty.update',
     entity: 'counterparty',
     entityId: id,
@@ -10559,12 +10559,12 @@ api.patch('/counterparties/:id', async (c) => {
   return c.json({ ok: true, amo: amoPush });
 });
 
-api.post('/counterparties/:id/archive', (c) => {
+api.post('/counterparties/:id/archive', async (c) => {
   const id = c.req.param('id');
-  const row = get('SELECT * FROM counterparties WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM counterparties WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  const next = archiveCounterparty(id);
-  auditFromContext(c, {
+  const next = await archiveCounterparty(id);
+  await auditFromContext(c, {
     action: 'counterparty.archive',
     entity: 'counterparty',
     entityId: id,
@@ -10572,7 +10572,7 @@ api.post('/counterparties/:id/archive', (c) => {
     before: row,
     after: next,
   });
-  return c.json(withDeleteMeta('counterparty', next as Record<string, unknown>));
+  return c.json(await withDeleteMeta('counterparty', next as Record<string, unknown>));
 });
 
 api.delete('/counterparties/:id', (c) => {
@@ -10585,7 +10585,7 @@ api.delete('/counterparties/:id', (c) => {
   );
 });
 
-api.get('/products', (c) => {
+api.get('/products', async (c) => {
   const q = (c.req.query('q') || '').trim();
   const codeFilter = (c.req.query('code') || '').trim();
   const idsFilter = (c.req.query('ids') || '').trim();
@@ -10608,19 +10608,19 @@ api.get('/products', (c) => {
     return c.json({ error: `limit max is ${limitMax}`, max: limitMax }, 400);
   }
   const companyIdRaw = (c.req.query('company_id') || '').trim();
-  const machineCoErr = requireMachineCompanyId(c, companyIdRaw);
+  const machineCoErr = await requireMachineCompanyId(c, companyIdRaw);
   if (machineCoErr) return machineCoErr;
-  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  const companyParsed = await parseRequestedCompanyId(companyIdRaw);
   if (!companyParsed.ok) {
     return c.json({ error: companyParsed.error }, 400);
   }
   const companyId = companyParsed.id;
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
   const deptCompanyId =
     coFilter.mode === 'one' ? coFilter.id : companyId || '';
   const deptFilter = sqlSourceDepartmentIn(
     'p',
-    sourceDepartmentsForCompany(deptCompanyId)
+    await sourceDepartmentsForCompany(deptCompanyId)
   );
   // Остаток по всем складам (stock_balances + Get/Rests без дублей).
   // Rests только если WMS ещё не вёл пару товар+склад (строка в balances, даже qty=0).
@@ -10769,7 +10769,7 @@ api.get('/products', (c) => {
     where += ' AND (p.category_id IS NULL OR p.category_id = \'\')';
   } else if (categoryId) {
     // Категория + все подкатегории (и дубли GUID с тем же именем)
-    const ids = idsForCategoryFilter(categoryId);
+    const ids = await idsForCategoryFilter(categoryId);
     if (ids.length === 1) {
       where += ' AND p.category_id = ?';
       params.push(ids[0]);
@@ -10806,23 +10806,23 @@ api.get('/products', (c) => {
       : `${mainFirst}${orderExpr} ${dir}, datetime(IFNULL(p.created_at, '1970-01-01')) DESC, p.name COLLATE NOCASE ASC`;
 
   const total =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM products p
        LEFT JOIN categories c ON c.id = p.category_id
        ${where}`,
       params
-    )?.c ?? 0;
-  let items = all(
+    ))?.c ?? 0;
+  let items = await all(
     `${select} ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   ) as Array<Record<string, unknown>>;
-  items = enrichMasterListPhotos(items);
+  items = await enrichMasterListPhotos(items);
   if (includePrices && items.length) {
     const ids = items
       .map((it) => String(it.id || '').trim())
       .filter(Boolean);
     const ph = ids.map(() => '?').join(',');
-    const priceRows = all<{ product_id: string; price_type: string; price: number }>(
+    const priceRows = await all<{ product_id: string; price_type: string; price: number }>(
       `SELECT product_id, price_type, price FROM product_prices
        WHERE product_id IN (${ph}) AND IFNULL(price,0) > 0
        ORDER BY price_type`,
@@ -10874,7 +10874,7 @@ api.get('/products', (c) => {
 });
 
 /** Счётчики для пилюль Вид / Основные (с учётом категории и поиска). */
-api.get('/products/facet-counts', (c) => {
+api.get('/products/facet-counts', async (c) => {
   const q = (c.req.query('q') || '').trim();
   const categoryId = (c.req.query('category_id') || '').trim();
   const categoryName = (c.req.query('category') || '').trim();
@@ -10882,17 +10882,17 @@ api.get('/products/facet-counts', (c) => {
   const itemKind = (c.req.query('item_kind') || '').trim().toLowerCase();
   const isMainQ = (c.req.query('is_main') || '').trim();
   const companyIdRaw = (c.req.query('company_id') || '').trim();
-  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  const companyParsed = await parseRequestedCompanyId(companyIdRaw);
   if (!companyParsed.ok) {
     return c.json({ error: companyParsed.error }, 400);
   }
   const companyId = companyParsed.id;
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
   const deptCompanyId =
     coFilter.mode === 'one' ? coFilter.id : companyId || '';
   const deptFilter = sqlSourceDepartmentIn(
     'p',
-    sourceDepartmentsForCompany(deptCompanyId)
+    await sourceDepartmentsForCompany(deptCompanyId)
   );
 
   let where =
@@ -10954,7 +10954,7 @@ api.get('/products/facet-counts', (c) => {
   if (categoryId === '__none__' || categoryName === '__none__') {
     where += " AND (p.category_id IS NULL OR p.category_id = '')";
   } else if (categoryId) {
-    const ids = idsForCategoryFilter(categoryId);
+    const ids = await idsForCategoryFilter(categoryId);
     if (ids.length === 1) {
       where += ' AND p.category_id = ?';
       params.push(ids[0]);
@@ -10969,22 +10969,22 @@ api.get('/products/facet-counts', (c) => {
 
   const from = `FROM products p LEFT JOIN categories c ON c.id = p.category_id`;
 
-  const countWhere = (extraSql: string, extraParams: Array<string | number> = []) =>
-    get<{ c: number }>(
+  const countWhere = async (extraSql: string, extraParams: Array<string | number> = []) =>
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c ${from} ${where}${extraSql}`,
       [...params, ...extraParams]
-    )?.c ?? 0;
+    ))?.c ?? 0;
 
   // Вид: учитываем текущий фильтр «Основные»
   let kindExtra = '';
   if (isMainQ === '1') kindExtra = ' AND IFNULL(p.is_main,0) = 1';
   else if (isMainQ === '0') kindExtra = ' AND IFNULL(p.is_main,0) = 0';
 
-  const kindAll = countWhere(kindExtra);
-  const kindProduct = countWhere(
+  const kindAll = await countWhere(kindExtra);
+  const kindProduct = await countWhere(
     `${kindExtra} AND IFNULL(p.item_kind,'product') != 'service'`
   );
-  const kindService = countWhere(
+  const kindService = await countWhere(
     `${kindExtra} AND IFNULL(p.item_kind,'product') = 'service'`
   );
 
@@ -10993,9 +10993,9 @@ api.get('/products/facet-counts', (c) => {
   if (itemKind === 'service') mainExtra = ` AND IFNULL(p.item_kind,'product') = 'service'`;
   else if (itemKind === 'product') mainExtra = ` AND IFNULL(p.item_kind,'product') != 'service'`;
 
-  const mainAll = countWhere(mainExtra);
-  const mainYes = countWhere(`${mainExtra} AND IFNULL(p.is_main,0) = 1`);
-  const mainNo = countWhere(`${mainExtra} AND IFNULL(p.is_main,0) = 0`);
+  const mainAll = await countWhere(mainExtra);
+  const mainYes = await countWhere(`${mainExtra} AND IFNULL(p.is_main,0) = 1`);
+  const mainNo = await countWhere(`${mainExtra} AND IFNULL(p.is_main,0) = 0`);
 
   return c.json({
     kind: { all: kindAll, product: kindProduct, service: kindService },
@@ -11003,9 +11003,9 @@ api.get('/products/facet-counts', (c) => {
   });
 });
 
-api.get('/products/:id', (c) => {
+api.get('/products/:id', async (c) => {
   const id = c.req.param('id');
-  const product = get(
+  const product = await get(
     `SELECT p.*, u.short_name AS unit, c.name AS category
      FROM products p
      LEFT JOIN units u ON u.id = p.unit_id
@@ -11014,7 +11014,7 @@ api.get('/products/:id', (c) => {
     [id]
   );
   if (!product) return c.json({ error: 'not found' }, 404);
-  const applicabilityRaw = all<{
+  const applicabilityRaw = await all<{
     id: string;
     mark: string;
     model: string;
@@ -11027,7 +11027,7 @@ api.get('/products/:id', (c) => {
      ORDER BY mark, model, years`,
     [id]
   );
-  const appCombos = all<{
+  const appCombos = await all<{
     mark: string;
     model: string;
     generation: string;
@@ -11051,7 +11051,7 @@ api.get('/products/:id', (c) => {
     marks: [...markSet].sort((a, b) => a.localeCompare(b, 'ru')),
     combos: appCombos,
   };
-  const propertiesRaw = all<{ property: string; value: string }>(
+  const propertiesRaw = await all<{ property: string; value: string }>(
     `SELECT property, value FROM product_properties WHERE product_id = ? ORDER BY property`,
     [id]
   );
@@ -11059,7 +11059,7 @@ api.get('/products/:id', (c) => {
   const optionsByProp = new Map<string, string[]>();
   if (propNames.length) {
     const placeholders = propNames.map(() => '?').join(',');
-    const optionRows = all<{ property: string; value: string }>(
+    const optionRows = await all<{ property: string; value: string }>(
       `SELECT property, value
        FROM product_properties
        WHERE property IN (${placeholders}) AND IFNULL(value,'') != ''
@@ -11078,14 +11078,14 @@ api.get('/products/:id', (c) => {
     if (p.value && !options.includes(p.value)) options.unshift(p.value);
     return { ...p, options };
   });
-  const existingPrices = all<{ price_type: string; price: number }>(
+  const existingPrices = await all<{ price_type: string; price: number }>(
     `SELECT price_type, price FROM product_prices WHERE product_id = ?`,
     [id]
   );
   const priceByType = new Map(
     existingPrices.map((p) => [String(p.price_type || '').trim(), Number(p.price) || 0])
   );
-  const dictTypes = all<{ name: string }>(
+  const dictTypes = (await all<{ name: string }>(
     `SELECT name FROM dict_price_types
      WHERE IFNULL(TRIM(name),'') != ''
      ORDER BY
@@ -11098,7 +11098,7 @@ api.get('/products/:id', (c) => {
          ELSE 10
        END,
        name`
-  ).map((r) => String(r.name || '').trim());
+  )).map((r) => String(r.name || '').trim());
   // Все типы из справочника + любые цены товара, которых нет в справочнике
   const typeNames = [...dictTypes];
   for (const t of priceByType.keys()) {
@@ -11118,8 +11118,8 @@ api.get('/products/:id', (c) => {
             has_value: true,
           }))
           .sort((a, b) => a.price_type.localeCompare(b.price_type, 'ru'));
-  const media = listProductMediaForDisplay(id);
-  const restsRaw = all(
+  const media = await listProductMediaForDisplay(id);
+  const restsRaw = await all(
     `SELECT x.warehouse_id,
             IFNULL(w.name, x.warehouse_id) AS warehouse,
             IFNULL(w.code, '') AS warehouse_code,
@@ -11151,7 +11151,7 @@ api.get('/products/:id', (c) => {
        IFNULL(w.name, x.warehouse_id)`,
     [id, id]
   );
-  const restsReserveMap = activeReserveOrdersForPairs(
+  const restsReserveMap = await activeReserveOrdersForPairs(
     restsRaw
       .filter((r) => Number((r as { is_reserve?: number }).is_reserve) === 1)
       .map((r) => ({
@@ -11167,7 +11167,7 @@ api.get('/products/:id', (c) => {
         : [];
     return { ...row, reserve_orders: reserveOrders };
   });
-  const related = all(
+  const related = await all(
     `SELECT p.id, p.sku, p.name
      FROM product_related r
      JOIN products p ON p.id = r.related_id
@@ -11177,7 +11177,7 @@ api.get('/products/:id', (c) => {
   );
   const inbound_layers = productInboundLayers(id);
   const purchase_history = productPurchaseHistory(id, 50);
-  const links = productLinkInfo(id);
+  const links = await productLinkInfo(id);
   return c.json({
     ...product,
     item_kind:
@@ -11201,7 +11201,7 @@ api.get('/products/:id', (c) => {
 });
 
   api.post('/products', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
@@ -11225,25 +11225,25 @@ api.get('/products/:id', (c) => {
   const prefix = itemKind === 'service' ? 'УСЛ' : 'НФ';
   // не пересекаться с уже импортированными кодами 1С
   if (!(body.sku || '').trim()) {
-    const mx = get<{ m: number }>(
+    const mx = (await get<{ m: number }>(
       `SELECT MAX(CAST(substr(v, instr(v, '-') + 1) AS INTEGER)) AS m FROM (
          SELECT sku AS v FROM products WHERE sku LIKE ?
          UNION ALL
          SELECT code AS v FROM products WHERE code LIKE ?
        )`,
       [prefix + '-%', prefix + '-%']
-    )?.m;
-    if (mx && Number.isFinite(Number(mx))) ensureSeqAtLeast(prefix, Number(mx));
+    ))?.m;
+    if (mx && Number.isFinite(Number(mx))) await ensureSeqAtLeast(prefix, Number(mx));
   }
-  const sku = (body.sku || '').trim() || nextCode(prefix);
+  const sku = (body.sku || '').trim() || await nextCode(prefix);
   const code = (body.code || '').trim() || sku;
   let unitId = (body.unit_id || '').trim();
   if (itemKind === 'service') {
-    unitId = ensureServiceUnitId();
+    unitId = await ensureServiceUnitId();
   } else if (!unitId) {
     unitId =
-      get<{ id: string }>('SELECT id FROM units WHERE short_name = ? LIMIT 1', ['шт'])?.id ||
-      get<{ id: string }>('SELECT id FROM units LIMIT 1')?.id ||
+      (await get<{ id: string }>('SELECT id FROM units WHERE short_name = ? LIMIT 1', ['шт']))?.id ||
+      (await get<{ id: string }>('SELECT id FROM units LIMIT 1'))?.id ||
       '';
   }
   if (!unitId) return c.json({ error: 'нет единиц измерения — синхронизируйте справочники' }, 400);
@@ -11255,7 +11255,7 @@ api.get('/products/:id', (c) => {
         ? (body.sku || '').trim()
         : '';
   if (onConflict === 'update' && matchValue) {
-    const existing = get<{ id: string; sku: string; code: string }>(
+    const existing = await get<{ id: string; sku: string; code: string }>(
       matchBy === 'code'
         ? `SELECT id, sku, IFNULL(code,'') AS code FROM products
            WHERE upper(replace(IFNULL(code,''),' ','')) = upper(replace(?, ' ','')) LIMIT 1`
@@ -11264,7 +11264,7 @@ api.get('/products/:id', (c) => {
       [matchValue]
     );
     if (existing?.id) {
-      run(
+      await run(
         `UPDATE products SET name = ?, category_id = COALESCE(?, category_id),
            barcode = CASE WHEN ? != '' THEN ? ELSE barcode END,
            code = CASE WHEN ? != '' THEN ? ELSE code END
@@ -11279,7 +11279,7 @@ api.get('/products/:id', (c) => {
           existing.id,
         ]
       );
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'product.update',
         entity: 'product',
         entityId: existing.id,
@@ -11292,7 +11292,7 @@ api.get('/products/:id', (c) => {
     }
   }
 
-  const existingSku = get<{ id: string; sku: string; code: string }>(
+  const existingSku = await get<{ id: string; sku: string; code: string }>(
     `SELECT id, sku, IFNULL(code,'') AS code FROM products WHERE upper(replace(sku,' ','')) = upper(replace(?, ' ','')) LIMIT 1`,
     [(body.sku || '').trim()]
   );
@@ -11302,7 +11302,7 @@ api.get('/products/:id', (c) => {
       409
     );
   }
-  const existingCode = get<{ id: string; sku: string; code: string }>(
+  const existingCode = await get<{ id: string; sku: string; code: string }>(
     `SELECT id, sku, IFNULL(code,'') AS code FROM products
      WHERE ? != '' AND upper(replace(IFNULL(code,''),' ','')) = upper(replace(?, ' ','')) LIMIT 1`,
     [(body.code || '').trim(), (body.code || '').trim()]
@@ -11320,7 +11320,7 @@ api.get('/products/:id', (c) => {
   }
 
   try {
-    run(
+    await run(
       `INSERT INTO products (id, sku, name, category_id, unit_id, barcode, item_kind, code)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -11335,7 +11335,7 @@ api.get('/products/:id', (c) => {
       ]
     );
   } catch {
-    const dup = get<{ id: string; sku: string; code: string }>(
+    const dup = await get<{ id: string; sku: string; code: string }>(
       `SELECT id, sku, IFNULL(code,'') AS code FROM products WHERE sku = ? OR code = ? LIMIT 1`,
       [sku, code]
     );
@@ -11347,7 +11347,7 @@ api.get('/products/:id', (c) => {
     }
     return c.json({ error: 'SKU уже существует' }, 409);
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'product.create',
     entity: 'product',
     entityId: id,
@@ -11362,7 +11362,7 @@ api.post('/products/suggest-categories', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { ids?: string[] };
   const ids = Array.isArray(body.ids) ? body.ids : [];
   try {
-    const suggestions = suggestCategoriesForProducts(ids);
+    const suggestions = await suggestCategoriesForProducts(ids);
     return c.json({ suggestions, total: suggestions.length });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -11370,7 +11370,7 @@ api.post('/products/suggest-categories', async (c) => {
 });
 
 api.patch('/products/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
@@ -11398,7 +11398,7 @@ api.patch('/products/:id', async (c) => {
     install_price?: number | null;
     is_main?: boolean | number | string;
   }>();
-  const row = get<Record<string, unknown>>('SELECT * FROM products WHERE id = ?', [id]);
+  const row = await get<Record<string, unknown>>('SELECT * FROM products WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
   const before = {
     name: row.name,
@@ -11424,45 +11424,45 @@ api.patch('/products/:id', async (c) => {
     is_main: row.is_main || 0,
   };
   if (body.name != null) {
-    run('UPDATE products SET name = ? WHERE id = ?', [body.name.trim(), id]);
+    await run('UPDATE products SET name = ? WHERE id = ?', [body.name.trim(), id]);
   }
   if (body.sku != null) {
     const sku = body.sku.trim();
     if (!sku) return c.json({ error: 'sku не может быть пустым' }, 400);
-    const clash = get<{ id: string }>(
+    const clash = await get<{ id: string }>(
       'SELECT id FROM products WHERE sku = ? AND id != ? LIMIT 1',
       [sku, id]
     );
     if (clash) return c.json({ error: 'SKU уже занят' }, 409);
-    run('UPDATE products SET sku = ? WHERE id = ?', [sku, id]);
+    await run('UPDATE products SET sku = ? WHERE id = ?', [sku, id]);
   }
   if (body.brand != null) {
-    run('UPDATE products SET brand = ? WHERE id = ?', [body.brand.trim(), id]);
+    await run('UPDATE products SET brand = ? WHERE id = ?', [body.brand.trim(), id]);
   }
   if (body.barcode != null) {
-    run('UPDATE products SET barcode = ? WHERE id = ?', [body.barcode.trim(), id]);
+    await run('UPDATE products SET barcode = ? WHERE id = ?', [body.barcode.trim(), id]);
   }
   if (body.code != null) {
-    run('UPDATE products SET code = ? WHERE id = ?', [body.code.trim(), id]);
+    await run('UPDATE products SET code = ? WHERE id = ?', [body.code.trim(), id]);
   }
   if (body.array_sku != null) {
-    run('UPDATE products SET array_sku = ? WHERE id = ?', [body.array_sku.trim(), id]);
+    await run('UPDATE products SET array_sku = ? WHERE id = ?', [body.array_sku.trim(), id]);
   }
   if (body.warehouse_sku != null) {
-    run('UPDATE products SET warehouse_sku = ? WHERE id = ?', [body.warehouse_sku.trim(), id]);
+    await run('UPDATE products SET warehouse_sku = ? WHERE id = ?', [body.warehouse_sku.trim(), id]);
   }
   if (body.category_id !== undefined) {
     const cat = body.category_id ? String(body.category_id).trim() : '';
     if (cat) {
-      const exists = get('SELECT id FROM categories WHERE id = ?', [cat]);
+      const exists = await get('SELECT id FROM categories WHERE id = ?', [cat]);
       if (!exists) return c.json({ error: 'категория не найдена' }, 400);
-      run('UPDATE products SET category_id = ? WHERE id = ?', [cat, id]);
+      await run('UPDATE products SET category_id = ? WHERE id = ?', [cat, id]);
     } else {
-      run('UPDATE products SET category_id = NULL WHERE id = ?', [id]);
+      await run('UPDATE products SET category_id = NULL WHERE id = ?', [id]);
     }
   }
   if (body.is_active != null) {
-    run('UPDATE products SET is_active = ? WHERE id = ?', [body.is_active ? 1 : 0, id]);
+    await run('UPDATE products SET is_active = ? WHERE id = ?', [body.is_active ? 1 : 0, id]);
   }
   const numOrNull = (v: number | null | undefined) => {
     if (v === undefined) return undefined;
@@ -11474,21 +11474,21 @@ api.patch('/products/:id', async (c) => {
   const ph = numOrNull(body.package_height_cm);
   const pl = numOrNull(body.package_length_cm);
   const pwg = numOrNull(body.package_weight_g);
-  if (pw !== undefined) run('UPDATE products SET package_width_cm = ? WHERE id = ?', [pw, id]);
-  if (ph !== undefined) run('UPDATE products SET package_height_cm = ? WHERE id = ?', [ph, id]);
-  if (pl !== undefined) run('UPDATE products SET package_length_cm = ? WHERE id = ?', [pl, id]);
-  if (pwg !== undefined) run('UPDATE products SET package_weight_g = ? WHERE id = ?', [pwg, id]);
+  if (pw !== undefined) await run('UPDATE products SET package_width_cm = ? WHERE id = ?', [pw, id]);
+  if (ph !== undefined) await run('UPDATE products SET package_height_cm = ? WHERE id = ?', [ph, id]);
+  if (pl !== undefined) await run('UPDATE products SET package_length_cm = ? WHERE id = ?', [pl, id]);
+  if (pwg !== undefined) await run('UPDATE products SET package_weight_g = ? WHERE id = ?', [pwg, id]);
   if (body.gtin != null) {
-    run('UPDATE products SET gtin = ? WHERE id = ?', [String(body.gtin).trim(), id]);
+    await run('UPDATE products SET gtin = ? WHERE id = ?', [String(body.gtin).trim(), id]);
   }
   if (body.requires_marking != null) {
-    run('UPDATE products SET requires_marking = ? WHERE id = ?', [
+    await run('UPDATE products SET requires_marking = ? WHERE id = ?', [
       body.requires_marking ? 1 : 0,
       id,
     ]);
   }
   if (body.serial_tracked != null) {
-    run('UPDATE products SET serial_tracked = ? WHERE id = ?', [
+    await run('UPDATE products SET serial_tracked = ? WHERE id = ?', [
       body.serial_tracked ? 1 : 0,
       id,
     ]);
@@ -11496,38 +11496,38 @@ api.patch('/products/:id', async (c) => {
   if (body.min_stock !== undefined) {
     const ms =
       body.min_stock === null ? 0 : Math.max(0, Number(body.min_stock) || 0);
-    run('UPDATE products SET min_stock = ? WHERE id = ?', [ms, id]);
+    await run('UPDATE products SET min_stock = ? WHERE id = ?', [ms, id]);
   }
   if (body.item_kind != null) {
     const kind =
       String(body.item_kind).toLowerCase() === 'service' ? 'service' : 'product';
-    run('UPDATE products SET item_kind = ? WHERE id = ?', [kind, id]);
+    await run('UPDATE products SET item_kind = ? WHERE id = ?', [kind, id]);
     if (kind === 'service') {
-      run('UPDATE products SET unit_id = ? WHERE id = ?', [ensureServiceUnitId(), id]);
+      await run('UPDATE products SET unit_id = ? WHERE id = ?', [await ensureServiceUnitId(), id]);
     }
   }
   if (body.notupload != null) {
-    run('UPDATE products SET notupload = ? WHERE id = ?', [body.notupload ? 1 : 0, id]);
+    await run('UPDATE products SET notupload = ? WHERE id = ?', [body.notupload ? 1 : 0, id]);
   }
   if (body.is_main != null) {
     const main = body.is_main === true || body.is_main === 1 || body.is_main === '1' ? 1 : 0;
-    run('UPDATE products SET is_main = ? WHERE id = ?', [main, id]);
+    await run('UPDATE products SET is_main = ? WHERE id = ?', [main, id]);
   }
   if (body.install_price !== undefined) {
-    ensureProductServiceLinksSchema();
+    await ensureProductServiceLinksSchema();
     const ip =
       body.install_price === null ? 0 : Math.max(0, Number(body.install_price) || 0);
-    run('UPDATE products SET install_price = ? WHERE id = ?', [ip, id]);
+    await run('UPDATE products SET install_price = ? WHERE id = ?', [ip, id]);
     if (ip > 0 && String(row.item_kind || 'product') !== 'service') {
       try {
-        linkInstallService(id, { price: ip });
+        await linkInstallService(id, { price: ip });
       } catch (e) {
         console.warn('[product] link install:', e instanceof Error ? e.message : e);
       }
     }
   }
 
-  const after = get(
+  const after = await get(
     `SELECT name, sku, brand, barcode, category_id, is_active, code, array_sku,
             IFNULL(warehouse_sku,'') AS warehouse_sku,
             package_width_cm, package_height_cm, package_length_cm, package_weight_g,
@@ -11540,7 +11540,7 @@ api.patch('/products/:id', async (c) => {
      FROM products WHERE id = ?`,
     [id]
   );
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'product.update',
     entity: 'product',
     entityId: id,
@@ -11551,14 +11551,14 @@ api.patch('/products/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-api.post('/products/reclassify-kinds', (c) => {
-  const actor = actorFromContext(c);
+api.post('/products/reclassify-kinds', async (c) => {
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products') && !isAdminActor(actor)) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
-  const result = reclassifyAllProductKinds();
-  const purged = purgeServiceLinesFromOutDocs();
-  auditFromContext(c, {
+  const result = await reclassifyAllProductKinds();
+  const purged = await purgeServiceLinesFromOutDocs();
+  await auditFromContext(c, {
     action: 'product.reclassify_kinds',
     entity: 'product',
     entityId: '',
@@ -11568,16 +11568,16 @@ api.post('/products/reclassify-kinds', (c) => {
   return c.json({ ok: true, ...result, out_services_purged: purged.deleted });
 });
 
-api.post('/products/:id/archive', (c) => {
-  const actor = actorFromContext(c);
+api.post('/products/:id/archive', async (c) => {
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
   const id = c.req.param('id');
-  const row = get('SELECT * FROM products WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM products WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  const next = archiveProduct(id);
-  auditFromContext(c, {
+  const next = await archiveProduct(id);
+  await auditFromContext(c, {
     action: 'product.archive',
     entity: 'product',
     entityId: id,
@@ -11585,27 +11585,27 @@ api.post('/products/:id/archive', (c) => {
     before: row,
     after: next,
   });
-  return c.json(withDeleteMeta('product', next as Record<string, unknown>));
+  return c.json(await withDeleteMeta('product', next as Record<string, unknown>));
 });
 
-api.delete('/products/:id', (c) => {
-  const actor = actorFromContext(c);
+api.delete('/products/:id', async (c) => {
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
   const id = c.req.param('id');
-  const row = get('SELECT * FROM products WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM products WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  const links = productLinkInfo(id);
+  const links = await productLinkInfo(id);
   if (links.linked) {
     return c.json({ error: LINKED_DELETE_MSG, has_links: true, link_counts: links.counts }, 409);
   }
   try {
-    hardDeleteProduct(id);
+    await hardDeleteProduct(id);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 409);
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'product.delete',
     entity: 'product',
     entityId: id,
@@ -11616,12 +11616,12 @@ api.delete('/products/:id', (c) => {
 });
 
 api.put('/products/:id/properties', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
   const id = c.req.param('id');
-  const product = get('SELECT id FROM products WHERE id = ?', [id]);
+  const product = await get('SELECT id FROM products WHERE id = ?', [id]);
   if (!product) return c.json({ error: 'not found' }, 404);
   const body = await c.req.json<{
     properties?: Array<{ property: string; value: string }>;
@@ -11629,7 +11629,7 @@ api.put('/products/:id/properties', async (c) => {
   const list = Array.isArray(body.properties) ? body.properties : null;
   if (!list) return c.json({ error: 'properties required' }, 400);
 
-  const before = all<{ property: string; value: string }>(
+  const before = await all<{ property: string; value: string }>(
     `SELECT property, value FROM product_properties WHERE product_id = ? ORDER BY property`,
     [id]
   );
@@ -11640,24 +11640,24 @@ api.put('/products/:id/properties', async (c) => {
     const value = String(item.value ?? '').trim();
     const existing = byProp.get(property);
     if (existing) {
-      run(`UPDATE product_properties SET value = ? WHERE product_id = ? AND property = ?`, [
+      await run(`UPDATE product_properties SET value = ? WHERE product_id = ? AND property = ?`, [
         value,
         id,
         property,
       ]);
     } else {
       const rowId = newGuid();
-      run(
+      await run(
         `INSERT INTO product_properties (id, product_id, property, value) VALUES (?, ?, ?, ?)`,
         [rowId, id, property, value]
       );
     }
   }
-  const after = all<{ property: string; value: string }>(
+  const after = await all<{ property: string; value: string }>(
     `SELECT property, value FROM product_properties WHERE product_id = ? ORDER BY property`,
     [id]
   );
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'product.properties.update',
     entity: 'product',
     entityId: id,
@@ -11669,12 +11669,12 @@ api.put('/products/:id/properties', async (c) => {
 });
 
 api.put('/products/:id/applicability', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав: редактирование номенклатуры' }, 403);
   }
   const id = c.req.param('id');
-  const product = get('SELECT id FROM products WHERE id = ?', [id]);
+  const product = await get('SELECT id FROM products WHERE id = ?', [id]);
   if (!product) return c.json({ error: 'not found' }, 404);
   const body = await c.req.json<{
     applicability?: Array<{
@@ -11690,14 +11690,14 @@ api.put('/products/:id/applicability', async (c) => {
   const list = Array.isArray(body.applicability) ? body.applicability : null;
   if (!list) return c.json({ error: 'applicability required' }, 400);
 
-  const before = all(
+  const before = await all(
     `SELECT id, mark, model, only_model, generation, years
      FROM product_applicability WHERE product_id = ? ORDER BY mark, model, years`,
     [id]
   );
 
   // Полная замена списка: у товара бывает несколько применимостей
-  run('DELETE FROM product_applicability WHERE product_id = ?', [id]);
+  await run('DELETE FROM product_applicability WHERE product_id = ?', [id]);
   for (const item of list) {
     if (item._delete) continue;
     const mark = String(item.mark || '').trim();
@@ -11713,7 +11713,7 @@ api.put('/products/:id/applicability', async (c) => {
     ).trim();
     if (!mark && !model && !onlyModel && !generation && !years) continue;
     const rowId = `${id}|${mark}|${model}|${onlyModel}|${generation}|${years}`;
-    run(
+    await run(
       `INSERT OR IGNORE INTO product_applicability
         (id, product_id, mark, model, only_model, generation, years)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -11721,12 +11721,12 @@ api.put('/products/:id/applicability', async (c) => {
     );
   }
 
-  const after = all(
+  const after = await all(
     `SELECT id, mark, model, only_model, generation, years
      FROM product_applicability WHERE product_id = ? ORDER BY mark, model, years`,
     [id]
   );
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'product.applicability.update',
     entity: 'product',
     entityId: id,
@@ -11738,12 +11738,12 @@ api.put('/products/:id/applicability', async (c) => {
 });
 
 api.put('/products/:id/prices', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_prices')) {
     return c.json({ error: 'Недостаточно прав: редактирование цен' }, 403);
   }
   const id = c.req.param('id');
-  const product = get<{ id: string; name: string; sku: string }>(
+  const product = await get<{ id: string; name: string; sku: string }>(
     'SELECT id, name, sku FROM products WHERE id = ?',
     [id]
   );
@@ -11752,42 +11752,42 @@ api.put('/products/:id/prices', async (c) => {
   const prices = Array.isArray(body.prices) ? body.prices : [];
   if (!prices.length) return c.json({ error: 'prices[] required' }, 400);
 
-  const before = all(
+  const before = await all(
     'SELECT price_type, price FROM product_prices WHERE product_id = ? ORDER BY price_type',
     [id]
   );
   const beforeMap = new Map(before.map((p) => [String(p.price_type), Number(p.price)]));
 
-  run('BEGIN');
+  await run('BEGIN');
   try {
     for (const p of prices) {
       const type = String(p.price_type || '').trim();
       const price = Number(p.price);
       if (!type || !Number.isFinite(price)) continue;
-      const existing = get<{ id: string }>(
+      const existing = await get<{ id: string }>(
         'SELECT id FROM product_prices WHERE product_id = ? AND price_type = ? LIMIT 1',
         [id, type]
       );
       if (existing) {
-        run('UPDATE product_prices SET price = ? WHERE id = ?', [price, existing.id]);
+        await run('UPDATE product_prices SET price = ? WHERE id = ?', [price, existing.id]);
       } else {
-        run(
+        await run(
           `INSERT INTO product_prices (id, product_id, price_type, price) VALUES (?, ?, ?, ?)`,
           [newGuid(), id, type, price]
         );
       }
     }
-    run('COMMIT');
+    await run('COMMIT');
   } catch (e) {
     try {
-      run('ROLLBACK');
+      await run('ROLLBACK');
     } catch {
       /* ignore */
     }
     throw e;
   }
 
-  const after = all(
+  const after = await all(
     'SELECT price_type, price FROM product_prices WHERE product_id = ? ORDER BY price_type',
     [id]
   );
@@ -11799,7 +11799,7 @@ api.put('/products/:id/prices', async (c) => {
     if (old === undefined) changes.push(`${t}: (нет) → ${neu}`);
     else if (old !== neu) changes.push(`${t}: ${old} → ${neu}`);
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'price.change',
     entity: 'product',
     entityId: id,
@@ -11813,13 +11813,13 @@ api.put('/products/:id/prices', async (c) => {
 });
 
 /* ——— stock ——— */
-api.get('/balances', (c) => {
+api.get('/balances', async (c) => {
   const warehouseId = c.req.query('warehouse_id');
   const productId = (c.req.query('product_id') || '').trim();
   const companyIdRaw = (c.req.query('company_id') || '').trim();
-  const machineCoErr = requireMachineCompanyId(c, companyIdRaw);
+  const machineCoErr = await requireMachineCompanyId(c, companyIdRaw);
   if (machineCoErr) return machineCoErr;
-  const companyParsed = parseRequestedCompanyId(companyIdRaw);
+  const companyParsed = await parseRequestedCompanyId(companyIdRaw);
   if (!companyParsed.ok) {
     return c.json({ error: companyParsed.error }, 400);
   }
@@ -11838,7 +11838,7 @@ api.get('/balances', (c) => {
     params.push(warehouseId);
   }
   {
-    const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+    const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
     if (coFilter.mode === 'none') {
       return c.json({ items: [], total: 0, page: 1, limit, pages: 1, totals: {}, limit_max: PAGE_LIMIT_MAX });
     }
@@ -11916,8 +11916,8 @@ api.get('/balances', (c) => {
     ? `${orderMap[sort]} ${dir}, p.name COLLATE NOCASE ASC`
     : `CASE WHEN w.code = 'WAIT-PAY' OR w.name = 'Ожидание оплаты' THEN 0 ELSE 1 END,
        w.name, p.name`;
-  const total = get<{ c: number }>(`SELECT COUNT(*) AS c ${from}`, params)?.c ?? 0;
-  const itemsRaw = all(
+  const total = (await get<{ c: number }>(`SELECT COUNT(*) AS c ${from}`, params))?.c ?? 0;
+  const itemsRaw = await all(
     `SELECT x.qty, p.id AS product_id, p.sku, IFNULL(p.code,'') AS code, IFNULL(p.warehouse_sku,'') AS warehouse_sku, p.name, w.id AS warehouse_id, w.name AS warehouse,
             w.code AS warehouse_code, IFNULL(u.short_name, '') AS unit,
             IFNULL(c.name, '') AS category,
@@ -11929,7 +11929,7 @@ api.get('/balances', (c) => {
      LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   );
-  const dmMap = dmCodesForBalanceRows(
+  const dmMap = await dmCodesForBalanceRows(
     itemsRaw.map((r) => ({
       product_id: String((r as { product_id?: string }).product_id || ''),
       warehouse_id: String((r as { warehouse_id?: string }).warehouse_id || ''),
@@ -11941,8 +11941,8 @@ api.get('/balances', (c) => {
       product_id: String((r as { product_id?: string }).product_id || ''),
       warehouse_id: String((r as { warehouse_id?: string }).warehouse_id || ''),
     }));
-  const reserveMap = activeReserveOrdersForPairs(reservePairs);
-  const dealLinkMap = openDealLinksForStockRows(
+  const reserveMap = await activeReserveOrdersForPairs(reservePairs);
+  const dealLinkMap = await openDealLinksForStockRows(
     itemsRaw.map((r) => ({
       product_id: String((r as { product_id?: string }).product_id || ''),
       warehouse_id: String((r as { warehouse_id?: string }).warehouse_id || ''),
@@ -11990,7 +11990,7 @@ api.get('/balances', (c) => {
       );
     });
   }
-  const qtySums = get<{ qty: number; reserved: number }>(
+  const qtySums = await get<{ qty: number; reserved: number }>(
     `SELECT COALESCE(SUM(x.qty), 0) AS qty,
             COALESCE(SUM((
               SELECT COALESCE(SUM(sr.qty), 0) FROM stock_reserves sr
@@ -12004,7 +12004,7 @@ api.get('/balances', (c) => {
   let valuePurchase = 0;
   let valueRetail = 0;
   try {
-    const val = stockValuation({
+    const val = await stockValuation({
       warehouseId: warehouseId || undefined,
       q: q || undefined,
       includeItems: false,
@@ -12016,11 +12016,11 @@ api.get('/balances', (c) => {
   } catch {
     /* оценка необязательна для списка */
   }
-  let pendingInbound: ReturnType<typeof pendingHandoffInboundOnWarehouse> = [];
+  let pendingInbound: Awaited<ReturnType<typeof pendingHandoffInboundOnWarehouse>> = [];
   let pendingSummary = { lines: 0, qty: 0, deals: 0 };
-  if (warehouseId && isStoDealReserveWarehouseId(String(warehouseId))) {
-    pendingInbound = pendingHandoffInboundOnWarehouse(String(warehouseId));
-    pendingSummary = pendingHandoffInboundSummary(String(warehouseId));
+  if (warehouseId && await isStoDealReserveWarehouseId(String(warehouseId))) {
+    pendingInbound = await pendingHandoffInboundOnWarehouse(String(warehouseId));
+    pendingSummary = await pendingHandoffInboundSummary(String(warehouseId));
     if (page === 1 && pendingInbound.length) {
       const qLow = q.toLowerCase();
       const filtered = qLow
@@ -12029,39 +12029,41 @@ api.get('/balances', (c) => {
             return hay.includes(qLow);
           })
         : pendingInbound;
-      const pendingAsItems = filtered.map((r) => {
-        const dealId = String(r.deal_id || '').trim();
-        const outNo = dealId ? outNumberFromDeal(dealId) : '';
-        return {
-          qty: r.qty,
-          product_id: r.product_id,
-          sku: r.sku,
-          code: '',
-          warehouse_sku: '',
-          name: r.name,
-          warehouse_id: r.warehouse_id,
-          warehouse: r.warehouse,
-          warehouse_code: r.warehouse_code,
-          unit: r.unit,
-          category: r.category,
-          item_kind: r.kind,
-          is_reserve: 0,
-          reserved_qty: 0,
-          warehouse_article: warehouseArticleOf({ sku: r.sku, warehouse_sku: '' }),
-          dm_codes: [] as string[],
-          dm_count: 0,
-          dm_more: 0,
-          reserve_orders: [],
-          open_deals: r.open_deals,
-          deal_id: dealId,
-          pending: true as const,
-          doc_id: r.doc_id,
-          doc_number: outNo || r.doc_number,
-        };
-      });
+      const pendingAsItems = await Promise.all(
+        filtered.map(async (r) => {
+          const dealId = String(r.deal_id || '').trim();
+          const outNo = dealId ? await outNumberFromDeal(dealId) : '';
+          return {
+            qty: r.qty,
+            product_id: r.product_id,
+            sku: r.sku,
+            code: '',
+            warehouse_sku: '',
+            name: r.name,
+            warehouse_id: r.warehouse_id,
+            warehouse: r.warehouse,
+            warehouse_code: r.warehouse_code,
+            unit: r.unit,
+            category: r.category,
+            item_kind: r.kind,
+            is_reserve: 0,
+            reserved_qty: 0,
+            warehouse_article: warehouseArticleOf({ sku: r.sku, warehouse_sku: '' }),
+            dm_codes: [] as string[],
+            dm_count: 0,
+            dm_more: 0,
+            reserve_orders: [],
+            open_deals: r.open_deals,
+            deal_id: dealId,
+            pending: true as const,
+            doc_id: r.doc_id,
+            doc_number: outNo || r.doc_number,
+          };
+        })
+      );
       items = [...pendingAsItems, ...items] as typeof items;
     }
-    items = items.map((row) => {
+    items = await Promise.all(items.map(async (row) => {
       const dealId = String(
         (row as { deal_id?: string }).deal_id ||
           (Array.isArray((row as { open_deals?: OpenDealLink[] }).open_deals) &&
@@ -12069,10 +12071,10 @@ api.get('/balances', (c) => {
           ''
       ).trim();
       if (!dealId) return row;
-      const outNo = outNumberFromDeal(dealId);
+      const outNo = await outNumberFromDeal(dealId);
       if (!outNo) return row;
       return { ...row, doc_number: outNo };
-    });
+    }));
   }
   return c.json({
     items,
@@ -12091,9 +12093,9 @@ api.get('/balances', (c) => {
       value_purchase: valuePurchase,
       value_retail: valueRetail,
       deals_count: warehouseId
-        ? isStoDealReserveWarehouseId(String(warehouseId))
-          ? countStoDealReserveDeals(String(warehouseId))
-          : Math.max(countOpenDealsOnWarehouse(String(warehouseId)), pendingSummary.deals)
+        ? await isStoDealReserveWarehouseId(String(warehouseId))
+          ? await countStoDealReserveDeals(String(warehouseId))
+          : Math.max(await countOpenDealsOnWarehouse(String(warehouseId)), pendingSummary.deals)
         : 0,
       pending_deals: pendingSummary.deals,
       pending_qty: pendingSummary.qty,
@@ -12121,23 +12123,23 @@ api.get('/stock/valuation', (c) => {
 });
 
 /** Остаток номенклатуры, разложенный по приходам (FIFO-слои). */
-api.get('/products/:id/inbound-layers', (c) => {
+api.get('/products/:id/inbound-layers', async (c) => {
   const id = c.req.param('id');
-  const product = get('SELECT id FROM products WHERE id = ?', [id]);
+  const product = await get('SELECT id FROM products WHERE id = ?', [id]);
   if (!product) return c.json({ error: 'not found' }, 404);
   return c.json(productInboundLayers(id));
 });
 
 /** История закупок номенклатуры: все строки приходных (поставщик, дата, qty, цена). */
-api.get('/products/:id/purchase-history', (c) => {
+api.get('/products/:id/purchase-history', async (c) => {
   const id = c.req.param('id');
-  const product = get('SELECT id FROM products WHERE id = ?', [id]);
+  const product = await get('SELECT id FROM products WHERE id = ?', [id]);
   if (!product) return c.json({ error: 'not found' }, 404);
   const limitRaw = Number(c.req.query('limit') || 50);
   return c.json(productPurchaseHistory(id, limitRaw));
 });
 
-api.get('/docs', (c) => {
+api.get('/docs', async (c) => {
   const type = (c.req.query('type') || '').trim();
   const q = (c.req.query('q') || '').trim();
   const dealId = (c.req.query('deal_id') || '').trim();
@@ -12163,7 +12165,7 @@ api.get('/docs', (c) => {
     params.push(dealId, dealId);
   }
   {
-    const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+    const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
     if (coFilter.mode === 'none') {
       return c.json({ items: [], total: 0, page: 1, limit, pages: 1 });
     }
@@ -12189,7 +12191,7 @@ api.get('/docs', (c) => {
     const like = `%${q}%`;
     params.push(like, like, like, like, like, like, like, like, like, like);
   }
-  if (!isAdminActor(actorFromContext(c))) {
+  if (!isAdminActor(await actorFromContext(c))) {
     where.push('IFNULL(d.admin_only, 0) = 0');
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -12218,8 +12220,8 @@ api.get('/docs', (c) => {
        )
        ${whereSql}`;
   const total =
-    get<{ c: number }>(`SELECT COUNT(*) AS c ${docsFrom}`, params)?.c ?? 0;
-  const items = all(
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c ${docsFrom}`, params))?.c ?? 0;
+  const items = await all(
     `SELECT d.*, w.name AS warehouse, wt.name AS warehouse_to,
             IFNULL(c.name,'') AS counterparty_doc,
             IFNULL(o.name,'') AS organization_name,
@@ -12237,7 +12239,7 @@ api.get('/docs', (c) => {
     [...params, limit, offset]
   );
   const placementMap =
-    type === 'in' ? getPlacementSummariesForDocs(items.map((d) => String(d.id || ''))) : {};
+    type === 'in' ? await getPlacementSummariesForDocs(items.map((d) => String(d.id || ''))) : {};
   const enriched = items.map((d) => {
     let supply = String((d as { supply_number?: string }).supply_number || '').trim();
     if (!supply) {
@@ -12280,7 +12282,7 @@ api.get('/docs', (c) => {
 
 api.get('/docs/:id', async (c) => {
   const id = c.req.param('id');
-  const existing = get<{ doc_type: string; deal_id: string; basis_order_id: string }>(
+  const existing = await get<{ doc_type: string; deal_id: string; basis_order_id: string }>(
     `SELECT doc_type, IFNULL(deal_id,'') AS deal_id, IFNULL(basis_order_id,'') AS basis_order_id
      FROM stock_docs WHERE id = ?`,
     [id]
@@ -12296,21 +12298,21 @@ api.get('/docs/:id', async (c) => {
   }
   // Заказ покупателя в Учёте = сделка Amo; подтянуть, если ещё нет в зеркале
   const dealIdNow = String(
-    get<{ deal_id: string }>(
+    (await get<{ deal_id: string }>(
       `SELECT IFNULL(deal_id,'') AS deal_id FROM stock_docs WHERE id = ?`,
       [id]
-    )?.deal_id ||
+    ))?.deal_id ||
       existing.deal_id ||
       ''
   ).trim();
-  if (dealIdNow && !get('SELECT id FROM crm_deals WHERE id = ?', [dealIdNow])) {
+  if (dealIdNow && !await get('SELECT id FROM crm_deals WHERE id = ?', [dealIdNow])) {
     try {
       await syncDealsFromAmo1cAsync({ dealId: dealIdNow, limit: 1 });
     } catch (e) {
       console.warn('docs/:id ensure deal', dealIdNow, e instanceof Error ? e.message : e);
     }
   }
-  const doc = get(
+  const doc = await get(
     `SELECT d.*, w.name AS warehouse, wt.name AS warehouse_to, c.name AS counterparty,
             IFNULL(c.inn,'') AS counterparty_inn,
             IFNULL(c.party_kind,'') AS counterparty_party_kind,
@@ -12349,10 +12351,10 @@ api.get('/docs/:id', async (c) => {
     [id]
   );
   if (!doc) return c.json({ error: 'not found' }, 404);
-  if (Number((doc as { admin_only?: number }).admin_only) === 1 && !isAdminActor(actorFromContext(c))) {
+  if (Number((doc as { admin_only?: number }).admin_only) === 1 && !isAdminActor(await actorFromContext(c))) {
     return c.json({ error: 'not found' }, 404);
   }
-  const lines = all(
+  const lines = await Promise.all((await all(
     `SELECT l.*, p.sku, IFNULL(p.code,'') AS code, IFNULL(p.barcode,'') AS barcode,
             IFNULL(p.array_sku,'') AS array_sku, p.name AS product_name,
             IFNULL(p.serial_tracked, 0) AS serial_tracked,
@@ -12374,11 +12376,11 @@ api.get('/docs/:id', async (c) => {
        IFNULL(p.code, '') COLLATE NOCASE,
        IFNULL(p.name, '') COLLATE NOCASE`,
     [id]
-  ).map((l) => {
+  )).map(async (l) => {
     const row = l as Record<string, unknown>;
     const serials = parseSerialsJson(String(row.serials_json || '[]'));
     const productId = String(row.product_id || '');
-    const looksService = isServiceProduct(productId);
+    const looksService = await isServiceProduct(productId);
     const item_kind = looksService ? 'service' : 'product';
     const art = catalogArticleOf({
       sku: String(row.sku || ''),
@@ -12394,12 +12396,12 @@ api.get('/docs/:id', async (c) => {
       article: art.article,
       code: art.code,
     };
-  });
+  }));
   const allMapped = lines;
   const goodsLines = allMapped.filter((l) => (l as { item_kind?: string }).item_kind !== 'service');
   const serviceLines = allMapped.filter((l) => (l as { item_kind?: string }).item_kind === 'service');
-  const units = unitsForDoc(id);
-  const { links, note: links_note } = buildDocLinks(id);
+  const units = await unitsForDoc(id);
+  const { links, note: links_note } = await buildDocLinks(id);
   const isOut = String((doc as { doc_type?: string }).doc_type || '') === 'out';
   // Расходные в UI — только товары (услуги живут в заказе / УПД)
   const visibleLines = isOut ? goodsLines : allMapped;
@@ -12424,14 +12426,14 @@ api.get('/docs/:id', async (c) => {
 
 /** Привязать заказ покупателя (сделку Amo) к расходной. */
 api.patch('/docs/:id/deal', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as { deal_id?: string };
   try {
-    const result = setOutDocDeal(c.req.param('id'), String(body.deal_id || ''));
-    if (!get('SELECT id FROM crm_deals WHERE id = ?', [result.deal_id])) {
+    const result = await setOutDocDeal(c.req.param('id'), String(body.deal_id || ''));
+    if (!await get('SELECT id FROM crm_deals WHERE id = ?', [result.deal_id])) {
       try {
         await syncDealsFromAmo1cAsync({ dealId: result.deal_id, limit: 1 });
       } catch (e) {
@@ -12442,7 +12444,7 @@ api.patch('/docs/:id/deal', async (c) => {
         );
       }
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'doc.link_deal',
       entity: 'stock_doc',
       entityId: c.req.param('id'),
@@ -12487,7 +12489,7 @@ api.post('/docs', async (c) => {
     );
   }
   try {
-    const id = createDocument({
+    const id = await createDocument({
       ...body,
       lines: (body.lines || []).map((l) => ({
         ...l,
@@ -12501,23 +12503,23 @@ api.post('/docs', async (c) => {
       dealForHandoff &&
       /Передача на склад/i.test(String(body.comment || ''))
     ) {
-      clearHandoffReturnState(dealForHandoff);
-      const reserve = buildHandoffReserveMeta(
+      await clearHandoffReturnState(dealForHandoff);
+      const reserve = await buildHandoffReserveMeta(
         dealForHandoff,
         String(body.warehouse_id || '').trim() ||
           String(body.lines?.find((l) => l.warehouse_id)?.warehouse_id || '').trim()
       );
       if (reserve) {
         const commentNext = ensureReserveHandoffComment(String(body.comment || ''));
-        run(`UPDATE stock_docs SET comment = ?, warehouse_to_id = ? WHERE id = ?`, [
+        await run(`UPDATE stock_docs SET comment = ?, warehouse_to_id = ? WHERE id = ?`, [
           commentNext,
           reserve.dest_warehouse_id,
           id,
         ]);
       }
     }
-    const doc = get('SELECT * FROM stock_docs WHERE id = ?', [id]);
-    auditFromContext(c, {
+    const doc = await get('SELECT * FROM stock_docs WHERE id = ?', [id]);
+    await auditFromContext(c, {
       action: 'doc.create',
       entity: 'stock_doc',
       entityId: id,
@@ -12538,7 +12540,7 @@ api.post('/docs/marks/preview', async (c) => {
     body = {};
   }
   try {
-    return c.json(previewStockMarks(body));
+    return c.json(await previewStockMarks(body));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -12552,11 +12554,11 @@ api.post('/docs/:id/datamatrix/allocate', async (c) => {
     body = {};
   }
   try {
-    const row = allocateStockDocDatamatrix(c.req.param('id'), {
+    const row = await allocateStockDocDatamatrix(c.req.param('id'), {
       prefix: body.prefix,
       force: !!body.force,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'doc.marks.allocate',
       entity: 'stock_doc',
       entityId: c.req.param('id'),
@@ -12569,9 +12571,9 @@ api.post('/docs/:id/datamatrix/allocate', async (c) => {
   }
 });
 
-api.get('/docs/:id/datamatrix/labels.html', (c) => {
+api.get('/docs/:id/datamatrix/labels.html', async (c) => {
   try {
-    return c.html(stockDocDmLabelsHtml(c.req.param('id')));
+    return c.html(await stockDocDmLabelsHtml(c.req.param('id')));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -12581,7 +12583,7 @@ api.get('/docs/:id/datamatrix/labels.pdf', async (c) => {
   try {
     const id = c.req.param('id');
     const buf = await stockDocDmLabelsPdf(id);
-    const num = get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [id])?.number || 'dm';
+    const num = (await get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [id]))?.number || 'dm';
     const asciiName = `dm-${String(num).replace(/[^\x20-\x7E]+/g, '_')}.pdf`;
     c.header('Content-Type', 'application/pdf');
     c.header(
@@ -12595,11 +12597,11 @@ api.get('/docs/:id/datamatrix/labels.pdf', async (c) => {
   }
 });
 
-api.get('/docs/:id/datamatrix/excel.csv', (c) => {
+api.get('/docs/:id/datamatrix/excel.csv', async (c) => {
   try {
     const id = c.req.param('id');
-    const csv = stockDocDmExcelCsv(id);
-    const num = get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [id])?.number || 'dm';
+    const csv = await stockDocDmExcelCsv(id);
+    const num = (await get<{ number: string }>('SELECT number FROM stock_docs WHERE id = ?', [id]))?.number || 'dm';
     const asciiName = `dm-${String(num).replace(/[^\x20-\x7E]+/g, '_')}.csv`;
     c.header('Content-Type', 'text/csv; charset=utf-8');
     c.header(
@@ -12612,7 +12614,7 @@ api.get('/docs/:id/datamatrix/excel.csv', (c) => {
   }
 });
 
-api.get('/product-units', (c) => {
+api.get('/product-units', async (c) => {
   const productId = (c.req.query('product_id') || '').trim();
   const warehouseId = (c.req.query('warehouse_id') || '').trim();
   const status = (c.req.query('status') || '').trim();
@@ -12621,7 +12623,7 @@ api.get('/product-units', (c) => {
   const q = (c.req.query('q') || '').trim();
   const page = Math.max(1, Number(c.req.query('page') || 1) || 1);
   const limit = Math.min(Math.max(Number(c.req.query('limit') || 50) || 50, 1), 200);
-  const { items, total } = listProductUnits({
+  const { items, total } = await listProductUnits({
     productId: productId || undefined,
     warehouseId: warehouseId || undefined,
     status: status || undefined,
@@ -12641,15 +12643,15 @@ api.get('/product-units', (c) => {
 });
 
 /** История экземпляра по Data Matrix / серийнику. */
-api.get('/product-units/trace', (c) => {
+api.get('/product-units/trace', async (c) => {
   const serial = (c.req.query('serial') || c.req.query('code') || '').trim();
   if (!serial) return c.json({ error: 'Укажите serial' }, 400);
-  const data = traceSerial(serial);
+  const data = await traceSerial(serial);
   if (!data.found) return c.json({ ...data, error: 'Код не найден' }, 404);
   return c.json(data);
 });
 
-api.get('/product-units/trace/:code', (c) => {
+api.get('/product-units/trace/:code', async (c) => {
   let serial = '';
   try {
     serial = decodeURIComponent(c.req.param('code') || '').trim();
@@ -12657,28 +12659,28 @@ api.get('/product-units/trace/:code', (c) => {
     serial = String(c.req.param('code') || '').trim();
   }
   if (!serial) return c.json({ error: 'Укажите код' }, 400);
-  const data = traceSerial(serial);
+  const data = await traceSerial(serial);
   if (!data.found) return c.json({ ...data, error: 'Код не найден' }, 404);
   return c.json(data);
 });
 
-api.get('/product-units/sources', (c) => {
+api.get('/product-units/sources', async (c) => {
   const productId = (c.req.query('product_id') || '').trim();
   const warehouseId = (c.req.query('warehouse_id') || '').trim();
   if (!productId) return c.json({ error: 'product_id required' }, 400);
   const forDeal = (c.req.query('for_deal') || '').trim() === '1';
   if (forDeal) {
     return c.json(
-      listDealLineSources({ productId, warehouseId: warehouseId || undefined })
+      await listDealLineSources({ productId, warehouseId: warehouseId || undefined })
     );
   }
-  return c.json(listUnitSources({ productId, warehouseId: warehouseId || undefined }));
+  return c.json(await listUnitSources({ productId, warehouseId: warehouseId || undefined }));
 });
 
-api.get('/products/:id/units', (c) => {
+api.get('/products/:id/units', async (c) => {
   const id = c.req.param('id');
   const status = (c.req.query('status') || '').trim();
-  const { items, total } = listProductUnits({
+  const { items, total } = await listProductUnits({
     productId: id,
     status: status || undefined,
     limit: 200,
@@ -12703,14 +12705,14 @@ api.post('/product-units', async (c) => {
   if (!productId || !warehouseId || !serials.length) {
     return c.json({ error: 'Нужны product_id, warehouse_id и серийные номера' }, 400);
   }
-  if (!get('SELECT id FROM products WHERE id = ?', [productId])) {
+  if (!await get('SELECT id FROM products WHERE id = ?', [productId])) {
     return c.json({ error: 'Товар не найден' }, 404);
   }
-  if (!get('SELECT id FROM warehouses WHERE id = ?', [warehouseId])) {
+  if (!await get('SELECT id FROM warehouses WHERE id = ?', [warehouseId])) {
     return c.json({ error: 'Склад не найден' }, 404);
   }
   try {
-    receiveUnits({
+    await receiveUnits({
       productId,
       warehouseId,
       serials,
@@ -12720,7 +12722,7 @@ api.post('/product-units', async (c) => {
       supplierId: String(body.supplier_id || '').trim() || undefined,
     });
     // qty-остаток не трогаем автоматически при ручной набивке — только реестр экземпляров
-    run('UPDATE products SET serial_tracked = 1 WHERE id = ?', [productId]);
+    await run('UPDATE products SET serial_tracked = 1 WHERE id = ?', [productId]);
     return c.json({ ok: true, count: serials.length }, 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -12729,7 +12731,7 @@ api.post('/product-units', async (c) => {
 
 /** Применимость партии у экземпляра (куда годится именно эта штука). Пустой массив = как в каталоге. */
 api.patch('/product-units/apps', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -12740,8 +12742,8 @@ api.patch('/product-units/apps', async (c) => {
   const serial = String(body.serial || '').trim();
   if (!serial) return c.json({ error: 'Укажите serial' }, 400);
   try {
-    const row = setUnitApps(serial, parseAppsJson(body.apps));
-    auditFromContext(c, {
+    const row = await setUnitApps(serial, parseAppsJson(body.apps));
+    await auditFromContext(c, {
       action: 'product_unit.set_apps',
       entity: 'product_unit',
       entityId: serial,
@@ -12755,18 +12757,18 @@ api.patch('/product-units/apps', async (c) => {
 });
 
 /** Дефолт применимости «поставщик × товар» (подставляется при приходе, если в строке не задано). */
-api.get('/supplier-product-apps', (c) => {
+api.get('/supplier-product-apps', async (c) => {
   const productId = (c.req.query('product_id') || '').trim();
   const supplierId = (c.req.query('supplier_id') || '').trim();
   if (!productId || !supplierId) {
     return c.json({ error: 'Нужны product_id и supplier_id' }, 400);
   }
-  const apps = getSupplierProductApps(productId, supplierId);
+  const apps = await getSupplierProductApps(productId, supplierId);
   return c.json({ product_id: productId, supplier_id: supplierId, apps });
 });
 
 api.put('/supplier-product-apps', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -12777,13 +12779,13 @@ api.put('/supplier-product-apps', async (c) => {
     comment?: string;
   };
   try {
-    const row = setSupplierProductApps(
+    const row = await setSupplierProductApps(
       String(body.product_id || ''),
       String(body.supplier_id || ''),
       parseAppsJson(body.apps),
       body.comment
     );
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'supplier_product_apps.set',
       entity: 'supplier_product_apps',
       entityId: `${row.product_id}:${row.supplier_id}`,
@@ -12800,19 +12802,19 @@ const FEEDBACK_KINDS = new Set(['idea', 'bug']);
 const FEEDBACK_STATUSES = new Set(['new', 'planned', 'done', 'rejected']);
 
 /** План разработки: таблица + Гант, ответственные из персонала. */
-api.get('/dev-plan', (c) => {
-  const items = listDevPlanItems();
+api.get('/dev-plan', async (c) => {
+  const items = await listDevPlanItems();
   const range = devPlanGanttRange(items);
   return c.json({
     items,
-    deps: listDevPlanDeps(),
+    deps: await listDevPlanDeps(),
     gantt: range,
-    staff: listDevPlanStaffOptions(),
+    staff: await listDevPlanStaffOptions(),
   });
 });
 
 api.post('/dev-plan/deps', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -12822,38 +12824,38 @@ api.post('/dev-plan/deps', async (c) => {
     note?: string;
   };
   try {
-    const dep = addDevPlanDep({
+    const dep = await addDevPlanDep({
       item_id: String(body.item_id || ''),
       depends_on_id: String(body.depends_on_id || ''),
       note: body.note != null ? String(body.note) : undefined,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'dev_plan.dep_add',
       entity: 'dev_plan_dep',
       entityId: dep.id,
       summary: `${dep.item_title} ← зависит от ${dep.depends_on_title}`,
       after: dep,
     });
-    return c.json({ ok: true, dep, deps: listDevPlanDeps() });
+    return c.json({ ok: true, dep, deps: await listDevPlanDeps() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'dep failed' }, 400);
   }
 });
 
 api.delete('/dev-plan/deps/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    const r = deleteDevPlanDep(c.req.param('id'));
-    auditFromContext(c, {
+    const r = await deleteDevPlanDep(c.req.param('id'));
+    await auditFromContext(c, {
       action: 'dev_plan.dep_delete',
       entity: 'dev_plan_dep',
       entityId: r.id,
       summary: 'Удалена связь зависимости',
     });
-    return c.json({ ok: true, id: r.id, deps: listDevPlanDeps() });
+    return c.json({ ok: true, id: r.id, deps: await listDevPlanDeps() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'delete failed' }, 400);
   }
@@ -12861,42 +12863,42 @@ api.delete('/dev-plan/deps/:id', async (c) => {
 
 /** Назначить текущего пользователя ответственным по всем работам плана. */
 api.post('/dev-plan/assign-me-all', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as { staff_id?: string };
   try {
     const staffId =
-      String(body.staff_id || '').trim() || resolveDevPlanStaffIdForActor(actor);
+      String(body.staff_id || '').trim() || await resolveDevPlanStaffIdForActor(actor);
     if (!staffId) {
       return c.json(
         { error: 'Не удалось определить сотрудника для текущего пользователя' },
         400
       );
     }
-    const r = assignAllDevPlanResponsible(staffId);
-    auditFromContext(c, {
+    const r = await assignAllDevPlanResponsible(staffId);
+    await auditFromContext(c, {
       action: 'dev_plan.assign_all',
       entity: 'dev_plan_item',
       entityId: '*',
       summary: `${actor?.name || 'Сотрудник'} назначил ответственным по всем работам: ${r.staff_name}`,
       after: r,
     });
-    return c.json({ ok: true, ...r, items: listDevPlanItems() });
+    return c.json({ ok: true, ...r, items: await listDevPlanItems() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'assign failed' }, 400);
   }
 });
 
 api.post('/dev-plan', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   try {
-    const item = createDevPlanItem({
+    const item = await createDevPlanItem({
       title: String(body.title || ''),
       description: body.description != null ? String(body.description) : undefined,
       result_plan: body.result_plan != null ? String(body.result_plan) : undefined,
@@ -12912,7 +12914,7 @@ api.post('/dev-plan', async (c) => {
       block_title: body.block_title != null ? String(body.block_title) : undefined,
       block_sort: body.block_sort != null ? Number(body.block_sort) : undefined,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'dev_plan.create',
       entity: 'dev_plan_item',
       entityId: item.id,
@@ -12926,13 +12928,13 @@ api.post('/dev-plan', async (c) => {
 });
 
 api.patch('/dev-plan/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   try {
-    const item = updateDevPlanItem(
+    const item = await updateDevPlanItem(
       c.req.param('id'),
       {
         title: body.title != null ? String(body.title) : undefined,
@@ -12954,7 +12956,7 @@ api.patch('/dev-plan/:id', async (c) => {
       },
       { id: actor?.id, name: actor?.name }
     );
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'dev_plan.update',
       entity: 'dev_plan_item',
       entityId: item.id,
@@ -12968,19 +12970,19 @@ api.patch('/dev-plan/:id', async (c) => {
 });
 
 api.post('/dev-plan/:id/comments', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   try {
-    const r = addDevPlanComment(c.req.param('id'), {
+    const r = await addDevPlanComment(c.req.param('id'), {
       body: String(body.body || ''),
       kind: body.kind != null ? String(body.kind) : 'note',
       author_staff_id: actor?.id,
       author_name: actor?.name,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'dev_plan.comment',
       entity: 'dev_plan_item',
       entityId: r.item.id,
@@ -12994,13 +12996,13 @@ api.post('/dev-plan/:id/comments', async (c) => {
 });
 
 api.delete('/dev-plan', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    const r = clearAllDevPlanItems();
-    auditFromContext(c, {
+    const r = await clearAllDevPlanItems();
+    await auditFromContext(c, {
       action: 'dev_plan.clear_all',
       entity: 'dev_plan_item',
       summary: `Очищен план разработки (${r.deleted} работ)`,
@@ -13013,14 +13015,14 @@ api.delete('/dev-plan', async (c) => {
 });
 
 api.delete('/dev-plan/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !actor?.isSystemAdmin) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
     const id = c.req.param('id');
-    deleteDevPlanItem(id);
-    auditFromContext(c, {
+    await deleteDevPlanItem(id);
+    await auditFromContext(c, {
       action: 'dev_plan.delete',
       entity: 'dev_plan_item',
       entityId: id,
@@ -13032,17 +13034,17 @@ api.delete('/dev-plan/:id', async (c) => {
   }
 });
 
-api.get('/feedback', (c) => {
+api.get('/feedback', async (c) => {
   const status = (c.req.query('status') || '').trim();
   if (status && FEEDBACK_STATUSES.has(status)) {
     return c.json(
-      all(
+      await all(
         `SELECT * FROM feedback_items WHERE status = ? ORDER BY datetime(created_at) DESC LIMIT 200`,
         [status]
       )
     );
   }
-  return c.json(all(`SELECT * FROM feedback_items ORDER BY datetime(created_at) DESC LIMIT 200`));
+  return c.json(await all(`SELECT * FROM feedback_items ORDER BY datetime(created_at) DESC LIMIT 200`));
 });
 
 api.post('/feedback', async (c) => {
@@ -13069,12 +13071,12 @@ api.post('/feedback', async (c) => {
     return c.json({ error: 'Текст слишком длинный (макс. 5000)' }, 400);
   }
   const id = newGuid();
-  run(
+  await run(
     `INSERT INTO feedback_items (id, kind, title, body, author, status) VALUES (?, ?, ?, ?, ?, 'new')`,
     [id, kind, title, text, author]
   );
-  const row = get('SELECT * FROM feedback_items WHERE id = ?', [id]);
-  auditFromContext(c, {
+  const row = await get('SELECT * FROM feedback_items WHERE id = ?', [id]);
+  await auditFromContext(c, {
     action: 'feedback.create',
     entity: 'feedback',
     entityId: id,
@@ -13086,15 +13088,15 @@ api.post('/feedback', async (c) => {
 
 api.patch('/feedback/:id', async (c) => {
   const id = c.req.param('id');
-  const existing = get('SELECT * FROM feedback_items WHERE id = ?', [id]);
+  const existing = await get('SELECT * FROM feedback_items WHERE id = ?', [id]);
   if (!existing) return c.json({ error: 'Не найдено' }, 404);
   const body = await c.req.json<{ status?: string }>();
   const status = (body.status || '').trim();
   if (!FEEDBACK_STATUSES.has(status)) {
     return c.json({ error: 'status: new | planned | done | rejected' }, 400);
   }
-  run(`UPDATE feedback_items SET status = ? WHERE id = ?`, [status, id]);
-  auditFromContext(c, {
+  await run(`UPDATE feedback_items SET status = ? WHERE id = ?`, [status, id]);
+  await auditFromContext(c, {
     action: 'feedback.status',
     entity: 'feedback',
     entityId: id,
@@ -13102,21 +13104,21 @@ api.patch('/feedback/:id', async (c) => {
     before: { status: existing.status },
     after: { status },
   });
-  return c.json(get('SELECT * FROM feedback_items WHERE id = ?', [id]));
+  return c.json(await get('SELECT * FROM feedback_items WHERE id = ?', [id]));
 });
 
 /* ——— Маркировка / партии / DataMatrix (Этапы 4–5) ——— */
 
-api.get('/marking/meta', (c) => c.json(markingMeta()));
+api.get('/marking/meta', async (c) => c.json(await markingMeta()));
 
 api.get('/marking/parse-label', (c) => {
   const raw = (c.req.query('raw') || '').trim();
   return c.json(parseMarkingLabel(raw));
 });
 
-api.get('/lots', (c) => {
+api.get('/lots', async (c) => {
   return c.json(
-    listLots({
+    await listLots({
       product_id: (c.req.query('product_id') || '').trim() || undefined,
       warehouse_id: (c.req.query('warehouse_id') || '').trim() || undefined,
       status: (c.req.query('status') || '').trim() || undefined,
@@ -13127,7 +13129,7 @@ api.get('/lots', (c) => {
 });
 
 api.post('/lots', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -13144,7 +13146,7 @@ api.post('/lots', async (c) => {
     comment?: string;
   }>();
   try {
-    const lot = createLot({
+    const lot = await createLot({
       product_id: String(body.product_id || ''),
       lot_number: String(body.lot_number || ''),
       factory: body.factory,
@@ -13157,7 +13159,7 @@ api.post('/lots', async (c) => {
       comment: body.comment,
       actor_id: actor?.id,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'lot.create',
       entity: 'product_lot',
       entityId: lot.id,
@@ -13170,9 +13172,9 @@ api.post('/lots', async (c) => {
   }
 });
 
-api.get('/lots/:id', (c) => {
+api.get('/lots/:id', async (c) => {
   const id = c.req.param('id');
-  const lot = get(
+  const lot = await get(
     `SELECT l.*, p.sku AS product_sku, p.name AS product_name, w.name AS warehouse_name
      FROM product_lots l
      LEFT JOIN products p ON p.id = l.product_id
@@ -13181,13 +13183,13 @@ api.get('/lots/:id', (c) => {
     [id]
   );
   if (!lot) return c.json({ error: 'not found' }, 404);
-  const codes = listCodes({ lot_id: id, limit: 500 });
+  const codes = await listCodes({ lot_id: id, limit: 500 });
   return c.json({ ...lot, codes });
 });
 
-api.get('/marking/codes', (c) => {
+api.get('/marking/codes', async (c) => {
   return c.json(
-    listCodes({
+    await listCodes({
       product_id: (c.req.query('product_id') || '').trim() || undefined,
       lot_id: (c.req.query('lot_id') || '').trim() || undefined,
       status: (c.req.query('status') || '').trim() || undefined,
@@ -13199,7 +13201,7 @@ api.get('/marking/codes', (c) => {
 });
 
 api.post('/marking/codes', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -13211,7 +13213,7 @@ api.post('/marking/codes', async (c) => {
     status?: string;
   }>();
   try {
-    const row = registerCode({
+    const row = await registerCode({
       code: String(body.code || ''),
       product_id: String(body.product_id || ''),
       lot_id: body.lot_id,
@@ -13226,7 +13228,7 @@ api.post('/marking/codes', async (c) => {
 });
 
 api.post('/marking/scan', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -13240,7 +13242,7 @@ api.post('/marking/scan', async (c) => {
     stock_doc_id?: string;
   }>();
   try {
-    const result = scanCode({
+    const result = await scanCode({
       code: String(body.code || ''),
       action: body.action || 'receive',
       product_id: body.product_id,
@@ -13250,7 +13252,7 @@ api.post('/marking/scan', async (c) => {
       stock_doc_id: body.stock_doc_id,
       actor_id: actor?.id,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: `marking.scan.${body.action || 'receive'}`,
       entity: 'datamatrix',
       entityId: result.code.id,
@@ -13264,13 +13266,13 @@ api.post('/marking/scan', async (c) => {
 });
 
 api.post('/marking/aggregate', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = await c.req.json<{ codes?: string[]; parent_code?: string }>();
   try {
-    const result = createAggregate({
+    const result = await createAggregate({
       codes: Array.isArray(body.codes) ? body.codes : [],
       parent_code: body.parent_code,
       actor_id: actor?.id,
@@ -13281,33 +13283,33 @@ api.post('/marking/aggregate', async (c) => {
   }
 });
 
-api.get('/products/:id/marking', (c) => {
+api.get('/products/:id/marking', async (c) => {
   const id = c.req.param('id');
-  const product = get('SELECT id FROM products WHERE id = ?', [id]);
+  const product = await get('SELECT id FROM products WHERE id = ?', [id]);
   if (!product) return c.json({ error: 'not found' }, 404);
-  return c.json(productMarkingSummary(id));
+  return c.json(await productMarkingSummary(id));
 });
 
 api.patch('/products/:id/marking-flags', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_products')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const id = c.req.param('id');
-  const product = get('SELECT id, gtin, requires_marking FROM products WHERE id = ?', [id]);
+  const product = await get('SELECT id, gtin, requires_marking FROM products WHERE id = ?', [id]);
   if (!product) return c.json({ error: 'not found' }, 404);
   const body = await c.req.json<{ gtin?: string; requires_marking?: boolean | number }>();
   if (body.gtin !== undefined) {
-    run('UPDATE products SET gtin = ? WHERE id = ?', [String(body.gtin).trim(), id]);
+    await run('UPDATE products SET gtin = ? WHERE id = ?', [String(body.gtin).trim(), id]);
   }
   if (body.requires_marking !== undefined) {
-    run('UPDATE products SET requires_marking = ? WHERE id = ?', [
+    await run('UPDATE products SET requires_marking = ? WHERE id = ?', [
       body.requires_marking ? 1 : 0,
       id,
     ]);
   }
   return c.json(
-    get(
+    await get(
       `SELECT id, sku, name, IFNULL(gtin,'') AS gtin, IFNULL(requires_marking,0) AS requires_marking
        FROM products WHERE id = ?`,
       [id]
@@ -13327,18 +13329,18 @@ api.get('/warehouse/tasks/meta', (c) =>
 );
 
 /** КПД склада: avg / P50 / P90 по этапам created→picked→packed→handed. */
-api.get('/warehouse/tasks/kpd', (c) => {
+api.get('/warehouse/tasks/kpd', async (c) => {
   return c.json(
-    tasksKpdReport({
+    await tasksKpdReport({
       days: Number(c.req.query('days') || 14) || 14,
       limit: Number(c.req.query('limit') || 200) || 200,
     })
   );
 });
 
-api.get('/warehouse/tasks', (c) => {
+api.get('/warehouse/tasks', async (c) => {
   return c.json(
-    listTasks({
+    await listTasks({
       status: (c.req.query('status') || '').trim() || undefined,
       q: (c.req.query('q') || '').trim() || undefined,
       limit: Number(c.req.query('limit') || 80) || 80,
@@ -13347,7 +13349,7 @@ api.get('/warehouse/tasks', (c) => {
 });
 
 api.get('/warehouse/tasks/:id', async (c) => {
-  const row = getTask(c.req.param('id')) as Record<string, unknown> | null;
+  const row = await getTask(c.req.param('id')) as Record<string, unknown> | null;
   if (!row) return c.json({ error: 'not found' }, 404);
   const dealId = String(row.deal_id || '').trim();
   const wantCdek = !!(row.is_cdek || /сдэк|cdek/i.test(String(row.amo_shipment || '')));
@@ -13368,16 +13370,16 @@ api.get('/warehouse/tasks/:id', async (c) => {
   return c.json(row);
 });
 
-api.get('/warehouse/tasks/:id/slip', (c) => {
+api.get('/warehouse/tasks/:id/slip', async (c) => {
   try {
-    return c.json(packingSlip(c.req.param('id')));
+    return c.json(await packingSlip(c.req.param('id')));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'slip failed' }, 404);
   }
 });
 
 api.post('/warehouse/tasks/from-deal', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) || actor?.role === 'courier') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -13388,7 +13390,7 @@ api.post('/warehouse/tasks/from-deal', async (c) => {
     comment?: string;
   }>();
   try {
-    const task = createTaskFromDeal({
+    const task = await createTaskFromDeal({
       deal_id: String(body.deal_id || ''),
       channel: body.channel,
       payment_required: body.payment_required,
@@ -13396,11 +13398,11 @@ api.post('/warehouse/tasks/from-deal', async (c) => {
       actor_id: actor?.id,
     });
     try {
-      ensureOrderDocChain(String(body.deal_id || ''));
+      await ensureOrderDocChain(String(body.deal_id || ''));
     } catch {
       /* */
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'warehouse_task.create',
       entity: 'warehouse_task',
       entityId: String(task?.id || ''),
@@ -13414,22 +13416,22 @@ api.post('/warehouse/tasks/from-deal', async (c) => {
 });
 
 api.patch('/warehouse/tasks/:id/status', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
   }
   const body = await c.req.json<{ status?: string; track_number?: string; block_reason?: string }>();
   try {
-    assertPickShiftForOps(actor);
-    const row = setTaskStatus({
+    await assertPickShiftForOps(actor);
+    const row = await setTaskStatus({
       id: c.req.param('id'),
       status: body.status as import('./warehouse-tasks.js').TaskStatus,
       track_number: body.track_number,
       block_reason: body.block_reason,
       actor_id: actor.id,
     });
-    touchPickShiftActivity(actor.id);
+    await touchPickShiftActivity(actor.id);
     let stoExecute: Record<string, unknown> | null = null;
     let productionExecute: Record<string, unknown> | null = null;
     if (
@@ -13438,7 +13440,7 @@ api.patch('/warehouse/tasks/:id/status', async (c) => {
     ) {
       try {
         const { executeStoPartsFromTask } = await import('./sto-parts-execute.js');
-        stoExecute = executeStoPartsFromTask({
+        stoExecute = await executeStoPartsFromTask({
           task_id: c.req.param('id'),
           actor_id: actor.id,
         }) as Record<string, unknown>;
@@ -13454,13 +13456,13 @@ api.patch('/warehouse/tasks/:id/status', async (c) => {
       try {
         if (ch === 'production_send') {
           const { executeProductionSendFromTask } = await import('./production-jobs.js');
-          productionExecute = executeProductionSendFromTask({
+          productionExecute = await executeProductionSendFromTask({
             task_id: c.req.param('id'),
             actor_id: actor.id,
           });
         } else if (ch === 'production_receive') {
           const { executeProductionReceiveFromTask } = await import('./production-jobs.js');
-          productionExecute = executeProductionReceiveFromTask({
+          productionExecute = await executeProductionReceiveFromTask({
             task_id: c.req.param('id'),
             actor_id: actor.id,
           });
@@ -13479,7 +13481,7 @@ api.patch('/warehouse/tasks/:id/status', async (c) => {
         taskId: c.req.param('id'),
       });
       if (dealPromote.ok && !dealPromote.skipped) {
-        auditFromContext(c, {
+        await auditFromContext(c, {
           action: 'crm.deal_stage_auto',
           entity: 'crm_deal',
           entityId: String((row as { deal_id?: string }).deal_id || ''),
@@ -13488,7 +13490,7 @@ api.patch('/warehouse/tasks/:id/status', async (c) => {
         });
       }
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'warehouse_task.status',
       entity: 'warehouse_task',
       entityId: c.req.param('id'),
@@ -13508,20 +13510,20 @@ api.patch('/warehouse/tasks/:id/status', async (c) => {
 });
 
 api.post('/warehouse/tasks/scan-hand', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
   }
   const body = await c.req.json<{ barcode?: string }>();
   try {
-    const row = scanHandOver({ barcode: String(body.barcode || ''), actor_id: actor.id });
+    const row = await scanHandOver({ barcode: String(body.barcode || ''), actor_id: actor.id });
     const dealPromote = await promoteDealToSuccessAfterHanded({
       dealId: String((row as { deal_id?: string } | null)?.deal_id || ''),
       taskId: String((row as { id?: string } | null)?.id || ''),
     });
     if (dealPromote.ok && !dealPromote.skipped) {
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'crm.deal_stage_auto',
         entity: 'crm_deal',
         entityId: String((row as { deal_id?: string } | null)?.deal_id || ''),
@@ -13537,16 +13539,16 @@ api.post('/warehouse/tasks/scan-hand', async (c) => {
 
 /** Скан на /pick: «Сделал» по штрихкоду / номеру задания. */
 api.post('/warehouse/tasks/scan-done', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
   }
   const body = await c.req.json<{ barcode?: string }>();
   try {
-    assertPickShiftForOps(actor);
-    const row = scanMarkDone({ barcode: String(body.barcode || ''), actor_id: actor.id });
-    touchPickShiftActivity(actor.id);
+    await assertPickShiftForOps(actor);
+    const row = await scanMarkDone({ barcode: String(body.barcode || ''), actor_id: actor.id });
+    await touchPickShiftActivity(actor.id);
     let dealPromote: Awaited<ReturnType<typeof promoteDealToSuccessAfterHanded>> | null = null;
     if (String((row as { status?: string } | null)?.status) === 'handed') {
       dealPromote = await promoteDealToSuccessAfterHanded({
@@ -13554,7 +13556,7 @@ api.post('/warehouse/tasks/scan-done', async (c) => {
         taskId: String((row as { id?: string } | null)?.id || ''),
       });
       if (dealPromote.ok && !dealPromote.skipped) {
-        auditFromContext(c, {
+        await auditFromContext(c, {
           action: 'crm.deal_stage_auto',
           entity: 'crm_deal',
           entityId: String((row as { deal_id?: string } | null)?.deal_id || ''),
@@ -13563,7 +13565,7 @@ api.post('/warehouse/tasks/scan-done', async (c) => {
         });
       }
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'warehouse_task.status',
       entity: 'warehouse_task',
       entityId: String((row as { id?: string } | null)?.id || ''),
@@ -13582,7 +13584,7 @@ api.post('/warehouse/tasks/scan-done', async (c) => {
 
 /** Скан марки (Data Matrix) в задание: конкретный экземпляр + поставщик / закупка. */
 api.post('/warehouse/tasks/:id/scan-unit', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
@@ -13597,10 +13599,10 @@ api.post('/warehouse/tasks/:id/scan-unit', async (c) => {
       ''
   ).trim();
   try {
-    assertPickShiftForOps(actor);
-    const row = scanUnitIntoWarehouseTask(c.req.param('id'), code, { actor_id: actor.id });
-    touchPickShiftActivity(actor.id);
-    auditFromContext(c, {
+    await assertPickShiftForOps(actor);
+    const row = await scanUnitIntoWarehouseTask(c.req.param('id'), code, { actor_id: actor.id });
+    await touchPickShiftActivity(actor.id);
+    await auditFromContext(c, {
       action: 'warehouse_task.scan_unit',
       entity: 'warehouse_task',
       entityId: c.req.param('id'),
@@ -13615,7 +13617,7 @@ api.post('/warehouse/tasks/:id/scan-unit', async (c) => {
 
 /** Удалить / сбросить выбранный экземпляр на строке задания (/pick · Изменить / Удалить). */
 api.post('/warehouse/tasks/:id/clear-unit', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
@@ -13624,14 +13626,14 @@ api.post('/warehouse/tasks/:id/clear-unit', async (c) => {
     .json<{ line_idx?: number | string; serial?: string }>()
     .catch(() => ({}));
   try {
-    assertPickShiftForOps(actor);
-    const row = clearUnitFromWarehouseTask(c.req.param('id'), {
+    await assertPickShiftForOps(actor);
+    const row = await clearUnitFromWarehouseTask(c.req.param('id'), {
       line_idx: (body as { line_idx?: number | string }).line_idx,
       serial: (body as { serial?: string }).serial,
       actor_id: actor.id,
     });
-    touchPickShiftActivity(actor.id);
-    auditFromContext(c, {
+    await touchPickShiftActivity(actor.id);
+    await auditFromContext(c, {
       action: 'warehouse_task.clear_unit',
       entity: 'warehouse_task',
       entityId: c.req.param('id'),
@@ -13646,7 +13648,7 @@ api.post('/warehouse/tasks/:id/clear-unit', async (c) => {
 
 /** Вручную задать № экземпляра (создаёт учёт марки, если её ещё не было). */
 api.post('/warehouse/tasks/:id/assign-serial', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
@@ -13655,14 +13657,14 @@ api.post('/warehouse/tasks/:id/assign-serial', async (c) => {
     .json<{ line_idx?: number | string; serial?: string }>()
     .catch(() => ({}));
   try {
-    assertPickShiftForOps(actor);
-    const row = assignManualSerialToWarehouseTask(c.req.param('id'), {
+    await assertPickShiftForOps(actor);
+    const row = await assignManualSerialToWarehouseTask(c.req.param('id'), {
       line_idx: (body as { line_idx?: number | string }).line_idx,
       serial: (body as { serial?: string }).serial,
       actor_id: actor.id,
     });
-    touchPickShiftActivity(actor.id);
-    auditFromContext(c, {
+    await touchPickShiftActivity(actor.id);
+    await auditFromContext(c, {
       action: 'warehouse_task.assign_serial',
       entity: 'warehouse_task',
       entityId: c.req.param('id'),
@@ -13676,15 +13678,15 @@ api.post('/warehouse/tasks/:id/assign-serial', async (c) => {
 });
 
 /** Живой поиск экземпляра по номеру в рамках задания (/pick). */
-api.get('/warehouse/tasks/:id/lookup-unit', (c) => {
-  const actor = actorFromContext(c);
+api.get('/warehouse/tasks/:id/lookup-unit', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
   }
   const q = String(c.req.query('q') || c.req.query('code') || '').trim();
   try {
-    const items = lookupUnitsForWarehouseTask(c.req.param('id'), q, { limit: 8 });
+    const items = await lookupUnitsForWarehouseTask(c.req.param('id'), q, { limit: 8 });
     return c.json({ ok: true, q, items });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'lookup failed' }, 400);
@@ -13692,14 +13694,14 @@ api.get('/warehouse/tasks/:id/lookup-unit', (c) => {
 });
 
 /** Остатки / ячейки / экземпляры по строке — выбор «со склада» на /pick. */
-api.get('/warehouse/tasks/:id/line-stock', (c) => {
-  const actor = actorFromContext(c);
+api.get('/warehouse/tasks/:id/line-stock', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
   }
   try {
-    const row = listStockForWarehouseTaskLine(
+    const row = await listStockForWarehouseTaskLine(
       c.req.param('id'),
       c.req.query('line_idx') || c.req.query('idx') || '0'
     );
@@ -13711,7 +13713,7 @@ api.get('/warehouse/tasks/:id/line-stock', (c) => {
 
 /** Найти задание по ШК / номеру (без закрытия) — открыть и сканировать марки. */
 api.post('/warehouse/tasks/scan-open', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
@@ -13719,15 +13721,15 @@ api.post('/warehouse/tasks/scan-open', async (c) => {
   const body = await c.req.json<{ barcode?: string }>().catch(() => ({}));
   const code = String((body as { barcode?: string }).barcode || '').trim();
   try {
-    assertPickShiftForOps(actor);
-    const hit = get<{ id: string }>(
+    await assertPickShiftForOps(actor);
+    const hit = await get<{ id: string }>(
       `SELECT id FROM warehouse_tasks WHERE barcode = ? OR number = ? LIMIT 1`,
       [code, code]
     );
     if (!hit) throw new Error('Задание по штрихкоду не найдено');
-    const task = getTask(hit.id);
+    const task = await getTask(hit.id);
     if (!task) throw new Error('Задание не найдено');
-    touchPickShiftActivity(actor.id);
+    await touchPickShiftActivity(actor.id);
     return c.json({ kind: 'task', task });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'scan open failed' }, 400);
@@ -13735,25 +13737,25 @@ api.post('/warehouse/tasks/scan-open', async (c) => {
 });
 
 api.post('/crm/deals/:id/warehouse-task', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) || actor?.role === 'courier') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = await c.req.json<{ channel?: string; comment?: string }>().catch(() => ({}));
   try {
     const dealId = c.req.param('id');
-    const task = createTaskFromDeal({
+    const task = await createTaskFromDeal({
       deal_id: dealId,
       channel: (body as { channel?: string }).channel,
       comment: (body as { comment?: string }).comment,
       actor_id: actor?.id,
     });
     try {
-      ensureOrderDocChain(dealId);
+      await ensureOrderDocChain(dealId);
     } catch {
       /* */
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.warehouse_task',
       entity: 'crm_deal',
       entityId: dealId,
@@ -13768,12 +13770,12 @@ api.post('/crm/deals/:id/warehouse-task', async (c) => {
 
 /** Резерв WAIT-PAY по заказу отключён — товар при ожидании оплаты не бронируем. */
 api.post('/crm/deals/:id/reserve-stock', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin' && !canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = String(c.req.param('id') || '').trim();
-  const deal = getDeal(dealId) as Record<string, unknown> | null;
+  const deal = await getDeal(dealId) as Record<string, unknown> | null;
   if (!deal) return c.json({ error: 'not found' }, 404);
   return c.json(
     {
@@ -13788,18 +13790,18 @@ api.post('/crm/deals/:id/reserve-stock', async (c) => {
 
 /** Обеспечение детали из заказа: со склада / курьер / рынок → Задание на СТО. */
 api.get('/crm/deals/:id/sto-parts', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   try {
     const { getDealStoPartsStatus } = await import('./sto-parts-flow.js');
-    return c.json(getDealStoPartsStatus(c.req.param('id')));
+    return c.json(await getDealStoPartsStatus(c.req.param('id')));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'status failed' }, 400);
   }
 });
 
 api.post('/crm/deals/:id/sto-parts', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (actor.role === 'courier') {
     return c.json({ error: 'Недостаточно прав' }, 403);
@@ -13827,7 +13829,7 @@ api.post('/crm/deals/:id/sto-parts', async (c) => {
       created_by: actor.name || actor.login || actor.id,
       actor_id: actor.id,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.sto_parts',
       entity: 'crm_deal',
       entityId: dealId,
@@ -13862,15 +13864,15 @@ api.post('/crm/deals/:id/sto-parts', async (c) => {
 });
 
 /** Поток склада по сделке: резерв, история, блокировки. */
-api.get('/crm/deals/:id/stock-flow', (c) => {
+api.get('/crm/deals/:id/stock-flow', async (c) => {
   const dealId = String(c.req.param('id') || '').trim();
   if (!dealId) return c.json({ error: 'id required' }, 400);
-  return c.json(getDealStockFlowStatus(dealId));
+  return c.json(await getDealStockFlowStatus(dealId));
 });
 
 /** Создать черновик «Передача на склад» (/pick). */
 api.post('/crm/deals/:id/handoff-pick', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const dealId = String(c.req.param('id') || '').trim();
   let source: 'auto' | 'widget' | 'manual' = 'manual';
@@ -13885,12 +13887,12 @@ api.post('/crm/deals/:id/handoff-pick', async (c) => {
     /* empty body ok */
   }
   try {
-    const result = createHandoffPickDraft({
+    const result = await createHandoffPickDraft({
       deal_id: dealId,
       source,
       actor_name: actorName,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.handoff_pick',
       entity: 'crm_deal',
       entityId: dealId,
@@ -13905,12 +13907,12 @@ api.post('/crm/deals/:id/handoff-pick', async (c) => {
 
 /** Резерв → СТО (клиент приехал). */
 api.post('/crm/deals/:id/stock-flow/to-sto', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const dealId = String(c.req.param('id') || '').trim();
   try {
-    const result = transferReserveToSto(dealId, actor.name || actor.login);
-    auditFromContext(c, {
+    const result = await transferReserveToSto(dealId, actor.name || actor.login);
+    await auditFromContext(c, {
       action: 'deal.stock_to_sto',
       entity: 'crm_deal',
       entityId: dealId,
@@ -13925,7 +13927,7 @@ api.post('/crm/deals/:id/stock-flow/to-sto', async (c) => {
 
 /** СРОЧНО на СТО: Основной/Отложено → СТО (+ Резерв → СТО, если уже на резерве). */
 api.post('/crm/deals/:id/stock-flow/urgent-to-sto', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const dealId = String(c.req.param('id') || '').trim();
   let actorName = actor.name || actor.login;
@@ -13937,8 +13939,8 @@ api.post('/crm/deals/:id/stock-flow/urgent-to-sto', async (c) => {
     /* empty body ok */
   }
   try {
-    const result = createUrgentToStoHandoffs(dealId, actorName);
-    auditFromContext(c, {
+    const result = await createUrgentToStoHandoffs(dealId, actorName);
+    await auditFromContext(c, {
       action: 'deal.stock_urgent_to_sto',
       entity: 'crm_deal',
       entityId: dealId,
@@ -13953,11 +13955,11 @@ api.post('/crm/deals/:id/stock-flow/urgent-to-sto', async (c) => {
 
 /** Производство по сделке — статус активных заказов. */
 api.get('/crm/deals/:id/production', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const dealId = String(c.req.param('id') || '').trim();
   try {
-    const jobs = listActiveProductionJobsForDeal(dealId);
+    const jobs = await listActiveProductionJobsForDeal(dealId);
     return c.json({ deal_id: dealId, jobs, can_send: !jobs.length });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'failed' }, 400);
@@ -13966,7 +13968,7 @@ api.get('/crm/deals/:id/production', async (c) => {
 
 /** В производство: consume из заказа, produce из тела запроса, задание кладовщику. */
 api.post('/crm/deals/:id/production', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const dealId = String(c.req.param('id') || '').trim();
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -13977,7 +13979,7 @@ api.post('/crm/deals/:id/production', async (c) => {
     produce_lines?: Array<{ product_id: string; qty?: number }>;
   };
   try {
-    const job = createProductionFromDeal(dealId, {
+    const job = await createProductionFromDeal(dealId, {
       kind: body.kind,
       comment: body.comment,
       consume_lines: body.consume_lines,
@@ -13985,7 +13987,7 @@ api.post('/crm/deals/:id/production', async (c) => {
       queue_send: body.queue_send !== false,
       actor_id: actor.id,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.production_send',
       entity: 'crm_deal',
       entityId: dealId,
@@ -14000,7 +14002,7 @@ api.post('/crm/deals/:id/production', async (c) => {
 
 /** Требование вернуть товар на основной (удалили из заказа / не установили). */
 api.post('/crm/deals/:id/stock-flow/return-request', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const dealId = String(c.req.param('id') || '').trim();
   let body: { reason?: string; lines?: Array<{ product_id: string; qty: number }> } = {};
@@ -14010,12 +14012,12 @@ api.post('/crm/deals/:id/stock-flow/return-request', async (c) => {
     body = {};
   }
   try {
-    const result = requestStockReturn({
+    const result = await requestStockReturn({
       deal_id: dealId,
       reason: body.reason,
       lines: body.lines,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.stock_return_request',
       entity: 'crm_deal',
       entityId: dealId,
@@ -14030,7 +14032,7 @@ api.post('/crm/deals/:id/stock-flow/return-request', async (c) => {
 
 /** Склад подтвердил возврат на основной. */
 api.post('/crm/deals/:id/stock-flow/return-complete', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (
     !canOperateWarehouseTasks(actor) &&
     actor?.role !== 'picker' &&
@@ -14063,7 +14065,7 @@ api.post('/crm/deals/:id/stock-flow/return-complete', async (c) => {
       lines: body.lines,
       actor_name: actor?.name || actor?.login,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'deal.stock_return_complete',
       entity: 'crm_deal',
       entityId: dealId,
@@ -14076,14 +14078,14 @@ api.post('/crm/deals/:id/stock-flow/return-complete', async (c) => {
   }
 });
 
-api.get('/warehouse/pick/returns', (c) => {
-  const actor = actorFromContext(c);
+api.get('/warehouse/pick/returns', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  return c.json({ items: stockReturnsForPick(80) });
+  return c.json({ items: await stockReturnsForPick(80) });
 });
 
-api.get('/warehouse/pick/returns/:dealId/print', (c) => {
-  const actor = actorFromContext(c);
+api.get('/warehouse/pick/returns/:dealId/print', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const dealId = String(c.req.param('dealId') || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
@@ -14091,7 +14093,7 @@ api.get('/warehouse/pick/returns/:dealId/print', (c) => {
     (c.req.query('autoprint') || '').trim() === '1' ||
     (c.req.query('autoprint') || '').trim().toLowerCase() === 'true';
   try {
-    const html = stockReturnPickSlipHtml(dealId, { autoprint });
+    const html = await stockReturnPickSlipHtml(dealId, { autoprint });
     return c.html(html);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'print failed' }, 404);
@@ -14100,7 +14102,7 @@ api.get('/warehouse/pick/returns/:dealId/print', (c) => {
 
 /** Провести возврат на основной с экрана /pick (раздел pick, без CRM). */
 api.post('/warehouse/pick/returns/:dealId/complete', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (
     !canOperateWarehouseTasks(actor) &&
     actor?.role !== 'picker' &&
@@ -14134,7 +14136,7 @@ api.post('/warehouse/pick/returns/:dealId/complete', async (c) => {
       lines: body.lines,
       actor_name: actor?.name || actor?.login,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'pick_return.complete',
       entity: 'crm_deal',
       entityId: dealId,
@@ -14149,34 +14151,34 @@ api.post('/warehouse/pick/returns/:dealId/complete', async (c) => {
 
 /* ——— Э1: дашборд дня / СДЭК / зеркало Доход ——— */
 
-api.get('/ops/dashboard', (c) => c.json(opsDashboard()));
+api.get('/ops/dashboard', async (c) => c.json(await opsDashboard()));
 
-api.get('/ops/income', (c) => {
+api.get('/ops/income', async (c) => {
   return c.json(
-    listIncomeMirror({
+    await listIncomeMirror({
       q: (c.req.query('q') || '').trim() || undefined,
       limit: Number(c.req.query('limit') || 80) || 80,
     })
   );
 });
 
-api.get('/ops/cdek-url', (c) => {
+api.get('/ops/cdek-url', async (c) => {
   const dealId = (c.req.query('deal_id') || c.req.query('lead_id') || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
   return c.json({
-    url: cdekWidgetUrl(dealId),
+    url: await cdekWidgetUrl(dealId),
     deal_id: dealId,
-    native: cdekConfigured(),
+    native: await cdekConfigured(),
   });
 });
 
 api.get('/warehouse/tasks/:id/cdek', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
   }
-  const task = getTask(c.req.param('id'));
+  const task = await getTask(c.req.param('id'));
   if (!task) return c.json({ error: 'not found' }, 404);
   const dealId = String(task.deal_id || '').trim();
   if (!dealId) return c.json({ error: 'no deal_id' }, 400);
@@ -14189,7 +14191,7 @@ api.get('/warehouse/tasks/:id/cdek', async (c) => {
 });
 
 api.post('/warehouse/tasks/:id/cdek/sync', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
@@ -14201,7 +14203,7 @@ api.post('/warehouse/tasks/:id/cdek/sync', async (c) => {
       refresh: body.refresh !== false,
       actor_id: actor.id,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'warehouse_task.cdek_sync',
       entity: 'warehouse_task',
       entityId: c.req.param('id'),
@@ -14211,8 +14213,8 @@ api.post('/warehouse/tasks/:id/cdek/sync', async (c) => {
         status: result.cdek.cdek_status_name,
       },
     });
-    const detail = getTask(c.req.param('id'));
-    return c.json({ ...result, detail, cdek_configured: cdekConfigured() });
+    const detail = await getTask(c.req.param('id'));
+    return c.json({ ...result, detail, cdek_configured: await cdekConfigured() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'cdek sync failed' }, 400);
   }
@@ -14235,7 +14237,7 @@ api.get('/ops/cdek-shipment', async (c) => {
 /* ——— СДЭК: настройки и сделки (bridge к виджету) ——— */
 
 api.get('/ops/cdek/settings', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor) && !isAdminActor(actor)) {
     return c.json({ error: 'Недостаточно прав: СДЭК' }, 403);
@@ -14245,14 +14247,14 @@ api.get('/ops/cdek/settings', async (c) => {
     if (settings.ok === false) {
       return c.json(settings, 502);
     }
-    return c.json({ ...settings, configured: cdekConfigured() });
+    return c.json({ ...settings, configured: await cdekConfigured() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'cdek settings failed' }, 502);
   }
 });
 
 api.put('/ops/cdek/settings', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor.role !== 'manager') {
     return c.json({ error: 'Сохранять настройки СДЭК может админ или менеджер' }, 403);
@@ -14263,7 +14265,7 @@ api.put('/ops/cdek/settings', async (c) => {
     if (settings.ok === false) {
       return c.json(settings, 400);
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'cdek.settings_save',
       entity: 'cdek_settings',
       entityId: 'widget',
@@ -14273,14 +14275,14 @@ api.put('/ops/cdek/settings', async (c) => {
         updated_at: settings.updated_at,
       },
     });
-    return c.json({ ...settings, configured: cdekConfigured() });
+    return c.json({ ...settings, configured: await cdekConfigured() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'cdek settings save failed' }, 502);
   }
 });
 
 api.post('/ops/cdek/action', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!isAdminActor(actor) && actor.role !== 'manager') {
     return c.json({ error: 'Действия СДЭК — админ или менеджер' }, 403);
@@ -14321,7 +14323,7 @@ api.post('/ops/cdek/action', async (c) => {
 });
 
 api.get('/ops/cdek/deals', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor) && !isAdminActor(actor)) {
     return c.json({ error: 'Недостаточно прав: СДЭК' }, 403);
@@ -14356,7 +14358,7 @@ api.get('/ops/cdek/deals', async (c) => {
       count: items.length,
       total: result.count,
       source: result.source,
-      configured: cdekConfigured(),
+      configured: await cdekConfigured(),
       widget_index: 'https://widget.pnevmopodveska1.ru/cdek/',
     });
   } catch (e) {
@@ -14365,7 +14367,7 @@ api.get('/ops/cdek/deals', async (c) => {
 });
 
 api.get('/ops/cdek/deals/:leadId', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor) && !isAdminActor(actor)) {
     return c.json({ error: 'Недостаточно прав: СДЭК' }, 403);
@@ -14377,7 +14379,7 @@ api.get('/ops/cdek/deals/:leadId', async (c) => {
     if (deal.ok === false) {
       return c.json(deal, deal.error?.includes('not found') ? 404 : 502);
     }
-    return c.json({ ok: true, deal, configured: cdekConfigured() });
+    return c.json({ ok: true, deal, configured: await cdekConfigured() });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'cdek deal failed' }, 502);
   }
@@ -14385,18 +14387,18 @@ api.get('/ops/cdek/deals/:leadId', async (c) => {
 
 /* ——— Валюты (каталог + курсы ЦБ РФ) ——— */
 
-api.get('/currencies', (c) => {
+api.get('/currencies', async (c) => {
   const allFlag = (c.req.query('all') || '') === '1';
-  return c.json({ items: listCurrencies(!allFlag) });
+  return c.json({ items: await listCurrencies(!allFlag) });
 });
 
-api.get('/currencies/catalog', (c) => c.json(currenciesCatalog()));
+api.get('/currencies/catalog', async (c) => c.json(await currenciesCatalog()));
 
-api.get('/currencies/header', (c) => c.json(headerRates()));
+api.get('/currencies/header', async (c) => c.json(await headerRates()));
 
-api.get('/currencies/rates', (c) =>
+api.get('/currencies/rates', async (c) =>
   c.json({
-    items: listCurrencyRates({
+    items: await listCurrencyRates({
       base: (c.req.query('base') || '').trim() || undefined,
       quote: (c.req.query('quote') || '').trim() || undefined,
       limit: Number(c.req.query('limit') || 50) || 50,
@@ -14405,7 +14407,7 @@ api.get('/currencies/rates', (c) =>
 );
 
 api.put('/currencies/rates', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor)) return c.json({ error: 'Только admin' }, 403);
   const body = await c.req.json<{
     base_code?: string;
@@ -14422,7 +14424,7 @@ api.put('/currencies/rates', async (c) => {
       .trim()
       .toUpperCase();
     if (rateToRub != null && code && code !== 'RUB') {
-      const row = upsertRubPair({
+      const row = await upsertRubPair({
         code,
         rateToRub,
         rate_date: body.rate_date,
@@ -14430,7 +14432,7 @@ api.put('/currencies/rates', async (c) => {
       });
       return c.json(row);
     }
-    const row = upsertCurrencyRate({
+    const row = await upsertCurrencyRate({
       base_code: body.base_code,
       quote_code: String(body.quote_code || ''),
       rate: Number(body.rate),
@@ -14444,7 +14446,7 @@ api.put('/currencies/rates', async (c) => {
 });
 
 api.post('/currencies/rates/sync-cbr', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor)) return c.json({ error: 'Только admin' }, 403);
   const qForce = (c.req.query('force') || '') === '1';
   const body = (await c.req.json().catch(() => ({}))) as { force?: boolean };
@@ -14457,38 +14459,38 @@ api.post('/currencies/rates/sync-cbr', async (c) => {
 });
 
 api.post('/currencies', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor)) return c.json({ error: 'Только admin' }, 403);
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   try {
-    const row = upsertCurrency(body as Parameters<typeof upsertCurrency>[0]);
+    const row = await upsertCurrency(body as Parameters<typeof upsertCurrency>[0]);
     return c.json(row, 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'currency create failed' }, 400);
   }
 });
 
-api.get('/currencies/:code', (c) => {
-  const row = getCurrency(c.req.param('code'));
+api.get('/currencies/:code', async (c) => {
+  const row = await getCurrency(c.req.param('code'));
   if (!row) return c.json({ error: 'not found' }, 404);
-  const history = listCurrencyRates({
+  const history = await listCurrencyRates({
     base: row.code,
     limit: Number(c.req.query('history') || 60) || 60,
   });
   return c.json({
     ...row,
     rates: history,
-    latest_to_rub: headerRates().items.find((i) => i.code === row.code) || null,
+    latest_to_rub: (await headerRates()).items.find((i) => i.code === row.code) || null,
   });
 });
 
 api.put('/currencies/:code', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor)) return c.json({ error: 'Только admin' }, 403);
   const code = c.req.param('code');
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   try {
-    const row = upsertCurrency({ ...body, code } as Parameters<typeof upsertCurrency>[0]);
+    const row = await upsertCurrency({ ...body, code } as Parameters<typeof upsertCurrency>[0]);
     return c.json(row);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'currency save failed' }, 400);
@@ -14527,15 +14529,15 @@ function emptyPickTodayBody(day: string, site?: string): Record<string, unknown>
   };
 }
 
-function buildPickTodayPayload(
+async function buildPickTodayPayload(
   day: string,
   site: string | undefined,
-  actor: ReturnType<typeof actorFromContext>
-): Record<string, unknown> {
+  actor: Awaited<ReturnType<typeof actorFromContext>>
+): Promise<Record<string, unknown>> {
   const t0 = Date.now();
-  const board = pickerBoard(day, site, actor);
+  const board = await pickerBoard(day, site, actor);
   const tBoard = Date.now();
-  const handoffs = warehouseHandoffsForPick(40, site, actor, { light: true });
+  const handoffs = await warehouseHandoffsForPick(40, site, actor, { light: true });
   const tHandoffs = Date.now();
   const totalKey = `${site || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`;
   const cached = pickCompletedTotalCache.get(totalKey);
@@ -14543,11 +14545,11 @@ function buildPickTodayPayload(
   if (cached && Date.now() - cached.at < PICK_COMPLETED_TOTAL_TTL_MS) {
     handoffs_completed_total = cached.n;
   } else {
-    handoffs_completed_total = warehouseHandoffsPickTotal(undefined, null, true);
+    handoffs_completed_total = await warehouseHandoffsPickTotal(undefined, null, true);
     pickCompletedTotalCache.set(totalKey, { at: Date.now(), n: handoffs_completed_total });
   }
   const tTotal = Date.now();
-  const returns = stockReturnsForPick(40);
+  const returns = await stockReturnsForPick(40);
   const tEnd = Date.now();
   if (tEnd - t0 > 400) {
     console.warn(
@@ -14564,14 +14566,14 @@ export function warmPickTodayCaches(): void {
   const day = new Date().toISOString().slice(0, 10);
   const sites: Array<string | undefined> = [undefined, 'msk', 'strela', 'vogel'];
   let i = 0;
-  const step = () => {
+  const step = async () => {
     if (i >= sites.length) {
       pickTodayBuilding = 0;
       return;
     }
     const site = sites[i++];
     try {
-      const body = buildPickTodayPayload(day, site, null);
+      const body = await buildPickTodayPayload(day, site, null);
       const at = Date.now();
       pickTodayPayloadCache.set(`${day}|${site || 'all'}|||`, { at, body });
       pickTodayPayloadCache.set(`${day}|${site || 'all'}|admin||`, { at, body });
@@ -14584,7 +14586,7 @@ export function warmPickTodayCaches(): void {
 }
 
 api.get('/warehouse/pick/today', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   const day = (c.req.query('day') || '').trim() || new Date().toISOString().slice(0, 10);
   const site = (c.req.query('site') || '').trim() || undefined;
   const d = String(day).slice(0, 10);
@@ -14597,13 +14599,13 @@ api.get('/warehouse/pick/today', async (c) => {
   }
   // Не считаем handoffs на HTTP-потоке: под нагрузкой это кладёт event loop.
   // production_send/receive — лёгкий SQL, кладём сразу (иначе W-xxxx пропадают с /pick).
-  let prodBoard: ReturnType<typeof pickerBoardLightProduction> = {
+  let prodBoard: Awaited<ReturnType<typeof pickerBoardLightProduction>> = {
     open: [],
     groups: [],
     counts: { open: 0, done: 0, blocked: 0 },
   };
   try {
-    prodBoard = pickerBoardLightProduction(site, actor);
+    prodBoard = await pickerBoardLightProduction(site, actor);
   } catch (e) {
     console.warn('[pick/today] light production', e instanceof Error ? e.message : e);
   }
@@ -14637,7 +14639,7 @@ async function enrichPickHandoffsWithCdek(
       const num = String(cdek.cdek_number || deal?.cdek_number || '').trim();
       const barcode =
         String(cdek.cdek_barcode_url || '').trim() ||
-        (num ? cdekBarcodePublicUrl(dealId, num) : '');
+        (num ? await cdekBarcodePublicUrl(dealId, num) : '');
       if (barcode) item.cdek_barcode_url = barcode;
       if (num) item.cdek_number = num;
       if (deal) {
@@ -14645,12 +14647,12 @@ async function enrichPickHandoffsWithCdek(
         if (num) deal.cdek_number = num;
       }
     } catch {
-      const cached = loadCdekDealFromWidgetCache(dealId);
+      const cached = await loadCdekDealFromWidgetCache(dealId);
       const num = String(cached?.cdek_number || deal?.cdek_number || '').trim();
       if (num) {
         const barcode =
           String(cached?.cdek_barcode_url || '').trim() ||
-          cdekBarcodePublicUrl(dealId, num);
+          await cdekBarcodePublicUrl(dealId, num);
         item.cdek_barcode_url = barcode;
         item.cdek_number = num;
         if (deal) {
@@ -14664,32 +14666,32 @@ async function enrichPickHandoffsWithCdek(
 }
 
 api.get('/warehouse/pick/handoffs', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   const limit = Math.max(1, Math.min(40, Number(c.req.query('limit') || 30) || 30));
   const site = (c.req.query('site') || '').trim() || undefined;
   // Только light: полный enrich валит event loop при опросе с нескольких вкладок.
-  const items = warehouseHandoffsForPick(limit, site, actor, { light: true });
+  const items = await warehouseHandoffsForPick(limit, site, actor, { light: true });
   const cacheKey = `all|${site || ''}|`;
   let completed_total = pickCompletedTotalCache.get(cacheKey)?.n;
   if (completed_total == null) {
     completed_total = pickCompletedTotalCache.get('all||')?.n;
   }
   if (completed_total == null) {
-    completed_total = warehouseHandoffsPickTotal(site, actor, true);
+    completed_total = await warehouseHandoffsPickTotal(site, actor, true);
     pickCompletedTotalCache.set(cacheKey, { at: Date.now(), n: completed_total });
   }
   return c.json({
     items,
     count: items.length,
     completed_total,
-    pick_sites: pickSitesCatalog().map((s) => ({ id: s.id, label: s.label })),
+    pick_sites: (await pickSitesCatalog()).map((s) => ({ id: s.id, label: s.label })),
   });
 });
 
 /** Завершённые передачи на склад (проведённые) — архив для /pick.
  *  Без CDEK-enrich: иначе 15× внешние запросы → таймаут UI (25с) и пустой список при total>0. */
 api.get('/warehouse/pick/handoffs/completed', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   const page = Math.max(1, Number(c.req.query('page') || 1) || 1);
   const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') || 15) || 15));
   const site = (c.req.query('site') || '').trim() || undefined;
@@ -14702,24 +14704,24 @@ api.get('/warehouse/pick/handoffs/completed', async (c) => {
     route_from: c.req.query('route_from'),
     route_to: c.req.query('route_to'),
   });
-  const result = warehouseCompletedHandoffsForPick(page, limit, site, actor, dealQ, filters);
+  const result = await warehouseCompletedHandoffsForPick(page, limit, site, actor, dealQ, filters);
   return c.json(result);
 });
 
 /** Справочники фильтров передач (каналы, склады) для /pick. */
-api.get('/warehouse/pick/handoffs/filters', (c) => {
-  const actor = actorFromContext(c);
+api.get('/warehouse/pick/handoffs/filters', async (c) => {
+  const actor = await actorFromContext(c);
   const site = (c.req.query('site') || '').trim() || undefined;
   const posted = String(c.req.query('posted') || '1') !== '0';
-  return c.json(warehouseHandoffPickFilterFacets(site, actor, posted));
+  return c.json(await warehouseHandoffPickFilterFacets(site, actor, posted));
 });
 
 /** Печатная форма расходной для сборки (прикрепить к коробке). */
-api.get('/warehouse/pick/handoffs/:id/print', (c) => {
+api.get('/warehouse/pick/handoffs/:id/print', async (c) => {
   const id = String(c.req.param('id') || '').trim();
   const autoprint = String(c.req.query('autoprint') || '') === '1';
   try {
-    const html = handoffPickSlipHtml(id, { autoprint });
+    const html = await handoffPickSlipHtml(id, { autoprint });
     return c.html(html);
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'print failed';
@@ -14729,7 +14731,7 @@ api.get('/warehouse/pick/handoffs/:id/print', (c) => {
 
 /** Кладовщик собрал — провести расходную «Передача на склад». */
 api.post('/warehouse/pick/handoffs/:id/complete', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -14738,7 +14740,7 @@ api.post('/warehouse/pick/handoffs/:id/complete', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { picks?: HandoffPickUnitInput[] };
     const picks = Array.isArray(body?.picks) ? body.picks : undefined;
     const result = await completeHandoffPick(id, actor?.id, picks);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'pick_handoff.complete',
       entity: 'stock_doc',
       entityId: id,
@@ -14753,7 +14755,7 @@ api.post('/warehouse/pick/handoffs/:id/complete', async (c) => {
 
 /** Кладовщик сменил склад-источник строки на /pick. */
 api.post('/warehouse/pick/handoffs/:id/line-source', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -14763,12 +14765,12 @@ api.post('/warehouse/pick/handoffs/:id/line-source', async (c) => {
       product_id?: string;
       warehouse_id?: string;
     };
-    const result = setHandoffPickLineSource({
+    const result = await setHandoffPickLineSource({
       doc_id: id,
       product_id: String(body?.product_id || '').trim(),
       warehouse_id: String(body?.warehouse_id || '').trim(),
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'pick_handoff.line_source',
       entity: 'stock_doc',
       entityId: id,
@@ -14784,7 +14786,7 @@ api.post('/warehouse/pick/handoffs/:id/line-source', async (c) => {
 
 /** То же по amo deal_id — запасной путь для экрана /pick. */
 api.post('/warehouse/pick/handoffs/by-deal/:dealId/complete', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -14793,7 +14795,7 @@ api.post('/warehouse/pick/handoffs/by-deal/:dealId/complete', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { picks?: HandoffPickUnitInput[] };
     const picks = Array.isArray(body?.picks) ? body.picks : undefined;
     const result = await completeHandoffPickByDeal(dealId, actor?.id, picks);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'pick_handoff.complete',
       entity: 'stock_doc',
       entityId: String(result.doc_id || dealId),
@@ -14807,18 +14809,18 @@ api.post('/warehouse/pick/handoffs/by-deal/:dealId/complete', async (c) => {
 });
 
 /** Статус «вернулось со склада» для виджета Amo. */
-api.get('/warehouse/pick/handoffs/return/:dealId', (c) => {
-  const actor = actorFromContext(c);
+api.get('/warehouse/pick/handoffs/return/:dealId', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const dealId = String(c.req.param('dealId') || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
-  const state = getHandoffReturnState(dealId);
+  const state = await getHandoffReturnState(dealId);
   return c.json({ ok: true, deal_id: dealId, return: state });
 });
 
 /** Склад не собрал — отмена черновика «Передача на склад». */
 api.post('/warehouse/pick/handoffs/:id/cancel', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -14828,7 +14830,7 @@ api.post('/warehouse/pick/handoffs/:id/cancel', async (c) => {
   if (!comment) return c.json({ error: 'Укажите комментарий' }, 400);
   try {
     const result = await cancelHandoffPick(id, comment, actor?.id);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'pick_handoff.cancel',
       entity: 'stock_doc',
       entityId: id,
@@ -14842,7 +14844,7 @@ api.post('/warehouse/pick/handoffs/:id/cancel', async (c) => {
 });
 
 api.post('/warehouse/pick/handoffs/by-deal/:dealId/cancel', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -14852,7 +14854,7 @@ api.post('/warehouse/pick/handoffs/by-deal/:dealId/cancel', async (c) => {
   if (!comment) return c.json({ error: 'Укажите комментарий' }, 400);
   try {
     const result = await cancelHandoffPickByDeal(dealId, comment, actor?.id);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'pick_handoff.cancel',
       entity: 'stock_doc',
       entityId: String(result.doc_id || dealId),
@@ -14867,13 +14869,13 @@ api.post('/warehouse/pick/handoffs/by-deal/:dealId/cancel', async (c) => {
 
 /** СДЭК · места / габариты для панели «Передано» (/pick). */
 api.get('/warehouse/pick/handoffs/:dealId/cdek-pack', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = String(c.req.param('dealId') || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
-  if (!cdekConfigured()) {
+  if (!await cdekConfigured()) {
     return c.json({ ok: false, error: 'СДЭК не настроен (ключ в интеграциях)' }, 503);
   }
   try {
@@ -14888,13 +14890,13 @@ api.get('/warehouse/pick/handoffs/:dealId/cdek-pack', async (c) => {
 });
 
 api.post('/warehouse/pick/handoffs/:dealId/cdek-pack', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = String(c.req.param('dealId') || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
-  if (!cdekConfigured()) {
+  if (!await cdekConfigured()) {
     return c.json({ ok: false, error: 'СДЭК не настроен' }, 503);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -14910,13 +14912,13 @@ api.post('/warehouse/pick/handoffs/:dealId/cdek-pack', async (c) => {
 });
 
 api.post('/warehouse/pick/handoffs/:dealId/cdek-regenerate', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canOperateWarehouseTasks(actor) && actor?.role !== 'picker') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const dealId = String(c.req.param('dealId') || '').trim();
   if (!dealId) return c.json({ error: 'deal_id required' }, 400);
-  if (!cdekConfigured()) {
+  if (!await cdekConfigured()) {
     return c.json({ ok: false, error: 'СДЭК не настроен' }, 503);
   }
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -14930,14 +14932,14 @@ api.post('/warehouse/pick/handoffs/:dealId/cdek-regenerate', async (c) => {
 });
 
 /** Статус смены сборщика + утренний автостарт. */
-api.get('/warehouse/pick/shift', (c) => {
-  const actor = actorFromContext(c);
+api.get('/warehouse/pick/shift', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  return c.json(pickShiftStatusPayload(actor));
+  return c.json(await pickShiftStatusPayload(actor));
 });
 
 api.post('/warehouse/pick/shift/start', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as {
     kind?: string;
@@ -14946,32 +14948,32 @@ api.post('/warehouse/pick/shift/start', async (c) => {
     auto?: boolean;
   };
   try {
-    const shift = startPickShift(actor, {
+    const shift = await startPickShift(actor, {
       kind: body.kind,
       pin: body.pin,
       password: body.password,
       auto: Boolean(body.auto),
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'pick_shift.start',
       entity: 'pick_shift',
       entityId: shift.id,
       summary: `Смена ${shift.kind === 'evening' ? 'вечерняя' : 'дневная'}${shift.auto_started ? ' (утро)' : ''}: ${actor.name}`,
       after: shift,
     });
-    return c.json({ ok: true, ...pickShiftStatusPayload(actor) });
+    return c.json({ ok: true, ...await pickShiftStatusPayload(actor) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'start failed' }, 400);
   }
 });
 
 api.post('/warehouse/pick/shift/end', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   try {
-    const ended = endPickShift(actor);
+    const ended = await endPickShift(actor);
     if (ended) {
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'pick_shift.end',
         entity: 'pick_shift',
         entityId: ended.id,
@@ -14979,39 +14981,39 @@ api.post('/warehouse/pick/shift/end', async (c) => {
         after: ended,
       });
     }
-    return c.json({ ok: true, ended, ...pickShiftStatusPayload(actor) });
+    return c.json({ ok: true, ended, ...await pickShiftStatusPayload(actor) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'end failed' }, 400);
   }
 });
 
 api.post('/warehouse/pick/shift/reauth', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as {
     pin?: string;
     password?: string;
   };
   try {
-    reauthPickShift(actor, { pin: body.pin, password: body.password });
-    return c.json({ ok: true, ...pickShiftStatusPayload(actor) });
+    await reauthPickShift(actor, { pin: body.pin, password: body.password });
+    return c.json({ ok: true, ...await pickShiftStatusPayload(actor) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'reauth failed' }, 400);
   }
 });
 
-api.get('/warehouse/pick/shift/settings', (c) => {
-  const actor = actorFromContext(c);
+api.get('/warehouse/pick/shift/settings', async (c) => {
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor)) return c.json({ error: 'Только администратор' }, 403);
-  return c.json(getPickShiftSettings());
+  return c.json(await getPickShiftSettings());
 });
 
 api.patch('/warehouse/pick/shift/settings', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor)) return c.json({ error: 'Только администратор' }, 403);
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
-  const next = savePickShiftSettings(body as Parameters<typeof savePickShiftSettings>[0]);
-  auditFromContext(c, {
+  const next = await savePickShiftSettings(body as Parameters<typeof savePickShiftSettings>[0]);
+  await auditFromContext(c, {
     action: 'pick_shift.settings',
     entity: 'meta',
     entityId: 'pick_shift_settings',
@@ -15021,33 +15023,33 @@ api.patch('/warehouse/pick/shift/settings', async (c) => {
   return c.json(next);
 });
 
-api.get('/warehouse/pick/shifts', (c) => {
-  const actor = actorFromContext(c);
+api.get('/warehouse/pick/shifts', async (c) => {
+  const actor = await actorFromContext(c);
   if (!isAdminActor(actor) && !canAccessSection(actor, 'staff')) {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   return c.json({
-    items: listPickShifts({
+    items: await listPickShifts({
       day: (c.req.query('day') || '').trim() || undefined,
       staff_id: (c.req.query('staff_id') || '').trim() || undefined,
       limit: Number(c.req.query('limit') || 100),
     }),
-    settings: getPickShiftSettings(),
+    settings: await getPickShiftSettings(),
   });
 });
 
 /** Примитив кладовщика: «сделал» → handed (или ready при шлюзе оплаты). */
 api.post('/warehouse/tasks/:id/done', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (!canOperateWarehouseTasks(actor)) {
     return c.json({ error: 'Недостаточно прав: задания склада' }, 403);
   }
   try {
-    assertPickShiftForOps(actor);
-    const taskBefore = getTask(c.req.param('id')) as { channel?: string; status?: string } | null;
-    const row = markTaskDone({ id: c.req.param('id'), actor_id: actor.id });
-    touchPickShiftActivity(actor.id);
+    await assertPickShiftForOps(actor);
+    const taskBefore = await getTask(c.req.param('id')) as { channel?: string; status?: string } | null;
+    const row = await markTaskDone({ id: c.req.param('id'), actor_id: actor.id });
+    await touchPickShiftActivity(actor.id);
     let productionExecute: Record<string, unknown> | null = null;
     if (
       String((row as { status?: string } | null)?.status) === 'handed' &&
@@ -15058,13 +15060,13 @@ api.post('/warehouse/tasks/:id/done', async (c) => {
       try {
         if (String(taskBefore.channel) === 'production_send') {
           const { executeProductionSendFromTask } = await import('./production-jobs.js');
-          productionExecute = executeProductionSendFromTask({
+          productionExecute = await executeProductionSendFromTask({
             task_id: c.req.param('id'),
             actor_id: actor.id,
           });
         } else {
           const { executeProductionReceiveFromTask } = await import('./production-jobs.js');
-          productionExecute = executeProductionReceiveFromTask({
+          productionExecute = await executeProductionReceiveFromTask({
             task_id: c.req.param('id'),
             actor_id: actor.id,
           });
@@ -15083,7 +15085,7 @@ api.post('/warehouse/tasks/:id/done', async (c) => {
         taskId: c.req.param('id'),
       });
       if (dealPromote.ok && !dealPromote.skipped) {
-        auditFromContext(c, {
+        await auditFromContext(c, {
           action: 'crm.deal_stage_auto',
           entity: 'crm_deal',
           entityId: String((row as { deal_id?: string } | null)?.deal_id || ''),
@@ -15092,7 +15094,7 @@ api.post('/warehouse/tasks/:id/done', async (c) => {
         });
       }
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'warehouse_task.status',
       entity: 'warehouse_task',
       entityId: c.req.param('id'),
@@ -15109,37 +15111,37 @@ api.post('/warehouse/tasks/:id/done', async (c) => {
   }
 });
 
-api.get('/gtd', (c) => c.json(listGtdNumbers(c.req.query('q') || '', Number(c.req.query('limit') || 200))));
+api.get('/gtd', async (c) => c.json(await listGtdNumbers(c.req.query('q') || '', Number(c.req.query('limit') || 200))));
 api.post('/gtd', async (c) => {
   const body = await c.req.json<{ code?: string; description?: string }>();
   try {
-    return c.json(createGtdNumber({ code: String(body.code || ''), description: body.description }), 201);
+    return c.json(await createGtdNumber({ code: String(body.code || ''), description: body.description }), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 api.patch('/gtd/:id', async (c) => {
   const body = await c.req.json<{ code?: string; description?: string }>();
-  const row = patchGtdNumber(c.req.param('id'), body);
+  const row = await patchGtdNumber(c.req.param('id'), body);
   if (!row) return c.json({ error: 'not found' }, 404);
   return c.json(row);
 });
 
-api.get('/stock/low', (c) => c.json(lowStockReport(Number(c.req.query('limit') || 300))));
+api.get('/stock/low', async (c) => c.json(await lowStockReport(Number(c.req.query('limit') || 300))));
 
-api.get('/money/cash-articles', (c) => c.json(listCashArticles()));
+api.get('/money/cash-articles', async (c) => c.json(await listCashArticles()));
 api.post('/money/cash-articles', async (c) => {
   const body = await c.req.json<{ id?: string; name?: string; kind?: string; is_active?: number }>();
   try {
-    return c.json(upsertCashArticle({ id: body.id, name: String(body.name || ''), kind: body.kind, is_active: body.is_active }), 201);
+    return c.json(await upsertCashArticle({ id: body.id, name: String(body.name || ''), kind: body.kind, is_active: body.is_active }), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/money/cash', (c) => {
+api.get('/money/cash', async (c) => {
   const registerId = c.req.query('cash_register_id') || c.req.query('register_id') || '';
   return c.json(
-    listCashDocs(Number(c.req.query('limit') || 200), {
+    await listCashDocs(Number(c.req.query('limit') || 200), {
       cash_register_id: registerId || undefined,
     })
   );
@@ -15156,7 +15158,7 @@ api.post('/money/cash', async (c) => {
   }>();
   try {
     return c.json(
-      createCashDoc({
+      await createCashDoc({
         doc_type: body.doc_type || 'in',
         amount: Number(body.amount),
         article_id: body.article_id,
@@ -15172,7 +15174,7 @@ api.post('/money/cash', async (c) => {
   }
 });
 
-api.get('/money/payment-orders', (c) => c.json(listPaymentOrders(Number(c.req.query('limit') || 200))));
+api.get('/money/payment-orders', async (c) => c.json(await listPaymentOrders(Number(c.req.query('limit') || 200))));
 api.post('/money/payment-orders', async (c) => {
   const body = await c.req.json<{
     amount?: number;
@@ -15182,28 +15184,28 @@ api.post('/money/payment-orders', async (c) => {
     status?: string;
   }>();
   try {
-    return c.json(createPaymentOrder(body as Parameters<typeof createPaymentOrder>[0]), 201);
+    return c.json(await createPaymentOrder(body as Parameters<typeof createPaymentOrder>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
-api.get('/staff/job-titles', (c) => c.json(listJobTitles()));
+api.get('/staff/job-titles', async (c) => c.json(await listJobTitles()));
 api.post('/staff/job-titles', async (c) => {
   const body = await c.req.json<{ id?: string; name?: string; is_active?: number }>();
   try {
-    return c.json(upsertJobTitle({ id: body.id, name: String(body.name || ''), is_active: body.is_active }), 201);
+    return c.json(await upsertJobTitle({ id: body.id, name: String(body.name || ''), is_active: body.is_active }), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
-api.get('/staff/schedules', (c) => c.json(listWorkSchedules()));
+api.get('/staff/schedules', async (c) => c.json(await listWorkSchedules()));
 api.post('/staff/schedules', async (c) => {
   const body = await c.req.json<{ id?: string; name?: string; hours_json?: string; is_active?: number }>();
   try {
     return c.json(
-      upsertWorkSchedule({
+      await upsertWorkSchedule({
         id: body.id,
         name: String(body.name || ''),
         hours_json: body.hours_json,
@@ -15216,11 +15218,11 @@ api.post('/staff/schedules', async (c) => {
   }
 });
 
-api.get('/production/orders', (c) => c.json(listProductionOrders(Number(c.req.query('limit') || 200))));
+api.get('/production/orders', async (c) => c.json(await listProductionOrders(Number(c.req.query('limit') || 200))));
 api.post('/production/orders', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(createProductionOrder(body as Parameters<typeof createProductionOrder>[0]), 201);
+    return c.json(await createProductionOrder(body as Parameters<typeof createProductionOrder>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -15228,7 +15230,7 @@ api.post('/production/orders', async (c) => {
 api.patch('/production/orders/:id', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    const row = patchProductionOrder(c.req.param('id'), body as Parameters<typeof patchProductionOrder>[1]);
+    const row = await patchProductionOrder(c.req.param('id'), body as Parameters<typeof patchProductionOrder>[1]);
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
   } catch (e) {
@@ -15236,17 +15238,17 @@ api.patch('/production/orders/:id', async (c) => {
   }
 });
 
-api.get('/crm/events', (c) => c.json(listCrmEvents(Number(c.req.query('limit') || 200))));
+api.get('/crm/events', async (c) => c.json(await listCrmEvents(Number(c.req.query('limit') || 200))));
 api.post('/crm/events', async (c) => {
   const body = await c.req.json<{ title?: string; kind?: string; deal_id?: string; comment?: string }>();
   try {
-    return c.json(createCrmEvent({ title: String(body.title || ''), kind: body.kind, deal_id: body.deal_id, comment: body.comment }), 201);
+    return c.json(await createCrmEvent({ title: String(body.title || ''), kind: body.kind, deal_id: body.deal_id, comment: body.comment }), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
-api.get('/crm/tasks', (c) => c.json(listCrmTasks(Number(c.req.query('limit') || 200))));
+api.get('/crm/tasks', async (c) => c.json(await listCrmTasks(Number(c.req.query('limit') || 200))));
 api.post('/crm/tasks', async (c) => {
   const body = await c.req.json<{
     title?: string;
@@ -15259,7 +15261,7 @@ api.post('/crm/tasks', async (c) => {
   }>();
   try {
     return c.json(
-      createCrmTask({
+      await createCrmTask({
         title: String(body.title || ''),
         status: body.status,
         due_at: body.due_at,
@@ -15277,9 +15279,9 @@ api.post('/crm/tasks', async (c) => {
 api.patch('/crm/tasks/:id', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { status?: string; comment?: string };
   try {
-    const row = patchCrmTask(c.req.param('id'), body);
+    const row = await patchCrmTask(c.req.param('id'), body);
     if (!row) return c.json({ error: 'not found' }, 404);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'crm.task_patch',
       entity: 'crm_task',
       entityId: c.req.param('id'),
@@ -15290,18 +15292,18 @@ api.patch('/crm/tasks/:id', async (c) => {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/crm/deals/:id/tasks', (c) =>
-  c.json({ items: listCrmTasksForDeal(c.req.param('id'), 50) })
+api.get('/crm/deals/:id/tasks', async (c) =>
+  c.json({ items: await listCrmTasksForDeal(c.req.param('id'), 50) })
 );
 
-api.get('/crm/calendar', (c) => c.json(listCrmCalendar(Number(c.req.query('limit') || 100))));
-api.get('/crm/order-statuses', (c) => c.json(listOrderStatusTypes(String(c.req.query('kind') || ''))));
+api.get('/crm/calendar', async (c) => c.json(await listCrmCalendar(Number(c.req.query('limit') || 100))));
+api.get('/crm/order-statuses', async (c) => c.json(await listOrderStatusTypes(String(c.req.query('kind') || ''))));
 
-api.get('/works/orders', (c) => c.json(listStoWorkOrders(Number(c.req.query('limit') || 200))));
+api.get('/works/orders', async (c) => c.json(await listStoWorkOrders(Number(c.req.query('limit') || 200))));
 api.post('/works/orders', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(createStoWorkOrder(body as Parameters<typeof createStoWorkOrder>[0]), 201);
+    return c.json(await createStoWorkOrder(body as Parameters<typeof createStoWorkOrder>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -15309,50 +15311,50 @@ api.post('/works/orders', async (c) => {
 api.patch('/works/orders/:id', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    const row = patchStoWorkOrder(c.req.param('id'), body as Parameters<typeof patchStoWorkOrder>[1]);
+    const row = await patchStoWorkOrder(c.req.param('id'), body as Parameters<typeof patchStoWorkOrder>[1]);
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/works/resources', (c) => c.json(listStoResources()));
-api.get('/works/order-statuses', (c) => c.json(listOrderStatusTypes('sto')));
+api.get('/works/resources', async (c) => c.json(await listStoResources()));
+api.get('/works/order-statuses', async (c) => c.json(await listOrderStatusTypes('sto')));
 
 /* ——— СТО: подъёмник (/lift) + приёмщик (/reception) ——— */
 
-api.get('/sto/lift/shift', (c) => {
-  const actor = actorFromContext(c);
+api.get('/sto/lift/shift', async (c) => {
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  return c.json(liftShiftStatusPayload(actor));
+  return c.json(await liftShiftStatusPayload(actor));
 });
 
 api.post('/sto/lift/shift/start', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as { pin?: string; password?: string };
   try {
-    const shift = startLiftShift(actor, body);
-    auditFromContext(c, {
+    const shift = await startLiftShift(actor, body);
+    await auditFromContext(c, {
       action: 'sto_lift_shift.start',
       entity: 'sto_lift_shift',
       entityId: shift.id,
       summary: `Смена мастера СТО: ${actor.name}`,
       after: shift,
     });
-    return c.json({ ok: true, ...liftShiftStatusPayload(actor) });
+    return c.json({ ok: true, ...await liftShiftStatusPayload(actor) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'start failed' }, 400);
   }
 });
 
 api.post('/sto/lift/shift/end', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   try {
-    const ended = endLiftShift(actor);
+    const ended = await endLiftShift(actor);
     if (ended) {
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'sto_lift_shift.end',
         entity: 'sto_lift_shift',
         entityId: ended.id,
@@ -15360,30 +15362,30 @@ api.post('/sto/lift/shift/end', async (c) => {
         after: ended,
       });
     }
-    return c.json({ ok: true, ended, ...liftShiftStatusPayload(actor) });
+    return c.json({ ok: true, ended, ...await liftShiftStatusPayload(actor) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'end failed' }, 400);
   }
 });
 
-api.get('/sto/lift/board', (c) => c.json(listLiftsBoard()));
+api.get('/sto/lift/board', async (c) => c.json(await listLiftsBoard()));
 
-api.get('/sto/lift/search', (c) =>
-  c.json(searchStoVehicles(String(c.req.query('q') || ''), Number(c.req.query('limit') || 20)))
+api.get('/sto/lift/search', async (c) =>
+  c.json(await searchStoVehicles(String(c.req.query('q') || ''), Number(c.req.query('limit') || 20)))
 );
 
-api.get('/sto/lift/orders/:id', (c) => {
-  const row = getWorkOrderDetail(c.req.param('id'));
+api.get('/sto/lift/orders/:id', async (c) => {
+  const row = await getWorkOrderDetail(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   return c.json(row);
 });
 
 api.post('/sto/lift/assign', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
   try {
-    const row = assignToLift(actor, {
+    const row = await assignToLift(actor, {
       lift_id: String(body.lift_id || ''),
       work_order_id: body.work_order_id ? String(body.work_order_id) : undefined,
       appointment_id: body.appointment_id ? String(body.appointment_id) : undefined,
@@ -15395,7 +15397,7 @@ api.post('/sto/lift/assign', async (c) => {
         ? (body.works as Array<{ name: string; qty?: number }>)
         : undefined,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sto_lift.assign',
       entity: 'sto_work_order',
       entityId: String((row as { id?: string })?.id || ''),
@@ -15409,12 +15411,12 @@ api.post('/sto/lift/assign', async (c) => {
 });
 
 api.post('/sto/lift/:liftId/free', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req.json<{ mark_done?: boolean }>().catch((): { mark_done?: boolean } => ({}));
   try {
-    const res = freeLift(actor, c.req.param('liftId'), Boolean(body.mark_done));
-    auditFromContext(c, {
+    const res = await freeLift(actor, c.req.param('liftId'), Boolean(body.mark_done));
+    await auditFromContext(c, {
       action: 'sto_lift.free',
       entity: 'sto_resource',
       entityId: c.req.param('liftId'),
@@ -15428,29 +15430,29 @@ api.post('/sto/lift/:liftId/free', async (c) => {
 });
 
 api.post('/sto/lift/orders/:id/works', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req.json<{ name?: string; qty?: number }>().catch((): { name?: string; qty?: number } => ({}));
   try {
-    return c.json(addWoWork(actor, c.req.param('id'), String(body.name || ''), Number(body.qty) || 1), 201);
+    return c.json(await addWoWork(actor, c.req.param('id'), String(body.name || ''), Number(body.qty) || 1), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
 api.post('/sto/lift/orders/:id/materials', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
   try {
-    const row = addMaterial(actor, {
+    const row = await addMaterial(actor, {
       work_order_id: c.req.param('id'),
       product_id: String(body.product_id || ''),
       qty: Number(body.qty) || 0,
       work_log_id: body.work_log_id ? String(body.work_log_id) : undefined,
       write_off: body.write_off !== false,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sto_lift.material',
       entity: 'sto_wo_material',
       entityId: String((row as { id?: string })?.id || ''),
@@ -15463,11 +15465,11 @@ api.post('/sto/lift/orders/:id/materials', async (c) => {
   }
 });
 
-api.get('/sto/work-catalog', (c) => c.json(listWorkCatalog()));
+api.get('/sto/work-catalog', async (c) => c.json(await listWorkCatalog()));
 
-api.get('/sto/work-logs', (c) =>
+api.get('/sto/work-logs', async (c) =>
   c.json(
-    listWorkLogs({
+    await listWorkLogs({
       day: (c.req.query('day') || '').trim() || undefined,
       staff_id: (c.req.query('staff_id') || '').trim() || undefined,
       work_order_id: (c.req.query('work_order_id') || '').trim() || undefined,
@@ -15477,11 +15479,11 @@ api.get('/sto/work-logs', (c) =>
 );
 
 api.post('/sto/work-logs', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
   try {
-    const row = createWorkLog(actor, {
+    const row = await createWorkLog(actor, {
       work_order_id: String(body.work_order_id || ''),
       lift_id: body.lift_id ? String(body.lift_id) : undefined,
       work_name: body.work_name ? String(body.work_name) : undefined,
@@ -15491,7 +15493,7 @@ api.post('/sto/work-logs', async (c) => {
       status: body.status ? String(body.status) : undefined,
       note: body.note ? String(body.note) : undefined,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sto_work_log.create',
       entity: 'sto_work_log',
       entityId: String((row as { id?: string })?.id || ''),
@@ -15505,14 +15507,14 @@ api.post('/sto/work-logs', async (c) => {
 });
 
 api.patch('/sto/work-logs/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   try {
     const id = c.req.param('id');
-    const row = patchWorkLog(actor, id, body as Parameters<typeof patchWorkLog>[2]);
+    const row = await patchWorkLog(actor, id, body as Parameters<typeof patchWorkLog>[2]);
     if (!row) return c.json({ error: 'not found' }, 404);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'sto_work_log.update',
       entity: 'sto_work_log',
       entityId: id,
@@ -15525,18 +15527,18 @@ api.patch('/sto/work-logs/:id', async (c) => {
   }
 });
 
-api.get('/sto/reception/today', (c) => {
+api.get('/sto/reception/today', async (c) => {
   const day = (c.req.query('day') || '').trim();
-  return c.json(listAppointments(day || undefined));
+  return c.json(await listAppointments(day || undefined));
 });
 
-api.get('/sto/reception/queue', (c) => c.json(todayArrivedQueue()));
+api.get('/sto/reception/queue', async (c) => c.json(await todayArrivedQueue()));
 
 api.post('/sto/reception/appointments', async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   try {
-    const row = createAppointment(body as Parameters<typeof createAppointment>[0]);
-    auditFromContext(c, {
+    const row = await createAppointment(body as Parameters<typeof createAppointment>[0]);
+    await auditFromContext(c, {
       action: 'sto_appointment.create',
       entity: 'sto_appointment',
       entityId: String((row as { id?: string })?.id || ''),
@@ -15552,7 +15554,7 @@ api.post('/sto/reception/appointments', async (c) => {
 api.patch('/sto/reception/appointments/:id', async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   try {
-    const row = patchAppointment(c.req.param('id'), body as Parameters<typeof patchAppointment>[1]);
+    const row = await patchAppointment(c.req.param('id'), body as Parameters<typeof patchAppointment>[1]);
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
   } catch (e) {
@@ -15562,8 +15564,8 @@ api.patch('/sto/reception/appointments/:id', async (c) => {
 
 api.post('/sto/reception/appointments/:id/arrive', async (c) => {
   try {
-    const row = markAppointmentArrived(c.req.param('id'));
-    auditFromContext(c, {
+    const row = await markAppointmentArrived(c.req.param('id'));
+    await auditFromContext(c, {
       action: 'sto_appointment.arrive',
       entity: 'sto_appointment',
       entityId: c.req.param('id'),
@@ -15577,23 +15579,23 @@ api.post('/sto/reception/appointments/:id/arrive', async (c) => {
 });
 
 api.get('/marketplaces/meta', (c) => c.json({ channels: marketplaceChannelMeta() }));
-api.get('/marketplaces/orders', (c) =>
-  c.json(listMarketplaceOrders(String(c.req.query('channel') || ''), Number(c.req.query('limit') || 200)))
+api.get('/marketplaces/orders', async (c) =>
+  c.json(await listMarketplaceOrders(String(c.req.query('channel') || ''), Number(c.req.query('limit') || 200)))
 );
 api.post('/marketplaces/orders', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(createMarketplaceOrder(body as Parameters<typeof createMarketplaceOrder>[0]), 201);
+    return c.json(await createMarketplaceOrder(body as Parameters<typeof createMarketplaceOrder>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
-api.get('/prices/matrix', (c) => c.json(priceListMatrix(Number(c.req.query('limit') || 200))));
-api.get('/sales/analysis', (c) => c.json(salesAnalysis()));
-api.get('/inventory', (c) => c.json(listInventorySheets(Number(c.req.query('limit') || 100))));
-api.get('/inventory/:id', (c) => {
-  const row = getInventorySheet(c.req.param('id'));
+api.get('/prices/matrix', async (c) => c.json(await priceListMatrix(Number(c.req.query('limit') || 200))));
+api.get('/sales/analysis', async (c) => c.json(await salesAnalysis()));
+api.get('/inventory', async (c) => c.json(await listInventorySheets(Number(c.req.query('limit') || 100))));
+api.get('/inventory/:id', async (c) => {
+  const row = await getInventorySheet(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   return c.json(row);
 });
@@ -15606,7 +15608,7 @@ api.post('/inventory', async (c) => {
   }>();
   try {
     return c.json(
-      createInventorySheet({
+      await createInventorySheet({
         warehouse_id: String(body.warehouse_id || ''),
         comment: body.comment,
         lines: body.lines || [],
@@ -15620,38 +15622,38 @@ api.post('/inventory', async (c) => {
 });
 api.post('/inventory/:id/post', async (c) => {
   try {
-    return c.json(postInventorySheet(c.req.param('id')));
+    return c.json(await postInventorySheet(c.req.param('id')));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
-api.get('/help/about', (c) => c.json(aboutProgram()));
+api.get('/help/about', async (c) => c.json(await aboutProgram()));
 
-api.get('/money/cash-book', (c) => c.json(cashBook(Number(c.req.query('limit') || 200))));
-api.get('/money/transfers', (c) => c.json(listMoneyTransfers(Number(c.req.query('limit') || 200))));
+api.get('/money/cash-book', async (c) => c.json(await cashBook(Number(c.req.query('limit') || 200))));
+api.get('/money/transfers', async (c) => c.json(await listMoneyTransfers(Number(c.req.query('limit') || 200))));
 api.post('/money/transfers', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(createMoneyTransfer(body as Parameters<typeof createMoneyTransfer>[0]), 201);
+    return c.json(await createMoneyTransfer(body as Parameters<typeof createMoneyTransfer>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/money/bank-docs', (c) =>
-  c.json(listBankDocsLocal(Number(c.req.query('limit') || 200), c.req.query('type') || ''))
+api.get('/money/bank-docs', async (c) =>
+  c.json(await listBankDocsLocal(Number(c.req.query('limit') || 200), c.req.query('type') || ''))
 );
 api.post('/money/bank-docs', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(createBankDocLocal(body as Parameters<typeof createBankDocLocal>[0]), 201);
+    return c.json(await createBankDocLocal(body as Parameters<typeof createBankDocLocal>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/money/cash-registers', (c) =>
+api.get('/money/cash-registers', async (c) =>
   c.json(
-    listCashRegisters({
+    await listCashRegisters({
       organization_id: c.req.query('organization_id') || undefined,
       company_id: c.req.query('company_id') || undefined,
     })
@@ -15661,7 +15663,7 @@ api.post('/money/cash-registers', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
     return c.json(
-      upsertCashRegister({
+      await upsertCashRegister({
         id: body.id != null ? String(body.id) : undefined,
         name: String(body.name || ''),
         kind: body.kind != null ? String(body.kind) : undefined,
@@ -15675,7 +15677,7 @@ api.post('/money/cash-registers', async (c) => {
   }
 });
 api.delete('/money/cash-registers/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   if (
     !isAdminActor(actor) &&
@@ -15685,130 +15687,130 @@ api.delete('/money/cash-registers/:id', async (c) => {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    return c.json(deleteCashRegister(c.req.param('id')));
+    return c.json(await deleteCashRegister(c.req.param('id')));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/money/card-ops', (c) => c.json(listCardOps(Number(c.req.query('limit') || 200))));
+api.get('/money/card-ops', async (c) => c.json(await listCardOps(Number(c.req.query('limit') || 200))));
 api.post('/money/card-ops', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(createCardOp(body as Parameters<typeof createCardOp>[0]), 201);
+    return c.json(await createCardOp(body as Parameters<typeof createCardOp>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/money/payment-calendar', (c) =>
-  c.json(paymentCalendar(c.req.query('from') || '', c.req.query('to') || ''))
+api.get('/money/payment-calendar', async (c) =>
+  c.json(await paymentCalendar(c.req.query('from') || '', c.req.query('to') || ''))
 );
 api.post('/money/payment-calendar', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(createPaymentPlanItem(body as Parameters<typeof createPaymentPlanItem>[0]), 201);
+    return c.json(await createPaymentPlanItem(body as Parameters<typeof createPaymentPlanItem>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
-api.get('/staff/hr-docs', (c) =>
-  c.json(listHrDocs(Number(c.req.query('limit') || 200), c.req.query('type') || ''))
+api.get('/staff/hr-docs', async (c) =>
+  c.json(await listHrDocs(Number(c.req.query('limit') || 200), c.req.query('type') || ''))
 );
 api.post('/staff/hr-docs', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(createHrDoc(body as Parameters<typeof createHrDoc>[0]), 201);
+    return c.json(await createHrDoc(body as Parameters<typeof createHrDoc>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/staff/persons', (c) => c.json(listPersons()));
-api.get('/staff/shifts', (c) => c.json(listWorkShifts()));
+api.get('/staff/persons', async (c) => c.json(await listPersons()));
+api.get('/staff/shifts', async (c) => c.json(await listWorkShifts()));
 api.post('/staff/shifts', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(upsertWorkShift(body as Parameters<typeof upsertWorkShift>[0]), 201);
+    return c.json(await upsertWorkShift(body as Parameters<typeof upsertWorkShift>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/staff/time-kinds', (c) => c.json(listTimeKinds()));
+api.get('/staff/time-kinds', async (c) => c.json(await listTimeKinds()));
 api.post('/staff/time-kinds', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
-    return c.json(upsertTimeKind(body as Parameters<typeof upsertTimeKind>[0]), 201);
+    return c.json(await upsertTimeKind(body as Parameters<typeof upsertTimeKind>[0]), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 
-api.get('/companies', (c) => {
-  ensureCompaniesSchema();
-  return c.json(companiesPublicListPayload());
+api.get('/companies', async (c) => {
+  await ensureCompaniesSchema();
+  return c.json(await companiesPublicListPayload());
 });
 
-api.get('/company/companies', (c) => {
-  ensureCompaniesSchema();
-  return c.json(companiesListPayload());
+api.get('/company/companies', async (c) => {
+  await ensureCompaniesSchema();
+  return c.json(await companiesListPayload());
 });
-api.get('/company/companies/:id', (c) => {
-  ensureCompaniesSchema();
-  const detail = companyDetailPayload(c.req.param('id'));
+api.get('/company/companies/:id', async (c) => {
+  await ensureCompaniesSchema();
+  const detail = await companyDetailPayload(c.req.param('id'));
   if (!detail) return c.json({ error: 'not found' }, 404);
   return c.json(detail);
 });
 api.post('/company/companies', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   try {
-    const row = upsertCompany(body as Parameters<typeof upsertCompany>[0]);
-    ensureCompanySysWarehouses(row.id);
-    auditFromContext(c, {
+    const row = await upsertCompany(body as Parameters<typeof upsertCompany>[0]);
+    await ensureCompanySysWarehouses(row.id);
+    await auditFromContext(c, {
       action: 'company.create',
       entity: 'company',
       entityId: row.id,
       summary: `Организация (контур): ${row.name}`,
       after: row,
     });
-    return c.json(companyDetailPayload(row.id), 201);
+    return c.json(await companyDetailPayload(row.id), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 api.put('/company/companies/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   try {
-    const row = upsertCompany({
+    const row = await upsertCompany({
       ...(body as Parameters<typeof upsertCompany>[0]),
       id: c.req.param('id'),
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'company.update',
       entity: 'company',
       entityId: row.id,
       summary: `Организация (контур): ${row.name}`,
       after: row,
     });
-    return c.json(companyDetailPayload(row.id));
+    return c.json(await companyDetailPayload(row.id));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
 api.post('/company/companies/:id/default', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    const row = setDefaultCompany(c.req.param('id'));
-    auditFromContext(c, {
+    const row = await setDefaultCompany(c.req.param('id'));
+    await auditFromContext(c, {
       action: 'company.default',
       entity: 'company',
       entityId: row.id,
@@ -15821,13 +15823,13 @@ api.post('/company/companies/:id/default', async (c) => {
   }
 });
 api.post('/company/companies/:id/archive', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    const row = archiveCompany(c.req.param('id'));
-    auditFromContext(c, {
+    const row = await archiveCompany(c.req.param('id'));
+    await auditFromContext(c, {
       action: 'company.archive',
       entity: 'company',
       entityId: row.id,
@@ -15840,13 +15842,13 @@ api.post('/company/companies/:id/archive', async (c) => {
   }
 });
 api.post('/company/companies/:id/restore', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    const row = restoreCompany(c.req.param('id'));
-    auditFromContext(c, {
+    const row = await restoreCompany(c.req.param('id'));
+    await auditFromContext(c, {
       action: 'company.restore',
       entity: 'company',
       entityId: row.id,
@@ -15859,15 +15861,15 @@ api.post('/company/companies/:id/restore', async (c) => {
   }
 });
 
-api.get('/company/organizations', (c) => c.json(companyOrganizations()));
+api.get('/company/organizations', async (c) => c.json(await companyOrganizations()));
 api.post('/company/organizations/sync-from-tochka', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
     const result = await syncOrganizationsFromTochka();
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'org.sync_tochka',
       entity: 'organization',
       summary: `Из Точки: +${result.created} / upd ${result.updated} / off ${result.deactivated} (customers ${result.customers_in_tochka})`,
@@ -15883,20 +15885,20 @@ api.post('/company/organizations/sync-from-tochka', async (c) => {
     return c.json({ error: e instanceof Error ? e.message : 'tochka sync failed' }, 502);
   }
 });
-api.get('/company/organizations/:id', (c) => {
-  const row = getOrganization(c.req.param('id'));
+api.get('/company/organizations/:id', async (c) => {
+  const row = await getOrganization(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   return c.json({ ...row, ...orgPrintAssetsMeta(row.inn) });
 });
 api.post('/company/organizations', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   try {
-    const row = upsertOrganization(body as Parameters<typeof upsertOrganization>[0]);
-    auditFromContext(c, {
+    const row = await upsertOrganization(body as Parameters<typeof upsertOrganization>[0]);
+    await auditFromContext(c, {
       action: 'org.create',
       entity: 'organization',
       entityId: row.id,
@@ -15909,17 +15911,17 @@ api.post('/company/organizations', async (c) => {
   }
 });
 api.put('/company/organizations/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   try {
-    const row = upsertOrganization({
+    const row = await upsertOrganization({
       ...(body as Parameters<typeof upsertOrganization>[0]),
       id: c.req.param('id'),
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'org.update',
       entity: 'organization',
       entityId: row.id,
@@ -15937,11 +15939,11 @@ async function orgPrintUploadForId(
   organizationId: string,
   kind: OrgPrintAssetKind
 ) {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const row = getOrganization(organizationId);
+  const row = await getOrganization(organizationId);
   if (!row) return c.json({ error: 'not found' }, 404);
   const inn = String(row.inn || '').replace(/\D/g, '');
   if (!inn) {
@@ -15956,7 +15958,7 @@ async function orgPrintUploadForId(
   if (!buf?.length) return c.json({ error: 'Нужен файл изображения (file) или image_base64' }, 400);
   try {
     const r = saveOrgPrintAsset(inn, kind, buf);
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: kind === 'stamp' ? 'org.stamp_upload' : 'org.signature_upload',
       entity: 'organization',
       entityId: organizationId,
@@ -15968,40 +15970,40 @@ async function orgPrintUploadForId(
   }
 }
 
-api.post('/company/organizations/:id/stamp', (c) =>
-  orgPrintUploadForId(c, c.req.param('id'), 'stamp')
+api.post('/company/organizations/:id/stamp', async (c) =>
+  await orgPrintUploadForId(c, c.req.param('id'), 'stamp')
 );
-api.post('/company/organizations/:id/signature', (c) =>
-  orgPrintUploadForId(c, c.req.param('id'), 'sign')
+api.post('/company/organizations/:id/signature', async (c) =>
+  await orgPrintUploadForId(c, c.req.param('id'), 'sign')
 );
-api.delete('/company/organizations/:id/stamp', (c) => {
-  const actor = actorFromContext(c);
+api.delete('/company/organizations/:id/stamp', async (c) => {
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const row = getOrganization(c.req.param('id'));
+  const row = await getOrganization(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   deleteOrgPrintAsset(row.inn, 'stamp');
   return c.json({ ok: true, ...row, ...orgPrintAssetsMeta(row.inn) });
 });
-api.delete('/company/organizations/:id/signature', (c) => {
-  const actor = actorFromContext(c);
+api.delete('/company/organizations/:id/signature', async (c) => {
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
-  const row = getOrganization(c.req.param('id'));
+  const row = await getOrganization(c.req.param('id'));
   if (!row) return c.json({ error: 'not found' }, 404);
   deleteOrgPrintAsset(row.inn, 'sign');
   return c.json({ ok: true, ...row, ...orgPrintAssetsMeta(row.inn) });
 });
 api.post('/company/organizations/:id/default', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
   try {
-    const row = setDefaultOrganization(c.req.param('id'));
-    auditFromContext(c, {
+    const row = await setDefaultOrganization(c.req.param('id'));
+    await auditFromContext(c, {
       action: 'org.default',
       entity: 'organization',
       entityId: row.id,
@@ -16014,7 +16016,7 @@ api.post('/company/organizations/:id/default', async (c) => {
   }
 });
 api.delete('/company/organizations/:id', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -16022,14 +16024,14 @@ api.delete('/company/organizations/:id', async (c) => {
   const hard = (c.req.query('hard') || '').trim() === '1';
   try {
     if (hard) {
-      const links = organizationLinkInfo(id);
+      const links = await organizationLinkInfo(id);
       if (links.linked) {
         return c.json({ error: LINKED_DELETE_MSG, has_links: true, link_counts: links.counts }, 409);
       }
-      const before = getOrganization(id);
+      const before = await getOrganization(id);
       if (!before) return c.json({ error: 'Организация не найдена' }, 404);
-      hardDeleteOrganization(id);
-      auditFromContext(c, {
+      await hardDeleteOrganization(id);
+      await auditFromContext(c, {
         action: 'org.delete',
         entity: 'organization',
         entityId: id,
@@ -16038,15 +16040,15 @@ api.delete('/company/organizations/:id', async (c) => {
       });
       return c.json({ ok: true });
     }
-    const row = deactivateOrganization(id);
-    auditFromContext(c, {
+    const row = await deactivateOrganization(id);
+    await auditFromContext(c, {
       action: 'org.deactivate',
       entity: 'organization',
       entityId: row.id,
       summary: `В архив: ${row.name}`,
       after: row,
     });
-    const links = organizationLinkInfo(row.id);
+    const links = await organizationLinkInfo(row.id);
     return c.json({
       ...row,
       has_links: links.linked,
@@ -16058,41 +16060,41 @@ api.delete('/company/organizations/:id', async (c) => {
   }
 });
 /** Компактный список для выпадающих списков. */
-api.get('/organizations', (c) => {
+api.get('/organizations', async (c) => {
   const activeOnly = c.req.query('all') !== '1';
   const companyId = (c.req.query('company_id') || '').trim();
-  const coFilter = resolveListCompanyFilter(actorFromContext(c), companyId);
+  const coFilter = resolveListCompanyFilter(await actorFromContext(c), companyId);
   if (coFilter.mode === 'none') return c.json([]);
   if (coFilter.mode === 'one') {
-    return c.json(listOrganizations({ activeOnly, companyId: coFilter.id }));
+    return c.json(await listOrganizations({ activeOnly, companyId: coFilter.id }));
   }
   if (coFilter.mode === 'in') {
     return c.json(
-      listOrganizations({ activeOnly }).filter((o) =>
+      (await listOrganizations({ activeOnly })).filter((o) =>
         coFilter.ids.includes(String(o.company_id || ''))
       )
     );
   }
-  return c.json(listOrganizations({ activeOnly, companyId: companyId || undefined }));
+  return c.json(await listOrganizations({ activeOnly, companyId: companyId || undefined }));
 });
-api.get('/company/bank-accounts', (c) => c.json(listCompanyBankAccounts()));
+api.get('/company/bank-accounts', async (c) => c.json(await listCompanyBankAccounts()));
 api.post('/company/bank-accounts', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   try {
     return c.json(
-      upsertCompanyBankAccount(body as Parameters<typeof upsertCompanyBankAccount>[0]),
+      await upsertCompanyBankAccount(body as Parameters<typeof upsertCompanyBankAccount>[0]),
       201
     );
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.post('/company/bank-accounts/:id/archive', (c) => {
+api.post('/company/bank-accounts/:id/archive', async (c) => {
   const id = c.req.param('id');
-  const row = get('SELECT * FROM company_bank_accounts WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM company_bank_accounts WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  const next = archiveBankAccount(id);
-  auditFromContext(c, {
+  const next = await archiveBankAccount(id);
+  await auditFromContext(c, {
     action: 'bank_account.archive',
     entity: 'bank_account',
     entityId: id,
@@ -16100,22 +16102,22 @@ api.post('/company/bank-accounts/:id/archive', (c) => {
     before: row,
     after: next,
   });
-  return c.json(withDeleteMeta('bank_account', next as Record<string, unknown>));
+  return c.json(await withDeleteMeta('bank_account', next as Record<string, unknown>));
 });
-api.delete('/company/bank-accounts/:id', (c) => {
+api.delete('/company/bank-accounts/:id', async (c) => {
   const id = c.req.param('id');
-  const row = get('SELECT * FROM company_bank_accounts WHERE id = ?', [id]);
+  const row = await get('SELECT * FROM company_bank_accounts WHERE id = ?', [id]);
   if (!row) return c.json({ error: 'not found' }, 404);
-  const links = bankAccountLinkInfo(id);
+  const links = await bankAccountLinkInfo(id);
   if (links.linked) {
     return c.json({ error: LINKED_DELETE_MSG, has_links: true, link_counts: links.counts }, 409);
   }
   try {
-    hardDeleteBankAccount(id);
+    await hardDeleteBankAccount(id);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 409);
   }
-  auditFromContext(c, {
+  await auditFromContext(c, {
     action: 'bank_account.delete',
     entity: 'bank_account',
     entityId: id,
@@ -16125,11 +16127,11 @@ api.delete('/company/bank-accounts/:id', (c) => {
   return c.json({ ok: true });
 });
 api.get('/company/dicts', (c) => c.json(allDictionariesIndex()));
-api.get('/company/analytics', (c) => c.json(companyAnalytics()));
+api.get('/company/analytics', async (c) => c.json(await companyAnalytics()));
 
-api.get('/home/kpi', (c) => {
-  const base = homeKpi();
-  const activity = auditKpi({ days: 14 });
+api.get('/home/kpi', async (c) => {
+  const base = await homeKpi();
+  const activity = await auditKpi({ days: 14 });
   return c.json({
     ...base,
     staff_activity: {
@@ -16141,21 +16143,21 @@ api.get('/home/kpi', (c) => {
   });
 });
 
-api.get('/settings/my', (c) => c.json(settingsMyProfile(actorFromContext(c))));
+api.get('/settings/my', async (c) => c.json(settingsMyProfile(await actorFromContext(c))));
 api.get('/settings/calendars', (c) => c.json(settingsCalendars()));
-api.get('/settings/equipment', (c) => c.json(settingsEquipment()));
+api.get('/settings/equipment', async (c) => c.json(await settingsEquipment()));
 api.get('/settings/sales-channels', (c) => c.json(settingsSalesChannels()));
 api.get('/settings/yookassa', (c) => c.json(settingsYookassa()));
 api.get('/settings/reports', (c) => c.json(settingsReportsIndex()));
 
 /** Пометки на схеме жизненного цикла — общие для всех (meta / SQLite). */
-api.get('/help/lifecycle-marks', (c) => c.json(getHelpLcMarks()));
+api.get('/help/lifecycle-marks', async (c) => c.json(await getHelpLcMarks()));
 api.put('/help/lifecycle-marks', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
   const body = (await c.req.json().catch(() => ({}))) as { marks?: unknown };
-  const saved = putHelpLcMarks(body.marks, actor);
-  auditFromContext(c, {
+  const saved = await putHelpLcMarks(body.marks, actor);
+  await auditFromContext(c, {
     action: 'help.lifecycle_marks',
     entity: 'meta',
     entityId: 'help_lc_marks',
@@ -16178,20 +16180,20 @@ api.get('/help/sale-scenarios', async (c) => {
 
 /** Batch A: Закупки / Продажи / складские отчёты — тонкие журналы + хабы. */
 api.get('/parity/journals', (c) => c.json({ items: listThinJournalKeys() }));
-api.get('/parity/journals/:key', (c) => {
+api.get('/parity/journals/:key', async (c) => {
   try {
     const key = c.req.param('key');
     const limit = Number(c.req.query('limit') || 200);
     const q = c.req.query('q') || '';
     if (key === 'transfer_orders') {
-      return c.json(listTransferOrdersJournal(limit, q));
+      return c.json(await listTransferOrdersJournal(limit, q));
     }
     if (key === 'purchase_discrepancy') {
       const meta = getThinJournalMeta(key);
       const qq = String(q || '')
         .trim()
         .toLowerCase();
-      let items = listDiscrepancyActs(limit).map((a) => ({
+      let items = (await listDiscrepancyActs(limit)).map((a) => ({
         id: String(a.id || ''),
         journal_key: key,
         number: String(a.number || ''),
@@ -16227,17 +16229,17 @@ api.get('/parity/journals/:key', (c) => {
         items,
       });
     }
-    return c.json(listThinJournalDocs(key, limit, q));
+    return c.json(await listThinJournalDocs(key, limit, q));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/parity/journals/:key/:id', (c) => {
+api.get('/parity/journals/:key/:id', async (c) => {
   try {
     const key = c.req.param('key');
     const id = c.req.param('id');
     if (key === 'purchase_discrepancy') {
-      const packed = getDiscrepancyAct(id);
+      const packed = await getDiscrepancyAct(id);
       if (!packed) return c.json({ error: 'not found' }, 404);
       const a = packed.act;
       return c.json({
@@ -16275,8 +16277,8 @@ api.get('/parity/journals/:key/:id', (c) => {
     // Заказ поставщику: при открытии догенерируем марки (по 1 на каждую шт. qty)
     const row =
       key === 'supplier_orders'
-        ? ensureThinJournalMarks(key, id)
-        : getThinJournalDoc(key, id);
+        ? await ensureThinJournalMarks(key, id)
+        : await getThinJournalDoc(key, id);
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
   } catch (e) {
@@ -16296,7 +16298,7 @@ api.post('/parity/journals/:key', async (c) => {
     if (!getThinJournalMeta(c.req.param('key'))) {
       return c.json({ error: 'unknown journal' }, 404);
     }
-    return c.json(createThinJournalDoc(c.req.param('key'), body), 201);
+    return c.json(await createThinJournalDoc(c.req.param('key'), body), 201);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
@@ -16322,7 +16324,7 @@ api.patch('/parity/journals/:key/:id', async (c) => {
       ];
       const hasHeader = headerKeys.some((k) => body[k] != null);
       if (hasHeader && body.payload_json == null) {
-        const updated = patchThinSupplierOrderHeader(id, {
+        const updated = await patchThinSupplierOrderHeader(id, {
           status: body.status != null ? String(body.status) : undefined,
           comment: body.comment != null ? String(body.comment) : undefined,
           doc_date: body.doc_date != null ? String(body.doc_date) : undefined,
@@ -16346,10 +16348,10 @@ api.patch('/parity/journals/:key/:id', async (c) => {
         return c.json(updated);
       }
     }
-    const row = patchThinJournalDoc(id, body as Parameters<typeof patchThinJournalDoc>[1]);
+    const row = await patchThinJournalDoc(id, body as Parameters<typeof patchThinJournalDoc>[1]);
     if (!row) return c.json({ error: 'not found' }, 404);
     if (key === 'supplier_orders') {
-      return c.json(getThinJournalDoc(key, id) || row);
+      return c.json(await getThinJournalDoc(key, id) || row);
     }
     return c.json(row);
   } catch (e) {
@@ -16362,7 +16364,7 @@ api.post('/parity/journals/:key/:id/lines', async (c) => {
     if (!getThinJournalMeta(c.req.param('key'))) {
       return c.json({ error: 'unknown journal' }, 404);
     }
-    const row = addThinJournalLine(c.req.param('key'), c.req.param('id'), {
+    const row = await addThinJournalLine(c.req.param('key'), c.req.param('id'), {
       product_id: String(body.product_id || ''),
       qty: body.qty,
       price: body.price,
@@ -16373,12 +16375,12 @@ api.post('/parity/journals/:key/:id/lines', async (c) => {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.delete('/parity/journals/:key/:id/lines/:idx', (c) => {
+api.delete('/parity/journals/:key/:id/lines/:idx', async (c) => {
   try {
     if (!getThinJournalMeta(c.req.param('key'))) {
       return c.json({ error: 'unknown journal' }, 404);
     }
-    const row = removeThinJournalLine(
+    const row = await removeThinJournalLine(
       c.req.param('key'),
       c.req.param('id'),
       Number(c.req.param('idx'))
@@ -16397,7 +16399,7 @@ api.post('/parity/journals/:key/:id/lines/delete', async (c) => {
     }
     const body = (await c.req.json()) as { indices?: number[] };
     const indices = Array.isArray(body.indices) ? body.indices : [];
-    const row = removeThinJournalLines(c.req.param('key'), c.req.param('id'), indices);
+    const row = await removeThinJournalLines(c.req.param('key'), c.req.param('id'), indices);
     if (!row) return c.json({ error: 'not found' }, 404);
     return c.json(row);
   } catch (e) {
@@ -16410,7 +16412,7 @@ api.patch('/parity/journals/:key/:id/lines/:idx', async (c) => {
       return c.json({ error: 'unknown journal' }, 404);
     }
     const body = (await c.req.json()) as { qty?: number; price?: number };
-    const row = patchThinJournalLine(
+    const row = await patchThinJournalLine(
       c.req.param('key'),
       c.req.param('id'),
       Number(c.req.param('idx')),
@@ -16433,7 +16435,7 @@ api.post('/parity/journals/:key/:id/datamatrix/allocate', async (c) => {
     if (!getThinJournalMeta(c.req.param('key'))) {
       return c.json({ error: 'unknown journal' }, 404);
     }
-    const row = allocateThinJournalDatamatrix(c.req.param('key'), c.req.param('id'), {
+    const row = await allocateThinJournalDatamatrix(c.req.param('key'), c.req.param('id'), {
       prefix: body.prefix,
       force: !!body.force,
     });
@@ -16443,12 +16445,12 @@ api.post('/parity/journals/:key/:id/datamatrix/allocate', async (c) => {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/parity/journals/:key/:id/datamatrix/labels.html', (c) => {
+api.get('/parity/journals/:key/:id/datamatrix/labels.html', async (c) => {
   try {
     if (!getThinJournalMeta(c.req.param('key'))) {
       return c.json({ error: 'unknown journal' }, 404);
     }
-    const html = thinJournalDmLabelsHtml(c.req.param('key'), c.req.param('id'));
+    const html = await thinJournalDmLabelsHtml(c.req.param('key'), c.req.param('id'));
     return c.html(html);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
@@ -16460,7 +16462,7 @@ api.get('/parity/journals/:key/:id/datamatrix/labels.pdf', async (c) => {
       return c.json({ error: 'unknown journal' }, 404);
     }
     const buf = await thinJournalDmLabelsPdf(c.req.param('key'), c.req.param('id'));
-    const num = getThinJournalDoc(c.req.param('key'), c.req.param('id'))?.number || 'dm';
+    const num = (await getThinJournalDoc(c.req.param('key'), c.req.param('id')))?.number || 'dm';
     const asciiName = `dm-${String(num).replace(/[^\x20-\x7E]+/g, '_')}.pdf`;
     c.header('Content-Type', 'application/pdf');
     c.header(
@@ -16473,13 +16475,13 @@ api.get('/parity/journals/:key/:id/datamatrix/labels.pdf', async (c) => {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.get('/parity/journals/:key/:id/datamatrix/excel.csv', (c) => {
+api.get('/parity/journals/:key/:id/datamatrix/excel.csv', async (c) => {
   try {
     if (!getThinJournalMeta(c.req.param('key'))) {
       return c.json({ error: 'unknown journal' }, 404);
     }
-    const csv = thinJournalDmExcelCsv(c.req.param('key'), c.req.param('id'));
-    const num = getThinJournalDoc(c.req.param('key'), c.req.param('id'))?.number || 'dm';
+    const csv = await thinJournalDmExcelCsv(c.req.param('key'), c.req.param('id'));
+    const num = (await getThinJournalDoc(c.req.param('key'), c.req.param('id')))?.number || 'dm';
     const asciiName = `dm-${String(num).replace(/[^\x20-\x7E]+/g, '_')}.csv`;
     c.header('Content-Type', 'text/csv; charset=utf-8');
     c.header(
@@ -16491,9 +16493,9 @@ api.get('/parity/journals/:key/:id/datamatrix/excel.csv', (c) => {
     return c.json({ error: e instanceof Error ? e.message : 'error' }, 400);
   }
 });
-api.delete('/parity/journals/:key/:id', (c) => {
+api.delete('/parity/journals/:key/:id', async (c) => {
   try {
-    const ok = deleteThinJournalDoc(c.req.param('key'), c.req.param('id'));
+    const ok = await deleteThinJournalDoc(c.req.param('key'), c.req.param('id'));
     if (!ok) return c.json({ error: 'not found' }, 404);
     return c.json({ ok: true });
   } catch (e) {
@@ -16501,23 +16503,23 @@ api.delete('/parity/journals/:key/:id', (c) => {
   }
 });
 
-api.get('/purchases/reports', (c) => c.json(purchasesReportsHub()));
-api.get('/purchases/inbound-report', (c) =>
+api.get('/purchases/reports', async (c) => c.json(await purchasesReportsHub()));
+api.get('/purchases/inbound-report', async (c) =>
   c.json(
-    purchasesInboundReport(
+    await purchasesInboundReport(
       Number(c.req.query('limit') || 100),
       c.req.query('gtd') === '1' || c.req.query('gtd_only') === '1'
     )
   )
 );
-api.get('/purchases/demand', (c) => c.json(demandCalculation(Number(c.req.query('limit') || 200))));
-api.get('/warehouse/reports', (c) => c.json(warehouseReportsHub()));
-api.get('/stock/writeoffs', (c) => c.json(listWriteOffs(Number(c.req.query('limit') || 200))));
-api.get('/stock/transfers', (c) => c.json(listTransfers(Number(c.req.query('limit') || 200))));
+api.get('/purchases/demand', async (c) => c.json(await demandCalculation(Number(c.req.query('limit') || 200))));
+api.get('/warehouse/reports', async (c) => c.json(await warehouseReportsHub()));
+api.get('/stock/writeoffs', async (c) => c.json(await listWriteOffs(Number(c.req.query('limit') || 200))));
+api.get('/stock/transfers', async (c) => c.json(await listTransfers(Number(c.req.query('limit') || 200))));
 
 /** Требование на возврат: сделка → задание кладовщику + ТВД (компенсация) в Деньгах. */
 api.post('/supply/return-request', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -16542,7 +16544,7 @@ api.post('/supply/return-request', async (c) => {
   try {
     const outDocId = String(body.out_doc_id || '').trim();
     if (!outDocId) return c.json({ error: 'Укажите документ списания' }, 400);
-    const outDoc = get<{
+    const outDoc = await get<{
       id: string;
       number: string;
       doc_type: string;
@@ -16562,7 +16564,7 @@ api.post('/supply/return-request', async (c) => {
     const outNum = String(body.out_doc_number || outDoc.number || '').trim();
     const whId = String(body.warehouse_id || '').trim();
     if (!whId) return c.json({ error: 'Укажите склад прихода' }, 400);
-    const wh = get<{ name: string }>(
+    const wh = await get<{ name: string }>(
       `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [whId]
     );
@@ -16573,7 +16575,7 @@ api.post('/supply/return-request', async (c) => {
     const { createMoneyRefundFromReturn } = await import('./return-money.js');
     const { getLastSalePrice } = await import('./return-money.js');
 
-    const enriched = lines.map((l) => {
+    const enriched = await Promise.all(lines.map(async (l) => {
       const productId = String(l.product_id || '').trim();
       const serials = Array.isArray(l.serials)
         ? l.serials.map((s) => String(s || '').trim()).filter(Boolean)
@@ -16582,7 +16584,7 @@ api.post('/supply/return-request', async (c) => {
       let price = Math.max(0, Number(l.price) || 0);
       if (!(price > 0) && productId) {
         // цена из строки этой расходной
-        const fromOut = get<{ price: number }>(
+        const fromOut = await get<{ price: number }>(
           `SELECT IFNULL(price,0) AS price FROM stock_doc_lines
            WHERE doc_id = ? AND product_id = ? AND IFNULL(price,0) > 0
            ORDER BY line_no LIMIT 1`,
@@ -16591,7 +16593,7 @@ api.post('/supply/return-request', async (c) => {
         if (fromOut && Number(fromOut.price) > 0) {
           price = Number(fromOut.price);
         } else {
-          const sale = getLastSalePrice({
+          const sale = await getLastSalePrice({
             productId,
             serial: serials[0] || '',
             dealId,
@@ -16607,7 +16609,7 @@ api.post('/supply/return-request', async (c) => {
         price,
         serials,
       };
-    });
+    }));
     const amount = enriched.reduce(
       (s, l) => s + (Number(l.price) || 0) * (Number(l.qty) || 0),
       0
@@ -16615,13 +16617,13 @@ api.post('/supply/return-request', async (c) => {
     const serialsAll = enriched.flatMap((l) => l.serials);
     const buyerName =
       String(body.buyer_name || '').trim() ||
-      get<{ name: string }>(
+      (await get<{ name: string }>(
         `SELECT IFNULL(name,'') AS name FROM counterparties WHERE id = ?`,
         [outDoc.counterparty_id]
-      )?.name ||
+      ))?.name ||
       '';
 
-    const task = createTaskFromReturnReceive({
+    const task = await createTaskFromReturnReceive({
       out_doc_id: outDocId,
       out_doc_number: outNum,
       deal_id: dealId,
@@ -16634,7 +16636,7 @@ api.post('/supply/return-request', async (c) => {
       lines: enriched,
     });
 
-    const money = createMoneyRefundFromReturn({
+    const money = await createMoneyRefundFromReturn({
       warehouseTaskId: String(task?.id || ''),
       warehouseTaskNumber: String(task?.number || ''),
       amount: Math.round(amount),
@@ -16650,7 +16652,7 @@ api.post('/supply/return-request', async (c) => {
         }`,
     });
 
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'warehouse_task.create',
       entity: 'warehouse_task',
       entityId: String(task?.id || ''),
@@ -16678,7 +16680,7 @@ api.post('/supply/return-request', async (c) => {
 
 /** Требование на оприходование: заказ поставщику → задание кладовщику (без проводки прихода). */
 api.post('/supply/inbound-request', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -16704,7 +16706,7 @@ api.post('/supply/inbound-request', async (c) => {
     if (!orderId) return c.json({ error: 'Укажите заказ поставщику' }, 400);
     const whId = String(body.warehouse_id || '').trim();
     if (!whId) return c.json({ error: 'Укажите склад прихода' }, 400);
-    const wh = get<{ name: string }>(
+    const wh = await get<{ name: string }>(
       `SELECT IFNULL(name,'') AS name FROM warehouses WHERE id = ?`,
       [whId]
     );
@@ -16714,7 +16716,7 @@ api.post('/supply/inbound-request', async (c) => {
 
     // Сохраняем override применимости в payload заказа — подхватит приход по скану
     try {
-      const row = get<{ payload_json: string }>(
+      const row = await get<{ payload_json: string }>(
         `SELECT IFNULL(payload_json,'') AS payload_json FROM thin_journal_docs WHERE id = ?`,
         [orderId]
       );
@@ -16739,7 +16741,7 @@ api.post('/supply/inbound-request', async (c) => {
         if (Object.keys(lineApps).length) payload.inbound_line_apps = lineApps;
         if (Object.keys(serialApps).length) payload.inbound_serial_apps = serialApps;
         payload.inbound_apps_at = new Date().toISOString();
-        run(
+        await run(
           `UPDATE thin_journal_docs SET payload_json = ?, updated_at = datetime('now') WHERE id = ?`,
           [JSON.stringify(payload), orderId]
         );
@@ -16748,7 +16750,7 @@ api.post('/supply/inbound-request', async (c) => {
       /* не блокируем требование */
     }
 
-    const task = createTaskFromInboundReceive({
+    const task = await createTaskFromInboundReceive({
       supplier_order_id: orderId,
       supplier_order_number: body.supplier_order_number,
       supplier_name: body.supplier_name,
@@ -16758,7 +16760,7 @@ api.post('/supply/inbound-request', async (c) => {
       actor_id: actor?.id,
       lines,
     });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'warehouse_task.create',
       entity: 'warehouse_task',
       entityId: String(task?.id || ''),
@@ -16782,7 +16784,7 @@ api.post('/supply/inbound-request', async (c) => {
 
 /** Заказ на перемещение: остатки склада → другой склад + задание кладовщику. */
 api.post('/stock/transfer-request', async (c) => {
-  const actor = actorFromContext(c);
+  const actor = await actorFromContext(c);
   if (!canDo(actor, 'can_edit_docs') && actor?.role !== 'admin') {
     return c.json({ error: 'Недостаточно прав' }, 403);
   }
@@ -16799,7 +16801,7 @@ api.post('/stock/transfer-request', async (c) => {
       return c.json({ error: 'Укажите комментарий к заказу на перемещение' }, 400);
     }
     const dealId = String(body.deal_id || '').trim();
-    const result = createTransferRequestFromBalances({
+    const result = await createTransferRequestFromBalances({
       warehouseFromId: String(body.warehouse_from_id || ''),
       warehouseToId: String(body.warehouse_to_id || ''),
       comment: body.comment,
@@ -16809,14 +16811,14 @@ api.post('/stock/transfer-request', async (c) => {
     });
     if (dealId) {
       try {
-        linkTransferToOrder(dealId, result.id);
+        await linkTransferToOrder(dealId, result.id);
       } catch {
         /* */
       }
     }
     let warehouse_task: Record<string, unknown> | null = null;
     try {
-      warehouse_task = createTaskFromTransfer({
+      warehouse_task = await createTaskFromTransfer({
         stock_doc_id: result.id,
         stock_doc_number: result.number,
         from_label: result.from_label,
@@ -16840,7 +16842,7 @@ api.post('/stock/transfer-request', async (c) => {
         amount: 0,
         line_no: i + 1,
       }));
-      history = createThinJournalDoc('transfer_orders', {
+      history = await createThinJournalDoc('transfer_orders', {
         counterparty_name: `${result.from_label} → ${result.to_label}`,
         comment: dealId
           ? `${result.user_comment} · сделка ${dealId}`
@@ -16868,7 +16870,7 @@ api.post('/stock/transfer-request', async (c) => {
     } catch (e) {
       console.warn('transfer_orders thin', e instanceof Error ? e.message : e);
     }
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'doc.transfer_request',
       entity: 'stock_doc',
       entityId: result.id,
@@ -16885,11 +16887,11 @@ api.post('/stock/transfer-request', async (c) => {
 
 /** Каталог + хабы отчётов (MAP → live SQLite / stub). */
 api.get('/reports/catalog', (c) => c.json(reportsCatalog()));
-api.get('/sales/reports', (c) => c.json(salesReportsHub()));
-api.get('/sales/retail-reports', (c) =>
-  c.json(retailSalesReport(Number(c.req.query('days') || 60)))
+api.get('/sales/reports', async (c) => c.json(await salesReportsHub()));
+api.get('/sales/retail-reports', async (c) =>
+  c.json(await retailSalesReport(Number(c.req.query('days') || 60)))
 );
-api.get('/crm/reports', (c) => c.json(crmReportsHub()));
-api.get('/money/reports', (c) => c.json(moneyReportsHub()));
-api.get('/company/reports', (c) => c.json(companyReportsHub()));
-api.get('/works/reports', (c) => c.json(worksReportsHub()));
+api.get('/crm/reports', async (c) => c.json(await crmReportsHub()));
+api.get('/money/reports', async (c) => c.json(await moneyReportsHub()));
+api.get('/company/reports', async (c) => c.json(await companyReportsHub()));
+api.get('/works/reports', async (c) => c.json(await worksReportsHub()));

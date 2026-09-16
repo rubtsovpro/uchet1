@@ -44,9 +44,9 @@ function defaultSettings(): OcrLocalSettings {
   };
 }
 
-export function getOcrLocalSettings(): OcrLocalSettings {
+export async function getOcrLocalSettings(): Promise<OcrLocalSettings> {
   const d = defaultSettings();
-  const row = get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
+  const row = await get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [META_KEY]);
   if (!row?.value) return d;
   try {
     const j = JSON.parse(row.value) as Partial<OcrLocalSettings>;
@@ -60,19 +60,19 @@ export function getOcrLocalSettings(): OcrLocalSettings {
   }
 }
 
-export function saveOcrLocalSettings(patch: Partial<OcrLocalSettings>): OcrLocalSettings {
-  const cur = getOcrLocalSettings();
+export async function saveOcrLocalSettings(patch: Partial<OcrLocalSettings>): Promise<OcrLocalSettings> {
+  const cur = await getOcrLocalSettings();
   const modeRaw = String(patch.mode ?? cur.mode).toLowerCase();
   const next: OcrLocalSettings = {
     mode: modeRaw === 'cloud' || modeRaw === 'off' || modeRaw === 'local' ? modeRaw : cur.mode,
     base_url: String(patch.base_url ?? cur.base_url).trim() || cur.base_url,
   };
-  run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(next)]);
+  await run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [META_KEY, JSON.stringify(next)]);
   return next;
 }
 
-export function ocrLocalPublic(s?: OcrLocalSettings) {
-  const cur = s || getOcrLocalSettings();
+export async function ocrLocalPublic(s?: OcrLocalSettings) {
+  const cur = s || await getOcrLocalSettings();
   return {
     mode: cur.mode,
     base_url: cur.base_url,
@@ -89,7 +89,7 @@ export function ocrLocalPublic(s?: OcrLocalSettings) {
 export async function ocrLocalHealth(
   settings?: OcrLocalSettings
 ): Promise<{ ok: boolean; status?: number; body?: unknown; error?: string }> {
-  const s = settings || getOcrLocalSettings();
+  const s = settings || await getOcrLocalSettings();
   const base = s.base_url.replace(/\/+$/, '');
   try {
     const res = await fetch(`${base}/health`, {
@@ -113,7 +113,7 @@ export async function recognizeStsViaLocal(
   settings?: OcrLocalSettings
 ): Promise<StsOcrResult> {
   const buffers = decodeStsImages(images);
-  const s = settings || getOcrLocalSettings();
+  const s = settings || await getOcrLocalSettings();
   const base = s.base_url.replace(/\/+$/, '');
   const payload = {
     doc_type: 'sts' as const,
@@ -196,7 +196,7 @@ export async function recognizePassportViaLocal(
   if (!buffers.length) {
     throw new Error('Прикрепите фото разворота паспорта с ФИО');
   }
-  const s = settings || getOcrLocalSettings();
+  const s = settings || await getOcrLocalSettings();
   if (s.mode === 'off') {
     throw new Error('OCR выключен (Настройки → OCR документов). Введите ФИО вручную.');
   }
@@ -261,7 +261,7 @@ export async function recognizePassportViaLocal(
 
 /** Есть ли рабочий локальный сервис (для UI / configured). */
 export async function ocrLocalConfigured(): Promise<boolean> {
-  const s = getOcrLocalSettings();
+  const s = await getOcrLocalSettings();
   if (s.mode === 'off') return false;
   if (s.mode !== 'local') return false;
   const h = await ocrLocalHealth(s);

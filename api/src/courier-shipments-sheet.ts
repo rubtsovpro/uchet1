@@ -43,10 +43,10 @@ function isDateMarker(s: string): boolean {
 }
 
 /** Тип отправки как в ручном реестре. */
-export function sheetShipmentTypeForDeal(dealId: string): string {
+export async function sheetShipmentTypeForDeal(dealId: string): Promise<string> {
   const id = String(dealId || '').trim();
   if (!id) return 'СДЭК';
-  const d = get<{ ship_channel: string; amo_shipment: string }>(
+  const d = await get<{ ship_channel: string; amo_shipment: string }>(
     `SELECT IFNULL(ship_channel,'') AS ship_channel,
             IFNULL(amo_shipment,'') AS amo_shipment
      FROM crm_deals WHERE id = ?`,
@@ -68,7 +68,7 @@ export function sheetShipmentTypeForDeal(dealId: string): string {
 }
 
 async function sheetsToken(): Promise<string> {
-  return googleAccessToken(SHEETS_SCOPE);
+  return await googleAccessToken(SHEETS_SCOPE);
 }
 
 async function resolveSheetMeta(spreadsheetId: string): Promise<SheetMeta> {
@@ -209,7 +209,7 @@ export async function appendCourierShipmentToSheet(input: {
   }
 
   const needDateHeader = lastMarker !== dateLabel;
-  const shipType = String(input.shipType || '').trim() || sheetShipmentTypeForDeal(dealId);
+  const shipType = String(input.shipType || '').trim() || await sheetShipmentTypeForDeal(dealId);
 
   const insertAt = colA.length; // 0-based index = append at end
   const rowsToInsert = needDateHeader ? 2 : 1;
@@ -266,7 +266,7 @@ export async function appendCourierShipmentToSheet(input: {
 }
 
 /** Best-effort: не ронять выдачу курьера при сбое Google. */
-export function enqueueCourierShipmentSheetAppend(dealId: string): void {
+export async function enqueueCourierShipmentSheetAppend(dealId: string): Promise<void> {
   const id = String(dealId || '').trim();
   if (!id || sheetsDisabled()) return;
   void appendCourierShipmentToSheet({ dealId: id }).catch((e) => {

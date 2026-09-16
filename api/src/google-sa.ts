@@ -77,7 +77,7 @@ export async function googleAccessToken(
 
 /** Export Google Doc → plain text. */
 export async function exportGoogleDocPlainText(docId: string): Promise<string> {
-  return exportDriveFilePlainText(docId);
+  return await exportDriveFilePlainText(docId);
 }
 
 /** Метаданные файла Drive. */

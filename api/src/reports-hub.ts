@@ -211,8 +211,8 @@ export function reportsCatalog(): { note: string; items: ReportCatalogItem[]; su
   };
 }
 
-function outByMonth(limit = 24) {
-  return all<{ ym: string; docs: number; amount: number }>(
+async function outByMonth(limit = 24) {
+  return await all<{ ym: string; docs: number; amount: number }>(
     `SELECT substr(doc_date,1,7) AS ym, COUNT(*) AS docs, IFNULL(SUM(amount),0) AS amount
      FROM stock_docs WHERE doc_type='out' AND IFNULL(doc_date,'') != ''
      GROUP BY substr(doc_date,1,7) ORDER BY ym DESC LIMIT ?`,
@@ -220,8 +220,8 @@ function outByMonth(limit = 24) {
   );
 }
 
-function inByMonth(limit = 24) {
-  return all<{ ym: string; docs: number; amount: number }>(
+async function inByMonth(limit = 24) {
+  return await all<{ ym: string; docs: number; amount: number }>(
     `SELECT substr(doc_date,1,7) AS ym, COUNT(*) AS docs, IFNULL(SUM(amount),0) AS amount
      FROM stock_docs WHERE doc_type='in' AND IFNULL(doc_date,'') != ''
      GROUP BY substr(doc_date,1,7) ORDER BY ym DESC LIMIT ?`,
@@ -229,8 +229,8 @@ function inByMonth(limit = 24) {
   );
 }
 
-function topBuyers(limit = 20) {
-  return all<{ name: string; docs: number; amount: number }>(
+async function topBuyers(limit = 20) {
+  return await all<{ name: string; docs: number; amount: number }>(
     `SELECT IFNULL(c.name,'—') AS name, COUNT(*) AS docs, IFNULL(SUM(d.amount),0) AS amount
      FROM stock_docs d
      LEFT JOIN counterparties c ON c.id = d.counterparty_id
@@ -241,8 +241,8 @@ function topBuyers(limit = 20) {
   );
 }
 
-function topSuppliers(limit = 20) {
-  return all<{ name: string; docs: number; amount: number }>(
+async function topSuppliers(limit = 20) {
+  return await all<{ name: string; docs: number; amount: number }>(
     `SELECT IFNULL(c.name,'—') AS name, COUNT(*) AS docs, IFNULL(SUM(d.amount),0) AS amount
      FROM stock_docs d
      LEFT JOIN counterparties c ON c.id = d.counterparty_id
@@ -253,8 +253,8 @@ function topSuppliers(limit = 20) {
   );
 }
 
-function topSkuOut(limit = 30) {
-  return all<{ sku: string; name: string; qty: number; amount: number }>(
+async function topSkuOut(limit = 30) {
+  return await all<{ sku: string; name: string; qty: number; amount: number }>(
     `SELECT IFNULL(p.sku,'') AS sku, IFNULL(p.name,'?') AS name,
             IFNULL(SUM(l.qty),0) AS qty, IFNULL(SUM(l.amount),0) AS amount
      FROM stock_doc_lines l
@@ -267,8 +267,8 @@ function topSkuOut(limit = 30) {
   );
 }
 
-function restsByWarehouse() {
-  return all<{ warehouse: string; rows: number; qty: number }>(
+async function restsByWarehouse() {
+  return await all<{ warehouse: string; rows: number; qty: number }>(
     `SELECT IFNULL(w.name,'—') AS warehouse, COUNT(*) AS rows, IFNULL(SUM(r.qty),0) AS qty
      FROM product_store_rests r
      LEFT JOIN warehouses w ON w.id = r.warehouse_id
@@ -278,8 +278,8 @@ function restsByWarehouse() {
   );
 }
 
-function dealsByPipeline() {
-  return all<{ pipeline: string; deals: number; amount: number }>(
+async function dealsByPipeline() {
+  return await all<{ pipeline: string; deals: number; amount: number }>(
     `SELECT IFNULL(pipeline_name,'—') AS pipeline, COUNT(*) AS deals,
             IFNULL(SUM(price),0) AS amount
      FROM crm_deals
@@ -288,8 +288,8 @@ function dealsByPipeline() {
   );
 }
 
-function dealsByStatus(limit = 20) {
-  return all<{ status: string; deals: number }>(
+async function dealsByStatus(limit = 20) {
+  return await all<{ status: string; deals: number }>(
     `SELECT IFNULL(status_name,'—') AS status, COUNT(*) AS deals
      FROM crm_deals
      GROUP BY status_id
@@ -299,13 +299,13 @@ function dealsByStatus(limit = 20) {
 }
 
 /** Хаб продаж: расходные + локальные документы. */
-export function salesReportsHub() {
+export async function salesReportsHub() {
   const out =
-    get<{ c: number; amount: number }>(
+    await get<{ c: number; amount: number }>(
       `SELECT COUNT(*) AS c, IFNULL(SUM(amount),0) AS amount FROM stock_docs WHERE doc_type='out'`
     ) || { c: 0, amount: 0 };
   const salesLocal =
-    get<{ c: number; amount: number }>(
+    await get<{ c: number; amount: number }>(
       `SELECT COUNT(*) AS c, IFNULL(SUM(amount),0) AS amount FROM sales_docs`
     ) || { c: 0, amount: 0 };
   return {
@@ -315,9 +315,9 @@ export function salesReportsHub() {
     outbound_amount: out.amount,
     local_sales_docs: salesLocal.c,
     local_sales_amount: salesLocal.amount,
-    by_month: outByMonth(18),
-    top_buyers: topBuyers(15),
-    top_sku: topSkuOut(20),
+    by_month: await outByMonth(18),
+    top_buyers: await topBuyers(15),
+    top_sku: await topSkuOut(20),
     links: [
       { view: 'parity-sales-analysis', label: 'Анализ продаж' },
       { view: 'parity-retail-reports', label: 'Розничные продажи (по дням)' },
@@ -329,9 +329,9 @@ export function salesReportsHub() {
 }
 
 /** Розница: по дням из расходных (прокси до АТОЛ). */
-export function retailSalesReport(limitDays = 60) {
+export async function retailSalesReport(limitDays = 60) {
   const lim = Math.min(180, Math.max(7, Math.floor(Number(limitDays) || 60)));
-  const byDay = all<{ day: string; docs: number; amount: number }>(
+  const byDay = await all<{ day: string; docs: number; amount: number }>(
     `SELECT substr(doc_date,1,10) AS day, COUNT(*) AS docs, IFNULL(SUM(amount),0) AS amount
      FROM stock_docs
      WHERE doc_type='out' AND IFNULL(doc_date,'') != ''
@@ -346,7 +346,7 @@ export function retailSalesReport(limitDays = 60) {
     note: 'Прокси розницы: расходные по дням. Чеки ККМ/АТОЛ — когда касса live.',
     days: byDay,
     today: todayRow || { day: today, docs: 0, amount: 0 },
-    month: outByMonth(6),
+    month: await outByMonth(6),
     links: [
       { view: 'parity-kkm-receipts', label: 'Чеки ККМ (журнал)' },
       { view: 'parity-sales-reports', label: 'Хаб отчётов продаж' },
@@ -356,49 +356,49 @@ export function retailSalesReport(limitDays = 60) {
 }
 
 /** Расширенный анализ продаж. */
-export function salesAnalysisLive() {
-  const byMonthSales = all<{ ym: string; docs: number; amount: number }>(
+export async function salesAnalysisLive() {
+  const byMonthSales = await all<{ ym: string; docs: number; amount: number }>(
     `SELECT substr(doc_date,1,7) AS ym, COUNT(*) AS docs, IFNULL(SUM(amount),0) AS amount
      FROM sales_docs WHERE IFNULL(doc_date,'') != ''
      GROUP BY substr(doc_date,1,7) ORDER BY ym DESC LIMIT 24`
   );
-  const byType = all<{ doc_type: string; docs: number; amount: number }>(
+  const byType = await all<{ doc_type: string; docs: number; amount: number }>(
     `SELECT doc_type, COUNT(*) AS docs, IFNULL(SUM(amount),0) AS amount
      FROM sales_docs GROUP BY doc_type ORDER BY amount DESC`
   );
   const outDocs =
-    get<{ c: number; amount: number }>(
+    await get<{ c: number; amount: number }>(
       `SELECT COUNT(*) AS c, IFNULL(SUM(amount),0) AS amount
        FROM stock_docs WHERE doc_type='out'`
     ) || { c: 0, amount: 0 };
   return {
     note: 'Анализ: расходные 1С (основной объём) + локальные sales_docs. Не полный отчёт УНФ.',
-    sales_by_month: outByMonth(24),
+    sales_by_month: await outByMonth(24),
     sales_docs_by_month: byMonthSales,
     sales_by_type: byType,
     outbound_1c: { docs: outDocs.c, amount: outDocs.amount },
-    top_buyers: topBuyers(15),
-    top_sku: topSkuOut(15),
+    top_buyers: await topBuyers(15),
+    top_sku: await topSkuOut(15),
   };
 }
 
 /** Хаб закупок с топом поставщиков. */
-export function purchasesReportsLive() {
+export async function purchasesReportsLive() {
   const inbound =
-    get<{ c: number; amount: number }>(
+    await get<{ c: number; amount: number }>(
       `SELECT COUNT(*) AS c, IFNULL(SUM(amount),0) AS amount FROM stock_docs WHERE doc_type='in'`
     ) || { c: 0, amount: 0 };
   const withGtd =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(DISTINCT d.id) AS c FROM stock_docs d
        JOIN stock_doc_lines l ON l.doc_id = d.id
        WHERE d.doc_type='in' AND IFNULL(l.gtd_key,'') != ''
          AND l.gtd_key != '00000000-0000-0000-0000-000000000000'`
-    )?.c ?? 0;
+    ))?.c ?? 0;
   const suppliers =
-    get<{ c: number }>(
+    (await get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM counterparties WHERE kind IN ('supplier','both')`
-    )?.c ?? 0;
+    ))?.c ?? 0;
   return {
     status: 'live' as const,
     note: 'Сводка закупок из приходных sync. Заказы поставщикам — блокер OData.',
@@ -406,8 +406,8 @@ export function purchasesReportsLive() {
     inbound_amount: inbound.amount,
     inbound_with_gtd: withGtd,
     suppliers_touch: suppliers,
-    by_month: inByMonth(18),
-    top_suppliers: topSuppliers(15),
+    by_month: await inByMonth(18),
+    top_suppliers: await topSuppliers(15),
     links: [
       { view: 'parity-purchases-inbound', label: 'Приходы с ГТД' },
       { view: 'parity-demand', label: 'Расчёт потребностей' },
@@ -419,14 +419,14 @@ export function purchasesReportsLive() {
 }
 
 /** Хаб склада: остатки + движения. */
-export function warehouseReportsLive() {
+export async function warehouseReportsLive() {
   const rests =
-    get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_store_rests WHERE qty > 0`)?.c ?? 0;
-  const docs = get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs`)?.c ?? 0;
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM product_store_rests WHERE qty > 0`))?.c ?? 0;
+  const docs = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs`))?.c ?? 0;
   const transfers =
-    get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE doc_type='transfer'`)?.c ?? 0;
-  const outs = get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE doc_type='out'`)?.c ?? 0;
-  const ins = get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE doc_type='in'`)?.c ?? 0;
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE doc_type='transfer'`))?.c ?? 0;
+  const outs = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE doc_type='out'`))?.c ?? 0;
+  const ins = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM stock_docs WHERE doc_type='in'`))?.c ?? 0;
   return {
     status: 'live' as const,
     note: 'Складские отчёты Учёт №1 по sync остаткам и документам.',
@@ -435,9 +435,9 @@ export function warehouseReportsLive() {
     transfers,
     write_offs: outs,
     inbound: ins,
-    by_warehouse: restsByWarehouse(),
-    outbound_by_month: outByMonth(12),
-    inbound_by_month: inByMonth(12),
+    by_warehouse: await restsByWarehouse(),
+    outbound_by_month: await outByMonth(12),
+    inbound_by_month: await inByMonth(12),
     links: [
       { view: 'balances', label: 'Остатки' },
       { view: 'stock-valuation', label: 'Стоимость склада' },
@@ -452,9 +452,9 @@ export function warehouseReportsLive() {
 }
 
 /** CRM отчёты по сделкам. */
-export function crmReportsHub() {
+export async function crmReportsHub() {
   const total =
-    get<{ c: number; amount: number }>(
+    await get<{ c: number; amount: number }>(
       `SELECT COUNT(*) AS c, IFNULL(SUM(price),0) AS amount FROM crm_deals`
     ) || { c: 0, amount: 0 };
   return {
@@ -462,8 +462,8 @@ export function crmReportsHub() {
     note: 'Отчёты CRM: сделки Amo в WMS. Воронка 1С УНФ не клонируется.',
     deals: total.c,
     amount: total.amount,
-    by_pipeline: dealsByPipeline(),
-    by_status: dealsByStatus(20),
+    by_pipeline: await dealsByPipeline(),
+    by_status: await dealsByStatus(20),
     links: [
       { view: 'deals', label: 'Сделки' },
       { view: 'pipelines', label: 'Воронки' },
@@ -473,15 +473,15 @@ export function crmReportsHub() {
 }
 
 /** Деньги: счётчики локальной кассы + ссылки. */
-export function moneyReportsHub() {
+export async function moneyReportsHub() {
   const cash =
-    get<{ c: number; amount: number }>(
+    await get<{ c: number; amount: number }>(
       `SELECT COUNT(*) AS c, IFNULL(SUM(amount),0) AS amount FROM cash_docs`
     ) || { c: 0, amount: 0 };
   const orders =
-    get<{ c: number }>(`SELECT COUNT(*) AS c FROM payment_orders`)?.c ?? 0;
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM payment_orders`))?.c ?? 0;
   const dealPay =
-    get<{ c: number; amount: number }>(
+    await get<{ c: number; amount: number }>(
       `SELECT COUNT(*) AS c, IFNULL(SUM(amount),0) AS amount FROM deal_payments`
     ) || { c: 0, amount: 0 };
   return {
@@ -500,16 +500,16 @@ export function moneyReportsHub() {
 }
 
 /** Компания: KPI + ссылки на live-отчёты. */
-export function companyReportsHub() {
+export async function companyReportsHub() {
   const products =
-    get<{ c: number }>(`SELECT COUNT(*) AS c FROM products WHERE IFNULL(is_active,1)=1`)?.c ?? 0;
-  const counterparties = get<{ c: number }>(`SELECT COUNT(*) AS c FROM counterparties`)?.c ?? 0;
-  const deals = get<{ c: number }>(`SELECT COUNT(*) AS c FROM crm_deals`)?.c ?? 0;
+    (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM products WHERE IFNULL(is_active,1)=1`))?.c ?? 0;
+  const counterparties = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM counterparties`))?.c ?? 0;
+  const deals = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM crm_deals`))?.c ?? 0;
   const outYtd =
-    get<{ amount: number }>(
+    (await get<{ amount: number }>(
       `SELECT IFNULL(SUM(amount),0) AS amount FROM stock_docs
        WHERE doc_type='out' AND substr(doc_date,1,4)=strftime('%Y','now')`
-    )?.amount ?? 0;
+    ))?.amount ?? 0;
   return {
     status: 'live' as const,
     note: 'Управленческий срез компании. Полные бухгалтерские отчёты УНФ — не в этой волне.',
@@ -517,7 +517,7 @@ export function companyReportsHub() {
     counterparties,
     deals,
     sales_ytd: outYtd,
-    sales_dynamics: outByMonth(12),
+    sales_dynamics: await outByMonth(12),
     links: [
       { view: 'company-analytics', label: 'Анализ бизнеса' },
       { view: 'parity-sales-reports', label: 'Отчёты продаж' },
@@ -529,8 +529,8 @@ export function companyReportsHub() {
 }
 
 /** СТО: хаб поверх тонкого журнала. */
-export function worksReportsHub() {
-  const orders = get<{ c: number }>(`SELECT COUNT(*) AS c FROM sto_work_orders`)?.c ?? 0;
+export async function worksReportsHub() {
+  const orders = (await get<{ c: number }>(`SELECT COUNT(*) AS c FROM sto_work_orders`))?.c ?? 0;
   return {
     status: 'partial' as const,
     note: 'Отчёты СТО. Заказ-наряды локальные; полный отчёт исполнителей УНФ — stub.',

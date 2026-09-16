@@ -25,7 +25,7 @@ type DriveFile = {
   size?: string;
 };
 
-let pollTimer: ReturnType<typeof setInterval> | null = null;
+let pollTimer: Awaited<ReturnType<typeof setInterval>> | null = null;
 let pollRunning = false;
 let lastPollAt = '';
 let lastPollError = '';
@@ -39,8 +39,8 @@ function deny(c: { json: (b: unknown, s: number) => Response }, actor: Actor | n
   return null;
 }
 
-export function ensurePurchaseDriveSchema(): void {
-  db.exec(`
+export async function ensurePurchaseDriveSchema(): Promise<void> {
+  /* PG: replace prepare */ db.exec(`
     CREATE TABLE IF NOT EXISTS purchase_drive_folders (
       id TEXT PRIMARY KEY,
       drive_folder_id TEXT NOT NULL UNIQUE,
@@ -87,15 +87,15 @@ export function ensurePurchaseDriveSchema(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_pph_article ON purchase_price_history(supplier_id, article, observed_at DESC);
   `);
-  addCol('purchase_price_imports', 'drive_file_id', `drive_file_id TEXT NOT NULL DEFAULT ''`);
-  addCol('purchase_price_imports', 'drive_folder_id', `drive_folder_id TEXT NOT NULL DEFAULT ''`);
+  await addCol('purchase_price_imports', 'drive_file_id', `drive_file_id TEXT NOT NULL DEFAULT ''`);
+  await addCol('purchase_price_imports', 'drive_folder_id', `drive_folder_id TEXT NOT NULL DEFAULT ''`);
 }
 
-function addCol(table: string, col: string, ddl: string): void {
+async function addCol(table: string, col: string, ddl: string): Promise<void> {
   try {
-    const info = all<{ name: string }>(`PRAGMA table_info(${table})`);
+    const info = await all<{ name: string }>(`PRAGMA table_info(${table})`);
     if (info.some((c) => c.name === col)) return;
-    run(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    await run(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   } catch {
     /* ignore */
   }
@@ -289,10 +289,10 @@ function resolveAliasTarget(folderName: string): string | null {
   return null;
 }
 
-function findSupplierByName(name: string): { id: string; name: string } | null {
+async function findSupplierByName(name: string): Promise<{ id: string; name: string } | null> {
   const n = normName(name);
   if (!n) return null;
-  const row = get<{ id: string; name: string }>(
+  const row = await get<{ id: string; name: string }>(
     `SELECT id, name FROM counterparties
      WHERE IFNULL(is_active,1)=1 AND (kind = 'supplier' OR kind = 'both')
        AND lower(name) = ?
@@ -301,7 +301,7 @@ function findSupplierByName(name: string): { id: string; name: string } | null {
   );
   if (row) return row;
   return (
-    get<{ id: string; name: string }>(
+    await get<{ id: string; name: string }>(
       `SELECT id, name FROM counterparties
        WHERE IFNULL(is_active,1)=1 AND (kind = 'supplier' OR kind = 'both')
          AND lower(name) LIKE ?
@@ -311,15 +311,15 @@ function findSupplierByName(name: string): { id: string; name: string } | null {
   );
 }
 
-function suggestSupplier(folderName: string): { id: string; name: string } | null {
+async function suggestSupplier(folderName: string): Promise<{ id: string; name: string } | null> {
   const alias = resolveAliasTarget(folderName);
   if (alias) {
-    const hit = findSupplierByName(alias);
+    const hit = await findSupplierByName(alias);
     if (hit) return hit;
   }
   const n = normName(folderName);
   if (!n) return null;
-  const rows = all<{ id: string; name: string }>(
+  const rows = await all<{ id: string; name: string }>(
     `SELECT id, name FROM counterparties
      WHERE (kind = 'supplier' OR kind = 'both') AND IFNULL(is_active,1) = 1
      ORDER BY IFNULL(is_main,0) DESC, name
@@ -343,7 +343,7 @@ export async function syncPurchaseDriveFolders(): Promise<{
   linked: number;
   error?: string;
 }> {
-  ensurePurchaseDriveSchema();
+  await ensurePurchaseDriveSchema();
   const root = rootFolderId();
   try {
     await driveGet<{ id: string; name: string }>(
@@ -368,12 +368,12 @@ export async function syncPurchaseDriveFolders(): Promise<{
   );
   let linked = 0;
   for (const f of folders) {
-    const existing = get<{ id: string; supplier_id: string }>(
+    const existing = await get<{ id: string; supplier_id: string }>(
       `SELECT id, supplier_id FROM purchase_drive_folders WHERE drive_folder_id = ?`,
       [f.id]
     );
     if (existing) {
-      run(
+      await run(
         `UPDATE purchase_drive_folders SET folder_name = ?, last_seen_at = datetime('now'),
          updated_at = datetime('now'), is_active = 1 WHERE id = ?`,
         [f.name, existing.id]
@@ -381,9 +381,9 @@ export async function syncPurchaseDriveFolders(): Promise<{
       if (existing.supplier_id) {
         linked += 1;
       } else {
-        const sug = suggestSupplier(f.name);
+        const sug = await suggestSupplier(f.name);
         if (sug?.id) {
-          run(
+          await run(
             `UPDATE purchase_drive_folders SET supplier_id=?, supplier_name=?,
              updated_at=datetime('now') WHERE id=?`,
             [sug.id, sug.name, existing.id]
@@ -393,9 +393,9 @@ export async function syncPurchaseDriveFolders(): Promise<{
       }
       continue;
     }
-    const sug = suggestSupplier(f.name);
+    const sug = await suggestSupplier(f.name);
     const id = newGuid();
-    run(
+    await run(
       `INSERT INTO purchase_drive_folders (
          id, drive_folder_id, folder_name, supplier_id, supplier_name, last_seen_at
        ) VALUES (?,?,?,?,?,datetime('now'))`,
@@ -413,7 +413,7 @@ export async function pollPurchaseDrive(opts?: {
     return { ok: false, skipped: true, reason: 'already_running' };
   }
   pollRunning = true;
-  ensurePurchaseDriveSchema();
+  await ensurePurchaseDriveSchema();
   const summary: Record<string, unknown> = {
     at: new Date().toISOString(),
     imported: 0,
@@ -433,7 +433,7 @@ export async function pollPurchaseDrive(opts?: {
     }
     lastPollError = '';
 
-    const mapped = all<{
+    const mapped = await all<{
       id: string;
       drive_folder_id: string;
       folder_name: string;
@@ -458,7 +458,7 @@ export async function pollPurchaseDrive(opts?: {
         if (f.mimeType === 'application/vnd.google-apps.folder') continue;
         if (!isPriceFile(f.name, f.mimeType)) continue;
         summary.seen = Number(summary.seen) + 1;
-        const prev = get<{ id: string; md5: string; modified_at: string; import_id: string }>(
+        const prev = await get<{ id: string; md5: string; modified_at: string; import_id: string }>(
           `SELECT id, md5, modified_at, import_id FROM purchase_drive_files WHERE drive_file_id = ?`,
           [f.id]
         );
@@ -473,7 +473,7 @@ export async function pollPurchaseDrive(opts?: {
         }
         const rowId = prev?.id || newGuid();
         if (!prev) {
-          run(
+          await run(
             `INSERT INTO purchase_drive_files (
                id, drive_file_id, drive_folder_id, folder_row_id, name, mime_type, md5,
                modified_at, size_bytes, status
@@ -491,7 +491,7 @@ export async function pollPurchaseDrive(opts?: {
             ]
           );
         } else {
-          run(
+          await run(
             `UPDATE purchase_drive_files SET name=?, mime_type=?, md5=?, modified_at=?, size_bytes=?,
              status='seen', error='' WHERE id=?`,
             [f.name, f.mimeType || '', md5, modified, Number(f.size) || 0, rowId]
@@ -516,7 +516,7 @@ export async function pollPurchaseDrive(opts?: {
             drive_file_id: f.id,
             drive_folder_id: folder.drive_folder_id,
           });
-          run(
+          await run(
             `UPDATE purchase_drive_files SET status='imported', import_id=?, imported_at=datetime('now'),
              error='' WHERE id=?`,
             [created.id, rowId]
@@ -524,7 +524,7 @@ export async function pollPurchaseDrive(opts?: {
           summary.imported = Number(summary.imported) + 1;
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          run(`UPDATE purchase_drive_files SET status='error', error=? WHERE id=?`, [msg.slice(0, 500), rowId]);
+          await run(`UPDATE purchase_drive_files SET status='error', error=? WHERE id=?`, [msg.slice(0, 500), rowId]);
           (summary.errors as string[]).push(`${f.name}: ${msg}`);
         }
       }
@@ -544,13 +544,13 @@ export async function pollPurchaseDrive(opts?: {
   }
 }
 
-export function startPurchaseDrivePoller(): void {
+export async function startPurchaseDrivePoller(): Promise<void> {
   if (String(process.env.GDRIVE_PURCHASE_POLL || '1') === '0') {
     console.log('[cron] purchase-drive: disabled (GDRIVE_PURCHASE_POLL=0)');
     return;
   }
-  ensurePurchaseDriveSchema();
-  const boot = () => {
+  await ensurePurchaseDriveSchema();
+  const boot = async () => {
     void pollPurchaseDrive().then((r) => {
       console.log(
         '[cron] purchase-drive boot:',
@@ -560,7 +560,7 @@ export function startPurchaseDrivePoller(): void {
   };
   setTimeout(boot, 45_000);
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(() => {
+  pollTimer = setInterval(async () => {
     void pollPurchaseDrive().then((r) => {
       if (r.error || Number(r.imported) > 0 || (r.errors as string[] | undefined)?.length) {
         console.log('[cron] purchase-drive:', JSON.stringify(r));
@@ -570,11 +570,11 @@ export function startPurchaseDrivePoller(): void {
   console.log(`[cron] purchase-drive: every ${Math.round(POLL_MS / 1000)}s · root ${rootFolderId()}`);
 }
 
-export function mountPurchaseDriveRoutes(api: Hono): void {
-  ensurePurchaseDriveSchema();
+export async function mountPurchaseDriveRoutes(api: Hono): Promise<void> {
+  await ensurePurchaseDriveSchema();
 
-  api.get('/purchase-drive/status', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-drive/status', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     // Без имён папок / id Drive / SA — сотрудникам только служебный статус опроса
@@ -594,11 +594,11 @@ export function mountPurchaseDriveRoutes(api: Hono): void {
     });
   });
 
-  api.get('/purchase-drive/folders', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-drive/folders', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
-    const rows = all<{
+    const rows = await all<{
       id: string;
       folder_name: string;
       supplier_id: string;
@@ -631,12 +631,12 @@ export function mountPurchaseDriveRoutes(api: Hono): void {
   });
 
   api.post('/purchase-drive/sync-folders', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     try {
       const r = await syncPurchaseDriveFolders();
-      auditFromContext(c, {
+      await auditFromContext(c, {
         action: 'purchase_drive.sync_folders',
         entity: 'purchase_drive',
         summary: r.error || `Папок Drive: ${r.folders}, с поставщиком: ${r.linked}`,
@@ -650,11 +650,11 @@ export function mountPurchaseDriveRoutes(api: Hono): void {
   });
 
   api.patch('/purchase-drive/folders/:id', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const id = c.req.param('id');
-    const row = get<Record<string, unknown>>(
+    const row = await get<Record<string, unknown>>(
       `SELECT * FROM purchase_drive_folders WHERE id = ?`,
       [id]
     );
@@ -673,19 +673,19 @@ export function mountPurchaseDriveRoutes(api: Hono): void {
         : String(row.supplier_name || '');
     if (supplier_id && !supplier_name) {
       supplier_name =
-        get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [supplier_id])
+        (await get<{ name: string }>('SELECT name FROM counterparties WHERE id = ?', [supplier_id]))
           ?.name || '';
     }
     const notes = body.notes !== undefined ? String(body.notes || '').slice(0, 500) : String(row.notes || '');
     const is_active =
       body.is_active !== undefined ? (body.is_active ? 1 : 0) : Number(row.is_active) ? 1 : 0;
-    run(
+    await run(
       `UPDATE purchase_drive_folders SET supplier_id=?, supplier_name=?, notes=?, is_active=?,
        updated_at=datetime('now') WHERE id=?`,
       [supplier_id, supplier_name, notes, is_active, id]
     );
-    const after = get(`SELECT * FROM purchase_drive_folders WHERE id = ?`, [id]);
-    auditFromContext(c, {
+    const after = await get(`SELECT * FROM purchase_drive_folders WHERE id = ?`, [id]);
+    await auditFromContext(c, {
       action: 'purchase_drive.folder_link',
       entity: 'purchase_drive_folder',
       entityId: id,
@@ -696,11 +696,11 @@ export function mountPurchaseDriveRoutes(api: Hono): void {
   });
 
   api.post('/purchase-drive/poll', async (c) => {
-    const actor = actorFromContext(c);
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const r = await pollPurchaseDrive({ force: true });
-    auditFromContext(c, {
+    await auditFromContext(c, {
       action: 'purchase_drive.poll',
       entity: 'purchase_drive',
       summary: r.error
@@ -711,8 +711,8 @@ export function mountPurchaseDriveRoutes(api: Hono): void {
     return c.json(r, r.error ? 400 : 200);
   });
 
-  api.get('/purchase-drive/files', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-drive/files', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const folder = String(c.req.query('folder_id') || '').trim();
@@ -722,7 +722,7 @@ export function mountPurchaseDriveRoutes(api: Hono): void {
       where += ' AND drive_folder_id = ?';
       params.push(folder);
     }
-    const items = all(
+    const items = await all(
       `SELECT * FROM purchase_drive_files WHERE ${where}
        ORDER BY first_seen_at DESC LIMIT 200`,
       params
@@ -730,8 +730,8 @@ export function mountPurchaseDriveRoutes(api: Hono): void {
     return c.json({ items });
   });
 
-  api.get('/purchase-drive/price-history', (c) => {
-    const actor = actorFromContext(c);
+  api.get('/purchase-drive/price-history', async (c) => {
+    const actor = await actorFromContext(c);
     const d = deny(c, actor);
     if (d) return d;
     const article = String(c.req.query('article') || '').trim();
@@ -743,7 +743,7 @@ export function mountPurchaseDriveRoutes(api: Hono): void {
       where += ' AND supplier_id = ?';
       params.push(supplier_id);
     }
-    const items = all(
+    const items = await all(
       `SELECT * FROM purchase_price_history WHERE ${where}
        ORDER BY observed_at DESC LIMIT 200`,
       params
