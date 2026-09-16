@@ -1951,7 +1951,7 @@ export function amoBranchToPickSite(branch: string): PickSiteId | null {
 }
 
 /** Значение Amo CF «СТО» → контур. */
-function amoStoToPickSite(sto: string): PickSiteId | null {
+export function amoStoToPickSite(sto: string): PickSiteId | null {
   const s = String(sto || '')
     .trim()
     .toLowerCase()

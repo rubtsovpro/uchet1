@@ -21,7 +21,17 @@ import {
   transferSerialToSto,
   archiveObsoleteLogisticsWarehouses,
 } from './supply-chain.js';
-import { createTaskFromStoParts, getTask, setTaskStatus, dealIsPaid } from './warehouse-tasks.js';
+import {
+  createTaskFromStoParts,
+  getTask,
+  setTaskStatus,
+  dealIsPaid,
+  amoBranchToPickSite,
+  amoStoToPickSite,
+  pickSitesCatalog,
+  resolvePickSiteQuery,
+  type PickSiteId,
+} from './warehouse-tasks.js';
 import { executeStoPartsFromTask } from './sto-parts-execute.js';
 import { logStoTransferEvent } from './deal-doc-numbers.js';
 import { writeOffCourierOnDelivered } from './deal-stock-flow.js';
@@ -910,14 +920,41 @@ export async function createMarketCashPurchase(input: {
   });
 }
 
+
+async function courierRunPickSite(row: {
+  amo_branch?: unknown;
+  amo_sto?: unknown;
+  org_company_id?: unknown;
+  department?: unknown;
+}): Promise<PickSiteId> {
+  const byBranch = amoBranchToPickSite(String(row.amo_branch || ''));
+  if (byBranch) return byBranch;
+  const bySto = amoStoToPickSite(String(row.amo_sto || ''));
+  if (bySto) return bySto;
+  const orgId = String(row.org_company_id || '').trim();
+  if (orgId) {
+    for (const site of await pickSitesCatalog()) {
+      if (site.company_ids.includes(orgId)) return site.id;
+    }
+  }
+  const dep = String(row.department || '').toLowerCase();
+  if (/fogel|фогель/.test(dep)) return 'fogel';
+  if (/strela|стрела/.test(dep)) return 'strela';
+  if (/moscow|mosk|москва|msk|pnevmopodveska/.test(dep)) return 'msk';
+  return 'strela';
+}
+
 export async function listCourierRuns(opts?: {
   status?: string;
   scope?: 'active' | 'closed' | 'all';
   q?: string;
   courier_staff_id?: string;
+  site?: string;
+  actor?: { id?: string; role?: string; rights?: { pick_site_lock?: string } } | null;
   limit?: number;
 }) {
   await ensureStoPartsSchema();
+  const siteFilter = resolvePickSiteQuery(opts?.site, opts?.actor as never);
   const where: string[] = ['1=1'];
   const params: Array<string | number> = [];
   if (opts?.status) {
@@ -943,7 +980,8 @@ export async function listCourierRuns(opts?: {
     );
     for (let i = 0; i < 9; i++) params.push(like);
   }
-  const limit = Math.min(200, Math.max(1, Number(opts?.limit) || (opts?.scope === 'closed' ? 80 : 50)));
+  const baseLimit = Math.min(200, Math.max(1, Number(opts?.limit) || (opts?.scope === 'closed' ? 80 : 50)));
+  const limit = siteFilter === 'all' ? baseLimit : Math.min(200, Math.max(baseLimit * 3, 120));
   const rows = await all(
     `SELECT cr.*,
        IFNULL(cr.kind,'pickup') AS kind,
@@ -962,6 +1000,10 @@ export async function listCourierRuns(opts?: {
        IFNULL(d.amo_shipment,'') AS amo_shipment,
        IFNULL(d.amo_channel,'') AS amo_channel,
        IFNULL(d.amo_payment_type,'') AS amo_payment_type,
+       IFNULL(d.amo_branch,'') AS amo_branch,
+       IFNULL(d.amo_sto,'') AS amo_sto,
+       IFNULL(d.org_company_id,'') AS org_company_id,
+       IFNULL(d.department,'') AS department,
        IFNULL(d.responsible_user_id,'') AS responsible_user_id,
        IFNULL(d.name,'') AS deal_name,
        IFNULL(d.status_id,'') AS status_id,
@@ -1003,21 +1045,37 @@ export async function listCourierRuns(opts?: {
     }
   }
 
-  const activeCount = Number(
-    (await get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM courier_runs WHERE status IN ('new','accepted','picked_up')`
-    ))?.n || 0
+  const countRows = await all<{
+    status: string;
+    amo_branch: string;
+    amo_sto: string;
+    org_company_id: string;
+    department: string;
+  }>(
+    `SELECT cr.status AS status,
+            IFNULL(d.amo_branch,'') AS amo_branch,
+            IFNULL(d.amo_sto,'') AS amo_sto,
+            IFNULL(d.org_company_id,'') AS org_company_id,
+            IFNULL(d.department,'') AS department
+     FROM courier_runs cr
+     LEFT JOIN sto_transfer_requests r ON r.id = cr.sto_request_id
+     LEFT JOIN crm_deals d ON d.id = IFNULL(NULLIF(TRIM(cr.deal_id),''), IFNULL(r.deal_id,''))`
   );
-  const closedCount = Number(
-    (await get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM courier_runs WHERE status IN ('delivered','cancelled')`
-    ))?.n || 0
-  );
+  let activeCount = 0;
+  let closedCount = 0;
+  for (const cr of countRows) {
+    const site = await courierRunPickSite(cr);
+    if (siteFilter !== 'all' && site !== siteFilter) continue;
+    const st = String(cr.status || '');
+    if (st === 'new' || st === 'accepted' || st === 'picked_up') activeCount += 1;
+    else if (st === 'delivered' || st === 'cancelled') closedCount += 1;
+  }
 
   const mapped = await Promise.all(rows.map(async (r) => {
     const kind = String(r.kind || 'pickup');
     const ship = String(r.amo_shipment || '').trim();
     const dealId = String(r.deal_id || '').trim();
+    const pick_site = await courierRunPickSite(r);
     const pNum =
       (dealId ? `С${dealId}` : '') ||
       String(r.sto_number || '').trim() ||
@@ -1080,6 +1138,7 @@ export async function listCourierRuns(opts?: {
       ...r,
       kind,
       is_handoff: kind === 'handoff',
+      pick_site,
       transfer_number: pNum,
       warehouse_number: sNum,
       shipment_label: ship,
@@ -1118,12 +1177,22 @@ export async function listCourierRuns(opts?: {
     }
   }
 
-  const items = mapped.filter((it) => {
+  let items = mapped.filter((it) => {
     if (opts?.scope === 'closed' || opts?.scope === 'all' || opts?.status) return true;
     return !['cancelled', 'delivered'].includes(String(it.status));
   });
+  if (siteFilter !== 'all') {
+    items = items.filter((it) => String(it.pick_site || '') === siteFilter);
+  }
+  if (items.length > baseLimit) items = items.slice(0, baseLimit);
 
-  return { items, counts: { active: activeCount, closed: closedCount } };
+  const pick_sites = (await pickSitesCatalog()).map((s) => ({ id: s.id, label: s.label }));
+  return {
+    items,
+    counts: { active: activeCount, closed: closedCount },
+    pick_site: siteFilter === 'all' ? 'strela' : siteFilter,
+    pick_sites,
+  };
 }
 
 /**

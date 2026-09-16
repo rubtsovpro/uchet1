@@ -2648,7 +2648,9 @@ export function mountSupplyChainRoutes(api: Hono): void {
   });
 
   api.get('/courier/runs', async (c) => {
-    const actor = (c as { get: (k: string) => unknown }).get('actor') as { id?: string } | undefined;
+    const actor = (c as { get: (k: string) => unknown }).get('actor') as
+      | { id?: string; role?: string; rights?: { pick_site_lock?: string } }
+      | undefined;
     const scopeRaw = String(c.req.query('scope') || 'active').trim().toLowerCase();
     const scope =
       scopeRaw === 'closed' || scopeRaw === 'all' ? scopeRaw : 'active';
@@ -2657,6 +2659,8 @@ export function mountSupplyChainRoutes(api: Hono): void {
       status: c.req.query('status') || undefined,
       scope: c.req.query('status') ? 'all' : (scope as 'active' | 'closed' | 'all'),
       q: c.req.query('q') || undefined,
+      site: c.req.query('site') || undefined,
+      actor: actor || null,
       courier_staff_id: actor?.id,
       limit: Number(c.req.query('limit') || 0) || undefined,
     });

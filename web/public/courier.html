@@ -123,6 +123,31 @@
       border-color: transparent;
     }
     .tab.is-on b { background: rgba(255,255,255,.22); color: #fff; }
+    .site-switch {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin: 0;
+    }
+    .site-switch button {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 8px 14px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      min-height: 36px;
+    }
+    .site-switch button.is-on {
+      background: var(--accent);
+      color: #fff;
+      border-color: transparent;
+    }
+    .site-switch.is-locked button:not(.is-on) { display: none; }
     .findbar {
       display: flex;
       gap: 8px;
@@ -304,6 +329,12 @@
       </div>
     </header>
 
+    <div class="site-switch" id="site-switch" role="tablist" aria-label="Площадка">
+      <button type="button" data-site="strela">Стрела</button>
+      <button type="button" data-site="fogel">Фогель</button>
+      <button type="button" data-site="msk">МСК</button>
+    </div>
+
     <div class="tabs" id="tabs">
       <button type="button" class="tab is-on" data-tab="active">Активные<b id="c-active">0</b></button>
       <button type="button" class="tab" data-tab="closed">Закрытые<b id="c-closed">0</b></button>
@@ -328,9 +359,61 @@
     let q = '';
     let lastRefreshAt = null;
     let fetching = false;
+    const SITE_KEY = 'uchet1_courier_site';
+    let pickSite = 'strela';
+    try {
+      const u = new URL(location.href);
+      const fromUrl = String(u.searchParams.get('site') || '').trim().toLowerCase();
+      if (fromUrl === 'msk' || fromUrl === 'fogel' || fromUrl === 'strela') pickSite = fromUrl;
+      else {
+        const saved = String(localStorage.getItem(SITE_KEY) || '').trim().toLowerCase();
+        if (saved === 'msk' || saved === 'fogel' || saved === 'strela') pickSite = saved;
+      }
+    } catch (_) {}
     const busyIds = new Set();
     /** отмеченные id заданий (активные) */
     const selected = new Set();
+
+    function pickSiteLockFromMe() {
+      const raw = String((me && me.pick_site_lock) || '').trim().toLowerCase();
+      if (raw === 'msk' || raw === 'moscow' || raw === 'москва') return 'msk';
+      if (raw === 'fogel' || raw === 'фогель') return 'fogel';
+      if (raw === 'strela' || raw === 'стрела') return 'strela';
+      return '';
+    }
+
+    function syncSiteSwitch() {
+      const lock = pickSiteLockFromMe();
+      const sw = document.getElementById('site-switch');
+      if (lock) {
+        pickSite = lock;
+        if (sw) sw.classList.add('is-locked');
+      } else if (sw) {
+        sw.classList.remove('is-locked');
+      }
+      document.querySelectorAll('#site-switch [data-site]').forEach((btn) => {
+        const on = btn.getAttribute('data-site') === pickSite;
+        btn.classList.toggle('is-on', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    function setPickSite(site) {
+      if (pickSiteLockFromMe()) return;
+      const s = String(site || '').trim().toLowerCase();
+      const next = s === 'msk' ? 'msk' : s === 'fogel' ? 'fogel' : 'strela';
+      if (next === pickSite) return;
+      pickSite = next;
+      try { localStorage.setItem(SITE_KEY, pickSite); } catch (_) {}
+      try {
+        const u = new URL(location.href);
+        u.searchParams.set('site', pickSite);
+        history.replaceState(null, '', u.pathname + u.search + u.hash);
+      } catch (_) {}
+      selected.clear();
+      syncSiteSwitch();
+      refresh({ force: true });
+    }
 
     function esc(s) {
       return String(s == null ? '' : s)
@@ -563,12 +646,19 @@
       const msg = document.getElementById('cr-msg');
       try {
         await ensureMe();
+        syncSiteSwitch();
         const qs = new URLSearchParams({
           scope: tab === 'closed' ? 'closed' : 'active',
+          site: pickSite,
         });
         if (q) qs.set('q', q);
         if (tab === 'closed') qs.set('limit', '80');
         const data = await api('/courier/runs?' + qs.toString());
+        if (data && data.pick_site && !pickSiteLockFromMe()) {
+          const ps = String(data.pick_site || '').trim().toLowerCase();
+          if (ps === 'msk' || ps === 'fogel' || ps === 'strela') pickSite = ps;
+          syncSiteSwitch();
+        }
         if (soft && isTyping()) {
           updateAutoLabel(true);
           return;
@@ -622,6 +712,11 @@
       tab = btn.getAttribute('data-tab') === 'closed' ? 'closed' : 'active';
       if (tab !== 'active') selected.clear();
       refresh({ force: true });
+    };
+    document.getElementById('site-switch').onclick = (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest('[data-site]') : null;
+      if (!btn) return;
+      setPickSite(btn.getAttribute('data-site'));
     };
     document.getElementById('btn-find').onclick = () => {
       q = String(document.getElementById('q').value || '').trim();
