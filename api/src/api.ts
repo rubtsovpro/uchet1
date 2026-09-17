@@ -9889,8 +9889,17 @@ api.get('/warehouses/:id', async (c) => {
   const detail = await warehouseDetail(id);
   if (!detail) return c.json({ error: 'not found' }, 404);
   const links = await warehouseLinkInfo(id);
+  const pickSite = String((detail as { pick_site?: string }).pick_site || '')
+    .trim()
+    .toLowerCase();
+  const { pickSiteLabel } = await import('./warehouse-tasks.js');
   return c.json({
     ...detail,
+    pick_site: pickSite || '',
+    pick_site_label:
+      pickSite === 'msk' || pickSite === 'fogel' || pickSite === 'strela'
+        ? await pickSiteLabel(pickSite)
+        : '',
     has_links: links.linked,
     can_delete: !links.linked,
     link_counts: links.counts,
