@@ -102,6 +102,8 @@ export function rewriteSqlForPg(sql: string): string {
   let s = String(sql || '');
 
   s = s.replace(/\bIFNULL\s*\(/gi, 'COALESCE(');
+  // SQLite instr(haystack, needle) → PG strpos (тот же порядок аргументов, 1-based)
+  s = s.replace(/\binstr\s*\(/gi, 'strpos(');
   // datetime('now', '+1 day') / datetime('now', '-7 days')
   s = s.replace(
     /\bdatetime\s*\(\s*['"]now['"]\s*,\s*['"]([+-]?\d+)\s+(day|days|hour|hours|minute|minutes|second|seconds)['"]\s*\)/gi,
