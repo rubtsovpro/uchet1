@@ -848,13 +848,21 @@ import { syncDealQueueStats } from './sync-deal-queue.js';
 
 export const api = new Hono();
 
-api.get('/health', (c) => {
+api.get('/health', async (c) => {
   const twofa = telegram2faConfigStatus();
+  let redis: { ok: boolean; mode: string; lag_ms?: number } = { ok: true, mode: 'memory' };
+  try {
+    const { redisHealth } = await import('./modules/redis.js');
+    redis = await redisHealth();
+  } catch {
+    /* optional */
+  }
   return c.json({
     ok: true,
     service: 'warehouse-1c',
     /** Совпадает с LEGACY_UI_BUILD в web/public/legacy.html — устаревшие вкладки перезагрузятся. */
     ui_build: Number(process.env.WMS_UI_BUILD || 1174) || 1174,
+    redis,
     auth_2fa: {
       channel: twofa.channel,
       mode: twofa.mode,
@@ -14124,7 +14132,7 @@ api.post('/crm/deals/:id/stock-flow/return-complete', async (c) => {
       lines: body.lines,
       actor_name: actor?.name || actor?.login,
     });
-    invalidatePickListCaches();
+    await invalidatePickListCaches();
     await auditFromContext(c, {
       action: 'deal.stock_return_complete',
       entity: 'crm_deal',
@@ -14199,7 +14207,7 @@ api.post('/warehouse/pick/returns/:dealId/complete', async (c) => {
       lines: body.lines,
       actor_name: actor?.name || actor?.login,
     });
-    invalidatePickListCaches();
+    await invalidatePickListCaches();
     await auditFromContext(c, {
       action: 'pick_return.complete',
       entity: 'crm_deal',
@@ -14837,7 +14845,7 @@ api.post('/warehouse/pick/handoffs/:id/complete', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { picks?: HandoffPickUnitInput[] };
     const picks = Array.isArray(body?.picks) ? body.picks : undefined;
     const result = await completeHandoffPick(id, actor?.id, picks);
-    invalidatePickListCaches();
+    await invalidatePickListCaches();
     pickCompletedTotalCache.clear();
     await auditFromContext(c, {
       action: 'pick_handoff.complete',
@@ -14894,7 +14902,7 @@ api.post('/warehouse/pick/handoffs/by-deal/:dealId/complete', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { picks?: HandoffPickUnitInput[] };
     const picks = Array.isArray(body?.picks) ? body.picks : undefined;
     const result = await completeHandoffPickByDeal(dealId, actor?.id, picks);
-    invalidatePickListCaches();
+    await invalidatePickListCaches();
     pickCompletedTotalCache.clear();
     await auditFromContext(c, {
       action: 'pick_handoff.complete',

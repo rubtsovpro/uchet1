@@ -3383,22 +3383,24 @@ ${channelBanner}
 </body></html>`;
 }
 
-/** Короткий TTL-кэш списков /pick (poll ~25с + nginx 4с) — меньше prune/JOIN на каждый тик. */
-const PICK_LIST_TTL_MS = 5_000;
-const pickReturnsListCache = new Map<string, { at: number; items: Array<Record<string, unknown>> }>();
-const pickHandoffsListCache = new Map<string, { at: number; items: Array<Record<string, unknown>> }>();
+/** Короткий TTL-кэш списков /pick (poll ~25с + nginx 4с) — Redis + memory fallback. */
+import {
+  pickCacheGet,
+  pickCacheInvalidate,
+  pickCacheSet,
+  PICK_LIST_TTL_MS,
+} from './modules/pick/index.js';
 
-export function invalidatePickListCaches(): void {
-  pickReturnsListCache.clear();
-  pickHandoffsListCache.clear();
+export async function invalidatePickListCaches(): Promise<void> {
+  await pickCacheInvalidate();
 }
 
 /** Карточки возврата для /pick — тот же дух, что handoffs (deal + print_href). */
 export async function stockReturnsForPick(limit = 60): Promise<Array<Record<string, unknown>>> {
   const cap = Math.max(1, Math.min(120, limit));
   const cacheKey = `returns|${cap}`;
-  const hit = pickReturnsListCache.get(cacheKey);
-  if (hit && Date.now() - hit.at < PICK_LIST_TTL_MS) return hit.items;
+  const hit = await pickCacheGet<Array<Record<string, unknown>>>(cacheKey);
+  if (hit) return hit;
 
   const items = await Promise.all(
     (await listPendingStockReturns(cap)).map(async (r) => {
@@ -3445,7 +3447,7 @@ export async function stockReturnsForPick(limit = 60): Promise<Array<Record<stri
       };
     })
   );
-  pickReturnsListCache.set(cacheKey, { at: Date.now(), items });
+  await pickCacheSet(cacheKey, items, PICK_LIST_TTL_MS);
   return items;
 }
 
@@ -4040,8 +4042,8 @@ export async function warehouseHandoffsForPick(
     ? `ho|${cap}|${site || siteFilter || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`
     : '';
   if (handoffsCacheKey) {
-    const hit = pickHandoffsListCache.get(handoffsCacheKey);
-    if (hit && Date.now() - hit.at < PICK_LIST_TTL_MS) return hit.items;
+    const hit = await pickCacheGet<Array<Record<string, unknown>>>(handoffsCacheKey);
+    if (hit) return hit;
   }
   // Сначала фильтр по филиалу/актору, потом slice — иначе page пустой при ненулевом total.
   // Архив «Закрытые» может быть >500; потолок 500 ломал и список, и счётчик.
@@ -4096,7 +4098,7 @@ export async function warehouseHandoffsForPick(
     )
   );
   if (handoffsCacheKey) {
-    pickHandoffsListCache.set(handoffsCacheKey, { at: Date.now(), items });
+    await pickCacheSet(handoffsCacheKey, items, PICK_LIST_TTL_MS);
   }
   return items;
 }

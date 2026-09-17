@@ -52,6 +52,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '..', '..', 'web', 'dist');
 /** Операционные HTML (pick, courier…) — правим в web/public, без полной сборки Vite. */
 const webPublicDir = path.resolve(__dirname, '..', '..', 'web', 'public');
+/** Quasar Vue PWA (apps/web) → /app/ */
+const quasarDir = path.resolve(__dirname, '..', '..', 'apps', 'web', 'dist');
 
 /** legacy.js ~1.7MB — readFileSync на каждый запрос блокировал event loop и вешал WMS. */
 const publicHtmlCache = new Map<string, { mtimeMs: number; content: string }>();
@@ -379,6 +381,8 @@ function isKioskHtmlPath(p: string): boolean {
     || p === '/pick.html'
     || p === '/pick-sw.js'
     || p === '/pick-new-task.mp3'
+    || p === '/app'
+    || p.startsWith('/app/')
     || p === '/courier'
     || p === '/courier.html'
     || p === '/photo'
@@ -670,6 +674,38 @@ app.post('/api/logout', async (c) => {
 });
 
 app.route('/api', api);
+
+/** Quasar apps/web · /app/ (тот же cookie-auth, что /pick) */
+app.get('/app', (c) => c.redirect('/app/', 302));
+app.get('/app/', async (c) => {
+  const index = path.join(quasarDir, 'index.html');
+  if (!existsSync(index)) {
+    return c.html(
+      '<!DOCTYPE html><html lang="ru"><body style="font:14px system-ui;padding:24px"><p>Quasar UI ещё не собран (<code>apps/web/dist</code>). Пока откройте <a href="/pick">/pick</a>.</p></body></html>',
+      503
+    );
+  }
+  c.header('Cache-Control', 'no-store');
+  c.header('Content-Type', 'text/html; charset=utf-8');
+  return c.body(readFileSync(index, 'utf8'));
+});
+app.use(
+  '/app/*',
+  serveStatic({
+    root: quasarDir,
+    rewriteRequestPath: (p) => p.replace(/^\/app/, '') || '/index.html',
+  })
+);
+/** SPA fallback: /app/pick и т.п. без файла → index.html */
+app.get('/app/*', async (c, next) => {
+  const index = path.join(quasarDir, 'index.html');
+  if (!existsSync(index)) return next();
+  const rel = c.req.path.replace(/^\/app\/?/, '');
+  if (rel && existsSync(path.join(quasarDir, rel))) return next();
+  c.header('Cache-Control', 'no-store');
+  c.header('Content-Type', 'text/html; charset=utf-8');
+  return c.body(readFileSync(index, 'utf8'));
+});
 
 app.get('/login', serveStatic({ path: path.join(publicDir, 'login.html') }));
 
