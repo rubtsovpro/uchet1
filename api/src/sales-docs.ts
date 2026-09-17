@@ -2069,7 +2069,8 @@ export async function createSalesDocFromDeal(input: {
     if (s) overrideBySku.set(s, ov);
   }
 
-  items.forEach(async (it, idx) => {
+  for (let idx = 0; idx < items.length; idx++) {
+    const it = items[idx];
     const qty = Number(it.qty) || 0;
     const price = Number(it.price) || 0;
     const lineTotal = Number(it.amount) || qty * price;
@@ -2090,11 +2091,15 @@ export async function createSalesDocFromDeal(input: {
       : '';
     const overrideKn = String(ov?.client_name || '').trim();
     const overrideName = String(ov?.name || '').trim();
-    const name =
-      overrideKn ||
-      overrideName ||
-      savedKn ||
-      await salesDocLineDisplayName(it);
+    const display = await salesDocLineDisplayName(it);
+    const isInstall =
+      sku.trim().toUpperCase() === 'SVC-INSTALL' ||
+      /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(display) ||
+      /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(String(it.name || ''));
+    // Для Снятие/Установка КН/имя — «Снятие/Установка (товар)», не шаблон услуги
+    const name = isInstall
+      ? overrideKn || overrideName || display || savedKn
+      : overrideKn || overrideName || savedKn || display;
     lines.push({
       id: newGuid(),
       product_guid: productGuid,
@@ -2108,7 +2113,7 @@ export async function createSalesDocFromDeal(input: {
       line_no: idx + 1,
       line_kind: await guessLineKind(sku, name, productGuid),
     });
-  });
+  }
 
   const mergedLines = mergeSalesDocLines(lines);
   sumTotal = mergedLines.reduce((s, l) => s + l.amount + l.vat_amount, 0);

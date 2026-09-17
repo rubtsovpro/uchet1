@@ -7412,7 +7412,10 @@ async function renderProductDetail(id) {
   ]);
   state.productsCatTree = catTree;
   const catRoots = catTree.roots || [];
-  const props = p.properties || [];
+  const props = (p.properties || []).filter((x) => {
+    const k = String(x.property || '').trim().toLowerCase();
+    return k && k !== 'supply' && !/^№?\s*поставк/i.test(k) && k !== 'поставка';
+  });
   const apps = p.applicability || [];
   const unitItems = unitsData.items || [];
   const unitStatusRu = unitsData.status_labels || {
@@ -26471,6 +26474,7 @@ async function renderDealDetail(id) {
         body: JSON.stringify(body),
       });
       const sug = res?.service_suggestions || [];
+      const autoSvc = Array.isArray(res?.auto_services) ? res.auto_services : [];
       if (sug.length && res?.item?.id) {
         if (state._dealSvcSkip) delete state._dealSvcSkip[id];
       }
@@ -26478,7 +26482,11 @@ async function renderDealDetail(id) {
       state.dealFindFlash =
         '✓ добавлено' +
         (label ? ': ' + String(label).slice(0, 60) : '') +
-        (sug.length ? ' · можно добавить услуги ниже' : '');
+        (autoSvc.length
+          ? ' · + Снятие/Установка'
+          : sug.length
+            ? ' · можно добавить услуги ниже'
+            : '');
       await renderDealDetail(id);
     } catch (err) {
       if (msg) msg.textContent = err.message || String(err);

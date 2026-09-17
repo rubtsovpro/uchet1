@@ -8,7 +8,22 @@ import { resolveIsSto } from './deal-sale-rules.js';
 import { loadRetailPrices } from './stock-valuation.js';
 
 export const DEFAULT_INSTALL_SERVICE_SKU = 'SVC-INSTALL';
-export const DEFAULT_INSTALL_SERVICE_NAME = 'Снятие / установка';
+export const DEFAULT_INSTALL_SERVICE_NAME = 'Снятие/Установка';
+
+/** Имя строки услуги: «Снятие/Установка (деталь…)» — цена install_price, в названии что снимаем/ставим. */
+export function installServiceLineName(partName: string, baseName = DEFAULT_INSTALL_SERVICE_NAME): string {
+  let n = String(partName || '').trim();
+  // убрать ведущие артикулы / коды (MRAA…, НФ-…, 00-…)
+  n = n.replace(/^(?:[A-ZА-Я]{2,}[\w./-]*\s+)+/iu, '').trim();
+  n = n.replace(/\s*[|·].*$/u, '').trim();
+  n = n.replace(/\s{2,}/g, ' ').trim();
+  if (!n) return baseName;
+  // не дублировать, если уже обёрнуто
+  if (/^снятие\s*\/\s*установка\s*\(/iu.test(n)) return n;
+  const max = 160;
+  if (n.length > max) n = n.slice(0, max - 1).trimEnd() + '…';
+  return `${baseName} (${n})`;
+}
 
 export async function ensureProductServiceLinksSchema(): Promise<void> {
   await Promise.resolve(
@@ -70,11 +85,15 @@ export async function ensureDefaultInstallService(): Promise<{ id: string; sku: 
   await ensureProductServiceLinksSchema();
   let row = await get<{ id: string; sku: string; name: string }>(
     `SELECT id, sku, name FROM products
-     WHERE sku = ? OR (IFNULL(item_kind,'') = 'service' AND lower(name) = lower(?))
+     WHERE sku = ? OR (IFNULL(item_kind,'') = 'service' AND lower(replace(name,' ','')) LIKE 'снятие/установка%')
+     ORDER BY CASE WHEN IFNULL(is_active,1)=1 THEN 0 ELSE 1 END, created_at DESC
      LIMIT 1`,
-    [DEFAULT_INSTALL_SERVICE_SKU, DEFAULT_INSTALL_SERVICE_NAME]
+    [DEFAULT_INSTALL_SERVICE_SKU]
   );
-  if (row) return { id: row.id, sku: row.sku, name: row.name };
+  if (row) {
+    // имя-шаблон в карточке — короткое; в заказе/доках будет «Снятие/Установка (товар)»
+    return { id: row.id, sku: row.sku || DEFAULT_INSTALL_SERVICE_SKU, name: DEFAULT_INSTALL_SERVICE_NAME };
+  }
   const unitId =
     (await get<{ id: string }>(`SELECT id FROM units WHERE short_name = ? LIMIT 1`, ['шт']))?.id ||
     (await get<{ id: string }>(`SELECT id FROM units LIMIT 1`))?.id ||
@@ -226,7 +245,7 @@ function roundMoney(n: number): number {
   return Math.round(Number(n) || 0);
 }
 
-/** Цена снятия/установки: колонка products.install_price или product_prices. */
+/** Цена снятия/установки: колонка products.install_price или тип цены товара «Снятие/Установка». */
 export async function resolveInstallPrice(productId: string): Promise<number> {
   await ensureProductServiceLinksSchema();
   const col = await get<{ install_price: number }>(
@@ -239,15 +258,26 @@ export async function resolveInstallPrice(productId: string): Promise<number> {
     `SELECT price FROM product_prices
      WHERE product_id = ?
        AND (
-         price_type = 'Цена снятие/установки'
+         price_type = 'Снятие/Установка'
+         OR price_type = 'Цена снятие/установки'
+         OR lower(replace(IFNULL(price_type,''), ' ', '')) LIKE '%снятие%установ%'
          OR lower(price_type) LIKE '%снят%'
          OR lower(price_type) LIKE '%установ%'
        )
-     ORDER BY CASE WHEN price_type = 'Цена снятие/установки' THEN 0 ELSE 1 END
+     ORDER BY CASE
+       WHEN price_type = 'Снятие/Установка' THEN 0
+       WHEN price_type = 'Цена снятие/установки' THEN 1
+       ELSE 2
+     END
      LIMIT 1`,
     [productId]
   );
   return Math.max(0, Number(fromPp?.price) || 0);
+}
+
+export function isInstallServiceSkuOrName(sku: string, name = ''): boolean {
+  if (String(sku || '').trim().toUpperCase() === DEFAULT_INSTALL_SERVICE_SKU) return true;
+  return /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(String(name || '').trim());
 }
 
 export type ServiceSuggestion = {
@@ -307,19 +337,32 @@ export async function suggestLinkedServicesForDealItem(input: {
 
     const qty =
       link.qty_mode === 'fixed' ? 1 : Math.max(0.001, Number(input.qty) || 1);
-    let price =
-      link.price_override != null && Number.isFinite(Number(link.price_override))
-        ? Math.max(0, Number(link.price_override))
-        : retailMap.get(String(svc.id)) ?? 0;
-    if (!(price > 0) && installPrice > 0 && link.role === 'install') {
-      price = installPrice;
+    const role = String(link.role || 'install');
+    const isInstall =
+      role === 'install' ||
+      isInstallServiceSkuOrName(String(svc.sku || ''), String(svc.name || ''));
+    // Цена только из типа цены товара «Снятие/Установка» / install_price — не розница шаблона SVC-INSTALL.
+    let price = 0;
+    if (isInstall) {
+      price =
+        link.price_override != null && Number.isFinite(Number(link.price_override)) && Number(link.price_override) > 0
+          ? Math.max(0, Number(link.price_override))
+          : installPrice;
+    } else {
+      price =
+        link.price_override != null && Number.isFinite(Number(link.price_override))
+          ? Math.max(0, Number(link.price_override))
+          : retailMap.get(String(svc.id)) ?? 0;
     }
+    const lineName = isInstall
+      ? installServiceLineName(String(product.name || ''))
+      : String(svc.name || DEFAULT_INSTALL_SERVICE_NAME);
     out.push({
       service_product_id: String(svc.id),
       sku: String(svc.sku || ''),
       code: String(svc.code || ''),
-      name: String(svc.name || DEFAULT_INSTALL_SERVICE_NAME),
-      role: String(link.role || 'install'),
+      name: lineName,
+      role,
       qty,
       price,
       amount: roundMoney(qty * price),
@@ -431,10 +474,15 @@ export async function applySuggestedServicesForDealItem(input: {
     if (already) continue;
 
     const qty = Math.max(0.001, Number(sel.qty) || 1);
-    const price =
-      sel.price != null && Number.isFinite(Number(sel.price))
-        ? Math.max(0, Number(sel.price))
-        : (await loadRetailPrices([sid])).get(sid) ?? 0;
+    const isInstall = isInstallServiceSkuOrName(String(svc.sku || ''), String(svc.name || ''));
+    let price =
+      sel.price != null && Number.isFinite(Number(sel.price)) ? Math.max(0, Number(sel.price)) : 0;
+    if (!(price > 0) && isInstall) {
+      price = await resolveInstallPrice(String(parent.product_guid || ''));
+    }
+    if (!(price > 0) && !isInstall) {
+      price = (await loadRetailPrices([sid])).get(sid) ?? 0;
+    }
     const amount = roundMoney(qty * price);
     const maxLine =
       (await get<{ m: number }>(
@@ -443,28 +491,33 @@ export async function applySuggestedServicesForDealItem(input: {
       ))?.m ?? 0;
     const itemId = newGuid();
     const note = `К ${String(parent.name || '').slice(0, 80)}`;
+    // Клиентское / документное имя: «Снятие/Установка (товар)»
+    const lineName = isInstall
+      ? installServiceLineName(String(parent.name || ''))
+      : String(svc.name || DEFAULT_INSTALL_SERVICE_NAME);
     await run(
       `INSERT INTO crm_deal_items (
          id, deal_id, product_guid, sku, code, name, brand, price, qty, amount, unit,
          department, note, line_no, warehouse_id, supplier_id, in_doc_id,
          mark, model, generation, parent_item_id, auto_service
-       ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, '', '', '', ?, ?, ?, ?, 0)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, '', '', '', ?, ?, ?, ?, 1)`,
       [
         itemId,
         input.dealId,
         String(svc.id),
         String(svc.sku || ''),
         String(svc.code || ''),
-        String(svc.name || DEFAULT_INSTALL_SERVICE_NAME),
+        lineName,
         price,
         qty,
         amount,
         await productUnitName(svc.unit_id as string | undefined),
         note,
         Number(maxLine) + 1,
-        String(input.mark || ''),
-        String(input.model || ''),
-        String(input.generation || ''),
+        // у услуги-установки не тащим применимость товара — иначе УПД/счёт пересоберут имя детали
+        isInstall ? '' : String(input.mark || ''),
+        isInstall ? '' : String(input.model || ''),
+        isInstall ? '' : String(input.generation || ''),
         input.parentItemId,
       ]
     );

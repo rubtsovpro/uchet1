@@ -3077,6 +3077,7 @@ export async function addDealItem(
   );
 
   let suggestions: ServiceSuggestion[] = [];
+  let autoServices: Record<string, unknown>[] = [];
   try {
     if (String(product.item_kind || 'product') !== 'service') {
       suggestions = await suggestLinkedServicesForDealItem({
@@ -3085,6 +3086,29 @@ export async function addDealItem(
         productId: String(product.id),
         qty,
       });
+      // Снятие/Установка из типа цены товара — сразу в заказ, не ждать клика
+      const installSug = suggestions.filter(
+        (s) =>
+          s.role === 'install' ||
+          String(s.sku || '').toUpperCase() === 'SVC-INSTALL' ||
+          /^снятие\s*\/\s*установка/iu.test(String(s.name || ''))
+      );
+      if (installSug.length) {
+        autoServices = await applySuggestedServicesForDealItem({
+          dealId,
+          parentItemId: itemId,
+          services: installSug.map((s) => ({
+            service_product_id: s.service_product_id,
+            qty: s.qty,
+            price: s.price,
+          })),
+          mark,
+          model,
+          generation,
+        });
+        const used = new Set(installSug.map((s) => s.service_product_id));
+        suggestions = suggestions.filter((s) => !used.has(s.service_product_id));
+      }
     }
   } catch (e) {
     console.warn('[deal] service suggestions:', e instanceof Error ? e.message : e);
@@ -3101,7 +3125,7 @@ export async function addDealItem(
     item,
     deal: await getDeal(dealId),
     service_suggestions: suggestions,
-    auto_services: [],
+    auto_services: autoServices,
   };
 }
 

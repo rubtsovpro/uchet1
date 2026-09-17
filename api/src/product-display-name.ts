@@ -9,6 +9,20 @@
  */
 import { all, get } from './db.js';
 
+/** Поставка — атрибут лота/остатка, не карточки номенклатуры. */
+export function isLotOnlyProductProperty(property: string): boolean {
+  const p = String(property || '').trim().toLowerCase();
+  if (!p) return false;
+  return (
+    p === 'supply' ||
+    p === 'поставка' ||
+    p === '№ поставки' ||
+    p === 'номер поставки' ||
+    p.startsWith('supply') ||
+    /^№?\s*поставк/i.test(p)
+  );
+}
+
 /** Внутренний код 1С (НФ-… / УСЛ-…), не каталожный артикул. */
 function looksLikeInternalNfCode(s: string): boolean {
   return /^(00)?НФ-|УСЛ-/i.test(String(s || '').trim());
@@ -295,6 +309,20 @@ export async function applicabilityLineName(line: ApplicabilityLineInput): Promi
   if (!hasApp) {
     // Уже коммерческое из виджета — не подменять на 1С.
     if (widgetName) return widgetName.slice(0, 255);
+    // Услуги / строки без применимости: иначе в счёте остаётся «Товар».
+    const fromCard = String(
+      line.name_1c || line.product_name_1c || line.product_name || ''
+    ).trim();
+    if (fromCard) return fromCard.slice(0, 255);
+    const productId = String(line.product_guid || line.product_id || '').trim();
+    if (productId) {
+      const p = await get<{ name: string }>(
+        `SELECT IFNULL(name,'') AS name FROM products WHERE id = ? LIMIT 1`,
+        [productId]
+      );
+      const pn = String(p?.name || '').trim();
+      if (pn) return pn.slice(0, 255);
+    }
     return 'Товар';
   }
 
@@ -434,8 +462,17 @@ export async function salesDocLineCharacteristicsSuffix(it: Record<string, unkno
 /** Счёт / УПД / ЗН / виджет документов — только коммерческое название. */
 export async function salesDocLineDisplayName(it: Record<string, unknown>): Promise<string> {
   const s = (v: unknown) => String(v ?? '').trim();
+  const rawName = s(it.name);
+  const sku = s(it.sku || it.code);
+  // Услуга из типа цены товара: имя уже «Снятие/Установка (деталь)» — не пересобирать по применимости
+  if (
+    sku.toUpperCase() === 'SVC-INSTALL' ||
+    /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(rawName)
+  ) {
+    return (rawName || 'Снятие/Установка').slice(0, 255);
+  }
   return await applicabilityLineName({
-    applicability_name: s(it.name),
+    applicability_name: rawName,
     name_1c: s(it.name_1c),
     product_name_1c: s(it.product_name_1c),
     product_guid: s(it.product_guid || it.product_id),

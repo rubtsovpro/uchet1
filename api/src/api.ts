@@ -27,7 +27,7 @@ import {
   sqlExcludeCrossContourProducts,
   sqlExcludeServices,
 } from './product-kind.js';
-import { catalogArticleOf, warehouseArticleOf, salesDocLineDisplayName } from './product-display-name.js';
+import { catalogArticleOf, warehouseArticleOf, salesDocLineDisplayName, isLotOnlyProductProperty } from './product-display-name.js';
 import {
   looksLike1cProductCode,
   resolveSkuForProduction, sqlProductTextSearch,
@@ -6375,7 +6375,7 @@ api.get('/sales-docs/deal-lines', async (c) => {
     const productGuid = String(it.product_guid || it.product_id || '').trim();
     const sku = String(it.sku || it.code || '').trim();
     const skuKey = sku.toUpperCase().replace(/\s+/g, '');
-    const clientName =
+    const clientNameSaved =
       (productGuid && knMap[`g:${productGuid}`]) ||
       (skuKey && knMap[`s:${skuKey}`]) ||
       '';
@@ -6389,6 +6389,13 @@ api.get('/sales-docs/deal-lines', async (c) => {
         .replace(/^.+?\s+[—–-]\s+/, '')
         .trim() ||
       rawName;
+    // КН для Снятие/Установка: по умолчанию то же «Снятие/Установка (товар)»
+    const isInstall =
+      sku.toUpperCase() === 'SVC-INSTALL' ||
+      /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(baseName);
+    const clientName =
+      clientNameSaved ||
+      (isInstall ? baseName : '');
     return {
       line_no: Number(it.line_no) || idx + 1,
       item_id: String(it.id || ''),
@@ -10233,6 +10240,7 @@ api.get('/counterparties', async (c) => {
   const partyKind = (c.req.query('party_kind') || '').trim().toLowerCase(); // legal | ip | person | partner(legacy) | ''
   const isPartnerQ = (c.req.query('is_partner') || '').trim().toLowerCase(); // 1 | 0 | yes | no | ''
   const isMainQ = (c.req.query('is_main') || '').trim().toLowerCase(); // 1 | 0 | ''
+  const amoCompanyIdQ = String(c.req.query('amo_company_id') || '').replace(/\D/g, '');
   const archived = (c.req.query('archived') || '0').trim();
   const sort = (c.req.query('sort') || 'created').trim().toLowerCase();
   const dir = (c.req.query('dir') || 'desc').trim().toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -10276,6 +10284,11 @@ api.get('/counterparties', async (c) => {
     where.push(`IFNULL(cp.is_main,0) = 1`);
   } else if (isMainQ === '0' || isMainQ === 'no' || isMainQ === 'false') {
     where.push(`IFNULL(cp.is_main,0) = 0`);
+  }
+  if (amoCompanyIdQ) {
+    // Без IFNULL(...,''): на Postgres rewrite даёт COALESCE(...,"") и 500.
+    where.push(`cp.amo_company_id = ?`);
+    params.push(amoCompanyIdQ);
   }
   if (q) {
     const like = `%${q}%`;
@@ -10363,6 +10376,12 @@ api.post('/counterparties', async (c) => {
     address?: string;
     name_full?: string;
     email?: string;
+    amo_company_id?: string | number;
+    director?: string;
+    bank?: string;
+    bik?: string;
+    rs?: string;
+    ks?: string;
   }>();
   if (!body.name?.trim()) return c.json({ error: 'name required' }, 400);
   const id = newGuid();
@@ -10384,13 +10403,19 @@ api.post('/counterparties', async (c) => {
   const address = String(body.address ?? '').trim();
   const nameFull = String(body.name_full ?? '').trim();
   const email = String(body.email ?? '').trim();
+  const amoCompanyId = String(body.amo_company_id ?? '').replace(/\D/g, '');
+  const director = String(body.director ?? '').trim();
+  const bank = String(body.bank ?? '').trim();
+  const bik = String(body.bik ?? '').replace(/\D/g, '');
+  const rs = String(body.rs ?? '').replace(/\D/g, '');
+  const ks = String(body.ks ?? '').replace(/\D/g, '');
   const fromDadata = Boolean(kpp || ogrn || address || nameFull);
   const isPartner =
     body.is_partner === true || body.is_partner === 1 || body.is_partner === '1' ? 1 : 0;
   const createdAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
   await run(
-    `INSERT INTO counterparties (id, name, inn, phone, kind, party_kind, is_partner, kpp, ogrn, address, name_full, email, dadata_synced_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO counterparties (id, name, inn, phone, kind, party_kind, is_partner, kpp, ogrn, address, name_full, email, amo_company_id, director, bank, bik, rs, ks, dadata_synced_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       body.name.trim(),
@@ -10404,6 +10429,12 @@ api.post('/counterparties', async (c) => {
       address,
       nameFull,
       email,
+      amoCompanyId,
+      director,
+      bank,
+      bik,
+      rs,
+      ks,
       fromDadata ? new Date().toISOString() : '',
       createdAt,
     ]
@@ -10422,9 +10453,10 @@ api.post('/counterparties', async (c) => {
       kpp,
       ogrn,
       email,
+      amo_company_id: amoCompanyId,
     },
   });
-  return c.json(created || { id, name: body.name.trim(), inn, phone, kind, email }, 201);
+  return c.json(created || { id, name: body.name.trim(), inn, phone, kind, email, amo_company_id: amoCompanyId }, 201);
 });
 
 api.get('/counterparties/:id', async (c) => {
@@ -10488,6 +10520,7 @@ api.patch('/counterparties/:id', async (c) => {
     is_partner?: boolean | number | string;
     is_main?: boolean | number | string;
     barcode_prefix?: string;
+    amo_company_id?: string | number;
   }>();
   const before = {
     name: row.name,
@@ -10499,6 +10532,7 @@ api.patch('/counterparties/:id', async (c) => {
     party_kind: row.party_kind,
     is_partner: row.is_partner,
     is_main: row.is_main,
+    amo_company_id: row.amo_company_id,
   };
   if (body.name != null) {
     const name = body.name.trim();
@@ -10565,6 +10599,16 @@ api.patch('/counterparties/:id', async (c) => {
       .replace(/[^A-Z0-9]/g, '')
       .slice(0, 8);
     await run('UPDATE counterparties SET barcode_prefix = ? WHERE id = ?', [pref, id]);
+  }
+  if (body.amo_company_id != null) {
+    const amoCo = String(body.amo_company_id).replace(/\D/g, '');
+    await run('UPDATE counterparties SET amo_company_id = ? WHERE id = ?', [amoCo, id]);
+    if (amoCo) {
+      const curKind = String(row.kind || '');
+      if (curKind === '' || curKind === 'supplier') {
+        await run('UPDATE counterparties SET kind = ? WHERE id = ?', ['buyer', id]);
+      }
+    }
   }
   if (body.is_active != null) {
     const active = body.is_active === true || body.is_active === 1 ? 1 : 0;
@@ -11170,10 +11214,12 @@ api.get('/products/:id', async (c) => {
     marks: [...markSet].sort((a, b) => a.localeCompare(b, 'ru')),
     combos: appCombos,
   };
-  const propertiesRaw = await all<{ property: string; value: string }>(
-    `SELECT property, value FROM product_properties WHERE product_id = ? ORDER BY property`,
-    [id]
-  );
+  const propertiesRaw = (
+    await all<{ property: string; value: string }>(
+      `SELECT property, value FROM product_properties WHERE product_id = ? ORDER BY property`,
+      [id]
+    )
+  ).filter((p) => !isLotOnlyProductProperty(p.property));
   const propNames = [...new Set(propertiesRaw.map((p) => p.property).filter(Boolean))];
   const optionsByProp = new Map<string, string[]>();
   if (propNames.length) {
@@ -11755,7 +11801,7 @@ api.put('/products/:id/properties', async (c) => {
   const byProp = new Map(before.map((r) => [r.property, r]));
   for (const item of list) {
     const property = String(item.property || '').trim();
-    if (!property) continue;
+    if (!property || isLotOnlyProductProperty(property)) continue;
     const value = String(item.value ?? '').trim();
     const existing = byProp.get(property);
     if (existing) {
@@ -16354,7 +16400,7 @@ api.post('/stock/transfer-request', async (c) => {
         comment: dealId
           ? `${result.user_comment} · сделка ${dealId}`
           : result.user_comment,
-        status: result.posted ? 'done' : 'new',
+        status: Number(result.posted) ? 'done' : 'new',
         amount: 0,
         payload_json: JSON.stringify({
           kind: 'transfer_request',
