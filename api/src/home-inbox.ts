@@ -118,47 +118,19 @@ export async function buildHomeInbox(
   const companyId = String(opts?.companyId || '').trim();
   const groups: HomeInboxGroup[] = [];
 
-  if (canSeePhoto(actor)) {
-    const photos = await Promise.all((await listOpenCarPhotoTasks(80))
-      .filter(async (t) => await matchesCompany(t.deal_id, companyId))
-      .slice(0, 40)
-      .map(async (t) => {
-        const deal = await getDeal(t.deal_id) as Record<string, unknown> | null;
-        const fio =
-          String(t.buyer_name || '').trim() ||
-          resolvePersonDocFio(deal) ||
-          '';
-        const car = [t.car_brand, t.car_model].filter(Boolean).join(' ');
-        const plate = t.car_plate || 'без номера';
-        return {
-          id: t.id,
-          kind: 'photo' as const,
-          title: kindTitlePhoto(t.kind),
-          subtitle: [plate, car, fio].filter(Boolean).join(' · '),
-          meta: String(t.created_at || '')
-            .replace('T', ' ')
-            .slice(0, 16),
-          href: `/reception-photo?v=rp7&deal=${encodeURIComponent(t.deal_id)}&task=${encodeURIComponent(t.id)}&kind=${encodeURIComponent(t.kind || 'car')}`,
-          status: 'open',
-          created_at: t.created_at,
-          deal_id: t.deal_id,
-          org_company_id: await dealOrgCompanyId(t.deal_id),
-        };
-      }));
-    groups.push({
-      id: 'photo',
-      title: 'Фото приёмки',
-      items: photos,
-    });
-  }
+  // «Фото приёмки» на главной не показываем — отдельное приложение /reception-photo.
 
   if (canSeeWarehouse(actor)) {
-    const open = (await listTasks({ limit: 100 })).filter(async (r) => {
+    const openRaw = await listTasks({ limit: 100 });
+    const open: Awaited<ReturnType<typeof listTasks>> = [];
+    for (const r of openRaw) {
       const st = String((r as { status?: string }).status || '');
-      if (!(st === 'new' || st === 'picking' || st === 'packed' || st === 'ready')) return false;
+      // На главной только новые задания; «отдано» / сборка / упаковано — не тянем.
+      if (st !== 'new') continue;
       const dealId = String((r as { deal_id?: string }).deal_id || '').trim();
-      return await matchesCompany(dealId, companyId);
-    });
+      if (!(await matchesCompany(dealId, companyId))) continue;
+      open.push(r);
+    }
     const items: HomeInboxItem[] = await Promise.all(open.slice(0, 40).map(async (r) => {
       const row = r as Record<string, unknown>;
       const num = String(row.number || row.id || '');
