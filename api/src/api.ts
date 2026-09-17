@@ -2279,6 +2279,7 @@ api.post('/crm/deals/:id/items', async (c) => {
     mark?: string;
     model?: string;
     generation?: string;
+    with_install?: boolean;
   };
   const result = await addDealItem(dealId, body);
   if (!result.ok) {

@@ -15313,7 +15313,9 @@ button.cells-tile:hover {
   cursor: pointer;
 }
 .deal-svc-suggest-row:last-child { border-bottom: 0; }
-.deal-svc-suggest-name { flex: 1 1 auto; font-size: 13px; }
+.deal-svc-suggest-name { flex: 1 1 auto; font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
+.deal-svc-suggest-type { font-weight: 650; }
+.deal-svc-suggest-kn { font-size: 12px; }
 .deal-svc-suggest-price {
   white-space: nowrap;
   font-size: 13px;
@@ -15323,6 +15325,29 @@ button.cells-tile:hover {
   margin: 8px 0 0;
   font-size: 12px;
 }
+.deal-install-slot:empty { display: none; }
+.deal-install-price-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  background: #fff7ed;
+  cursor: pointer;
+}
+.deal-install-price-opt input { margin-top: 3px; }
+.deal-install-price-opt-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  min-width: 0;
+}
+.deal-install-price-opt-type { font-weight: 650; font-size: 13px; }
+.deal-install-price-opt-sum { font-size: 13px; }
+.deal-install-price-opt-kn { font-size: 12px; flex: 1 1 100%; }
 .deal-svc-hint-actions {
   display: flex;
   flex-wrap: wrap;

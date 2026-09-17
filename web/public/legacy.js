@@ -4578,6 +4578,100 @@ function offerDealServiceSuggestions(dealId, parentItemId, suggestions, productL
   return Promise.resolve(0);
 }
 
+/** Тип цены «Снятие/Установка» с карточки товара → { label, price } | null */
+function installPriceTypeFromProduct(p) {
+  if (!p || String(p.item_kind || '') === 'service') return null;
+  const prices = Array.isArray(p.prices) ? p.prices : [];
+  const hit = prices.find((x) => {
+    const t = String(x.price_type || x.type || '');
+    const n = Number(x.price) || 0;
+    if (!(n > 0)) return false;
+    return (
+      t === 'Снятие/Установка' ||
+      t === 'Цена снятие/установки' ||
+      /снятие.*установ/iu.test(t.replace(/\s+/g, ''))
+    );
+  });
+  if (hit) {
+    return {
+      label: 'Снятие/Установка',
+      price: Math.max(0, Number(hit.price) || 0),
+    };
+  }
+  const col = Number(p.install_price) || 0;
+  if (col > 0) return { label: 'Снятие/Установка', price: col };
+  return null;
+}
+
+function dealInstallPriceTypeClientName(priceType, productName) {
+  const type = String(priceType || 'Снятие/Установка').trim() || 'Снятие/Установка';
+  let n = String(productName || '').trim();
+  n = n.replace(/^(?:[A-ZА-Я]{2,}[\w./-]*\s+)+/iu, '').trim();
+  n = n.replace(/\s*[|·].*$/u, '').trim();
+  if (!n) return type;
+  if (n.length > 160) n = n.slice(0, 159).trimEnd() + '…';
+  return `${type} (${n})`.slice(0, 255);
+}
+
+/** HTML галочки типа цены при добавлении товара (СТО). */
+function dealInstallPriceCheckboxHtml(install, productName) {
+  if (!install || !(install.price > 0)) return '';
+  const kn = dealInstallPriceTypeClientName(install.label, productName);
+  return `
+    <label class="deal-install-price-opt" id="deal-install-price-opt">
+      <input type="checkbox" id="deal-with-install" checked />
+      <span class="deal-install-price-opt-body">
+        <span class="deal-install-price-opt-type">${esc(install.label)}</span>
+        <span class="mono deal-install-price-opt-sum">${formatMoney(install.price)}</span>
+        <span class="muted deal-install-price-opt-kn">КН: ${esc(kn)}</span>
+      </span>
+    </label>`;
+}
+
+/**
+ * Перед добавлением товара в СТО: показать тип цены + сумму, галочка → with_install.
+ * @returns {Promise<boolean|null>} true/false = галочка; null = отмена
+ */
+function pickDealInstallWithProduct(opts) {
+  const install = opts?.install;
+  if (!install || !(install.price > 0)) return Promise.resolve(false);
+  const productLabel = String(opts?.productLabel || 'Товар').slice(0, 120);
+  const kn = dealInstallPriceTypeClientName(install.label, opts?.productName || productLabel);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+    openCreateLightbox({
+      title: 'Тип цены',
+      submitLabel: 'В заказ',
+      cancelLabel: 'Отмена',
+      bodyHtml: `
+        <p style="margin:0 0 12px">${esc(productLabel)}</p>
+        <label class="deal-install-price-opt">
+          <input type="checkbox" id="deal-find-with-install" checked />
+          <span class="deal-install-price-opt-body">
+            <span class="deal-install-price-opt-type">${esc(install.label)}</span>
+            <span class="mono deal-install-price-opt-sum">${formatMoney(install.price)}</span>
+            <span class="muted deal-install-price-opt-kn">КН: ${esc(kn)}</span>
+          </span>
+        </label>
+        <p class="muted" style="margin:10px 0 0;font-size:12px">Галочка — товар + услуга с КН. Без галочки — только товар.</p>`,
+      onSubmit: async (root) => {
+        const cb = root.querySelector('#deal-find-with-install');
+        closeCreateLightbox();
+        finish(!!(cb && cb.checked));
+      },
+    });
+    const lb = document.getElementById('create-lightbox');
+    const onCancel = () => finish(null);
+    lb?.querySelector('#create-lb-cancel')?.addEventListener('click', onCancel, { once: true });
+    lb?.querySelector('#create-lb-x')?.addEventListener('click', onCancel, { once: true });
+  });
+}
+
 /** HTML блока-подсказки «Добавить услуги?» внутри заказа. */
 function dealServiceSuggestHtml(pending) {
   const groups = (Array.isArray(pending) ? pending : [])
@@ -4598,13 +4692,24 @@ function dealServiceSuggestHtml(pending) {
         .map((s) => {
           const idx = flat.length;
           flat.push({ parent_item_id: g.parent_item_id, ...s });
+          const typeLabel =
+            String(s.price_type_label || s.name || 'Услуга').trim() || 'Услуга';
+          const kn = String(s.client_name || '').trim();
           return `
     <label class="deal-svc-suggest-row">
       <input type="checkbox" data-svc-flat="${idx}" checked />
-      <span class="deal-svc-suggest-name">${esc(s.name || 'Услуга')}${
-            s.sku ? ` <span class="muted mono">${esc(s.sku)}</span>` : ''
+      <span class="deal-svc-suggest-name">
+        <span class="deal-svc-suggest-type">${esc(typeLabel)}</span>
+        ${
+          kn && kn !== typeLabel
+            ? `<span class="muted deal-svc-suggest-kn">КН: ${esc(kn)}</span>`
+            : ''
+        }
+        ${s.sku ? ` <span class="muted mono">${esc(s.sku)}</span>` : ''}
+      </span>
+      <span class="mono deal-svc-suggest-price">${formatMoney(s.price)}${
+            Number(s.qty) > 1 ? ` × ${esc(String(s.qty))}` : ''
           }</span>
-      <span class="mono deal-svc-suggest-price">${formatMoney(s.price)} × ${esc(String(s.qty ?? 1))}</span>
     </label>`;
         })
         .join('');
@@ -4620,13 +4725,12 @@ function dealServiceSuggestHtml(pending) {
   state._dealSvcFlat = flat;
 
   return `
-    <div class="deal-svc-hint" id="deal-svc-hint" role="region" aria-label="Предложение услуг">
+    <div class="deal-svc-hint" id="deal-svc-hint" role="region" aria-label="Тип цены Снятие/Установка">
       <div class="deal-svc-hint-head">
-        <strong>Добавить услуги?</strong>
-        <span class="muted">В заказе есть товары без связанных услуг</span>
+        <strong>Тип цены на товаре</strong>
+        <span class="muted">Отметьте — добавится услуга с КН</span>
       </div>
       <div class="deal-svc-suggest-list">${blocks}</div>
-      <p class="muted deal-svc-hint-note">Услуги не добавляются сами — отметьте нужные.</p>
       <div class="deal-svc-hint-actions">
         <button type="button" class="primary" id="deal-svc-add">Добавить выбранные</button>
         <button type="button" id="deal-svc-skip">Без услуг</button>
@@ -25923,6 +26027,9 @@ async function renderDealDetail(id) {
         </label>
         <label>Кол-во<input id="deal-item-qty" type="number" step="1" min="1" inputmode="numeric" value="1" /></label>
         <label>Цена<input id="deal-item-price" type="number" step="1" min="0" inputmode="numeric" placeholder="розничная" /></label>
+        <div id="deal-install-slot" class="deal-install-slot${
+          isAutoserviceDeal && /автосервис/i.test(String(d.amo_channel || '')) ? '' : ' hidden'
+        }" style="grid-column:1 / -1"></div>
         <div class="toolbar" style="margin:0;grid-column:1 / -1">
           <button type="button" class="primary" id="deal-item-add">Добавить в заказ</button>
           <button type="button" id="deal-item-add-cancel">Скрыть</button>
@@ -26467,8 +26574,26 @@ async function renderDealDetail(id) {
         }
         price = picked;
       }
+      let withInstall = false;
+      const install = !isService ? installPriceTypeFromProduct(productMeta) : null;
+      const stoChannel =
+        isAutoserviceDeal && /автосервис/i.test(String(d.amo_channel || ''));
+      if (stoChannel && install && install.price > 0) {
+        if (msg) msg.textContent = '';
+        const pick = await pickDealInstallWithProduct({
+          install,
+          productLabel: label || pRow.name || 'Товар',
+          productName: pRow.name || label || '',
+        });
+        if (pick == null) {
+          if (msg) msg.textContent = 'Отменено';
+          return;
+        }
+        withInstall = !!pick;
+      }
       const body = { product_id: pid, qty: 1 };
       if (price != null) body.price = price;
+      if (withInstall) body.with_install = true;
       const res = await api('/crm/deals/' + encodeURIComponent(id) + '/items', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -26483,9 +26608,9 @@ async function renderDealDetail(id) {
         '✓ добавлено' +
         (label ? ': ' + String(label).slice(0, 60) : '') +
         (autoSvc.length
-          ? ' · + Снятие/Установка'
+          ? ' · + ' + (install?.label || 'Снятие/Установка')
           : sug.length
-            ? ' · можно добавить услуги ниже'
+            ? ' · тип цены ниже'
             : '');
       await renderDealDetail(id);
     } catch (err) {
@@ -27033,6 +27158,8 @@ async function renderDealDetail(id) {
               idInput.value = btn.dataset.id;
               qInput.value = btn.dataset.label || btn.dataset.sku || '';
               suggest.classList.add('hidden');
+              const installSlot = document.getElementById('deal-install-slot');
+              if (installSlot) installSlot.innerHTML = '';
               if (btn.dataset.kind === 'Услуга') {
                 if (supSel) {
                   supSel.innerHTML = '<option value="">—</option>';
@@ -27071,6 +27198,27 @@ async function renderDealDetail(id) {
                 }
               } else {
                 loadSources(btn.dataset.id);
+                try {
+                  const p = await api('/products/' + encodeURIComponent(btn.dataset.id));
+                  const install = installPriceTypeFromProduct(p);
+                  const stoOk =
+                    isAutoserviceDeal && /автосервис/i.test(String(d.amo_channel || ''));
+                  if (installSlot && stoOk && install) {
+                    installSlot.innerHTML = dealInstallPriceCheckboxHtml(install, p.name || '');
+                    installSlot.classList.remove('hidden');
+                  }
+                  if (priceInput && Array.isArray(p?.prices)) {
+                    const retail = Number(
+                      (p.prices.find((x) => /рознич/i.test(String(x.price_type || ''))) || {})
+                        .price
+                    ) || 0;
+                    if (retail > 0 && !(priceInput.value !== '' && Number(priceInput.value) > 0)) {
+                      priceInput.value = String(Math.round(retail));
+                    }
+                  }
+                } catch (_) {
+                  /* ignore */
+                }
               }
             };
           });
@@ -27194,6 +27342,8 @@ async function renderDealDetail(id) {
           if (markName) body.mark = markName;
           if (modelName) body.model = modelName;
           if (genName) body.generation = genName;
+          const withInstallCb = document.getElementById('deal-with-install');
+          if (withInstallCb && withInstallCb.checked) body.with_install = true;
           const res = await api('/crm/deals/' + encodeURIComponent(id) + '/items', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -27204,6 +27354,8 @@ async function renderDealDetail(id) {
           }
           // Без сброса марки/склада: панель остаётся открытой, фильтры сохраняются
           rememberAddDraft({ open: true, clearProduct: true });
+          const installSlot = document.getElementById('deal-install-slot');
+          if (installSlot) installSlot.innerHTML = '';
           await renderDealDetail(id);
         } catch (err) {
           if (msg) msg.textContent = err.message;

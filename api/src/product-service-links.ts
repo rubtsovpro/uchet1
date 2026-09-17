@@ -1,6 +1,11 @@
 /**
- * Связь товар → услуги (снятие/установка и др.).
- * В заказе автосервис/СТО при добавлении товара услуги предлагаются (не добавляются сами).
+ * Тип цены на товаре → услуга в заказе.
+ *
+ * Пример: у товара тип цены «Снятие/Установка» = 10000.
+ * При добавлении товара в СТО:
+ *   - name услуги = имя типа цены → «Снятие/Установка»
+ *   - price = цена этого типа с товара
+ *   - КН = «Тип цены (Товар)» → «Снятие/Установка (Пневмобаллон …)»
  */
 import { all, get, run, db } from './db.js';
 import { newGuid } from './ids.js';
@@ -8,22 +13,30 @@ import { resolveIsSto } from './deal-sale-rules.js';
 import { loadRetailPrices } from './stock-valuation.js';
 
 export const DEFAULT_INSTALL_SERVICE_SKU = 'SVC-INSTALL';
+/** Имя типа цены / имя услуги в заказе (не путать с КН). */
 export const DEFAULT_INSTALL_SERVICE_NAME = 'Снятие/Установка';
+export const INSTALL_PRICE_TYPE_LABEL = DEFAULT_INSTALL_SERVICE_NAME;
 
-/** Имя строки услуги: «Снятие/Установка (деталь…)» — цена install_price, в названии что снимаем/ставим. */
-export function installServiceLineName(partName: string, baseName = DEFAULT_INSTALL_SERVICE_NAME): string {
-  let n = String(partName || '').trim();
-  // убрать ведущие артикулы / коды (MRAA…, НФ-…, 00-…)
+/** КН: «Тип цены (Товар)». */
+export function priceTypeClientName(priceType: string, productName: string): string {
+  const type = String(priceType || '').trim() || INSTALL_PRICE_TYPE_LABEL;
+  let n = String(productName || '').trim();
   n = n.replace(/^(?:[A-ZА-Я]{2,}[\w./-]*\s+)+/iu, '').trim();
   n = n.replace(/\s*[|·].*$/u, '').trim();
   n = n.replace(/\s{2,}/g, ' ').trim();
-  if (!n) return baseName;
-  // не дублировать, если уже обёрнуто
-  if (/^снятие\s*\/\s*установка\s*\(/iu.test(n)) return n;
+  if (!n) return type;
+  const esc = type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`^${esc}\\s*\\(`, 'iu').test(n)) return n.slice(0, 255);
   const max = 160;
   if (n.length > max) n = n.slice(0, max - 1).trimEnd() + '…';
-  return `${baseName} (${n})`;
+  return `${type} (${n})`.slice(0, 255);
 }
+
+/** @deprecated alias — КН из типа цены + товара */
+export function installServiceLineName(partName: string, baseName = INSTALL_PRICE_TYPE_LABEL): string {
+  return priceTypeClientName(baseName, partName);
+}
+
 
 export async function ensureProductServiceLinksSchema(): Promise<void> {
   await Promise.resolve(
@@ -245,24 +258,22 @@ function roundMoney(n: number): number {
   return Math.round(Number(n) || 0);
 }
 
-/** Цена снятия/установки: колонка products.install_price или тип цены товара «Снятие/Установка». */
-export async function resolveInstallPrice(productId: string): Promise<number> {
+/**
+ * Тип цены «Снятие/Установка» на товаре → { label, price }.
+ * Цена сначала из product_prices, иначе products.install_price.
+ */
+export async function resolveInstallPriceType(
+  productId: string
+): Promise<{ label: string; price: number; price_type: string } | null> {
   await ensureProductServiceLinksSchema();
-  const col = await get<{ install_price: number }>(
-    `SELECT IFNULL(install_price,0) AS install_price FROM products WHERE id = ?`,
-    [productId]
-  );
-  const fromCol = Number(col?.install_price) || 0;
-  if (fromCol > 0) return fromCol;
-  const fromPp = await get<{ price: number }>(
-    `SELECT price FROM product_prices
+  const fromPp = await get<{ price: number; price_type: string }>(
+    `SELECT price, IFNULL(price_type,'') AS price_type FROM product_prices
      WHERE product_id = ?
+       AND COALESCE(price,0) > 0
        AND (
          price_type = 'Снятие/Установка'
          OR price_type = 'Цена снятие/установки'
          OR lower(replace(IFNULL(price_type,''), ' ', '')) LIKE '%снятие%установ%'
-         OR lower(price_type) LIKE '%снят%'
-         OR lower(price_type) LIKE '%установ%'
        )
      ORDER BY CASE
        WHEN price_type = 'Снятие/Установка' THEN 0
@@ -272,7 +283,32 @@ export async function resolveInstallPrice(productId: string): Promise<number> {
      LIMIT 1`,
     [productId]
   );
-  return Math.max(0, Number(fromPp?.price) || 0);
+  if (fromPp && Number(fromPp.price) > 0) {
+    return {
+      label: INSTALL_PRICE_TYPE_LABEL,
+      price: Math.max(0, Number(fromPp.price) || 0),
+      price_type: String(fromPp.price_type || INSTALL_PRICE_TYPE_LABEL),
+    };
+  }
+  const col = await get<{ install_price: number }>(
+    `SELECT IFNULL(install_price,0) AS install_price FROM products WHERE id = ?`,
+    [productId]
+  );
+  const fromCol = Number(col?.install_price) || 0;
+  if (fromCol > 0) {
+    return {
+      label: INSTALL_PRICE_TYPE_LABEL,
+      price: fromCol,
+      price_type: INSTALL_PRICE_TYPE_LABEL,
+    };
+  }
+  return null;
+}
+
+/** Цена типа «Снятие/Установка» с товара. */
+export async function resolveInstallPrice(productId: string): Promise<number> {
+  const hit = await resolveInstallPriceType(productId);
+  return hit?.price || 0;
 }
 
 export function isInstallServiceSkuOrName(sku: string, name = ''): boolean {
@@ -281,8 +317,8 @@ export function isInstallServiceSkuOrName(sku: string, name = ''): boolean {
 }
 
 /**
- * КН для услуги установки: «Снятие/Установка (товар)».
- * Имя позиции в заказе остаётся коротким «Снятие/Установка».
+ * КН услуги из типа цены: «Тип цены (Товар)».
+ * name в заказе — только тип цены («Снятие/Установка»).
  */
 export async function resolveInstallClientName(it: {
   sku?: string | null;
@@ -298,7 +334,6 @@ export async function resolveInstallClientName(it: {
   const fromNote = note.match(/^КН:\s*(.+)$/u);
   if (fromNote?.[1]?.trim()) return fromNote[1].trim().slice(0, 255);
 
-  // старые строки, где длинное имя уже в name
   if (/^снятие\s*\/\s*установка\s*\(/iu.test(name)) return name.slice(0, 255);
 
   const parentId = String(it.parent_item_id || '').trim();
@@ -308,16 +343,21 @@ export async function resolveInstallClientName(it: {
       [parentId]
     );
     const pn = String(parent?.name || '').trim();
-    if (pn) return installServiceLineName(pn);
+    if (pn) return priceTypeClientName(INSTALL_PRICE_TYPE_LABEL, pn);
   }
-  return DEFAULT_INSTALL_SERVICE_NAME;
+  return INSTALL_PRICE_TYPE_LABEL;
 }
 
 export type ServiceSuggestion = {
   service_product_id: string;
   sku: string;
   code: string;
+  /** Имя в заказе / подпись чекбокса = тип цены («Снятие/Установка») */
   name: string;
+  /** Тип цены на товаре */
+  price_type_label: string;
+  /** КН услуги: «Тип цены (Товар)» — пишется в note при добавлении */
+  client_name: string;
   role: string;
   qty: number;
   price: number;
@@ -344,7 +384,8 @@ export async function suggestLinkedServicesForDealItem(input: {
   );
   if (!product || String(product.item_kind) === 'service') return [];
 
-  const installPrice = await resolveInstallPrice(input.productId);
+  const priceType = await resolveInstallPriceType(input.productId);
+  const installPrice = priceType?.price || 0;
 
   let links = (await listProductServiceLinks(input.productId)).filter((l) => Number(l.auto_add) === 1);
   if (!links.length && installPrice > 0) {
@@ -355,6 +396,7 @@ export async function suggestLinkedServicesForDealItem(input: {
 
   const retailMap = await loadRetailPrices(links.map((l) => l.service_product_id).filter(Boolean));
   const out: ServiceSuggestion[] = [];
+  const priceTypeLabel = priceType?.label || INSTALL_PRICE_TYPE_LABEL;
 
   for (const link of links) {
     const svc = await get<Record<string, unknown>>(`SELECT * FROM products WHERE id = ?`, [
@@ -374,7 +416,7 @@ export async function suggestLinkedServicesForDealItem(input: {
     const isInstall =
       role === 'install' ||
       isInstallServiceSkuOrName(String(svc.sku || ''), String(svc.name || ''));
-    // Цена только из типа цены товара «Снятие/Установка» / install_price — не розница шаблона SVC-INSTALL.
+    // Цена с типа цены товара — не розница шаблона SVC-INSTALL
     let price = 0;
     if (isInstall) {
       price =
@@ -387,15 +429,20 @@ export async function suggestLinkedServicesForDealItem(input: {
           ? Math.max(0, Number(link.price_override))
           : retailMap.get(String(svc.id)) ?? 0;
     }
+    // UI: тип цены + сумма; КН уходит в услугу при галочке
     const lineName = isInstall
-      ? installServiceLineName(String(product.name || ''))
+      ? priceTypeLabel
       : String(svc.name || DEFAULT_INSTALL_SERVICE_NAME);
+    const clientName = isInstall
+      ? priceTypeClientName(priceTypeLabel, String(product.name || ''))
+      : '';
     out.push({
       service_product_id: String(svc.id),
       sku: String(svc.sku || ''),
       code: String(svc.code || ''),
-      // в подсказке показываем КН-вид; в заказ пишется короткое имя услуги
       name: lineName,
+      price_type_label: isInstall ? priceTypeLabel : '',
+      client_name: clientName,
       role,
       qty,
       price,
@@ -509,10 +556,13 @@ export async function applySuggestedServicesForDealItem(input: {
 
     const qty = Math.max(0.001, Number(sel.qty) || 1);
     const isInstall = isInstallServiceSkuOrName(String(svc.sku || ''), String(svc.name || ''));
+    const priceType = isInstall
+      ? await resolveInstallPriceType(String(parent.product_guid || ''))
+      : null;
     let price =
       sel.price != null && Number.isFinite(Number(sel.price)) ? Math.max(0, Number(sel.price)) : 0;
-    if (!(price > 0) && isInstall) {
-      price = await resolveInstallPrice(String(parent.product_guid || ''));
+    if (!(price > 0) && priceType) {
+      price = priceType.price;
     }
     if (!(price > 0) && !isInstall) {
       price = (await loadRetailPrices([sid])).get(sid) ?? 0;
@@ -524,13 +574,11 @@ export async function applySuggestedServicesForDealItem(input: {
         [input.dealId]
       ))?.m ?? 0;
     const itemId = newGuid();
-    const note = `К ${String(parent.name || '').slice(0, 80)}`;
-    // В заказе — просто услуга «Снятие/Установка»; КН «Снятие/Установка (товар)» собирается при документах/виджете
-    const lineName = isInstall
-      ? DEFAULT_INSTALL_SERVICE_NAME
-      : String(svc.name || DEFAULT_INSTALL_SERVICE_NAME);
+    const priceTypeLabel = priceType?.label || INSTALL_PRICE_TYPE_LABEL;
+    // name = тип цены; КН = «Тип цены (Товар)»
+    const lineName = isInstall ? priceTypeLabel : String(svc.name || DEFAULT_INSTALL_SERVICE_NAME);
     const clientName = isInstall
-      ? installServiceLineName(String(parent.name || ''))
+      ? priceTypeClientName(priceTypeLabel, String(parent.name || ''))
       : '';
     await run(
       `INSERT INTO crm_deal_items (
@@ -549,10 +597,8 @@ export async function applySuggestedServicesForDealItem(input: {
         qty,
         amount,
         await productUnitName(svc.unit_id as string | undefined),
-        // note хранит КН-подсказку, если колонки client_name нет
-        isInstall && clientName ? `КН: ${clientName}` : note,
+        isInstall && clientName ? `КН: ${clientName}` : `К ${String(parent.name || '').slice(0, 80)}`,
         Number(maxLine) + 1,
-        // у услуги-установки не тащим применимость товара — иначе УПД/счёт пересоберут имя детали
         isInstall ? '' : String(input.mark || ''),
         isInstall ? '' : String(input.model || ''),
         isInstall ? '' : String(input.generation || ''),

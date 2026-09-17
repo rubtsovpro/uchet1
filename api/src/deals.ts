@@ -2988,6 +2988,8 @@ export async function addDealItem(
     mark?: string;
     model?: string;
     generation?: string;
+    /** Галочка «Снятие/Установка»: сразу добавить услугу с КН */
+    with_install?: boolean;
   }
 ):
   Promise<| {
@@ -2995,7 +2997,7 @@ export async function addDealItem(
       item: Record<string, unknown>;
       deal: Awaited<ReturnType<typeof getDeal>>;
       service_suggestions?: ServiceSuggestion[];
-      /** @deprecated пусто — услуги не добавляются сами, только предлагаются */
+      /** Услуги, добавленные вместе с товаром (галочка with_install) */
       auto_services?: Record<string, unknown>[];
     }
   | { ok: false; error: string }> {
@@ -3086,28 +3088,30 @@ export async function addDealItem(
         productId: String(product.id),
         qty,
       });
-      // Снятие/Установка из типа цены товара — сразу в заказ, не ждать клика
-      const installSug = suggestions.filter(
-        (s) =>
-          s.role === 'install' ||
-          String(s.sku || '').toUpperCase() === 'SVC-INSTALL' ||
-          /^снятие\s*\/\s*установка/iu.test(String(s.name || ''))
-      );
-      if (installSug.length) {
-        autoServices = await applySuggestedServicesForDealItem({
-          dealId,
-          parentItemId: itemId,
-          services: installSug.map((s) => ({
-            service_product_id: s.service_product_id,
-            qty: s.qty,
-            price: s.price,
-          })),
-          mark,
-          model,
-          generation,
-        });
-        const used = new Set(installSug.map((s) => s.service_product_id));
-        suggestions = suggestions.filter((s) => !used.has(s.service_product_id));
+      // Галочка «Снятие/Установка» при добавлении — товар + услуга с КН за один шаг
+      if (opts.with_install) {
+        const installSug = suggestions.filter(
+          (s) =>
+            s.role === 'install' ||
+            String(s.sku || '').toUpperCase() === 'SVC-INSTALL' ||
+            /^снятие\s*\/\s*установка/iu.test(String(s.price_type_label || s.name || ''))
+        );
+        if (installSug.length) {
+          autoServices = await applySuggestedServicesForDealItem({
+            dealId,
+            parentItemId: itemId,
+            services: installSug.map((s) => ({
+              service_product_id: s.service_product_id,
+              qty: s.qty,
+              price: s.price,
+            })),
+            mark,
+            model,
+            generation,
+          });
+          const used = new Set(installSug.map((s) => s.service_product_id));
+          suggestions = suggestions.filter((s) => !used.has(s.service_product_id));
+        }
       }
     }
   } catch (e) {
