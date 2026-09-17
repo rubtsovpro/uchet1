@@ -82,7 +82,7 @@ if ($needReturn) {
         error_log('delete_order_item after return: ' . $e->getMessage());
     }
     queue_1c_mark_items_dirty($dbHelper, $dealId);
-    widget_sync_after_order_change($dbHelper, $dealId, $department);
+    widget_sync_after_order_change($dbHelper, $dealId, $department, true);
     echo json_encode([
         'status' => 'success',
         'message' => 'Позиция убрана из сделки. Задача складу: вернуть на основной.',
@@ -103,7 +103,7 @@ try {
     }
 
     queue_1c_mark_items_dirty($dbHelper, $dealId);
-    widget_sync_after_order_change($dbHelper, $dealId, $department);
+    widget_sync_after_order_change($dbHelper, $dealId, $department, true);
     echo json_encode(['status' => 'success'], JSON_UNESCAPED_UNICODE);
 } catch (Throwable $e) {
     error_log('delete_order_item: ' . $e->getMessage());
