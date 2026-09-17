@@ -20,7 +20,12 @@ let pool: Pool | null = null;
 
 async function getPool(): Promise<Pool> {
   if (pool) return pool;
-  const { Pool: PgPool } = await import('pg');
+  const { Pool: PgPool, types } = await import('pg');
+  // OID 20 = int8 — без парсера `"0"` truthy и ломает `if (doc.posted)`.
+  types.setTypeParser(20, (v) => {
+    const n = Number(v);
+    return Number.isSafeInteger(n) ? n : v;
+  });
   const url = String(workerData?.url || process.env.WMS_PG_URL || '');
   if (!url) throw new Error('WMS_PG_URL missing in pg worker');
   pool = new PgPool({

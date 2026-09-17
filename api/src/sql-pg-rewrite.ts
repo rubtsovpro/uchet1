@@ -146,6 +146,8 @@ export function rewriteSqlForPg(sql: string): string {
   s = s.replace(/\bgroup_concat\s*\(\s*([^)]+)\)/gi, "string_agg(($1)::text, ',')");
   // SQLite COLLATE NOCASE / "NOCASE" → убрать (PG: citext нет по умолчанию)
   s = s.replace(/\bCOLLATE\s+(?:NOCASE|"NOCASE"|'NOCASE')\b/gi, '');
+  // SQLite char(9) → PG chr(9); иначе PG читает char(9) как тип и падает на GET /counterparties
+  s = s.replace(/(?<!:)\bchar\s*\(\s*(\d+)\s*\)/gi, 'chr($1)');
   // sqlite_master / sqlite_schema → PG catalogs
   s = s.replace(
     /\bFROM\s+(?:main\.)?(?:sqlite_master|sqlite_schema)\b/gi,

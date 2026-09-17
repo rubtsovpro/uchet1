@@ -131,7 +131,8 @@ export async function postDocument(
     warehouse_to_id: string | null;
   }>('SELECT * FROM stock_docs WHERE id = ?', [docId]);
   if (!doc) throw new Error('Документ не найден');
-  if (doc.posted) throw new Error('Уже проведён');
+  // PG int8 может прийти строкой `"0"` — без Number ложное «Уже проведён».
+  if (Number(doc.posted)) throw new Error('Уже проведён');
 
   const lines = await all<{
     id: string;
@@ -297,7 +298,9 @@ export async function createDocument(input: {
   const sourceSupplierOrderId = String(input.source_supplier_order_id || '').trim();
   const supplyNumber = String(input.supply_number || '').trim();
   const commentStr = String(input.comment || '');
-  const isAdminStockFix = /^(Коррекция остатков|Инвентаризация)\b/i.test(commentStr.trim());
+  // Не \b: в JS без /u кириллица не «слово», и «Коррекция остатков · …» ложно не матчится → списание вниз блокируется.
+  const isAdminStockFix =
+    /^(Коррекция остатков|Инвентаризация)(?:\s|[·.\-—]|$)/i.test(commentStr.trim());
   // Списание со склада — только по реализации заказа. Исключение: админ-коррекция / инвентаризация.
   if (input.doc_type === 'out' && !dealId && !isAdminStockFix) {
     throw new Error(
@@ -782,7 +785,7 @@ export async function allocateStockDocDatamatrix(
         line.id,
       ]);
 
-      if (doc.posted) {
+      if (Number(doc.posted)) {
         const already = new Set(
           (await all<{ serial: string }>(
             `SELECT serial FROM product_units WHERE in_doc_id = ? AND in_line_id = ?`,

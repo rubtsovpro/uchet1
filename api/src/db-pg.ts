@@ -19,9 +19,19 @@ function pgUrl(): string {
   return url;
 }
 
+/** node-pg returns int8 as string; `"0"` is truthy and breaks `if (doc.posted)`. */
+function installInt8NumberParser(types: { setTypeParser: (oid: number, fn: (v: string) => unknown) => void }): void {
+  // OID 20 = int8 / bigint
+  types.setTypeParser(20, (v) => {
+    const n = Number(v);
+    return Number.isSafeInteger(n) ? n : v;
+  });
+}
+
 export async function pgPool(): Promise<Pool> {
   if (pool) return pool;
-  const { Pool: PgPool } = await import('pg');
+  const { Pool: PgPool, types } = await import('pg');
+  installInt8NumberParser(types);
   pool = new PgPool({
     connectionString: pgUrl(),
     max: Math.max(2, Number(process.env.WMS_PG_POOL_MAX || 8) || 8),
