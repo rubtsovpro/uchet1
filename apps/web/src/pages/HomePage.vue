@@ -7,7 +7,10 @@
     </div>
 
     <div class="row q-gutter-sm">
-      <q-btn color="primary" unelevated :to="{ name: 'pick' }" label="Новый Pick" />
+      <q-btn color="primary" unelevated :to="{ name: 'pick' }" label="Склад · задачи" />
+      <q-btn color="primary" unelevated :to="{ name: 'courier' }" label="Курьер" />
+      <q-btn color="primary" unelevated :to="{ name: 'production' }" label="Производство" />
+      <q-btn color="primary" unelevated :to="{ name: 'deals' }" label="Сделки" />
       <q-btn outline color="primary" href="/pick" label="Legacy /pick" />
     </div>
 

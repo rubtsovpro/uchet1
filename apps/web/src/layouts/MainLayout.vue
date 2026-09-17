@@ -4,7 +4,10 @@
       <q-toolbar>
         <q-toolbar-title shrink class="text-weight-bold">Учёт №1</q-toolbar-title>
         <q-btn flat stretch :to="{ name: 'home' }" label="Главная" />
-        <q-btn flat stretch :to="{ name: 'pick' }" label="Склад · задачи" />
+        <q-btn flat stretch :to="{ name: 'pick' }" label="Склад" />
+        <q-btn flat stretch :to="{ name: 'courier' }" label="Курьер" />
+        <q-btn flat stretch :to="{ name: 'production' }" label="Производство" />
+        <q-btn flat stretch :to="{ name: 'deals' }" label="Сделки" />
         <q-btn flat stretch href="/pick" label="Legacy" />
         <q-space />
         <q-chip
@@ -30,6 +33,7 @@ type Health = {
   ok?: boolean;
   event_loop?: { lag_ms?: number; peak_lag_ms?: number };
   ui_build?: number;
+  redis?: { ok?: boolean; mode?: string; lag_ms?: number };
 };
 
 const health = ref<Health | null>(null);
@@ -39,7 +43,8 @@ const healthLabel = computed(() => {
   const h = health.value;
   if (!h) return '…';
   const lag = h.event_loop?.lag_ms ?? 0;
-  return h.ok ? `API ok · lag ${lag}ms` : `API lag ${lag}ms`;
+  const redis = h.redis?.mode === 'redis' ? '· redis' : '· mem';
+  return h.ok ? `API ok · lag ${lag}ms ${redis}` : `API lag ${lag}ms`;
 });
 
 async function refreshHealth() {

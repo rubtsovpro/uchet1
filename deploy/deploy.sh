@@ -19,6 +19,11 @@ build_and_restart() {
   NODE_ENV= npm install --prefix web
   NODE_ENV= npm run build --prefix api
   NODE_ENV= npm run build --prefix web
+  # Quasar dual-run UI → /app/
+  if [[ -d apps/web ]]; then
+    NODE_ENV= npm install --prefix apps/web
+    NODE_ENV= npm run build --prefix apps/web
+  fi
   # Vite publicDir → dist; крупные/долгие файлы иногда не попадают — дублируем явно
   if [[ -d web/public && -d web/dist ]]; then
     rsync -a --exclude 'assets/' web/public/ web/dist/

@@ -22,6 +22,8 @@ function redisUrl(): string {
   return 'redis://127.0.0.1:6379';
 }
 
+export { redisUrl };
+
 async function ensureClient(): Promise<RedisClientType | null> {
   if (disabled) return null;
   const url = redisUrl();

@@ -58,6 +58,13 @@ async function main(): Promise<void> {
     }
   }, 60_000);
 
+  try {
+    const { startBullWorkers } = await import('./modules/queue/bull.js');
+    startBullWorkers();
+  } catch (e) {
+    console.warn('[worker] bullmq', e instanceof Error ? e.message : e);
+  }
+
   console.log('[worker] WMS background worker up', {
     sot: isPostgresSot() ? 'postgres' : 'sqlite',
     sync_note: 'amo-note-queue drain only; deal sync stays in API enqueue',

@@ -2,22 +2,39 @@
   <q-page class="q-pa-md pick-page">
     <div class="row items-center q-mb-sm q-gutter-sm">
       <div class="text-h6 text-weight-bold">Склад · задачи</div>
-      <q-space />
-      <q-btn-toggle
-        v-model="site"
-        toggle-color="primary"
-        :options="siteOptions"
+      <q-chip
+        v-if="shift"
         dense
-        unelevated
+        :color="shift.open ? 'positive' : 'grey-5'"
+        :text-color="shift.open ? 'white' : 'dark'"
+        :label="shiftLabel"
       />
+      <q-btn v-if="shift && !shift.open" dense unelevated color="primary" label="Смена" @click="startShift" />
+      <q-btn v-if="shift?.open" dense flat color="negative" label="Закрыть смену" @click="endShift" />
+      <q-space />
+      <q-btn-toggle v-model="site" toggle-color="primary" :options="siteOptions" dense unelevated />
       <q-btn flat dense icon="open_in_new" href="/pick" target="_blank" label="Классика" />
       <q-btn flat icon="refresh" :loading="loading" @click="load" />
     </div>
 
+    <div class="row items-center q-gutter-sm q-mb-sm">
+      <q-input
+        v-model="filterQ"
+        dense
+        outlined
+        clearable
+        placeholder="Фильтр: номер, сделка, клиент…"
+        class="col-grow"
+        style="max-width: 360px"
+      >
+        <template #append><q-icon name="search" /></template>
+      </q-input>
+    </div>
+
     <q-tabs v-model="tab" dense class="text-primary" active-color="primary" indicator-color="primary" align="left">
-      <q-tab name="open" :label="`Задачи · ${board?.counts?.open ?? 0}`" />
-      <q-tab name="handoffs" :label="`Расходные · ${handoffs.length}`" />
-      <q-tab name="returns" :label="`Возвраты · ${returns.length}`" />
+      <q-tab name="open" :label="`Задачи · ${filteredOpen.length}`" />
+      <q-tab name="handoffs" :label="`Расходные · ${filteredHandoffs.length}`" />
+      <q-tab name="returns" :label="`Возвраты · ${filteredReturns.length}`" />
       <q-tab name="done" :label="`Закрытые · ${completedTotal}`" />
     </q-tabs>
     <q-separator />
@@ -31,47 +48,43 @@
 
     <q-tab-panels v-model="tab" animated class="q-mt-md bg-transparent">
       <q-tab-panel name="open" class="q-pa-none">
-        <q-list bordered separator class="rounded-borders bg-white">
-          <q-item v-for="row in openRows" :key="String(row.id || row.number)">
-            <q-item-section>
-              <q-item-label>{{ row.buyer_name || row.number || row.deal_id }}</q-item-label>
-              <q-item-label caption>
-                {{ row.route_label || row.channel || row.purpose_label }} · {{ row.deal_id }}
-              </q-item-label>
-            </q-item-section>
-            <q-item-section side>
-              <q-badge color="primary">{{ row.number }}</q-badge>
-            </q-item-section>
-          </q-item>
-          <q-item v-if="!loading && !openRows.length">
-            <q-item-section class="text-grey-6">Нет открытых задач · {{ siteLabel }}</q-item-section>
-          </q-item>
-        </q-list>
+        <div v-for="g in openGroups" :key="g.key" class="q-mb-md">
+          <div class="text-subtitle2 q-mb-xs">{{ g.label }} · {{ g.tasks.length }}</div>
+          <q-list bordered separator class="rounded-borders bg-white">
+            <PickCard
+              v-for="row in g.tasks"
+              :key="String(row.id || row.number)"
+              :row="row"
+              :busy-id="busyId"
+              @complete="completeHandoff"
+              @cancel="cancelHandoff"
+              @cdek="openCdek"
+              @line-source="setLineSource"
+            />
+            <q-item v-if="!g.tasks.length">
+              <q-item-section class="text-grey-6">Пусто</q-item-section>
+            </q-item>
+          </q-list>
+        </div>
+        <q-item v-if="!loading && !filteredOpen.length" class="text-grey-6">
+          Нет открытых задач · {{ siteLabel }}
+        </q-item>
       </q-tab-panel>
 
       <q-tab-panel name="handoffs" class="q-pa-none">
         <q-list bordered separator class="rounded-borders bg-white">
-          <q-item v-for="row in handoffs" :key="String(row.id)">
-            <q-item-section>
-              <q-item-label>
-                {{ row.number }} · {{ dealTitle(row) }}
-              </q-item-label>
-              <q-item-label caption>
-                {{ row.route_label || row.purpose_label }} · сделка {{ row.deal_id }}
-              </q-item-label>
-            </q-item-section>
-            <q-item-section side top>
-              <q-btn
-                color="primary"
-                unelevated
-                dense
-                label="Собрано"
-                :loading="busyId === String(row.id)"
-                @click="completeHandoff(String(row.id))"
-              />
-            </q-item-section>
-          </q-item>
-          <q-item v-if="!loading && !handoffs.length">
+          <PickCard
+            v-for="row in filteredHandoffs"
+            :key="String(row.id)"
+            :row="row"
+            mode="handoff"
+            :busy-id="busyId"
+            @complete="completeHandoff"
+            @cancel="cancelHandoff"
+            @cdek="openCdek"
+            @line-source="setLineSource"
+          />
+          <q-item v-if="!loading && !filteredHandoffs.length">
             <q-item-section class="text-grey-6">Нет расходных</q-item-section>
           </q-item>
         </q-list>
@@ -79,25 +92,15 @@
 
       <q-tab-panel name="returns" class="q-pa-none">
         <q-list bordered separator class="rounded-borders bg-white">
-          <q-item v-for="row in returns" :key="String(row.deal_id || row.id)">
-            <q-item-section>
-              <q-item-label>{{ row.number || row.deal_id }} · {{ dealTitle(row) }}</q-item-label>
-              <q-item-label caption>
-                {{ row.route_label }} · {{ row.qty_sum || row.lines_count }} поз.
-              </q-item-label>
-            </q-item-section>
-            <q-item-section side top>
-              <q-btn
-                color="orange"
-                unelevated
-                dense
-                label="Вернуть"
-                :loading="busyId === `ret:${row.deal_id}`"
-                @click="completeReturn(String(row.deal_id))"
-              />
-            </q-item-section>
-          </q-item>
-          <q-item v-if="!loading && !returns.length">
+          <PickCard
+            v-for="row in filteredReturns"
+            :key="String(row.deal_id || row.id)"
+            :row="row"
+            mode="return"
+            :busy-id="busyId"
+            @complete-return="completeReturn"
+          />
+          <q-item v-if="!loading && !filteredReturns.length">
             <q-item-section class="text-grey-6">Нет возвратов</q-item-section>
           </q-item>
         </q-list>
@@ -105,40 +108,79 @@
 
       <q-tab-panel name="done" class="q-pa-none">
         <q-list bordered separator class="rounded-borders bg-white">
-          <q-item v-for="row in completed" :key="String(row.id)">
+          <q-item v-for="row in filteredDone" :key="String(row.id)">
             <q-item-section>
               <q-item-label>{{ row.number }} · {{ dealTitle(row) }}</q-item-label>
               <q-item-label caption>{{ row.route_label }} · {{ row.deal_id }}</q-item-label>
             </q-item-section>
+            <q-item-section side>
+              <q-btn
+                v-if="printHref(row)"
+                flat
+                dense
+                icon="print"
+                :href="printHref(row) + '?autoprint=1'"
+                target="_blank"
+              />
+            </q-item-section>
           </q-item>
-          <q-item v-if="!loading && !completed.length">
+          <q-item v-if="!loading && !filteredDone.length">
             <q-item-section class="text-grey-6">Пусто · всего {{ completedTotal }}</q-item-section>
           </q-item>
         </q-list>
       </q-tab-panel>
     </q-tab-panels>
 
-    <div class="text-caption text-grey-6 q-mt-md">
-      Quasar · те же API что /pick · poll {{ pollSec }}с · Redis кэш списков на бэке
-    </div>
+    <q-dialog v-model="cdekOpen" persistent maximized-mobile>
+      <q-card style="min-width: 420px; max-width: 640px">
+        <q-card-section class="row items-center">
+          <div class="text-h6">СДЭК · места · {{ cdekDealId }}</div>
+          <q-space />
+          <q-btn flat round icon="close" v-close-popup />
+        </q-card-section>
+        <q-card-section>
+          <div v-if="cdekErr" class="text-negative q-mb-sm">{{ cdekErr }}</div>
+          <div class="row q-gutter-sm items-center q-mb-md">
+            <div class="text-subtitle2">Коробок: {{ cdekBoxes }}</div>
+            <q-btn dense flat icon="remove" :disable="cdekBoxes <= 1" @click="cdekBoxes--" />
+            <q-btn dense flat icon="add" @click="cdekBoxes++" />
+          </div>
+          <div v-for="(box, bi) in cdekDims" :key="bi" class="row q-gutter-sm q-mb-sm">
+            <q-input v-model.number="box.l" type="number" dense outlined label="Д, см" style="width: 90px" />
+            <q-input v-model.number="box.w" type="number" dense outlined label="Ш, см" style="width: 90px" />
+            <q-input v-model.number="box.h" type="number" dense outlined label="В, см" style="width: 90px" />
+            <q-input v-model.number="box.weight" type="number" dense outlined label="Вес, кг" style="width: 100px" />
+          </div>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Отмена" v-close-popup />
+          <q-btn flat color="orange" label="Пересоздать" :loading="cdekBusy" @click="regenCdek" />
+          <q-btn color="primary" unelevated label="Сохранить" :loading="cdekBusy" @click="saveCdek" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Notify } from 'quasar';
+import { Dialog, Notify } from 'quasar';
 import { api } from '@/boot/api';
+import PickCard from '@/components/PickCard.vue';
 
 type Board = {
   counts?: { open?: number };
   open?: Array<Record<string, unknown>>;
+  groups?: Array<{ key?: string; label?: string; tasks?: Array<Record<string, unknown>> }>;
   handoffs_completed_total?: number;
 };
 type ListResp = { items?: Array<Record<string, unknown>>; completed_total?: number };
 type PageResp = { items?: Array<Record<string, unknown>>; total?: number };
+type Shift = { open?: boolean; kind?: string; kind_label?: string; started_at?: string };
 
 const site = ref<'msk' | 'strela' | 'fogel'>('msk');
 const tab = ref('open');
+const filterQ = ref('');
 const siteOptions = [
   { label: 'МСК', value: 'msk' },
   { label: 'Стрела', value: 'strela' },
@@ -156,19 +198,107 @@ const handoffs = ref<Array<Record<string, unknown>>>([]);
 const returns = ref<Array<Record<string, unknown>>>([]);
 const completed = ref<Array<Record<string, unknown>>>([]);
 const completedTotal = ref(0);
+const shift = ref<Shift | null>(null);
 const pollSec = 25;
 let timer: ReturnType<typeof setInterval> | null = null;
+
+const cdekOpen = ref(false);
+const cdekDealId = ref('');
+const cdekErr = ref('');
+const cdekBusy = ref(false);
+const cdekBoxes = ref(1);
+const cdekDims = ref<Array<{ l: number; w: number; h: number; weight: number }>>([
+  { l: 20, w: 20, h: 20, weight: 1 },
+]);
+
+watch(cdekBoxes, (n) => {
+  while (cdekDims.value.length < n) cdekDims.value.push({ l: 20, w: 20, h: 20, weight: 1 });
+  if (cdekDims.value.length > n) cdekDims.value = cdekDims.value.slice(0, n);
+});
 
 const openRows = computed(() => {
   const open = board.value?.open || [];
   const extra = handoffs.value.slice(0, 20);
-  // Как /pick: задачи производства + расходные в одном обзоре
   return [...open, ...extra.map((h) => ({ ...h, channel: h.purpose_label || 'handoff' }))];
+});
+
+function matchRow(row: Record<string, unknown>): boolean {
+  const q = filterQ.value.trim().toLowerCase();
+  if (!q) return true;
+  const d = row.deal as Record<string, unknown> | undefined;
+  const hay = [row.number, row.deal_id, row.buyer_name, row.route_label, row.purpose_label, d?.title, d?.buyer_name, row.cdek_number]
+    .map((x) => String(x || '').toLowerCase())
+    .join(' ');
+  return hay.includes(q);
+}
+
+const filteredOpen = computed(() => openRows.value.filter(matchRow));
+const filteredHandoffs = computed(() => handoffs.value.filter(matchRow));
+const filteredReturns = computed(() => returns.value.filter(matchRow));
+const filteredDone = computed(() => completed.value.filter(matchRow));
+
+const openGroups = computed(() => {
+  const groups = board.value?.groups;
+  if (Array.isArray(groups) && groups.length) {
+    return groups
+      .map((g) => ({
+        key: String(g.key || g.label || 'g'),
+        label: String(g.label || g.key || 'Задачи'),
+        tasks: (g.tasks || []).filter(matchRow),
+      }))
+      .filter((g) => g.tasks.length);
+  }
+  const byType = new Map<string, Array<Record<string, unknown>>>();
+  for (const row of filteredOpen.value) {
+    const key = String(row.pick_type || row.channel || 'other');
+    if (!byType.has(key)) byType.set(key, []);
+    byType.get(key)!.push(row);
+  }
+  return [...byType.entries()].map(([key, tasks]) => ({
+    key,
+    label: key === 'production' ? 'Производство' : key,
+    tasks,
+  }));
+});
+
+const shiftLabel = computed(() => {
+  if (!shift.value) return 'Смена…';
+  if (!shift.value.open) return 'Смена закрыта';
+  return `Смена · ${shift.value.kind_label || shift.value.kind || 'открыта'}`;
 });
 
 function dealTitle(row: Record<string, unknown>): string {
   const d = row.deal as Record<string, unknown> | undefined;
   return String(d?.title || d?.buyer_name || row.buyer_name || '').trim() || '—';
+}
+function printHref(row: Record<string, unknown>): string {
+  return String(row.print_href || '').trim();
+}
+
+async function loadShift() {
+  try {
+    shift.value = await api.get<Shift>('/api/warehouse/pick/shift');
+  } catch {
+    shift.value = null;
+  }
+}
+
+async function startShift() {
+  try {
+    shift.value = await api.post<Shift>('/api/warehouse/pick/shift/start', { kind: 'day' });
+    Notify.create({ type: 'positive', message: 'Смена открыта' });
+  } catch (e) {
+    Notify.create({ type: 'negative', message: e instanceof Error ? e.message : 'Ошибка' });
+  }
+}
+
+async function endShift() {
+  try {
+    shift.value = await api.post<Shift>('/api/warehouse/pick/shift/end', {});
+    Notify.create({ type: 'positive', message: 'Смена закрыта' });
+  } catch (e) {
+    Notify.create({ type: 'negative', message: e instanceof Error ? e.message : 'Ошибка' });
+  }
 }
 
 async function load() {
@@ -182,6 +312,7 @@ async function load() {
       api.get<ListResp>(`/api/warehouse/pick/returns?site=${q}`),
       api.get<PageResp>(`/api/warehouse/pick/handoffs/completed?site=${q}&page=1&limit=15`),
     ]);
+    void loadShift();
     board.value = today;
     handoffs.value = ho.items || [];
     returns.value = ret.items || [];
@@ -207,6 +338,32 @@ async function completeHandoff(id: string) {
   }
 }
 
+async function cancelHandoff(id: string) {
+  Dialog.create({
+    title: 'Не собрали',
+    prompt: { model: '', type: 'text', label: 'Комментарий' },
+    cancel: true,
+    persistent: true,
+  }).onOk(async (comment: string) => {
+    if (!String(comment || '').trim()) {
+      Notify.create({ type: 'warning', message: 'Нужен комментарий' });
+      return;
+    }
+    busyId.value = `cancel:${id}`;
+    try {
+      await api.post(`/api/warehouse/pick/handoffs/${encodeURIComponent(id)}/cancel`, {
+        comment: String(comment).trim(),
+      });
+      Notify.create({ type: 'positive', message: 'Отменено' });
+      await load();
+    } catch (e) {
+      Notify.create({ type: 'negative', message: e instanceof Error ? e.message : 'Ошибка' });
+    } finally {
+      busyId.value = '';
+    }
+  });
+}
+
 async function completeReturn(dealId: string) {
   busyId.value = `ret:${dealId}`;
   try {
@@ -217,6 +374,96 @@ async function completeReturn(dealId: string) {
     Notify.create({ type: 'negative', message: e instanceof Error ? e.message : 'Ошибка' });
   } finally {
     busyId.value = '';
+  }
+}
+
+async function setLineSource(payload: { id: string; product_id: string; warehouse_id: string }) {
+  busyId.value = `ls:${payload.id}:${payload.product_id}`;
+  try {
+    await api.post(`/api/warehouse/pick/handoffs/${encodeURIComponent(payload.id)}/line-source`, {
+      product_id: payload.product_id,
+      warehouse_id: payload.warehouse_id,
+    });
+    Notify.create({ type: 'positive', message: 'Склад-источник обновлён' });
+    await load();
+  } catch (e) {
+    Notify.create({ type: 'negative', message: e instanceof Error ? e.message : 'Ошибка' });
+  } finally {
+    busyId.value = '';
+  }
+}
+
+async function openCdek(dealId: string) {
+  cdekDealId.value = dealId;
+  cdekErr.value = '';
+  cdekOpen.value = true;
+  cdekBusy.value = true;
+  try {
+    const pack = await api.get<Record<string, unknown>>(
+      `/api/warehouse/pick/handoffs/${encodeURIComponent(dealId)}/cdek-pack`
+    );
+    const packages = Array.isArray(pack.packages)
+      ? (pack.packages as Array<Record<string, unknown>>)
+      : Array.isArray(pack.places)
+        ? (pack.places as Array<Record<string, unknown>>)
+        : [];
+    if (packages.length) {
+      cdekBoxes.value = packages.length;
+      cdekDims.value = packages.map((p) => ({
+        l: Number(p.length || p.l || 20) || 20,
+        w: Number(p.width || p.w || 20) || 20,
+        h: Number(p.height || p.h || 20) || 20,
+        weight: Number(p.weight || 1) || 1,
+      }));
+    }
+  } catch (e) {
+    cdekErr.value = e instanceof Error ? e.message : 'Не удалось загрузить';
+  } finally {
+    cdekBusy.value = false;
+  }
+}
+
+async function saveCdek() {
+  cdekBusy.value = true;
+  cdekErr.value = '';
+  try {
+    await api.post(`/api/warehouse/pick/handoffs/${encodeURIComponent(cdekDealId.value)}/cdek-pack`, {
+      packages: cdekDims.value.map((b) => ({
+        length: b.l,
+        width: b.w,
+        height: b.h,
+        weight: b.weight,
+      })),
+    });
+    Notify.create({ type: 'positive', message: 'Места СДЭК сохранены' });
+    cdekOpen.value = false;
+  } catch (e) {
+    cdekErr.value = e instanceof Error ? e.message : 'Ошибка сохранения';
+  } finally {
+    cdekBusy.value = false;
+  }
+}
+
+async function regenCdek() {
+  cdekBusy.value = true;
+  cdekErr.value = '';
+  try {
+    await api.post(
+      `/api/warehouse/pick/handoffs/${encodeURIComponent(cdekDealId.value)}/cdek-regenerate`,
+      {
+        packages: cdekDims.value.map((b) => ({
+          length: b.l,
+          width: b.w,
+          height: b.h,
+          weight: b.weight,
+        })),
+      }
+    );
+    Notify.create({ type: 'positive', message: 'СДЭК пересоздан' });
+  } catch (e) {
+    cdekErr.value = e instanceof Error ? e.message : 'Ошибка';
+  } finally {
+    cdekBusy.value = false;
   }
 }
 

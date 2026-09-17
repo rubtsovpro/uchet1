@@ -3393,6 +3393,13 @@ import {
 
 export async function invalidatePickListCaches(): Promise<void> {
   await pickCacheInvalidate();
+  try {
+    const { enqueueCacheJob } = await import('./modules/queue/bull.js');
+    // Прогрев /pick/today на worker после сброса списков (не блокирует HTTP).
+    void enqueueCacheJob({ kind: 'pick_today' });
+  } catch {
+    /* optional */
+  }
 }
 
 /** Карточки возврата для /pick — тот же дух, что handoffs (deal + print_href). */
