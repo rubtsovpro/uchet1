@@ -464,12 +464,12 @@ export async function salesDocLineDisplayName(it: Record<string, unknown>): Prom
   const s = (v: unknown) => String(v ?? '').trim();
   const rawName = s(it.name);
   const sku = s(it.sku || it.code);
-  // Услуга из типа цены товара: имя уже «Снятие/Установка (деталь)» — не пересобирать по применимости
+  // Услуга установки в номенклатуре заказа — короткое имя; КН собирается отдельно
   if (
     sku.toUpperCase() === 'SVC-INSTALL' ||
     /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(rawName)
   ) {
-    return (rawName || 'Снятие/Установка').slice(0, 255);
+    return 'Снятие/Установка';
   }
   return await applicabilityLineName({
     applicability_name: rawName,

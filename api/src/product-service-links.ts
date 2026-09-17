@@ -280,6 +280,39 @@ export function isInstallServiceSkuOrName(sku: string, name = ''): boolean {
   return /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(String(name || '').trim());
 }
 
+/**
+ * КН для услуги установки: «Снятие/Установка (товар)».
+ * Имя позиции в заказе остаётся коротким «Снятие/Установка».
+ */
+export async function resolveInstallClientName(it: {
+  sku?: string | null;
+  name?: string | null;
+  note?: string | null;
+  parent_item_id?: string | null;
+}): Promise<string> {
+  const sku = String(it.sku || '').trim();
+  const name = String(it.name || '').trim();
+  if (!isInstallServiceSkuOrName(sku, name)) return '';
+
+  const note = String(it.note || '').trim();
+  const fromNote = note.match(/^КН:\s*(.+)$/u);
+  if (fromNote?.[1]?.trim()) return fromNote[1].trim().slice(0, 255);
+
+  // старые строки, где длинное имя уже в name
+  if (/^снятие\s*\/\s*установка\s*\(/iu.test(name)) return name.slice(0, 255);
+
+  const parentId = String(it.parent_item_id || '').trim();
+  if (parentId) {
+    const parent = await get<{ name: string }>(
+      `SELECT IFNULL(name,'') AS name FROM crm_deal_items WHERE id = ? LIMIT 1`,
+      [parentId]
+    );
+    const pn = String(parent?.name || '').trim();
+    if (pn) return installServiceLineName(pn);
+  }
+  return DEFAULT_INSTALL_SERVICE_NAME;
+}
+
 export type ServiceSuggestion = {
   service_product_id: string;
   sku: string;
@@ -361,6 +394,7 @@ export async function suggestLinkedServicesForDealItem(input: {
       service_product_id: String(svc.id),
       sku: String(svc.sku || ''),
       code: String(svc.code || ''),
+      // в подсказке показываем КН-вид; в заказ пишется короткое имя услуги
       name: lineName,
       role,
       qty,
@@ -491,10 +525,13 @@ export async function applySuggestedServicesForDealItem(input: {
       ))?.m ?? 0;
     const itemId = newGuid();
     const note = `К ${String(parent.name || '').slice(0, 80)}`;
-    // Клиентское / документное имя: «Снятие/Установка (товар)»
+    // В заказе — просто услуга «Снятие/Установка»; КН «Снятие/Установка (товар)» собирается при документах/виджете
     const lineName = isInstall
-      ? installServiceLineName(String(parent.name || ''))
+      ? DEFAULT_INSTALL_SERVICE_NAME
       : String(svc.name || DEFAULT_INSTALL_SERVICE_NAME);
+    const clientName = isInstall
+      ? installServiceLineName(String(parent.name || ''))
+      : '';
     await run(
       `INSERT INTO crm_deal_items (
          id, deal_id, product_guid, sku, code, name, brand, price, qty, amount, unit,
@@ -512,7 +549,8 @@ export async function applySuggestedServicesForDealItem(input: {
         qty,
         amount,
         await productUnitName(svc.unit_id as string | undefined),
-        note,
+        // note хранит КН-подсказку, если колонки client_name нет
+        isInstall && clientName ? `КН: ${clientName}` : note,
         Number(maxLine) + 1,
         // у услуги-установки не тащим применимость товара — иначе УПД/счёт пересоберут имя детали
         isInstall ? '' : String(input.mark || ''),

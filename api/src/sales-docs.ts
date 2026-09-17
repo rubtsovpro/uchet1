@@ -31,6 +31,10 @@ import {
 import { assertDealStockAvailable, planDealStockNeeds } from './payment-links.js';
 import { catalogArticleOf, mergeSalesDocLines, salesDocLineDisplayName } from './product-display-name.js';
 import { getDocClientName } from './doc-client-names.js';
+import {
+  DEFAULT_INSTALL_SERVICE_NAME,
+  resolveInstallClientName,
+} from './product-service-links.js';
 import { orgSignHtml, orgStampHtml } from './org-stamp.js';
 import { orgLogoHtml } from './org-logo.js';
 import { workorderWarrantyBlockHtml } from './warranty-settings.js';
@@ -2094,11 +2098,11 @@ export async function createSalesDocFromDeal(input: {
     const display = await salesDocLineDisplayName(it);
     const isInstall =
       sku.trim().toUpperCase() === 'SVC-INSTALL' ||
-      /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(display) ||
       /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(String(it.name || ''));
-    // Для Снятие/Установка КН/имя — «Снятие/Установка (товар)», не шаблон услуги
+    const installKn = isInstall ? await resolveInstallClientName(it) : '';
+    // В УПД/счёте печатная строка = КН «Снятие/Установка (товар)»; name услуги в заказе короткое
     const name = isInstall
-      ? overrideKn || overrideName || display || savedKn
+      ? overrideKn || installKn || overrideName || savedKn || DEFAULT_INSTALL_SERVICE_NAME
       : overrideKn || overrideName || savedKn || display;
     lines.push({
       id: newGuid(),

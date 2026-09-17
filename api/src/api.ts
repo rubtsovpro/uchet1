@@ -841,7 +841,9 @@ import {
   ensureProductServiceLinksSchema,
   linkInstallService,
   listProductServiceLinks,
+  resolveInstallClientName,
   setProductServiceLinks,
+  DEFAULT_INSTALL_SERVICE_NAME,
 } from './product-service-links.js';
 import { mountWarehouseCellsRoutes, getPlacementSummariesForDocs } from './warehouse-cells.js';
 import { mountWarehouseInboundRoutes } from './warehouse-inbound.js';
@@ -6381,21 +6383,21 @@ api.get('/sales-docs/deal-lines', async (c) => {
       '';
     // Не «Не найдено: …» из карточки склада — в документах имя из заказа / применимости.
     const rawName = String(it.name || '').trim();
-    const baseName =
-      (rawName && !/^не\s*найдено:/i.test(rawName) ? rawName : '') ||
-      await salesDocLineDisplayName(it) ||
-      String(it.display_name || '')
-        .replace(/^не\s*найдено:\s*/i, '')
-        .replace(/^.+?\s+[—–-]\s+/, '')
-        .trim() ||
-      rawName;
-    // КН для Снятие/Установка: по умолчанию то же «Снятие/Установка (товар)»
     const isInstall =
       sku.toUpperCase() === 'SVC-INSTALL' ||
-      /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(baseName);
-    const clientName =
-      clientNameSaved ||
-      (isInstall ? baseName : '');
+      /^снятие\s*\/\s*установка(\s*\(|$)/iu.test(rawName);
+    const baseName = isInstall
+      ? DEFAULT_INSTALL_SERVICE_NAME
+      : (rawName && !/^не\s*найдено:/i.test(rawName) ? rawName : '') ||
+        (await salesDocLineDisplayName(it)) ||
+        String(it.display_name || '')
+          .replace(/^не\s*найдено:\s*/i, '')
+          .replace(/^.+?\s+[—–-]\s+/, '')
+          .trim() ||
+        rawName;
+    // КН: «Снятие/Установка (товар)» — из родителя / note, не путать с name услуги
+    const installKn = isInstall ? await resolveInstallClientName(it) : '';
+    const clientName = clientNameSaved || installKn || '';
     return {
       line_no: Number(it.line_no) || idx + 1,
       item_id: String(it.id || ''),
