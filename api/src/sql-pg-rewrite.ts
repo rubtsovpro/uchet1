@@ -129,7 +129,13 @@ export function rewriteSqlForPg(sql: string): string {
   // julianday('now') / julianday(expr) — для разницы в секундах через * 86400
   s = s.replace(/\bjulianday\s*\(\s*['"]now['"]\s*\)/gi, '(EXTRACT(EPOCH FROM NOW()) / 86400.0)');
   s = s.replace(/\bjulianday\s*\(\s*([^)]+)\s*\)/gi, '(EXTRACT(EPOCH FROM (($1)::timestamptz)) / 86400.0)');
-
+  // SQLite strftime → PG to_char (частые форматы из кода)
+  s = s.replace(/\bstrftime\s*\(\s*['"]%Y['"]\s*,\s*['"]now['"]\s*\)/gi, "to_char(NOW(), 'YYYY')");
+  s = s.replace(/\bstrftime\s*\(\s*['"]%Y-%m['"]\s*,\s*['"]now['"]\s*\)/gi, "to_char(NOW(), 'YYYY-MM')");
+  s = s.replace(/\bstrftime\s*\(\s*['"]%Y-%m-%d['"]\s*,\s*['"]now['"]\s*\)/gi, "to_char(NOW(), 'YYYY-MM-DD')");
+  s = s.replace(/\bstrftime\s*\(\s*['"]%Y['"]\s*,\s*([^)]+?)\s*\)/gi, "to_char(($1)::timestamptz, 'YYYY')");
+  s = s.replace(/\bstrftime\s*\(\s*['"]%Y-%m['"]\s*,\s*([^)]+?)\s*\)/gi, "to_char(($1)::timestamptz, 'YYYY-MM')");
+  s = s.replace(/\bstrftime\s*\(\s*['"]%Y-%m-%d['"]\s*,\s*([^)]+?)\s*\)/gi, "to_char(($1)::timestamptz, 'YYYY-MM-DD')");
 
   if (/\bINSERT\s+OR\s+IGNORE\s+INTO\b/i.test(s)) {
     s = s.replace(/\bINSERT\s+OR\s+IGNORE\s+INTO\b/gi, 'INSERT INTO');
