@@ -13,19 +13,23 @@ function widget_handoff_wms_pdo(): ?PDO
         return $pdo;
     }
     $tried = true;
-    $path = wms_sqlite_path();
-    if (!is_readable($path)) {
-        return null;
+    // SoT = Postgres (как WMS). sqlite больше не читаем.
+    $checks = dirname(__DIR__, 2) . '/../widget_pnevmopodveska1_ru/public_html/checks/_lib.php';
+    $checksAlt = '/root/widget_pnevmopodveska1_ru/public_html/checks/_lib.php';
+    foreach ([$checks, $checksAlt] as $lib) {
+        if (is_readable($lib)) {
+            require_once $lib;
+            break;
+        }
     }
-    try {
-        $pdo = new PDO('sqlite:' . $path, null, null, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
-    } catch (Throwable $e) {
-        error_log('widget_handoff_wms_pdo: ' . $e->getMessage());
-        $pdo = null;
+    if (function_exists('checks_wms_pdo')) {
+        $pdo = checks_wms_pdo();
+        if ($pdo instanceof PDO) {
+            return $pdo;
+        }
     }
+    error_log('widget_handoff_wms_pdo: checks_wms_pdo unavailable');
+    $pdo = null;
 
     return $pdo;
 }
@@ -573,7 +577,7 @@ function widget_handoff_request_return_for_item(DbHelper $db, array $orderItem):
 
     $pdo = widget_handoff_wms_pdo();
     if (!$pdo) {
-        return ['ok' => false, 'error' => 'WMS sqlite недоступен'];
+        return ['ok' => false, 'error' => 'WMS Postgres недоступен'];
     }
 
     $metaKey = 'stock_return_pending:' . $dealId;
@@ -671,7 +675,9 @@ function widget_handoff_request_return_for_item(DbHelper $db, array $orderItem):
         'from_warehouse_name' => $fromName,
         'route_label' => $fromName . ' → Основной',
     ];
-    $ins = $pdo->prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)');
+    $ins = $pdo->prepare(
+        'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value'
+    );
     $ins->execute([$metaKey, json_encode($req, JSON_UNESCAPED_UNICODE)]);
 
     widget_order_pending_return_ensure_column($db);
