@@ -628,6 +628,7 @@ import {
   stockReturnsForPick,
   completeHandoffPick,
   completeHandoffPickByDeal,
+  invalidatePickListCaches,
   setHandoffPickLineSource,
   type HandoffPickUnitInput,
   cancelHandoffPick,
@@ -14123,6 +14124,7 @@ api.post('/crm/deals/:id/stock-flow/return-complete', async (c) => {
       lines: body.lines,
       actor_name: actor?.name || actor?.login,
     });
+    invalidatePickListCaches();
     await auditFromContext(c, {
       action: 'deal.stock_return_complete',
       entity: 'crm_deal',
@@ -14197,6 +14199,7 @@ api.post('/warehouse/pick/returns/:dealId/complete', async (c) => {
       lines: body.lines,
       actor_name: actor?.name || actor?.login,
     });
+    invalidatePickListCaches();
     await auditFromContext(c, {
       action: 'pick_return.complete',
       entity: 'crm_deal',
@@ -14834,6 +14837,8 @@ api.post('/warehouse/pick/handoffs/:id/complete', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { picks?: HandoffPickUnitInput[] };
     const picks = Array.isArray(body?.picks) ? body.picks : undefined;
     const result = await completeHandoffPick(id, actor?.id, picks);
+    invalidatePickListCaches();
+    pickCompletedTotalCache.clear();
     await auditFromContext(c, {
       action: 'pick_handoff.complete',
       entity: 'stock_doc',
@@ -14889,6 +14894,8 @@ api.post('/warehouse/pick/handoffs/by-deal/:dealId/complete', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { picks?: HandoffPickUnitInput[] };
     const picks = Array.isArray(body?.picks) ? body.picks : undefined;
     const result = await completeHandoffPickByDeal(dealId, actor?.id, picks);
+    invalidatePickListCaches();
+    pickCompletedTotalCache.clear();
     await auditFromContext(c, {
       action: 'pick_handoff.complete',
       entity: 'stock_doc',

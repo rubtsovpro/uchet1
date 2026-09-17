@@ -13,6 +13,7 @@
 | `WMS_SYNC_CHILD_TIMEOUT_MS` | `25000` | то же |
 | `GDRIVE_PURCHASE_POLL` | `0` | пока CPU стабилен |
 | nginx `limit_req` на `/api/webhooks/amo` | 429, не фейковый OK | `deploy/nginx-uchetn1-ssl-mtu.conf` |
+| nginx `limit_req` на `/api/warehouse/pick/` | **не ставить** (poll → 503) | то же; кэш `pickcache` OK |
 
 Шаблон drop-in: `deploy/warehouse-wms.service.d/steady-limits.conf`.
 

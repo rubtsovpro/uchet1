@@ -3383,51 +3383,70 @@ ${channelBanner}
 </body></html>`;
 }
 
+/** Короткий TTL-кэш списков /pick (poll ~25с + nginx 4с) — меньше prune/JOIN на каждый тик. */
+const PICK_LIST_TTL_MS = 5_000;
+const pickReturnsListCache = new Map<string, { at: number; items: Array<Record<string, unknown>> }>();
+const pickHandoffsListCache = new Map<string, { at: number; items: Array<Record<string, unknown>> }>();
+
+export function invalidatePickListCaches(): void {
+  pickReturnsListCache.clear();
+  pickHandoffsListCache.clear();
+}
+
 /** Карточки возврата для /pick — тот же дух, что handoffs (deal + print_href). */
 export async function stockReturnsForPick(limit = 60): Promise<Array<Record<string, unknown>>> {
-  return (await Promise.all((await listPendingStockReturns(limit)).map(async (r) => {
-    const dealId = String(r.deal_id || '').trim();
-    const deal = dealId ? await dealPickContext(dealId) : null;
-    const fromName = String(r.from_warehouse_name || 'Резерв/СТО').trim();
-    const lines = (Array.isArray(r.lines) ? r.lines : []).map((l) => {
-      const row = l as Record<string, unknown>;
-      const fromCell = String(row.from_cell_code || '').trim();
-      const toCell = String(row.to_cell_code || row.origin_cell_code || '').trim();
+  const cap = Math.max(1, Math.min(120, limit));
+  const cacheKey = `returns|${cap}`;
+  const hit = pickReturnsListCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < PICK_LIST_TTL_MS) return hit.items;
+
+  const items = await Promise.all(
+    (await listPendingStockReturns(cap)).map(async (r) => {
+      const dealId = String(r.deal_id || '').trim();
+      const deal = dealId ? await dealPickContext(dealId) : null;
+      const fromName = String(r.from_warehouse_name || 'Резерв/СТО').trim();
+      const lines = (Array.isArray(r.lines) ? r.lines : []).map((l) => {
+        const row = l as Record<string, unknown>;
+        const fromCell = String(row.from_cell_code || '').trim();
+        const toCell = String(row.to_cell_code || row.origin_cell_code || '').trim();
+        return {
+          ...row,
+          article: String(row.sku || ''),
+          cells_label: fromCell || '—',
+          cells: fromCell ? [{ cell_code: fromCell, qty: Number(row.qty) || 1 }] : [],
+          needs_pick: true,
+          from_cell_code: fromCell,
+          to_cell_code: toCell,
+          origin_label: String(row.origin_label || ''),
+        };
+      });
       return {
-        ...row,
-        article: String(row.sku || ''),
-        cells_label: fromCell || '—',
-        cells: fromCell ? [{ cell_code: fromCell, qty: Number(row.qty) || 1 }] : [],
-        needs_pick: true,
-        from_cell_code: fromCell,
-        to_cell_code: toCell,
-        origin_label: String(row.origin_label || ''),
+        ...r,
+        id: `return:${dealId}`,
+        is_return: true,
+        is_reserve: false,
+        is_ship: false,
+        is_to_sto: false,
+        purpose_label: 'Приходная · на основной',
+        warehouse_name: fromName,
+        warehouse_to_name: 'Основной',
+        dest_warehouse_name: 'Основной',
+        route_label: String(r.route_label || `${fromName} → Основной`),
+        transfer_label: String(r.created_at || '')
+          .replace('T', ' ')
+          .slice(0, 16),
+        number: `П${dealId}`,
+        pick_site_label: 'МСК',
+        print_href: `/api/warehouse/pick/returns/${encodeURIComponent(dealId)}/print`,
+        deal: deal || r.deal || null,
+        lines,
+        lines_count: lines.length,
+        qty_sum: lines.reduce((s, l) => s + (Number((l as { qty?: number }).qty) || 0), 0),
       };
-    });
-    return {
-      ...r,
-      id: `return:${dealId}`,
-      is_return: true,
-      is_reserve: false,
-      is_ship: false,
-      is_to_sto: false,
-      purpose_label: 'Приходная · на основной',
-      warehouse_name: fromName,
-      warehouse_to_name: 'Основной',
-      dest_warehouse_name: 'Основной',
-      route_label: String(r.route_label || `${fromName} → Основной`),
-      transfer_label: String(r.created_at || '')
-        .replace('T', ' ')
-        .slice(0, 16),
-      number: `П${dealId}`,
-      pick_site_label: 'МСК',
-      print_href: `/api/warehouse/pick/returns/${encodeURIComponent(dealId)}/print`,
-      deal: deal || r.deal || null,
-      lines,
-      lines_count: lines.length,
-      qty_sum: lines.reduce((s, l) => s + (Number((l as { qty?: number }).qty) || 0), 0),
-    };
-  })));
+    })
+  );
+  pickReturnsListCache.set(cacheKey, { at: Date.now(), items });
+  return items;
 }
 
 type HandoffDealLine = {
@@ -4010,6 +4029,20 @@ export async function warehouseHandoffsForPick(
   const joinSql = searchClause.joinSql || listClause.joinSql;
   const whereSql = searchClause.whereSql + listClause.whereSql;
   const siteFilter = resolvePickSiteQuery(site, actor);
+  // Горячий poll /pick: light + без поиска/фильтров — 5с TTL.
+  const canCache =
+    light &&
+    !posted &&
+    !listActive &&
+    !search &&
+    offset === 0;
+  const handoffsCacheKey = canCache
+    ? `ho|${cap}|${site || siteFilter || 'all'}|${actor?.role || ''}|${actorPickSiteLock(actor) || ''}`
+    : '';
+  if (handoffsCacheKey) {
+    const hit = pickHandoffsListCache.get(handoffsCacheKey);
+    if (hit && Date.now() - hit.at < PICK_LIST_TTL_MS) return hit.items;
+  }
   // Сначала фильтр по филиалу/актору, потом slice — иначе page пустой при ненулевом total.
   // Архив «Закрытые» может быть >500; потолок 500 ломал и список, и счётчик.
   const fetchCap = Math.min(
@@ -4055,13 +4088,17 @@ export async function warehouseHandoffsForPick(
       return mapped.slice(offset, offset + cap);
     });
   }
-  return runWithDealFlowCache(async () =>
+  const items = await runWithDealFlowCache(async () =>
     await Promise.all(
       filteredRows
         .slice(offset, offset + cap)
         .map(async (row) => await mapHandoffPickRow(row, siteFilter, posted, mapOpts))
     )
   );
+  if (handoffsCacheKey) {
+    pickHandoffsListCache.set(handoffsCacheKey, { at: Date.now(), items });
+  }
+  return items;
 }
 
 export async function warehouseHandoffsPickTotal(
