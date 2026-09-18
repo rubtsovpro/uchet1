@@ -22822,58 +22822,8 @@ async function renderDealStoPack(dealIdRaw, opts = {}) {
       }
     </div>
   </div>`;
-  const docsBlock = `<div class="sto-docs-hub" style="margin:0 0 14px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:10px;background:#fff">
-    <div style="font-weight:700;margin:0 0 4px">Документы заказа</div>
-    <p class="muted" style="margin:0 0 10px;font-size:12px">Клиент: <b>${esc(
-      buyerKindLabel
-    )}</b>${
-      dealChannelHubHint(d) ? ' · ' + esc(dealChannelHubHint(d)) : ''
-    } · пакет по матрице ЖЦ</p>
-    ${tplSrcHtml}
-    ${blanksHtml}
-    ${packFieldsHtml}
-    <div style="margin:14px 0 0;padding-top:12px;border-top:1px solid #e2e8f0">
-      ${docsListHtml}
-    </div>
-    ${packShipHtml}
-    ${packFlowHtml}
-    ${packCloseHtml}
-  </div>`;
-
-  const stoFullPackToolbar = isAutoservice
-    ? `${uiIcoBar(
-        [
-          `<span class="muted" style="font-size:12px;margin-right:4px" title="Параметры PDF полного пакета (договор + ЗН ×2, ПДн ×1)">Полный пакет</span>`,
-          `<label class="ui-ico-check" title="Печать организации на PDF полного пакета документов">
-            <input type="checkbox" id="sto-pack-pdf-stamp" checked />
-            <span>Печать орг.</span>
-          </label>`,
-          `<label class="ui-ico-check" title="Подпись организации на PDF полного пакета документов">
-            <input type="checkbox" id="sto-pack-pdf-sign" checked />
-            <span>Подпись</span>
-          </label>`,
-          uiIcoBtn({
-            id: 'sto-pack-full',
-            tip: 'Открыть полный пакет документов (PDF ×2)',
-            icon: 'print',
-          }),
-          uiIcoLink({
-            id: 'sto-pack-full-dl',
-            href: '#',
-            tip: 'Скачать полный пакет документов (PDF)',
-            icon: 'download',
-            download: true,
-          }),
-        ],
-        { align: 'end' }
-      )}`
-    : `<span class="muted" style="font-size:12px">${
-        dealChannelHubHint(d) === 'Отправка'
-          ? 'Отправка: без договора / ЗН / ПДн'
-          : dealChannelHubHint(d) === 'Самовывоз'
-            ? 'Самовывоз: ЗН при выдаче, без договора 01 и ПДн'
-            : ''
-      }</span>`;
+  const docsBlock = '';
+  const stoFullPackToolbar = '';
 
   view.innerHTML = formChrome(
     'Документы',
