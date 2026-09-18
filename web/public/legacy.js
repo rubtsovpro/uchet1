@@ -341,8 +341,8 @@ const SECTION_PATHS = {
   purchases: '/purchases',
   warehouse: '/warehouse',
   works: '/works',
-  production: '/production',
-  'production-jobs': '/production',
+  production: '/pick',
+  'production-jobs': '/pick',
   money: '/money',
   kassa: '/kassa',
   tax: '/tax',
@@ -864,7 +864,7 @@ const SECTIONS = {
         {
           title: 'Производство',
           links: [
-            { view: 'production-jobs', label: 'Заказы на производство' },
+            { view: 'production-jobs', label: 'Задания на складе' },
             { view: 'products', label: 'Номенклатура' },
           ],
         },
@@ -1057,7 +1057,6 @@ const SECTIONS = {
         {
           title: 'Ссылки',
           links: [
-            { label: 'Экран производства', href: '/production' },
             { label: 'Экран кладовщика', href: '/pick' },
             { label: 'Экран курьера', href: '/courier.html' },
           ],
@@ -3203,12 +3202,31 @@ function factSkuLine(p) {
   return oldWarehouseSkus(p?.warehouse_sku).join('; ');
 }
 
-/** Поставщик (по коду) с листа / лотов мастера. */
+/** Поставщики по номерам на складе (факт) — у мастера их может быть несколько. */
 function sheetSupplierLine(p) {
+  const pairs = String(p?.lot_supplier_pairs || '').trim();
+  if (pairs) {
+    return pairs
+      .split(/[;|]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join('; ');
+  }
   const fromSheet = String(p?.sheet_supplier || '').trim();
-  if (fromSheet) return fromSheet;
+  if (fromSheet) {
+    return fromSheet
+      .split(/[;,|]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join('; ');
+  }
   const fromLots = String(p?.lot_suppliers || p?.supplier_codes || '').trim();
-  return fromLots;
+  if (!fromLots) return '';
+  return fromLots
+    .split(/[;,|]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('; ');
 }
 
 /** Убрать `@podveska` / `@fogel`; `:8hex` оставить — обособленные карточки 1С. */
@@ -7549,10 +7567,21 @@ async function renderProductDetail(id) {
     canAccessSectionMe('media') ||
     canAccessSectionMe('photo') ||
     canAccessSectionMe('warehouse');
+  const mediaBelongsToCard = (m) => {
+    const pid = String(m?.product_id || '').trim();
+    if (!pid || pid === String(id)) return true;
+    const bare = (x) => {
+      const s = String(x || '');
+      const i = s.indexOf('::');
+      return i >= 0 ? s.slice(i + 2) : s;
+    };
+    return bare(pid) === bare(id);
+  };
   const canReorderPhotos =
     canUploadPhoto &&
     images.length > 1 &&
-    images.every((m) => !m.product_id || String(m.product_id) === String(id));
+    !images.some((m) => Number(m.inherited_from_fact) === 1) &&
+    images.every(mediaBelongsToCard);
   if (p.category_id && !state.categories.some((c) => c.id === p.category_id)) {
     state.categories = [
       { id: p.category_id, name: p.category || p.category_id },
@@ -7604,11 +7633,7 @@ async function renderProductDetail(id) {
       <label data-product-only>Бренд<select id="pe-brand">${brandOpts}</select></label>
       ${catPickHtml}
       <label data-product-only>Аналоги SKU<textarea id="pe-array" rows="4">${esc(p.array_sku || '')}</textarea></label>
-      <label>Статус<span class="muted" style="display:block;margin-top:6px">${
-        p.is_active
-          ? '<span class="badge">Активен</span>'
-          : '<span class="badge draft">Архив</span>'
-      }</span></label>
+      <label class="pe-check"><input type="checkbox" id="pe-active" ${Number(p.is_active) !== 0 ? 'checked' : ''} /> Активен</label>
       <label>Заведена<span class="muted mono" style="display:block;margin-top:6px">${esc(
         formatSqlDateTime(p.created_at) || '—'
       )}</span></label>
@@ -7784,7 +7809,7 @@ async function renderProductDetail(id) {
                   ${canReorderPhotos ? '<span class="media-drag" title="Перетащить" aria-hidden="true">⋮⋮</span>' : ''}
                   ${titleBadge}
                   <label class="media-check"><input type="checkbox" class="pe-media-check" value="${mid}" /></label>
-                  <a class="media-thumb" href="${esc(m.url)}" target="_blank" rel="noopener">
+                  <a class="media-thumb" href="${esc(m.url)}" target="_blank" rel="noopener" draggable="false">
                     <img src="${esc(m.url)}" alt="" loading="lazy" draggable="false" />
                   </a>
                   <span class="media-orient">${esc(ol || '—')}${dims ? ' · ' + esc(dims) : ''}</span>
@@ -8266,7 +8291,7 @@ async function renderProductDetail(id) {
     };
     mediaGrid.querySelectorAll('.media-item[data-media-id]').forEach((item) => {
       item.addEventListener('dragstart', (ev) => {
-        if (ev.target?.closest?.('input, button, label.media-check')) {
+        if (ev.target?.closest?.('input, button, label.media-check, .pe-media-del')) {
           ev.preventDefault();
           return;
         }
@@ -8279,10 +8304,12 @@ async function renderProductDetail(id) {
           /* ignore */
         }
       });
-      // Не открывать фото в новой вкладке, если это был drag
+      // Не открывать фото в новой вкладке, если это был drag;
+      // и не давать <a> перехватывать native URL-drag вместо сортировки.
       const thumb = item.querySelector('a.media-thumb');
       if (thumb) {
         let dragged = false;
+        thumb.setAttribute('draggable', 'false');
         item.addEventListener('dragstart', () => {
           dragged = true;
         });
@@ -8383,6 +8410,7 @@ async function renderProductDetail(id) {
             serial_tracked: asService ? false : document.getElementById('pe-serial')?.value === '1',
             item_kind: kind,
             notupload: !document.getElementById('pe-onsite')?.checked,
+            is_active: !!document.getElementById('pe-active')?.checked,
           }),
         });
         msg.textContent = 'Сохранено';
@@ -8687,7 +8715,7 @@ async function renderProducts(opts = {}) {
   const sort = state.productsSort || 'created_at';
   const dir = state.productsDir || 'desc';
   const limit = getPageSize('products', 50);
-  let url = `/products?page=${page}&limit=${limit}&sort=${encodeURIComponent(sort)}&dir=${encodeURIComponent(dir)}`;
+  let url = `/products?page=${page}&limit=${limit}&sort=${encodeURIComponent(sort)}&dir=${encodeURIComponent(dir)}&archived=all`;
   if (q) url += '&q=' + encodeURIComponent(q);
   if (catId) url += '&category_id=' + encodeURIComponent(catId);
   else if (catName) url += '&category=' + encodeURIComponent(catName);
@@ -8702,6 +8730,7 @@ async function renderProducts(opts = {}) {
   const treeQs = [];
   if (kindFilter) treeQs.push('item_kind=' + encodeURIComponent(kindFilter));
   treeQs.push('is_main=1');
+  treeQs.push('archived=all');
   if (treeQs.length) {
     treeUrl += (treeUrl.includes('?') ? '&' : '?') + treeQs.join('&');
   }
@@ -8712,6 +8741,7 @@ async function renderProducts(opts = {}) {
   else if (catName) facetQs.push('category=' + encodeURIComponent(catName));
   if (kindFilter) facetQs.push('item_kind=' + encodeURIComponent(kindFilter));
   facetQs.push('is_main=1');
+  facetQs.push('archived=all');
   if (facetQs.length) {
     facetsUrl += (facetsUrl.includes('?') ? '&' : '?') + facetQs.join('&');
   }
@@ -8806,12 +8836,17 @@ async function renderProducts(opts = {}) {
               sort === key ? 'sorted' : ''
             }" title="${esc(tip || 'Сортировка')}">${esc(label)}${mark(key)}</th>`;
           return (
-            th('photos', 'Фото', 'Превью и количество фото · сортировка') +
+            th('photos', 'Фото', 'Превью и количество · сортировка') +
+            th('is_active', 'Активна', 'Активна / архив · сортировка') +
             th('kind', 'Вид') +
             th('site', 'Сайт') +
             th('sku', 'Артикул') +
-            th('old_sku', 'Номер на складе (факт)', 'warehouse_sku с листа номенклатуры') +
-            th('supplier', 'Поставщик (по коду)', 'Код поставщика с листа') +
+            th('old_sku', 'Номер на складе (факт)', 'warehouse_sku с листа — у мастера может быть несколько') +
+            th(
+              'supplier',
+              'Поставщики',
+              'Коды поставщиков по каждому номеру на складе (факт · поставщик)'
+            ) +
             th('code', 'Код') +
             th('name', 'Название') +
             th('category', 'Категория') +
@@ -8828,36 +8863,44 @@ async function renderProducts(opts = {}) {
             .map((p) => {
               const isMain = Number(p.is_main) === 1;
               const isSvc = String(p.item_kind) === 'service';
-              const photoN = Number(p.images_count) || 0;
-              const thumb = String(p.thumb_url || '').trim();
-              const photoCell = photoN
-                ? `<td class="prod-photo-cell" data-filter-text="${esc(String(photoN))}" data-preview-row="1" data-preview="${esc(
-                    thumb
-                  )}" data-preview-title="${esc(productTitle(p))}">
+              const isActive = Number(p.is_active ?? 1) === 1;
+              const activeCell = isActive
+                ? `<td data-filter-text="да" title="Активна">да</td>`
+                : `<td data-filter-text="нет" title="Архив"><span class="badge draft">нет</span></td>`;
+              const supplierLine = sheetSupplierLine(p);
+              const nPhoto = Number(p.images_count) || 0;
+              const thumbUrl = String(p.thumb_url || '').trim();
+              const titleTxt = productTitle(p);
+              const photoCell = nPhoto
+                ? `<td class="prod-photo-cell" data-filter-text="${esc(String(nPhoto))}" data-preview-row="1" data-preview="${esc(
+                    thumbUrl
+                  )}" data-preview-title="${esc(titleTxt)}">
                     ${
-                      thumb
-                        ? `<img class="prod-list-thumb" src="${esc(thumb)}" alt="" loading="lazy" decoding="async" width="40" height="40" />`
+                      thumbUrl
+                        ? `<img class="prod-list-thumb" src="${esc(thumbUrl)}" alt="" loading="lazy" decoding="async" />`
                         : ''
-                    }<span class="mono prod-photo-n">${esc(photoN)}</span>
+                    }<span class="mono prod-photo-n">${esc(nPhoto)}</span>
                   </td>`
                 : `<td class="prod-photo-cell muted" data-filter-text="0">—</td>`;
-              const supplierLine = sheetSupplierLine(p);
               return `
-          <tr class="clickable${isMain ? ' is-main-cp' : ''}">
+          <tr class="clickable${isMain ? ' is-main-cp' : ''}${isActive ? '' : ' is-archived'}">
             ${photoCell}
+            ${activeCell}
             <td>${isSvc ? 'Услуга' : 'Товар'}</td>
             <td>${Number(p.notupload) ? '<span class="badge draft">нет</span>' : 'да'}</td>
             <td class="mono"><a href="#" data-open="${esc(p.id)}">${esc(p.sku)}</a></td>
             <td class="mono">${factSkuLine(p) ? esc(factSkuLine(p)) : '<span class="muted">—</span>'}</td>
-            <td class="mono">${
+            <td class="mono" style="white-space:normal;max-width:220px" title="${esc(supplierLine)}">${
               supplierLine ? esc(supplierLine) : '<span class="muted">—</span>'
             }</td>
             <td class="mono">${esc(p.code || '')}</td>
-            <td><a href="#" data-open="${esc(p.id)}">${esc(productTitle(p))}</a></td>
+            <td><a href="#" data-open="${esc(p.id)}">${esc(titleTxt)}</a></td>
             <td>${p.category ? esc(p.category) : '<span class="muted">—</span>'}</td>
-            <td>${p.brand ? esc(p.brand) : '<span class="muted">—</span>'}</td>
+            <td>${isSvc || !p.brand ? '<span class="muted">—</span>' : esc(p.brand)}</td>
             <td class="mono">${
-              Number(p.stock_qty) > 0
+              isSvc
+                ? '<span class="muted">—</span>'
+                : Number(p.stock_qty) > 0
                 ? `<strong>${esc(p.stock_qty)}</strong>${
                     p.stock_places
                       ? `<div class="muted" style="font-size:11px;margin-top:2px;white-space:normal">${esc(p.stock_places)}</div>`
@@ -8875,7 +8918,7 @@ async function renderProducts(opts = {}) {
               )}</td>
           </tr>`;
             })
-            .join('') || '<tr><td colspan="13" class="muted">Ничего не найдено</td></tr>'
+            .join('') || '<tr><td colspan="14" class="muted">Ничего не найдено</td></tr>'
         }
       </tbody>
     </table>
@@ -9025,6 +9068,11 @@ function whIsWaitPay(w) {
   const code = String(w?.code || '').trim().toUpperCase();
   if (code === 'WAIT-PAY' || code.startsWith('WAIT-PAY.')) return true;
   return /ожидание\s*оплат/i.test(String(w?.name || '').trim());
+}
+
+/** Коррекция остатка — только склад «Основной» (НФ-000032), не СТО и не резервы. */
+function whIsMainStock(w) {
+  return String(w?.code || '').trim() === 'НФ-000032';
 }
 
 /** Подпись склада в UI (карточка, крошки, селекты) — единственный источник.
@@ -10221,13 +10269,6 @@ async function renderWarehouses() {
   const createPanelOpen = !!state.warehousesCreateOpen;
   const whPick = isWarehousePickerOnly();
   const toolbar = `
-    ${
-      whPick
-        ? ''
-        : `<button class="primary" type="button" id="wadd2" aria-expanded="${createPanelOpen ? 'true' : 'false'}">${
-            createPanelOpen ? 'Свернуть' : 'Создать'
-          }</button>`
-    }
     <div class="form-pagetabs" style="display:inline-flex;margin:0" id="w-view-tabs">
       <button type="button" class="form-pagetab ${viewMode === 'table' ? 'active' : ''}" data-wh-view="table" data-tip="Таблица">
         <svg class="form-pagetab-ico" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -12265,17 +12306,18 @@ function balResponsibleCellHtml(row) {
   return label ? esc(label) : '<span class="muted">—</span>';
 }
 
-function renderBalanceTableRows(list, { groupByDeal, showDealCol, sort, dir, showAdjust }) {
+function renderBalanceTableRows(list, { showDealCol, showWarehouseCol, sort, dir, showAdjust }) {
+  const showWh = showWarehouseCol !== false;
   const mark = (key) => (sort !== key ? '' : dir === 'asc' ? ' ▲' : ' ▼');
-  const th = (key, label) =>
+  const th = (key, label, locked) =>
     `<th data-col-id="${esc(key)}" data-sort="${esc(key)}" class="sortable ${
       sort === key ? 'sorted' : ''
-    }" title="Сортировка по всем строкам">${esc(label)}${mark(key)}</th>`;
+    }"${locked ? ' data-col-locked="1"' : ''}>${esc(label)}${mark(key)}</th>`;
   const head =
-    th('warehouse', 'Склад') +
-    (showDealCol ? th('deal', 'Сделка') : '') +
-    (showDealCol ? th('channel', 'Канал реализации') : '') +
-    (showDealCol ? th('responsible', 'Ответственный') : '') +
+    (showWh ? th('warehouse', 'Склад') : '') +
+    (showDealCol ? th('deal', 'Сделка', true) : '') +
+    (showDealCol ? th('channel', 'Канал реализации', true) : '') +
+    (showDealCol ? th('responsible', 'Ответственный', true) : '') +
     th('kind', 'Вид') +
     th('category', 'Категория') +
     th('sku', 'Артикул') +
@@ -12289,7 +12331,7 @@ function renderBalanceTableRows(list, { groupByDeal, showDealCol, sort, dir, sho
     th('marks', 'Марки') +
     th('reserved', 'Резерв') +
     th('unit', 'Ед.');
-  const colCount = (showDealCol ? 14 : 11) + (showAdjust ? 1 : 0);
+  const colCount = (showWh ? 1 : 0) + (showDealCol ? 3 : 0) + 10 + (showAdjust ? 1 : 0);
 
   const rowHtml = (r) => {
     const codes = Array.isArray(r.dm_codes) ? r.dm_codes : [];
@@ -12330,15 +12372,28 @@ function renderBalanceTableRows(list, { groupByDeal, showDealCol, sort, dir, sho
           <tr class="${r.product_id ? 'clickable' : ''}${r.pending ? ' is-pending-inbound' : ''}" ${
             r.product_id ? `data-product="${esc(r.product_id)}"` : ''
           }${r.doc_id ? ` data-open-doc="${esc(r.doc_id)}"` : ''}>
-            <td>${pendingBadge}${
-              isReserve
+            ${
+              showWh
+                ? `<td>${pendingBadge}${
+                    isReserve
+                      ? reserveOrdersHtml(reserveOrders, {
+                          title: 'Ожидание оплаты · резерв',
+                          qty: r.reserved_qty || r.qty,
+                        })
+                      : esc(r.warehouse)
+                  }</td>`
+                : ''
+            }
+            ${showDealCol ? `<td class="mono bal-deal-cell" onclick="event.stopPropagation()">${
+              !showWh ? pendingBadge : ''
+            }${
+              !showWh && isReserve
                 ? reserveOrdersHtml(reserveOrders, {
                     title: 'Ожидание оплаты · резерв',
                     qty: r.reserved_qty || r.qty,
                   })
-                : esc(r.warehouse)
-            }</td>
-            ${showDealCol ? `<td class="mono bal-deal-cell" onclick="event.stopPropagation()">${balDealCellHtml(r)}</td>` : ''}
+                : ''
+            }${balDealCellHtml(r)}</td>` : ''}
             ${showDealCol ? `<td>${balChannelCellHtml(r)}</td>` : ''}
             ${showDealCol ? `<td>${balResponsibleCellHtml(r)}</td>` : ''}
             <td>${String(r.item_kind) === 'service' ? 'Услуга' : 'Товар'}</td>
@@ -12362,42 +12417,6 @@ function renderBalanceTableRows(list, { groupByDeal, showDealCol, sort, dir, sho
   let bodyHtml = '';
   if (!list.length) {
     bodyHtml = `<tr><td colspan="${colCount}" class="muted">Пусто — нет остатка и нет черновиков «Передача на склад»</td></tr>`;
-  } else if (groupByDeal) {
-    let lastDeal = '\0';
-    for (const r of list) {
-      const deals = balOpenDealsOf(r);
-      const dealId = String(deals[0]?.deal_id || '').trim();
-      const groupKey = dealId || '__none__';
-      if (groupKey !== lastDeal) {
-        lastDeal = groupKey;
-        const dealName = deals[0]?.deal_name || '';
-        const dealStatus = deals[0]?.status_name || '';
-        const dealChannel = String(deals[0]?.amo_channel || '').trim();
-        const dealResp =
-          String(deals[0]?.responsible_name || '').trim() ||
-          (deals[0]?.responsible_user_id ? '#' + deals[0].responsible_user_id : '');
-        const groupItems = list.filter((x) => {
-          const xd = String(balOpenDealsOf(x)[0]?.deal_id || '').trim();
-          return (xd || '__none__') === groupKey;
-        });
-        const groupQty = groupItems.reduce((s, x) => s + (Number(x.qty) || 0), 0);
-        const outNo =
-          String(groupItems[0]?.doc_number || '').trim() || (dealId ? 'Р' + dealId : '');
-        const label = dealId
-          ? `<button type="button" class="linkish mono bal-deal-link" data-open-deal="${esc(dealId)}">${esc(
-              dealId
-            )}</button>${
-              outNo ? ` · <span class="mono">${esc(outNo)}</span>` : ''
-            }${
-              groupItems.some((x) => x.pending)
-                ? ' · <span class="badge" title="Ждёт сборку на экране склада">Ждёт сборку</span>'
-                : ''
-            }${dealName ? ` · ${esc(dealName)}` : ''}${dealStatus ? ` · <span class="muted">${esc(dealStatus)}</span>` : ''}${dealChannel ? ` · <span class="muted">${esc(dealChannel)}</span>` : ''}${dealResp ? ` · ${esc(dealResp)}` : ''}`
-          : '<span class="muted">Без привязки к сделке</span>';
-        bodyHtml += `<tr class="bal-deal-group-row"><td colspan="${colCount}"><div class="bal-deal-group-head">${label}<span class="muted"> · ${groupItems.length} поз. · ${groupQty} шт.</span></div></td></tr>`;
-      }
-      bodyHtml += rowHtml(r);
-    }
   } else {
     bodyHtml = list.map((r) => rowHtml(r)).join('');
   }
@@ -12835,8 +12854,9 @@ async function renderBalances() {
     }
     return t.slice(0, 16).replace('T', ' ');
   };
-  const whCardTabs = (active) => {
+  const whCardTabs = (active, row) => {
     if (!wh) return '';
+    const allowAdj = isAdminMe() && whIsMainStock(row);
     const tab = (id, label) =>
       `<button type="button" class="auth-tab${active === id ? ' active' : ''}" data-bal-tab="${id}" role="tab" aria-selected="${
         active === id ? 'true' : 'false'
@@ -12845,7 +12865,7 @@ async function renderBalances() {
       ${tab('data', 'Данные')}
       ${tab('stock', 'Остатки')}
       ${tab('history', 'История')}
-      ${isAdminMe() ? tab('adjustments', 'Коррекции') : ''}
+      ${allowAdj ? tab('adjustments', 'Коррекции') : ''}
     </div>`;
   };
   const bindWhCardTabs = () => {
@@ -12870,6 +12890,10 @@ async function renderBalances() {
     let whRow = detail || whCatalog.find((w) => w.id === wh) || (await resolveWarehouseRow(wh));
     const whLabel =
       whUiTitle(whRow) || entityTitle('id', String(wh).slice(0, 8) + '…');
+    if (whCardTab === 'adjustments' && !whIsMainStock(whRow)) {
+      state.balWhTab = 'stock';
+      return renderBalances();
+    }
     const title = whLabel;
     const isAutoWh = !!whIsAutoSys(whRow || { id: wh, name: whLabel, code: '' });
     const whOpts = balancesWhSelectOptions(whCatalog, wh);
@@ -12883,7 +12907,7 @@ async function renderBalances() {
       const showWidgetFlag = whIsPnevmoWarehouse(whRow);
       view.innerHTML = formChrome(
         title,
-        `${whCardTabs('data')}
+        `${whCardTabs('data', whRow)}
         <div class="form-grid">
           <label class="span-2">Название склада
             <input id="wh-card-name" value="${esc(whUiTitle(whRow) || whRow?.name || '')}" ${isAutoWh ? 'readonly' : ''} />
@@ -13001,9 +13025,13 @@ async function renderBalances() {
       };
       view.innerHTML = formChrome(
         title,
-        `${whCardTabs('adjustments')}
+        `${whCardTabs('adjustments', whRow)}
         <div class="toolbar" style="margin-bottom:10px">
-          <button type="button" class="primary" id="bal-adj-open-tab">Коррекция остатка</button>
+          ${
+            whIsMainStock(whRow)
+              ? `<button type="button" class="primary" id="bal-adj-open-tab">Коррекция остатка</button>`
+              : ''
+          }
           <div class="grow"></div>
         </div>
         ${pagerHtml('bapager', adj.page, adj.pages, adj.total, { limit: adjLimit, listKey: 'balances' })}
@@ -13097,7 +13125,7 @@ async function renderBalances() {
       ({ in: 'Приход', out: 'Расход', transfer: 'Перемещение', return: 'Возврат' })[t] || t || '—';
     view.innerHTML = formChrome(
       title,
-      `${whCardTabs('history')}
+      `${whCardTabs('history', whRow)}
       <div class="toolbar" style="margin-bottom:10px">
         <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px">Тип
           <select id="bal-hist-type">
@@ -13263,11 +13291,11 @@ async function renderBalances() {
         })
       : list;
   const balTable = renderBalanceTableRows(displayList, {
-    groupByDeal,
     showDealCol,
+    showWarehouseCol: !wh,
     sort,
     dir,
-    showAdjust: !!(wh && isAdminMe()),
+    showAdjust: !!(wh && isAdminMe() && whIsMainStock(whRow)),
   });
   const whOpts = balancesWhSelectOptions(whCatalog, wh);
   const footerHtml = `
@@ -13370,7 +13398,7 @@ async function renderBalances() {
   view.innerHTML = formChrome(
     title,
     `
-    ${whCardTabs('stock')}
+    ${whCardTabs('stock', whRow)}
     ${transferPanel}
     ${pagerHtml('bpager', data.page, data.pages, data.total, { limit, listKey: 'balances' })}
     <div class="table-scroll"><table class="data-table is-dense" data-table-key="balances" data-no-col-filter="1">
@@ -13393,7 +13421,7 @@ async function renderBalances() {
             : ''
         }
         ${
-          wh && isAdminMe()
+          wh && isAdminMe() && whIsMainStock(whRow)
             ? `<button type="button" class="primary" id="bal-adj-open">Коррекция</button>`
             : ''
         }
@@ -28712,6 +28740,29 @@ async function renderSalesDocs(docType) {
   return renderSalesDocsJournal(docType);
 }
 
+function salesDocListWhen(d) {
+  const raw = String((d && d.created_at) || '').trim();
+  const date = String((d && d.doc_date) || raw).slice(0, 10);
+  if (!raw) return date || '—';
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const dt = new Date(normalized);
+  if (Number.isNaN(dt.getTime())) {
+    const time = raw.slice(11, 16);
+    return time ? date + ' ' + time : date || '—';
+  }
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .format(dt)
+    .replace(',', '');
+}
+
 async function renderSalesDocsJournal(docType) {
   const typeRaw = String(docType || state.salesType || '').trim();
   if (typeRaw === 'upd') state.salesUpdView = 'journal';
@@ -28799,7 +28850,7 @@ async function renderSalesDocsJournal(docType) {
                 ? `<td title="${esc(contractTemplateHint(d.template_id))}">${esc(tplLabel)}</td>`
                 : ''
             }
-            <td>${esc(String(d.doc_date || '').slice(0, 10))}</td>
+            <td class="mono">${esc(salesDocListWhen(d))}</td>
             <td class="mono">${esc(d.number)}</td>
             <td>${esc(company || '—')}</td>
             <td title="${esc(legalTip || legalShort)}">${esc(legalShort || '—')}${
@@ -37113,12 +37164,6 @@ function renderHelpHub() {
     </p>
     <div class="help-role-cards" aria-label="Разделы помощи">
       ${pickCard}
-      <a class="help-role-card" href="/production" target="_blank" rel="noopener">
-        <span class="help-role-ico" aria-hidden="true">Пр</span>
-        <span class="help-role-title">Экран производства</span>
-        <span class="help-role-desc">Сборка/разбор стойки · «Готово» → задание складу</span>
-        <span class="help-role-go">uchetn1.ru/production →</span>
-      </a>
       <a class="help-role-card" href="/courier.html" target="_blank" rel="noopener">
         <span class="help-role-ico" aria-hidden="true">Кр</span>
         <span class="help-role-title">Экран курьера</span>

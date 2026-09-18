@@ -108,9 +108,9 @@ export async function ensureStoReserveWarehouses(): Promise<{
   strela: string;
 }> {
   const mskRsv = await ensureWarehouseByCode('STO-RSV-MSK', 'Резерв СТО');
-  const mskHold = await ensureWarehouseByCode('STO-RES-MSK', 'Отложено под СТО');
+  // Москва: «Отложено под СТО» снят, остатки на Основном. Стрелу не поднимаем заново как московский склад.
   const strelaId = await ensureWarehouseByCode('STO-RES-STRELA', 'Отложено под СТО · Стрела');
-  return { msk: mskRsv, mskHold, strela: strelaId };
+  return { msk: mskRsv, mskHold: '', strela: strelaId };
 }
 
 /** Куда класть новый резерв по сделке (не «Отложено» — это другой виртуальный склад на тех же стеллажах). */

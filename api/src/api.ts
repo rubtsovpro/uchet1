@@ -10815,13 +10815,21 @@ api.get('/products', async (c) => {
            WHERE (l.product_id = p.id OR l.master_sku = p.sku)
              AND IFNULL(l.supplier,'') != ''
          ) x)`;
+  const lotSupplierPairsSql = `(SELECT group_concat(x.pair, '; ')
+         FROM (
+           SELECT DISTINCT (IFNULL(l.fact_sku,'') || ' · ' || l.supplier) AS pair
+           FROM product_supplier_lots l
+           WHERE (l.product_id = p.id OR l.master_sku = p.sku)
+             AND IFNULL(l.supplier,'') != ''
+         ) x)`;
   const select = `SELECT p.*, u.short_name AS unit, c.name AS category,
             CASE WHEN IFNULL(p.item_kind,'product') = 'service' THEN 'service' ELSE 'product' END AS item_kind,
             IFNULL(st.stock_qty, 0) AS stock_qty,
             IFNULL(st.stock_places, '') AS stock_places,
             ${imagesCountSql} AS images_count,
             ${thumbUrlSql} AS thumb_url,
-            IFNULL(${lotSuppliersSql}, '') AS lot_suppliers
+            IFNULL(${lotSuppliersSql}, '') AS lot_suppliers,
+            IFNULL(${lotSupplierPairsSql}, '') AS lot_supplier_pairs
      FROM products p
      LEFT JOIN units u ON u.id = p.unit_id
      LEFT JOIN categories c ON c.id = p.category_id
@@ -10844,11 +10852,12 @@ api.get('/products', async (c) => {
         : ` AND IFNULL(p.item_kind,'product') != 'service'`;
   }
   // Код 1С (НФ-/00-): не режем is_main — иначе архивный мастер / клон не находятся.
+  // Услуги — всегда «карточки», без клонов факта; is_main на них часто 0.
   const relaxMainForCode = Boolean(q && looksLike1cProductCode(q));
   if (isMainQ === '1' && !relaxMainForCode) {
-    where += ` AND IFNULL(p.is_main,0) = 1`;
+    where += ` AND (IFNULL(p.is_main,0) = 1 OR IFNULL(p.item_kind,'product') = 'service')`;
   } else if (isMainQ === '0') {
-    where += ` AND IFNULL(p.is_main,0) = 0`;
+    where += ` AND IFNULL(p.is_main,0) = 0 AND IFNULL(p.item_kind,'product') != 'service'`;
   }
 
   if (codeFilter) {
@@ -10954,6 +10963,11 @@ api.get('/products', async (c) => {
     site: 'IFNULL(p.notupload, 0)',
     stock: 'IFNULL(st.stock_qty, 0)',
     main: 'IFNULL(p.is_main, 0)',
+    is_active: 'IFNULL(p.is_active, 1)',
+    active: 'IFNULL(p.is_active, 1)',
+    supplier:
+      "IFNULL(NULLIF(TRIM(IFNULL(p.sheet_supplier,'')), ''), IFNULL((SELECT group_concat(DISTINCT l.supplier, ';') FROM product_supplier_lots l WHERE (l.product_id = p.id OR l.master_sku = p.sku) AND IFNULL(l.supplier,'') != ''), '')) COLLATE NOCASE",
+    old_sku: "IFNULL(p.warehouse_sku,'') COLLATE NOCASE",
     photos: imagesCountSql,
     images_count: imagesCountSql,
     created_at: "datetime(IFNULL(p.created_at, '1970-01-01'))",
@@ -11141,10 +11155,13 @@ api.get('/products/facet-counts', async (c) => {
       [...params, ...extraParams]
     ))?.c ?? 0;
 
-  // Вид: учитываем текущий фильтр «Основные»
+  // Вид: учитываем текущий фильтр «Основные» (услуги всегда в списке мастеров)
   let kindExtra = '';
-  if (isMainQ === '1') kindExtra = ' AND IFNULL(p.is_main,0) = 1';
-  else if (isMainQ === '0') kindExtra = ' AND IFNULL(p.is_main,0) = 0';
+  if (isMainQ === '1') {
+    kindExtra = ` AND (IFNULL(p.is_main,0) = 1 OR IFNULL(p.item_kind,'product') = 'service')`;
+  } else if (isMainQ === '0') {
+    kindExtra = ` AND IFNULL(p.is_main,0) = 0 AND IFNULL(p.item_kind,'product') != 'service'`;
+  }
 
   const kindAll = await countWhere(kindExtra);
   const kindProduct = await countWhere(
@@ -11605,7 +11622,16 @@ api.patch('/products/:id', async (c) => {
     await run('UPDATE products SET sku = ? WHERE id = ?', [sku, id]);
   }
   if (body.brand != null) {
-    await run('UPDATE products SET brand = ? WHERE id = ?', [body.brand.trim(), id]);
+    const kindNow =
+      body.item_kind != null && String(body.item_kind).toLowerCase() === 'service'
+        ? 'service'
+        : body.item_kind != null
+          ? 'product'
+          : String(row.item_kind || 'product');
+    await run('UPDATE products SET brand = ? WHERE id = ?', [
+      kindNow === 'service' ? '' : body.brand.trim(),
+      id,
+    ]);
   }
   if (body.barcode != null) {
     await run('UPDATE products SET barcode = ? WHERE id = ?', [body.barcode.trim(), id]);
@@ -11672,6 +11698,9 @@ api.patch('/products/:id', async (c) => {
     await run('UPDATE products SET item_kind = ? WHERE id = ?', [kind, id]);
     if (kind === 'service') {
       await run('UPDATE products SET unit_id = ? WHERE id = ?', [await ensureServiceUnitId(), id]);
+      await run("UPDATE products SET brand = '' WHERE id = ?", [id]);
+      await run('DELETE FROM stock_balances WHERE product_id = ?', [id]);
+      await run('DELETE FROM product_store_rests WHERE product_id = ?', [id]);
     }
   }
   if (body.notupload != null) {

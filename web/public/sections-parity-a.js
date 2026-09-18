@@ -3409,6 +3409,7 @@
           title: 'Склад',
           links: [
             { view: 'warehouses', label: 'Склады', whHubTab: 'warehouses' },
+            { view: 'wh-transfers', label: 'Перемещения между складами' },
             { view: 'warehouses', label: 'Заказы на перемещение', whHubTab: 'requests' },
             { view: 'balances', label: 'Остатки' },
             { view: 'wh-cells', label: 'Адресные ячейки' },

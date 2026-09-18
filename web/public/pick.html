@@ -9,9 +9,9 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <link rel="icon" href="/logo-uchet1.svg" type="image/svg+xml" />
   <title>Склад · задачи · Учёт №1</title>
-  <!-- pick-ui rev=pick-production-nom-check-20260903 -->
+  <!-- pick-ui rev=pick-handoff-lot-meta-20260917 -->
   <script>
-    window.__PICK_UI_REV = 'pc96';
+    window.__PICK_UI_REV = 'pc97';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -548,6 +548,19 @@
       border-radius: 14px;
       background: var(--card);
       padding: 10px 12px;
+    }
+    .handoff-row.is-production {
+      border: 2px solid #2563eb;
+      background: #fff;
+    }
+    .handoff-complete-btn.is-production {
+      border-color: #2563eb;
+      background: #2563eb;
+      color: #fff;
+    }
+    [data-theme="dark"] .handoff-row.is-production {
+      border-color: #60a5fa;
+      background: var(--card);
     }
     .handoff-row.is-reserve {
       border-color: color-mix(in srgb, #2563eb 45%, var(--line));
@@ -1361,6 +1374,17 @@
       font-size: 11px;
       color: var(--muted);
       margin-bottom: 2px;
+    }
+    .handoff-lines-tbl .handoff-lot-meta {
+      margin-top: 4px;
+      font-size: 13px;
+      line-height: 1.45;
+      color: #0f766e;
+      font-weight: 600;
+    }
+    .handoff-lines-tbl .handoff-lot-meta b {
+      color: #134e4a;
+      font-weight: 800;
     }
     .handoff-lines-tbl .qty-ok { color: var(--ok); font-weight: 800; }
     .handoff-lines-tbl .qty-low { color: #c2410c; font-weight: 800; }
@@ -2716,11 +2740,12 @@
         </div>
         <button type="button" class="handoff-filter-reset" id="handoff-filter-reset">Сбросить</button>
       </div>
+      <div id="prod-cards" class="handoffs-list"></div>
       <div id="handoffs-list" class="handoffs-list">Загрузка…</div>
       <div id="handoffs-pager" class="handoff-pager" hidden></div>
     </section>
 
-    <section class="panel" id="open-panel">
+    <section class="panel" id="open-panel" hidden>
       <h2>На производство · переделка</h2>
       <div id="groups">Загрузка…</div>
     </section>
@@ -2871,6 +2896,7 @@
     let pendingStockReturnByDeal = new Map();
     /** Заказы уже на участке (склад отдал) — иначе пропадают с /production после handed. */
     let prodAtJobs = [];
+    let closedProdJobs = [];
     let prodSendJobs = [];
     let prodWaitReceiveJobs = [];
     let handoffTab = 'active';
@@ -4480,6 +4506,45 @@
       };
     }
 
+    function productionClosedJobAsCard(job) {
+      const j = job || {};
+      const id = String(j.id || '').trim();
+      if (!id) return null;
+      const consume = Array.isArray(j.consume) ? j.consume : [];
+      const produce = Array.isArray(j.produce) ? j.produce : [];
+      return {
+        id: 'job-closed:' + id,
+        stock_doc_id: id,
+        number: j.number || '',
+        deal_id: j.deal_id || '',
+        channel: 'production_at',
+        production_phase: 'closed',
+        production_kind_label: j.kind_label || j.kind || '',
+        lines: (produce.length ? produce : consume).map((l) => ({
+          sku: l.sku,
+          name: l.name,
+          qty: l.qty,
+          code: l.code || '',
+          cell_code: l.cell_code || '',
+        })),
+        created_at: j.received_at || j.done_at || j.updated_at || j.created_at || '',
+        route_from: 'Производство',
+        route_to: 'Основной',
+        title: '',
+        deal: j.deal || null,
+      };
+    }
+
+    function productionMatchesSearch(t, rawQ) {
+      const q = normalizeHandoffSearchQ(rawQ);
+      if (!q) return true;
+      const digits = handoffSearchDigits(q);
+      const dealId = String((t && t.deal_id) || '').trim();
+      if (digits && dealId.includes(digits)) return true;
+      const num = String((t && t.number) || '').toLowerCase();
+      return !!(num && num.indexOf(q.toLowerCase()) >= 0);
+    }
+
     function boardGroupsForUi() {
       // light /pick/today раньше отдавал groups:{} — forEach падал и ломал весь экран.
       const raw = board && board.groups;
@@ -4710,9 +4775,11 @@
     }
 
     function productionFormBusy() {
-          const ae = document.activeElement;
-      if (!ae) return false;
-      return !!(ae.closest && ae.closest('[data-prod-task]'));
+      const ae = document.activeElement;
+      if (!ae || !ae.closest) return false;
+      // Кнопка «Произвели» не должна держать закрытую карточку на экране.
+      if (ae.closest('button, a')) return false;
+      return !!ae.closest('[data-prod-task]');
     }
 
 
@@ -4771,6 +4838,7 @@
       const waitReceive =
         String(t.production_phase || '') === 'await_receive' ||
         String(t.channel || '') === 'production_wait_receive';
+      const closed = String(t.production_phase || '') === 'closed';
       const from = String(
         t.route_from || (atProd || waitReceive ? 'Производство' : 'Основной')
       ).trim() || 'Основной';
@@ -4780,9 +4848,11 @@
       const consume = Array.isArray(t.lines) ? t.lines : [];
       const deal = t.deal && typeof t.deal === 'object' ? t.deal : null;
       const kindFromJob = String(t.production_kind_label || t.kind_label || '').trim();
-      const kindLbl = waitReceive
-        ? 'Ждёт склад'
-        : kindFromJob || 'Произвести';
+      const kindLbl = closed
+        ? 'Готово'
+        : waitReceive
+          ? 'Ждёт склад'
+          : kindFromJob || 'Произвести';
       const title = productionDealTitle(t, deal, dealId);
       const routeFake = {
         is_to_sto: true,
@@ -4790,11 +4860,13 @@
         dest_warehouse_name: to,
         route_label: from + ' → ' + to,
       };
-      const badge = waitReceive
-        ? '<span class="handoff-reserve-badge" style="background:#ecfdf5;color:#047857">Ждёт склад</span>'
-        : atProd
-          ? '<span class="handoff-reserve-badge" style="background:#fef3c7;color:#92400e">В производстве</span>'
-          : '<span class="handoff-reserve-badge" style="background:#dbeafe;color:#1e40af">На производство</span>';
+      const badge = closed
+        ? '<span class="handoff-reserve-badge" style="background:#dbeafe;color:#1e40af">Готово</span>'
+        : waitReceive
+          ? '<span class="handoff-reserve-badge" style="background:#ecfdf5;color:#047857">Ждёт склад</span>'
+          : atProd
+            ? '<span class="handoff-reserve-badge" style="background:#fef3c7;color:#92400e">В производстве</span>'
+            : '<span class="handoff-reserve-badge" style="background:#dbeafe;color:#1e40af">На производство</span>';
       const printBtn = atProd || waitReceive
         ? ''
         : '<div class="handoff-actionbar-secondary">' +
@@ -4818,6 +4890,7 @@
       const doneLabel = waitReceive ? 'На складе · приёмка' : 'Произвели';
       return (
         '<article class="handoff-row is-production' +
+        (closed ? ' is-done' : '') +
         (pendingRet ? ' is-prod-stopped' : '') +
         '" data-prod-task="' +
         esc(id) +
@@ -4845,20 +4918,23 @@
         '</div></div></div>' +
         stopBanner +
         productionLinesTableHtml(consume) +
-        (waitReceive
+        (closed || waitReceive
           ? ''
           : '<hr class="prod-result-hr" />' + productionResultFormHtml(t)) +
-        '<div class="handoff-actionbar">' +
-        printBtn +
-        '<div class="handoff-actionbar-main">' +
-        '<button type="button" class="handoff-complete-btn is-production" data-prod-done="' +
-        esc(id) +
-        '"' +
-        prodDoneDisabled +
-        '>' +
-        esc(doneLabel) +
-        '</button>' +
-        '</div></div></article>'
+        (closed
+          ? ''
+          : '<div class="handoff-actionbar">' +
+            printBtn +
+            '<div class="handoff-actionbar-main">' +
+            '<button type="button" class="handoff-complete-btn is-production" data-prod-done="' +
+            esc(id) +
+            '"' +
+            prodDoneDisabled +
+            '>' +
+            esc(doneLabel) +
+            '</button>' +
+            '</div></div>') +
+        '</article>'
       );
     }
 
@@ -5229,8 +5305,7 @@
           const jobId = String(article.getAttribute('data-prod-job') || '').trim();
           const phase = String(article.getAttribute('data-prod-phase') || '').trim();
           if (phase === 'await_receive') {
-            alert('Уже на складе: оприходуйте задание приёмки на экране Склад · задачи (/pick).');
-            return;
+            /* сразу приход, без задания складу */
           }
           const lines = collectProductionResultLines(article);
           if (!lines.length) {
@@ -5266,53 +5341,30 @@
           }
           doneBtn.disabled = true;
           const prev = doneBtn.textContent;
-          doneBtn.textContent = 'Сохраняю…';
+          doneBtn.textContent = 'Приходую…';
           try {
-            if (jobId) {
-              await api('/production/jobs/' + encodeURIComponent(jobId) + '/produce-results', {
-                method: 'POST',
-                body: JSON.stringify({ lines }),
-              });
-            }
-            if (phase === 'at_production') {
-              // Деталь уже на участке — закрываем производство → задание складу на приход.
-              if (!jobId) throw new Error('Нет заказа производства');
-              await api('/production/jobs/' + encodeURIComponent(jobId) + '/done', {
-                method: 'POST',
-                body: '{}',
-              });
-            } else if (taskId && !String(taskId).startsWith('job:')) {
-              try {
-                await api('/warehouse/tasks/' + encodeURIComponent(taskId) + '/done', {
-                  method: 'POST',
-                  body: '{}',
-                });
-              } catch (taskErr) {
-                // Склад уже отдал (handed), карточка ещё со старым W-xxxx —
-                // закрываем производство через job/done.
-                const msg = String((taskErr && taskErr.message) || taskErr || '');
-                if (jobId && /уже закрыто|handed|не найден/i.test(msg)) {
-                  await api('/production/jobs/' + encodeURIComponent(jobId) + '/done', {
-                    method: 'POST',
-                    body: '{}',
-                  });
-                } else {
-                  throw taskErr;
-                }
-              }
-            } else if (jobId) {
-              await api('/production/jobs/' + encodeURIComponent(jobId) + '/done', {
-                method: 'POST',
-                body: '{}',
-              });
-            } else {
-              throw new Error('Нет задания производства');
-            }
+            if (!jobId) throw new Error('Нет заказа производства');
+            await api('/production/jobs/' + encodeURIComponent(jobId) + '/produce-results', {
+              method: 'POST',
+              body: JSON.stringify({ lines }),
+            });
+            await api('/production/jobs/' + encodeURIComponent(jobId) + '/done', {
+              method: 'POST',
+              body: '{}',
+            });
             delete prodResultDrafts[taskId];
             selectedId = null;
+            if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
             await load();
           } catch (err) {
-            alert((err && err.message) || String(err));
+            const msg = (err && err.message) || String(err);
+            alert(msg);
+            if (/уже закрыто/i.test(msg)) {
+              delete prodResultDrafts[taskId];
+              if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+              await load();
+              return;
+            }
             doneBtn.disabled = false;
             doneBtn.textContent = prev || 'Произвели';
           }
@@ -5442,14 +5494,12 @@
     }
 
     function ensureProdCardsRoot() {
+      const root = document.getElementById('prod-cards');
+      if (root) return root;
       const box = document.getElementById('groups');
       if (!box) return null;
-      let root = document.getElementById('prod-cards');
-      if (!root) {
-        box.innerHTML = '<div class="handoffs-list" id="prod-cards"></div>';
-        root = document.getElementById('prod-cards');
-      }
-      return root;
+      box.innerHTML = '<div class="handoffs-list" id="prod-cards"></div>';
+      return document.getElementById('prod-cards');
     }
 
     function buildJobByIdMap() {
@@ -5661,6 +5711,7 @@
         // Board light production раньше отдавал все площадки — оставляем только job текущей site.
         const prod = (g.items || []).filter((t) => {
           if (!isProductionTask(t)) return false;
+          if (['handed', 'cancelled', 'done'].includes(String(t.status || ''))) return false;
           const jid = String(t.stock_doc_id || '').trim();
           if (!jid) return false;
           return siteJobIds.size ? siteJobIds.has(jid) : String(t.pick_site || '') === pickSite;
@@ -5684,14 +5735,18 @@
         .filter(Boolean)
         .filter((t) => !openJobIds.has(String(t.stock_doc_id || '').trim()));
       const allProd = prodItems.concat(sendCards).concat(atOnly).concat(waitCards);
-
-      if (allProd.length && (!otherGroups.length || IS_PROD_SCREEN)) {
-        if (productionFormBusy() && document.getElementById('prod-cards')) {
-          return;
-        }
-        await renderProductionCards(allProd);
+      const dealQ = normalizeHandoffSearchQ(handoffDealQ);
+      let visibleProd = allProd;
+      if (dealQ) visibleProd = allProd.filter((t) => productionMatchesSearch(t, dealQ));
+      if (handoffFilters.type) visibleProd = [];
+      if (handoffTab === 'closed') return;
+      if (productionFormBusy() && document.getElementById('prod-cards') && visibleProd.length) {
         return;
       }
+      await renderProductionCards(visibleProd);
+      const openPanel = document.getElementById('open-panel');
+      if (openPanel) openPanel.hidden = true;
+      return;
 
       if (!groups.length && !atOnly.length) {
         box.innerHTML = '<div class="muted">Очередь пуста — можно передохнуть.</div>';
@@ -6437,6 +6492,11 @@
           product_id: productId,
           article: String(line.article || line.sku || '').trim(),
           name: String(line.name || '').trim(),
+          brand: String(line.brand || line.deal_brand || line.product_brand || '').trim(),
+          master_sku: String(line.master_sku || '').trim(),
+          fact_sku: String(line.fact_sku || '').trim(),
+          supplier: String(line.supplier || '').trim(),
+          lot_cell_code: String(line.lot_cell_code || '').trim(),
           cells: cells,
           default_cell_id: String((def && def.cell_id) || '').trim(),
           default_cell_code: String((def && def.cell_code) || '').trim(),
@@ -6445,6 +6505,25 @@
           stock_wh: Array.isArray(line.stock_wh) ? line.stock_wh : [],
         },
       ];
+    }
+
+    /** Как на печатной: Мастер · На складе · Поставщик · Яч. (+ бренд менеджера). */
+    function handoffLotMetaHtml(l) {
+      const master = String(l.master_sku || l.article || l.sku || '').trim();
+      const fact = String(l.fact_sku || '').trim() || master;
+      const supplier = String(l.supplier || '').trim();
+      const lotCell = String(
+        l.lot_cell_code || l.default_cell_code || l.cells_label || ''
+      ).trim();
+      const brand = String(l.brand || l.deal_brand || l.product_brand || '').trim();
+      const bits = [];
+      if (brand) bits.push('Бренд: <b>' + esc(brand) + '</b>');
+      if (master) bits.push('Мастер: <b>' + esc(master) + '</b>');
+      if (fact) bits.push('На складе: <b>' + esc(fact) + '</b>');
+      if (supplier) bits.push('Поставщик: <b>' + esc(supplier) + '</b>');
+      if (lotCell) bits.push('Яч.: <b>' + esc(lotCell) + '</b>');
+      if (!bits.length) return '';
+      return '<div class="handoff-lot-meta">' + bits.join(' · ') + '</div>';
     }
 
     function getHandoffUnitState(docId, unit) {
@@ -6747,6 +6826,7 @@
               '<td class="name">' +
               (article ? '<span class="art">' + esc(article) + '</span>' : '') +
               esc(name || article || '—') +
+              handoffLotMetaHtml(l) +
               '</td><td class="num"><b>' +
               esc(String(qty)) +
               '</b></td><td class="handoff-cell-single">' +
@@ -6778,6 +6858,7 @@
               '<td class="name">' +
               (u.article ? '<span class="art">' + esc(u.article) + '</span>' : '') +
               esc(u.name || u.article || '—') +
+              handoffLotMetaHtml(u) +
               '</td>' +
               '<td class="num"><b>' +
               esc(String(qty)) +
@@ -6869,16 +6950,8 @@
       const returnsPanel = document.getElementById('returns-panel');
       const pager = document.getElementById('handoffs-pager');
       const isClosed = handoffTab === 'closed';
-      const pickerOnly = !!(me && me.picker_only);
-      const prodN = productionOpenCount();
       if (openPanel) {
-        // Склад: показываем панель, если есть задания «на производство».
-        openPanel.hidden = isClosed || (pickerOnly && prodN === 0);
-        openPanel.classList.toggle('is-production', prodN > 0 || pickerOnly);
-        const h2 = openPanel.querySelector('h2');
-        if (h2) {
-          h2.textContent = pickerOnly || prodN > 0 ? 'На производство' : 'Очередь · производство';
-        }
+        openPanel.hidden = true;
       }
       if (returnsPanel) returnsPanel.hidden = isClosed || !(stockReturns && stockReturns.length);
       if (handoffsPanel) {
@@ -7124,6 +7197,22 @@
         '>▶</button>';
     }
 
+    function renderClosedProductionCards() {
+      const root = document.getElementById('prod-cards');
+      if (!root || handoffTab !== 'closed') return;
+      prodCardsCache = new Map();
+      if (handoffFilters.type) {
+        root.innerHTML = '';
+        return;
+      }
+      const dealQ = normalizeHandoffSearchQ(handoffDealQ);
+      const cards = (Array.isArray(closedProdJobs) ? closedProdJobs : [])
+        .map(productionClosedJobAsCard)
+        .filter(Boolean)
+        .filter((t) => productionMatchesSearch(t, dealQ));
+      root.innerHTML = cards.map((t) => productionCardHtml(t)).join('');
+    }
+
     async function loadClosedHandoffs(page) {
       closedPage = Math.max(1, page || closedPage || 1);
       const root = document.getElementById('handoffs-list');
@@ -7141,13 +7230,21 @@
           CLOSED_PAGE_SIZE;
         if (dealQ) url += '&q=' + encodeURIComponent(dealQ);
         url += handoffFiltersQuery();
-        const r = await api(url);
+        const jobsUrl =
+          '/production/jobs?status=closed&limit=40&site=' +
+          encodeURIComponent(pickSite) +
+          (dealQ ? '&q=' + encodeURIComponent(dealQ) : '');
+        const [r, jobsRes] = await Promise.all([
+          api(url),
+          api(jobsUrl).catch(() => ({ items: [] })),
+        ]);
         if (loadGen !== loadClosedHandoffs._gen) return;
         closedHandoffs = Array.isArray(r.items) ? r.items : [];
+        closedProdJobs = Array.isArray(jobsRes && jobsRes.items) ? jobsRes.items : [];
         closedTotal = Number(r.total) || 0;
         closedPages = Math.max(1, Number(r.pages) || 1);
         closedPage = Math.max(1, Number(r.page) || closedPage);
-        if (dealQ) closedSearchTotal = closedTotal;
+        if (dealQ) closedSearchTotal = closedTotal + closedProdJobs.length;
         else if (handoffFiltersActive()) closedSearchTotal = closedTotal;
         else {
           closedSearchTotal = null;
@@ -7156,6 +7253,7 @@
         renderPickTabs(board && board.counts);
         renderHandoffPager();
         syncPickTabPanels();
+        renderClosedProductionCards();
         renderHandoffs();
       } catch (_) {
         if (loadGen !== loadClosedHandoffs._gen) return;
@@ -7382,6 +7480,9 @@
         renderPickTabs(board && board.counts);
         renderHandoffs();
         renderStockReturns();
+        try {
+          await renderGroups();
+        } catch (_) {}
       }
     }
 
@@ -7398,6 +7499,9 @@
         renderHandoffPager();
         renderHandoffs();
         renderStockReturns();
+        try {
+          await renderGroups();
+        } catch (_) {}
       }
     }
 
@@ -7422,6 +7526,15 @@
         items = items.filter((h) => handoffMatchesListFilters(h));
       }
       if (!items.length) {
+        if (
+          isClosedTab &&
+          Array.isArray(closedProdJobs) &&
+          closedProdJobs.length &&
+          !handoffFilters.type
+        ) {
+          root.innerHTML = '';
+          return;
+        }
         root.innerHTML =
           '<p class="handoffs-empty">' +
           (dealQ || handoffFiltersActive()

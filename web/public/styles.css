@@ -5911,9 +5911,9 @@ button.bal-reserve-order-link:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  margin: 0 auto 2px;
+  width: 18px;
+  height: 18px;
+  margin: 0 4px 0 0;
   border-radius: 6px;
   background: #f0fdfa;
   color: var(--brand-deep, #0f766e);
@@ -5921,9 +5921,10 @@ button.bal-reserve-order-link:hover {
   vertical-align: middle;
 }
 .data-table th.bal-adj-th .bal-adj-th-label {
-  display: block;
+  display: inline;
   font-size: 10px;
   line-height: 1.1;
+  vertical-align: middle;
 }
 .data-table th.bal-adj-th .bal-adj-th-ico svg {
   width: 13px;
@@ -9861,6 +9862,8 @@ button.linkish:hover {
 }
 .media-grid.is-sortable .media-item {
   cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .media-grid.is-sortable .media-item.is-dragging {
   opacity: 0.45;
@@ -9869,6 +9872,14 @@ button.linkish:hover {
 .media-grid.is-sortable .media-item.drag-over {
   outline: 2px solid var(--taxi-accent, #2f6fed);
   outline-offset: -2px;
+}
+.media-grid.is-sortable .media-thumb,
+.media-grid.is-sortable .media-thumb img {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+.media-grid.is-sortable .media-item:active {
+  cursor: grabbing;
 }
 .media-grid .media-drag {
   position: absolute;
@@ -11896,15 +11907,83 @@ button.kassa-health-chip.is-busy {
   background: #f1f5f9;
   border-top: 1px solid var(--line, #e2e8f0);
   border-bottom: 1px solid var(--line, #e2e8f0);
-  padding: 8px 10px;
+  padding: 0;
+}
+/* плотный вид режет ячейки nowrap/max-width — шапка сделки от этого разъезжается по всей ширине */
+.table-scroll > table.data-table.is-dense tr.bal-deal-group-row > td,
+.table-scroll > table.data-table.is-wrap tr.bal-deal-group-row > td {
+  max-width: none;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  vertical-align: middle;
 }
 .bal-deal-group-head {
+  position: sticky;
+  left: 0;
+  z-index: 1;
   display: flex;
   flex-wrap: wrap;
   gap: 4px 8px;
   align-items: baseline;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 100cqi;
+  padding: 8px 12px;
   font-size: 13px;
   font-weight: 600;
+  white-space: normal;
+  background: #f1f5f9;
+}
+/* Остатки: таблица в окне, шапка липнет, горизонтальный скролл виден — колонки не уезжают за обрез */
+.taxi-main > #view:has(table[data-table-key="balances"]) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  max-width: 100%;
+  min-height: 0;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.taxi-main > #view:has(table[data-table-key="balances"]) > .form-chrome {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.form-chrome:has(table[data-table-key="balances"]) > :not(.form-body) {
+  flex-shrink: 0;
+}
+.form-chrome:has(table[data-table-key="balances"]) .form-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.form-body .table-scroll:has(table[data-table-key="balances"]) {
+  flex: 1 1 auto;
+  min-height: 220px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  margin-bottom: 8px;
+  overflow: auto;
+  container-type: inline-size;
+}
+.form-body .table-scroll:has(table[data-table-key="balances"]) thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #f8fafc;
 }
 .bal-group-deal-toggle {
   display: inline-flex;

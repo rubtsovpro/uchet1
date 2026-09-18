@@ -2083,6 +2083,10 @@ export async function pickerBoardLightProduction(
      FROM warehouse_tasks t
      WHERE t.status IN ('new','picking','packed','ready')
        AND t.channel IN ('production_send','production_receive')
+       AND NOT EXISTS (
+         SELECT 1 FROM production_jobs j
+         WHERE j.id = t.stock_doc_id AND j.status IN ('closed','cancelled')
+       )
      ORDER BY datetime(t.created_at) ASC
      LIMIT 80`
   )) as Array<Record<string, unknown>>;
@@ -2682,7 +2686,6 @@ async function handoffDisplayWarehouses(site: PickSiteId): Promise<Array<{ id: s
   const defs: Record<PickSiteId, Array<[string, string]>> = {
     msk: [
       ['НФ-000032', 'Основной'],
-      ['STO-RES-MSK', 'Отложено под СТО'],
       ['STO', 'СТО'],
       ['00-000001', 'Склад СТО Москва'],
     ],
@@ -2750,10 +2753,18 @@ async function enrichHandoffLine(
 ): Promise<Record<string, unknown>> {
   const productId = String(line.product_id || '').trim();
   const p = productId
-    ? await get<{ sku: string; name: string; barcode: string; code: string; array_sku: string }>(
+    ? await get<{
+        sku: string;
+        name: string;
+        barcode: string;
+        code: string;
+        array_sku: string;
+        brand: string;
+      }>(
         `SELECT IFNULL(sku,'') AS sku, IFNULL(name,'') AS name,
                 IFNULL(barcode,'') AS barcode, IFNULL(code,'') AS code,
-                IFNULL(array_sku,'') AS array_sku
+                IFNULL(array_sku,'') AS array_sku,
+                IFNULL(brand,'') AS brand
          FROM products WHERE id = ?`,
         [productId]
       )
@@ -2817,6 +2828,21 @@ async function enrichHandoffLine(
     preferCell,
     dealId: dealId || undefined,
   });
+  const dealBrand =
+    dealId && productId
+      ? String(
+          (
+            await get<{ brand: string }>(
+              `SELECT IFNULL(brand,'') AS brand
+               FROM crm_deal_items
+               WHERE deal_id = ? AND product_guid = ?
+               ORDER BY line_no ASC LIMIT 1`,
+              [dealId, productId]
+            )
+          )?.brand || ''
+        ).trim()
+      : '';
+  const productBrand = String(p?.brand || line.brand || '').trim();
   return {
     ...line,
     sku: String(p?.sku || line.sku || '').trim(),
@@ -2824,6 +2850,9 @@ async function enrichHandoffLine(
     article: String(cat.article || p?.sku || '').trim(),
     name: String(p?.name || line.name || '').trim(),
     barcode: String(p?.barcode || '').trim(),
+    brand: dealBrand || productBrand,
+    product_brand: productBrand,
+    deal_brand: dealBrand,
     warehouse_id: lineWh,
     from_warehouse_id: lineWh,
     from_warehouse_name: fromWhName,
@@ -3012,6 +3041,7 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
     fact_sku?: string;
     supplier?: string;
     lot_cell?: string;
+    brand?: string;
   }) => {
     rowNo += 1;
     const chk = row.checked
@@ -3023,7 +3053,9 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
     const fact = String(row.fact_sku || '').trim() || master;
     const lotCell = String(row.lot_cell || '').trim();
     const supplier = String(row.supplier || '').trim();
+    const brand = String(row.brand || '').trim();
     const lotBits: string[] = [];
+    if (brand) lotBits.push(`Бренд: <b>${pickEsc(brand)}</b>`);
     if (master) lotBits.push(`Мастер: <b>${pickEsc(master)}</b>`);
     if (fact) lotBits.push(`На складе: <b>${pickEsc(fact)}</b>`);
     if (supplier) lotBits.push(`Поставщик: <b>${pickEsc(supplier)}</b>`);
@@ -3067,6 +3099,7 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
           fact_sku: fact,
           supplier: String(enriched.supplier || '').trim(),
           lot_cell: String(enriched.lot_cell_code || sr.cell_code || '').trim(),
+          brand: String(enriched.brand || '').trim(),
         });
       })
     )
@@ -3098,6 +3131,7 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
         fact_sku: fact,
         supplier: String(l.supplier || '').trim(),
         lot_cell: lotCell || cellCode.replace(/\s*\(\d+\)\s*$/, '').trim(),
+        brand: String(l.brand || '').trim(),
       });
     })
     .filter(Boolean)
@@ -3467,6 +3501,17 @@ type HandoffDealLine = {
   sku: string;
 };
 
+/** Старые «Резерв» ушли на склад STO-RES-MSK с именем «Отложено». На карточке это Резерв СТО. */
+function reserveCardDestName(toCode: string, toName: string, comment: string): string {
+  const code = String(toCode || '').trim().toUpperCase();
+  const name = String(toName || '').trim();
+  const c = String(comment || '');
+  const oldHold = code === 'STO-RES-MSK' || /^отложено под сто$/i.test(name);
+  const meantReserve = /→\s*резерв\s*сто/i.test(c) || /^\s*резерв\s*·/i.test(c);
+  if (oldHold && meantReserve && !/спуск на сто/i.test(c)) return 'Резерв СТО';
+  return name;
+}
+
 function handoffLinesSignature(
   lines: Array<{ product_id: string; qty: number; warehouse_id?: string }>
 ): string {
@@ -3513,7 +3558,11 @@ async function ensureHandoffProductStub(line: {
 }
 
 /** Позиции заказа для черновика «Передача на склад» (без услуг) — только ещё не перемещённые. */
-async function dealHandoffSourceLines(dealId: string, docWarehouseId: string): Promise<HandoffDealLine[]> {
+async function dealHandoffSourceLines(
+  dealId: string,
+  docWarehouseId: string,
+  excludeDocId?: string
+): Promise<HandoffDealLine[]> {
   const deal = String(dealId || '').trim();
   if (!deal) return [];
   const defaultWh = String(docWarehouseId || '').trim() || await mainWarehouseId();
@@ -3529,7 +3578,11 @@ async function dealHandoffSourceLines(dealId: string, docWarehouseId: string): P
   const allowHold = !(
     !isReserveChannelDeal(dealRow) && isShipChannelDeal(dealRow)
   );
-  const moved = await movedQtyMapForDeal(deal);
+  // Своё открытое задание не считать «уже ушло» — иначе дозаказ стирает старые строки.
+  const moved = await movedQtyMapForDeal(
+    deal,
+    excludeDocId ? { excludeDocId } : undefined
+  );
   const rows = await all<{
     product_guid: string;
     qty: number;
@@ -3630,7 +3683,7 @@ async function syncUnpostedHandoffDocLines(docId: string): Promise<boolean> {
     // Обычная передача и «СРОЧНО на СТО» (Основной/Отложено → СТО):
     // состав из заказа минус уже перемещённое. Нельзя подменять на «только резерв» —
     // иначе баллоны/дозаказ с Основного пропадают с распечатки при закрытии.
-    targetLines = await dealHandoffSourceLines(dealId, warehouseId);
+    targetLines = await dealHandoffSourceLines(dealId, warehouseId, id);
   }
   if (!targetLines.length) return false;
 
@@ -3685,6 +3738,25 @@ async function syncUnpostedHandoffDocLines(docId: string): Promise<boolean> {
     await run('ROLLBACK');
     console.warn('handoff sync lines', id, dealId, e instanceof Error ? e.message : e);
     return false;
+  }
+}
+
+/** Открытые «Передача на склад»: дописать новые позиции сделки, не стирая уже стоящие. */
+export async function syncOpenHandoffLinesForDeal(dealId: string): Promise<void> {
+  const id = String(dealId || '').trim();
+  if (!id) return;
+  const docs = await all<{ id: string }>(
+    `SELECT id FROM stock_docs
+     WHERE deal_id = ?
+       AND doc_type = 'out'
+       AND IFNULL(posted,0) = 0
+       AND IFNULL(comment,'') LIKE '%Передача на склад%'
+       AND IFNULL(comment,'') NOT LIKE '%Возврат на основной%'
+       AND IFNULL(comment,'') NOT LIKE '%Списание по продаже%'`,
+    [id]
+  );
+  for (const doc of docs) {
+    await syncUnpostedHandoffDocLines(String(doc.id || ''));
   }
 }
 
@@ -3936,34 +4008,34 @@ function handoffPickDocSql(posted: boolean): string {
 }
 
 /**
- * SQL-фильтр площадки для COUNT: склады из БД (warehouses.pick_site) + филиал/СТО/юрлицо из pick_sites.
+ * SQL-фильтр площадки для COUNT.
+ * Юрлицо сделки важнее склада: чужой ИП не попадает в контур только потому,
+ * что склад помечен pick_site (московский «СТО» был помечен как Стрела).
+ * Склад / филиал — только если у сделки юрлица нет.
  */
 async function handoffPickSiteMatchSql(
   siteFilter: PickSiteId
 ): Promise<{ sql: string; params: string[] }> {
-  const site = (await pickSitesCatalog()).find((s) => s.id === siteFilter);
+  const catalog = await pickSitesCatalog();
+  const site = catalog.find((s) => s.id === siteFilter);
   const companyIds = (site?.company_ids || []).filter(Boolean);
   const branchLike = site?.branch_like || [];
   const stoLike = site?.sto_like || [];
-  const parts: string[] = [
+  const looseParts: string[] = [
     `d.warehouse_id IN (SELECT id FROM warehouses WHERE pick_site = ?)`,
     `d.warehouse_to_id IN (SELECT id FROM warehouses WHERE pick_site = ?)`,
   ];
-  const params: string[] = [siteFilter, siteFilter];
+  const looseParams: string[] = [siteFilter, siteFilter];
   for (const p of branchLike) {
-    parts.push(`lower(IFNULL(cd.amo_branch,'')) LIKE ?`);
-    params.push(p);
+    looseParts.push(`lower(IFNULL(cd.amo_branch,'')) LIKE ?`);
+    looseParams.push(p);
   }
   for (const p of stoLike) {
-    parts.push(`lower(IFNULL(cd.amo_sto,'')) LIKE ?`);
-    params.push(p);
-  }
-  if (companyIds.length) {
-    parts.push(`cd.org_company_id IN (${companyIds.map(() => '?').join(',')})`);
-    params.push(...companyIds);
+    looseParts.push(`lower(IFNULL(cd.amo_sto,'')) LIKE ?`);
+    looseParams.push(p);
   }
   if (siteFilter === 'strela') {
-    parts.push(
+    looseParts.push(
       `(lower(IFNULL(cd.amo_branch,'')) LIKE '%краснодар%'
         AND lower(IFNULL(cd.amo_branch,'')) NOT LIKE '%фогель%'
         AND lower(IFNULL(cd.amo_branch,'')) NOT LIKE '%fogel%'
@@ -3971,7 +4043,13 @@ async function handoffPickSiteMatchSql(
         AND lower(IFNULL(cd.amo_branch,'')) NOT LIKE '%strela%')`
     );
   }
-  return { sql: parts.join(' OR '), params };
+  const looseSql = looseParts.join(' OR ');
+  if (!companyIds.length) return { sql: looseSql, params: looseParams };
+  const own = `cd.org_company_id IN (${companyIds.map(() => '?').join(',')})`;
+  return {
+    sql: `(${own} OR (TRIM(IFNULL(cd.org_company_id,'')) = '' AND (${looseSql})))`,
+    params: [...companyIds, ...looseParams],
+  };
 }
 
 /** Справочники для фильтров списка передач на /pick. */
@@ -4264,6 +4342,7 @@ async function mapHandoffPickRow(
       `SELECT l.qty, l.product_id,
               IFNULL(l.warehouse_id,'') AS warehouse_id,
               IFNULL(p.sku,'') AS sku, IFNULL(p.name,'') AS name,
+              IFNULL(p.brand,'') AS brand,
               IFNULL(wl.name,'') AS warehouse_name
        FROM stock_doc_lines l
        LEFT JOIN products p ON p.id = l.product_id
@@ -4284,11 +4363,42 @@ async function mapHandoffPickRow(
       const sku = String(l.sku || '').trim();
       const fromWhName =
         String(l.warehouse_name || '').trim() || fromName;
+      const preferCell = String(
+        (Array.isArray(loc.cells) && loc.cells[0] && (loc.cells[0] as { cell_code?: string }).cell_code) ||
+          loc.cells_label ||
+          ''
+      )
+        .split(/[·,;\s]+/)[0]
+        ?.trim();
+      const lotFields = productId
+        ? await supplierLotFieldsForLine(productId, {
+            preferCell,
+            dealId: dealId || undefined,
+          })
+        : {};
+      const dealBrand =
+        dealId && productId
+          ? String(
+              (
+                await get<{ brand: string }>(
+                  `SELECT IFNULL(brand,'') AS brand
+                   FROM crm_deal_items
+                   WHERE deal_id = ? AND product_guid = ?
+                   ORDER BY line_no ASC LIMIT 1`,
+                  [dealId, productId]
+                )
+              )?.brand || ''
+            ).trim()
+          : '';
+      const productBrand = String(l.brand || '').trim();
       return {
         ...l,
         sku,
         article: sku,
         name: String(l.name || '').trim(),
+        brand: dealBrand || productBrand,
+        product_brand: productBrand,
+        deal_brand: dealBrand,
         warehouse_id: lineWh,
         from_warehouse_id: lineWh,
         from_warehouse_name: fromWhName,
@@ -4296,6 +4406,7 @@ async function mapHandoffPickRow(
         cells: loc.cells,
         cells_label: loc.cells_label,
         stock_wh: [],
+        ...lotFields,
       };
     }));
     const slimDeal = dealId
@@ -4327,9 +4438,12 @@ async function mapHandoffPickRow(
       (byCodesReserve || isReserveChannelDeal(slimDeal));
     const isShip =
       !isToSto && !isReturn && !isReserve && isShipChannelDeal(slimDeal);
-    const destName =
+    const destName = reserveCardDestName(
+      toCode,
       toNameRaw ||
-      (isToSto ? 'СТО' : isReserve ? 'Резерв' : isShip ? 'Курьер' : '');
+        (isToSto ? 'СТО' : isReserve ? 'Резерв' : isShip ? 'Курьер' : ''),
+      commentStr
+    );
     const routeLabel =
       fromName && destName
         ? `${fromName} → ${destName}`
@@ -4474,10 +4588,12 @@ async function mapHandoffPickRow(
     !isReturn &&
     (/^STO-RS[VE]/.test(toCode) || /резерв/i.test(toNameRaw) || /резерв/i.test(commentStr));
   // Маршрут на карточке — склады документа. Meta — только для черновика без warehouse_to.
-  const toName =
+  const toName = reserveCardDestName(
+    toCode,
     toNameRaw ||
-    (!completed ? String(flowMeta?.dest_warehouse_name || '').trim() : '') ||
-    '';
+      (!completed ? String(flowMeta?.dest_warehouse_name || '').trim() : ''),
+    commentStr
+  );
   const routeLabel = isToSto
     ? toStoRoute || (fromName && toName ? `${fromName} → ${toName}` : docRoute)
     : fromName && toName

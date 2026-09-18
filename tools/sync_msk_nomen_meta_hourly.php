@@ -24,17 +24,18 @@
  * Usage:
  *   php tools/sync_msk_nomen_meta_hourly.php --dry-run
  *   php tools/sync_msk_nomen_meta_hourly.php --apply
+ *
+ * SoT: Postgres WMS (не sqlite).
  */
 declare(strict_types=1);
 
 require_once __DIR__ . '/lib_msk_applicability_parse.php';
+require_once __DIR__ . '/lib_wms_db_pg.php';
 
 $credPath = getenv('GOOGLE_SA_JSON')
     ?: '/root/bank_pnevmopodveska1_ru/public_html/pnevmopodveska1-677b14845bb0.json';
 $autoload = getenv('GOOGLE_PHP_AUTOLOAD')
     ?: '/root/bank_pnevmopodveska1_ru/public_html/vendor/autoload.php';
-$wmsDb = getenv('WMS_SQLITE')
-    ?: '/root/1c_pnevmopodveska1_ru/warehouse/data/warehouse.sqlite';
 $spreadsheetId = getenv('MSK_NOMEN_SHEET_ID') ?: '1KRNwQIi-jYBDtKYl5rQ9is6zngbPds0ZZvBXWCApn7I';
 $sheetGid = (int) (getenv('MSK_NOMEN_SHEET_GID') ?: 0);
 $logDir = getenv('MSK_NOMEN_SYNC_LOG_DIR')
@@ -158,7 +159,7 @@ function normCellCode(string $raw): string
  * @return array{cells:int,bal:int,lots:int,skipped:int}
  */
 function seedInitialStockFromSheet(
-    SQLite3 $db,
+    WmsDb $db,
     string $productId,
     string $masterSku,
     string $productName,
@@ -175,11 +176,11 @@ function seedInitialStockFromSheet(
     // Уже есть остатки по карточке — не трогаем (повторный create не должен быть).
     $have = (float) $db->querySingle(
         "SELECT IFNULL(SUM(ABS(qty)),0) FROM stock_balances WHERE product_id = '"
-        . SQLite3::escapeString($productId) . "'"
+        . WmsDb::escapeString($productId) . "'"
     );
     $haveCells = (float) $db->querySingle(
         "SELECT IFNULL(SUM(ABS(qty)),0) FROM stock_cell_balances WHERE product_id = '"
-        . SQLite3::escapeString($productId) . "'"
+        . WmsDb::escapeString($productId) . "'"
     );
     if ($have > 0.0001 || $haveCells > 0.0001) {
         $out['skipped'] = count($lines);
@@ -254,28 +255,28 @@ function seedInitialStockFromSheet(
         if ($cellCode !== '') {
             $cellId = (string) $db->querySingle(
                 "SELECT id FROM warehouse_cells WHERE warehouse_id = '"
-                . SQLite3::escapeString($whId) . "' AND code = '"
-                . SQLite3::escapeString($cellCode) . "' COLLATE NOCASE LIMIT 1"
+                . WmsDb::escapeString($whId) . "' AND code = '"
+                . WmsDb::escapeString($cellCode) . "' COLLATE NOCASE LIMIT 1"
             );
             if ($cellId === '') {
                 $cellId = guid();
                 $db->exec(
                     "INSERT INTO warehouse_cells (id, warehouse_id, code, kind, is_active)
-                     VALUES ('" . SQLite3::escapeString($cellId) . "', '"
-                    . SQLite3::escapeString($whId) . "', '"
-                    . SQLite3::escapeString($cellCode) . "', 'shelf', 1)"
+                     VALUES ('" . WmsDb::escapeString($cellId) . "', '"
+                    . WmsDb::escapeString($whId) . "', '"
+                    . WmsDb::escapeString($cellCode) . "', 'shelf', 1)"
                 );
             }
             $db->exec(
                 "INSERT INTO stock_cell_balances
                     (warehouse_id, cell_id, product_id, sku, product_name, supply, qty, updated_at)
                  VALUES (
-                    '" . SQLite3::escapeString($whId) . "',
-                    '" . SQLite3::escapeString($cellId) . "',
-                    '" . SQLite3::escapeString($productId) . "',
-                    '" . SQLite3::escapeString($fact) . "',
-                    '" . SQLite3::escapeString($productName) . "',
-                    '" . SQLite3::escapeString($supply) . "',
+                    '" . WmsDb::escapeString($whId) . "',
+                    '" . WmsDb::escapeString($cellId) . "',
+                    '" . WmsDb::escapeString($productId) . "',
+                    '" . WmsDb::escapeString($fact) . "',
+                    '" . WmsDb::escapeString($productName) . "',
+                    '" . WmsDb::escapeString($supply) . "',
                     {$qty},
                     datetime('now')
                  )
@@ -283,7 +284,7 @@ function seedInitialStockFromSheet(
                     product_id = excluded.product_id,
                     product_name = excluded.product_name,
                     supply = excluded.supply,
-                    qty = stock_cell_balances.qty + excluded.qty,
+                    qty = stock_cell_balances.qty + EXCLUDED.qty,
                     updated_at = datetime('now')"
             );
             $out['cells']++;
@@ -295,15 +296,15 @@ function seedInitialStockFromSheet(
                 id, product_id, master_sku, fact_sku, supplier, warehouse_id, warehouse_name,
                 cell_code, supply, qty, oe, price, how_found, sheet_row, updated_at
              ) VALUES (
-                '" . SQLite3::escapeString($lotId) . "',
-                '" . SQLite3::escapeString($productId) . "',
-                '" . SQLite3::escapeString($masterSku) . "',
-                '" . SQLite3::escapeString($fact) . "',
-                '" . SQLite3::escapeString($supplier) . "',
-                '" . SQLite3::escapeString($whId) . "',
-                '" . SQLite3::escapeString($whName) . "',
-                '" . SQLite3::escapeString($cellCode) . "',
-                '" . SQLite3::escapeString($supply) . "',
+                '" . WmsDb::escapeString($lotId) . "',
+                '" . WmsDb::escapeString($productId) . "',
+                '" . WmsDb::escapeString($masterSku) . "',
+                '" . WmsDb::escapeString($fact) . "',
+                '" . WmsDb::escapeString($supplier) . "',
+                '" . WmsDb::escapeString($whId) . "',
+                '" . WmsDb::escapeString($whName) . "',
+                '" . WmsDb::escapeString($cellCode) . "',
+                '" . WmsDb::escapeString($supply) . "',
                 {$qty}, '', 0, 'sheet:seed-on-create', 0, datetime('now')
              )"
         );
@@ -318,15 +319,15 @@ function seedInitialStockFromSheet(
         }
         $db->exec(
             "INSERT INTO stock_balances (warehouse_id, product_id, qty)
-             VALUES ('" . SQLite3::escapeString((string) $whId) . "', '"
-            . SQLite3::escapeString($productId) . "', {$qty})
-             ON CONFLICT(warehouse_id, product_id) DO UPDATE SET qty = qty + excluded.qty"
+             VALUES ('" . WmsDb::escapeString((string) $whId) . "', '"
+            . WmsDb::escapeString($productId) . "', {$qty})
+             ON CONFLICT(warehouse_id, product_id) DO UPDATE SET qty = stock_balances.qty + EXCLUDED.qty"
         );
         $db->exec(
             "INSERT INTO product_store_rests (product_id, warehouse_id, qty)
-             VALUES ('" . SQLite3::escapeString($productId) . "', '"
-            . SQLite3::escapeString((string) $whId) . "', {$qty})
-             ON CONFLICT(product_id, warehouse_id) DO UPDATE SET qty = qty + excluded.qty"
+             VALUES ('" . WmsDb::escapeString($productId) . "', '"
+            . WmsDb::escapeString((string) $whId) . "', {$qty})
+             ON CONFLICT(product_id, warehouse_id) DO UPDATE SET qty = product_store_rests.qty + EXCLUDED.qty"
         );
         $out['bal']++;
     }
@@ -341,7 +342,7 @@ function seedInitialStockFromSheet(
  * @return array{moved:int,lots:int,cells:int,cleared_wh:int}
  */
 function reassignFactToMaster(
-    SQLite3 $db,
+    WmsDb $db,
     string $fact,
     string $toPid,
     string $toMasterSku,
@@ -362,15 +363,15 @@ function reassignFactToMaster(
     // Снять warehouse_sku у чужих мастеров подвески (не трогаем Фогель и целевой)
     $q = $db->query(
         "SELECT id, sku FROM products
-         WHERE warehouse_sku = '" . SQLite3::escapeString($fact) . "' COLLATE NOCASE
-           AND id <> '" . SQLite3::escapeString($toPid) . "'
+         WHERE warehouse_sku = '" . WmsDb::escapeString($fact) . "' COLLATE NOCASE
+           AND id <> '" . WmsDb::escapeString($toPid) . "'
            AND {$deptProd}"
     );
     while ($q && ($row = $q->fetchArray(SQLITE3_ASSOC))) {
         if (!$dryRun) {
             $db->exec(
                 "UPDATE products SET warehouse_sku = '' WHERE id = '"
-                . SQLite3::escapeString((string) $row['id']) . "'"
+                . WmsDb::escapeString((string) $row['id']) . "'"
             );
         }
         $out['cleared_wh']++;
@@ -389,18 +390,18 @@ function reassignFactToMaster(
             "SELECT l.id, l.product_id, l.master_sku
              FROM product_supplier_lots l
              INNER JOIN products p ON p.id = l.product_id
-             WHERE l.fact_sku = '" . SQLite3::escapeString($fact) . "' COLLATE NOCASE
-               AND l.product_id <> '" . SQLite3::escapeString($toPid) . "'
+             WHERE l.fact_sku = '" . WmsDb::escapeString($fact) . "' COLLATE NOCASE
+               AND l.product_id <> '" . WmsDb::escapeString($toPid) . "'
                AND {$deptJoin}"
         );
         while ($q && ($row = $q->fetchArray(SQLITE3_ASSOC))) {
             if (!$dryRun) {
                 $db->exec(
                     "UPDATE product_supplier_lots
-                     SET product_id = '" . SQLite3::escapeString($toPid) . "',
-                         master_sku = '" . SQLite3::escapeString($toMasterSku) . "',
+                     SET product_id = '" . WmsDb::escapeString($toPid) . "',
+                         master_sku = '" . WmsDb::escapeString($toMasterSku) . "',
                          updated_at = datetime('now')
-                     WHERE id = '" . SQLite3::escapeString((string) $row['id']) . "'"
+                     WHERE id = '" . WmsDb::escapeString((string) $row['id']) . "'"
                 );
             }
             $out['lots']++;
@@ -415,8 +416,8 @@ function reassignFactToMaster(
     $q = $db->query(
         "SELECT warehouse_id, cell_id, product_id, qty, sku
          FROM stock_cell_balances
-         WHERE sku = '" . SQLite3::escapeString($fact) . "' COLLATE NOCASE
-           AND IFNULL(product_id,'') <> '" . SQLite3::escapeString($toPid) . "'"
+         WHERE sku = '" . WmsDb::escapeString($fact) . "' COLLATE NOCASE
+           AND IFNULL(product_id,'') <> '" . WmsDb::escapeString($toPid) . "'"
     );
     while ($q && ($row = $q->fetchArray(SQLITE3_ASSOC))) {
         $oldPid = trim((string) ($row['product_id'] ?? ''));
@@ -426,7 +427,7 @@ function reassignFactToMaster(
         if ($oldPid !== '') {
             $oldDept = (string) $db->querySingle(
                 "SELECT IFNULL(source_department,'') FROM products WHERE id = '"
-                . SQLite3::escapeString($oldPid) . "'"
+                . WmsDb::escapeString($oldPid) . "'"
             );
             if ($oldDept === 'fogel_2025') {
                 continue;
@@ -435,47 +436,47 @@ function reassignFactToMaster(
         if (!$dryRun) {
             $db->exec(
                 "UPDATE stock_cell_balances
-                 SET product_id = '" . SQLite3::escapeString($toPid) . "',
-                     product_name = '" . SQLite3::escapeString($toName !== '' ? $toName : $toMasterSku) . "',
+                 SET product_id = '" . WmsDb::escapeString($toPid) . "',
+                     product_name = '" . WmsDb::escapeString($toName !== '' ? $toName : $toMasterSku) . "',
                      updated_at = datetime('now')
-                 WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
-                   AND cell_id = '" . SQLite3::escapeString((string) $row['cell_id']) . "'
-                   AND sku = '" . SQLite3::escapeString($fact) . "' COLLATE NOCASE"
+                 WHERE warehouse_id = '" . WmsDb::escapeString($whId) . "'
+                   AND cell_id = '" . WmsDb::escapeString((string) $row['cell_id']) . "'
+                   AND sku = '" . WmsDb::escapeString($fact) . "' COLLATE NOCASE"
             );
             if ($oldPid !== '' && $whId !== '' && abs($qty) > 0.0001) {
                 // снять с старого мастера
                 $db->exec(
                     "UPDATE stock_balances SET qty = qty - {$qty}
-                     WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
-                       AND product_id = '" . SQLite3::escapeString($oldPid) . "'"
+                     WHERE warehouse_id = '" . WmsDb::escapeString($whId) . "'
+                       AND product_id = '" . WmsDb::escapeString($oldPid) . "'"
                 );
                 $db->exec(
                     "DELETE FROM stock_balances
-                     WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
-                       AND product_id = '" . SQLite3::escapeString($oldPid) . "'
+                     WHERE warehouse_id = '" . WmsDb::escapeString($whId) . "'
+                       AND product_id = '" . WmsDb::escapeString($oldPid) . "'
                        AND qty <= 0.0001"
                 );
                 $db->exec(
                     "UPDATE product_store_rests SET qty = qty - {$qty}
-                     WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
-                       AND product_id = '" . SQLite3::escapeString($oldPid) . "'"
+                     WHERE warehouse_id = '" . WmsDb::escapeString($whId) . "'
+                       AND product_id = '" . WmsDb::escapeString($oldPid) . "'"
                 );
                 $db->exec(
                     "DELETE FROM product_store_rests
-                     WHERE warehouse_id = '" . SQLite3::escapeString($whId) . "'
-                       AND product_id = '" . SQLite3::escapeString($oldPid) . "'
+                     WHERE warehouse_id = '" . WmsDb::escapeString($whId) . "'
+                       AND product_id = '" . WmsDb::escapeString($oldPid) . "'
                        AND qty <= 0.0001"
                 );
                 // начислить новому
                 $db->exec(
                     "INSERT INTO stock_balances (warehouse_id, product_id, qty)
-                     VALUES ('" . SQLite3::escapeString($whId) . "', '" . SQLite3::escapeString($toPid) . "', {$qty})
-                     ON CONFLICT(warehouse_id, product_id) DO UPDATE SET qty = qty + excluded.qty"
+                     VALUES ('" . WmsDb::escapeString($whId) . "', '" . WmsDb::escapeString($toPid) . "', {$qty})
+                     ON CONFLICT(warehouse_id, product_id) DO UPDATE SET qty = stock_balances.qty + EXCLUDED.qty"
                 );
                 $db->exec(
                     "INSERT INTO product_store_rests (product_id, warehouse_id, qty)
-                     VALUES ('" . SQLite3::escapeString($toPid) . "', '" . SQLite3::escapeString($whId) . "', {$qty})
-                     ON CONFLICT(product_id, warehouse_id) DO UPDATE SET qty = qty + excluded.qty"
+                     VALUES ('" . WmsDb::escapeString($toPid) . "', '" . WmsDb::escapeString($whId) . "', {$qty})
+                     ON CONFLICT(product_id, warehouse_id) DO UPDATE SET qty = product_store_rests.qty + EXCLUDED.qty"
                 );
             }
         }
@@ -493,15 +494,19 @@ if (!is_readable($credPath) || !is_readable($autoload)) {
     sync_log('ERR: нет Google credentials/autoload');
     exit(1);
 }
-if (!is_readable($wmsDb)) {
-    sync_log('ERR: нет WMS sqlite: ' . $wmsDb);
-    exit(1);
-}
 
 require $autoload;
 
 $started = microtime(true);
-sync_log('MSK nomen meta sync ' . ($dryRun ? 'DRY-RUN' : 'APPLY') . ' @ ' . date('c'));
+sync_log('MSK nomen meta sync ' . ($dryRun ? 'DRY-RUN' : 'APPLY') . ' @ ' . date('c') . ' (postgres)');
+
+try {
+    $db = WmsDb::fromChecksLib();
+} catch (Throwable $e) {
+    sync_log('ERR: Postgres WMS: ' . $e->getMessage());
+    exit(5);
+}
+$db->busyTimeout(120000);
 
 $client = new Google\Client();
 $client->setApplicationName('Uchet1 MSK nomen meta hourly');
@@ -566,7 +571,7 @@ if ($iAppAll === null) {
 }
 $iSupply = colIndex($header, ['№ поставки (склад)', '№ поставки', 'поставки']);
 $iCat = colIndex($header, ['категория'], false);
-$iName = colIndex($header, ['номенклатура 1с']);
+$iName = colIndex($header, ['название', 'номенклатура 1с', 'номенклатура']);
 $iAxis = colIndex($header, ['ось'], false);
 $iSide = colIndex($header, ['сторона'], false);
 // не путать со «Сторона: значима?»
@@ -727,14 +732,6 @@ for ($r = 1, $n = count($vals); $r < $n; $r++) {
 
 sync_log('мастеров на листе: ' . count($masters));
 
-$db = new SQLite3($wmsDb);
-$db->busyTimeout(120000);
-$db->exec('PRAGMA foreign_keys = ON');
-$db->exec('PRAGMA busy_timeout = 120000');
-// меньше конфликтов с Node WMS
-@$db->exec('PRAGMA journal_mode = WAL');
-@$db->exec('PRAGMA synchronous = NORMAL');
-
 $prodCols = [];
 $qCols = $db->query('PRAGMA table_info(products)');
 while ($qCols && ($c = $qCols->fetchArray(SQLITE3_ASSOC))) {
@@ -748,21 +745,21 @@ foreach (['warehouse_sku', 'array_sku', 'install_price', 'source_department'] as
 }
 
 $getProduct = $db->prepare(
-    "SELECT id, sku, name, warehouse_sku, array_sku, install_price, category_id, source_department
+    "SELECT id, sku, name, warehouse_sku, array_sku, install_price, category_id, source_department, is_active
      FROM products
-     WHERE IFNULL(source_department,'') IN ('', 'pnevmopodveska_2025')
+     WHERE COALESCE(source_department,'') IN ('', 'pnevmopodveska_2025')
        AND (
-         sku = :sku COLLATE NOCASE
-         OR sku = :sku_ns COLLATE NOCASE
-         OR warehouse_sku = :sku COLLATE NOCASE
-         OR code = :sku_code COLLATE NOCASE
+         LOWER(sku) = LOWER(:sku)
+         OR LOWER(sku) = LOWER(:sku_ns)
+         OR LOWER(COALESCE(warehouse_sku,'')) = LOWER(:sku)
+         OR LOWER(COALESCE(code,'')) = LOWER(:sku_code)
        )
      ORDER BY
        CASE
-         WHEN sku = :sku2 COLLATE NOCASE THEN 0
-         WHEN sku = :sku_ns2 COLLATE NOCASE THEN 1
-         WHEN code = :sku_code2 COLLATE NOCASE AND id NOT LIKE '%::%' THEN 2
-         WHEN code = :sku_code2 COLLATE NOCASE THEN 3
+         WHEN LOWER(sku) = LOWER(:sku2) THEN 0
+         WHEN LOWER(sku) = LOWER(:sku_ns2) THEN 1
+         WHEN LOWER(COALESCE(code,'')) = LOWER(:sku_code2) AND id NOT LIKE '%::%' THEN 2
+         WHEN LOWER(COALESCE(code,'')) = LOWER(:sku_code2) THEN 3
          ELSE 4
        END
      LIMIT 1"
@@ -777,7 +774,7 @@ $insProduct = $db->prepare(
      )"
 );
 $findCat = $db->prepare(
-    "SELECT id FROM categories WHERE name = :name COLLATE NOCASE LIMIT 1"
+    "SELECT id FROM categories WHERE LOWER(name) = LOWER(:name) LIMIT 1"
 );
 $insCat = $db->prepare(
     "INSERT INTO categories (id, name, parent_id) VALUES (:id, :name, NULL)"
@@ -846,17 +843,17 @@ $db->exec(
     )"
 );
 
-$skuTaken = static function (SQLite3 $db, string $candidate, string $exceptId = '') : bool {
-    $sql = "SELECT id FROM products WHERE sku = '" . SQLite3::escapeString($candidate) . "' COLLATE NOCASE";
+$skuTaken = static function (WmsDb $db, string $candidate, string $exceptId = '') : bool {
+    $sql = "SELECT id FROM products WHERE LOWER(sku) = LOWER('" . WmsDb::escapeString($candidate) . "')";
     if ($exceptId !== '') {
-        $sql .= " AND id <> '" . SQLite3::escapeString($exceptId) . "'";
+        $sql .= " AND id <> '" . WmsDb::escapeString($exceptId) . "'";
     }
     $sql .= ' LIMIT 1';
 
     return (string) $db->querySingle($sql) !== '';
 };
 
-$pickStoreSku = static function (SQLite3 $db, string $master) use ($skuTaken): string {
+$pickStoreSku = static function (WmsDb $db, string $master) use ($skuTaken): string {
     if (!$skuTaken($db, $master)) {
         return $master;
     }
@@ -902,7 +899,7 @@ $createdSample = [];
 $changedSample = [];
 
 /** @return bool */
-$execOk = static function (SQLite3 $db, string $sql): bool {
+$execOk = static function (WmsDb $db, string $sql): bool {
     for ($i = 0; $i < 8; $i++) {
         $ok = @$db->exec($sql);
         if ($ok) {
@@ -921,10 +918,10 @@ $execOk = static function (SQLite3 $db, string $sql): bool {
 };
 
 /** @return bool */
-$stmtOk = static function (SQLite3Stmt $st): bool {
+$stmtOk = static function (WmsDbStmt $st): bool {
     for ($i = 0; $i < 8; $i++) {
         $res = @$st->execute();
-        if ($res instanceof SQLite3Result) {
+        if ($res instanceof WmsDbResult) {
             $res->finalize();
             return true;
         }
@@ -1021,6 +1018,16 @@ try {
         $stats['matched']++;
         $pid = (string) $prod['id'];
         $changed = $createdNow;
+
+        // С листа — карточка должна быть активна (только Москва / этот id)
+        if (!$createdNow && (int) ($prod['is_active'] ?? 1) !== 1) {
+            if (!$dryRun) {
+                $st = $db->prepare('UPDATE products SET is_active = 1 WHERE id = :id');
+                $st->bindValue(':id', $pid, SQLITE3_TEXT);
+                $st->execute();
+            }
+            $changed = true;
+        }
 
         $name = trim((string) $m['name']);
         if ($name !== '' && $name !== (string) ($prod['name'] ?? '')) {
@@ -1130,8 +1137,10 @@ try {
         if ($catName !== '') {
             $findCat->bindValue(':name', $catName, SQLITE3_TEXT);
             $cr = $findCat->execute();
-            $cat = $cr->fetchArray(SQLITE3_ASSOC);
-            $cr->finalize();
+            $cat = ($cr instanceof WmsDbResult) ? $cr->fetchArray(SQLITE3_ASSOC) : false;
+            if ($cr instanceof WmsDbResult) {
+                $cr->finalize();
+            }
             $catId = $cat ? (string) $cat['id'] : '';
             if ($catId === '' && !$dryRun) {
                 $catId = guid();
@@ -1162,16 +1171,16 @@ try {
                 continue;
             }
             $curP = (float) $db->querySingle(
-                "SELECT price FROM product_prices WHERE product_id = '" . SQLite3::escapeString($pid)
-                . "' AND price_type = '" . SQLite3::escapeString($ptype) . "' LIMIT 1"
+                "SELECT price FROM product_prices WHERE product_id = '" . WmsDb::escapeString($pid)
+                . "' AND price_type = '" . WmsDb::escapeString($ptype) . "' LIMIT 1"
             );
             if (abs($curP - $price) < 0.009) {
                 continue;
             }
             if (!$dryRun) {
                 $db->exec(
-                    "DELETE FROM product_prices WHERE product_id = '" . SQLite3::escapeString($pid)
-                    . "' AND price_type = '" . SQLite3::escapeString($ptype) . "'"
+                    "DELETE FROM product_prices WHERE product_id = '" . WmsDb::escapeString($pid)
+                    . "' AND price_type = '" . WmsDb::escapeString($ptype) . "'"
                 );
                 $st = $db->prepare(
                     'INSERT INTO product_prices (id, product_id, price_type, price) VALUES (:id, :pid, :t, :p)'
@@ -1196,7 +1205,7 @@ try {
         if ($supJoined !== '') {
             $curSup = (string) $db->querySingle(
                 "SELECT IFNULL(sheet_supplier,'') FROM products WHERE id = '"
-                . SQLite3::escapeString($pid) . "'"
+                . WmsDb::escapeString($pid) . "'"
             );
             if ($curSup !== $supJoined) {
                 if (!$dryRun) {
@@ -1228,16 +1237,16 @@ try {
                 continue;
             }
             $curV = (string) $db->querySingle(
-                "SELECT value FROM product_properties WHERE product_id = '" . SQLite3::escapeString($pid)
-                . "' AND property = '" . SQLite3::escapeString($pk) . "' LIMIT 1"
+                "SELECT value FROM product_properties WHERE product_id = '" . WmsDb::escapeString($pid)
+                . "' AND property = '" . WmsDb::escapeString($pk) . "' LIMIT 1"
             );
             if ($curV === $pv) {
                 continue;
             }
             if (!$dryRun) {
                 $db->exec(
-                    "DELETE FROM product_properties WHERE product_id = '" . SQLite3::escapeString($pid)
-                    . "' AND property = '" . SQLite3::escapeString($pk) . "'"
+                    "DELETE FROM product_properties WHERE product_id = '" . WmsDb::escapeString($pid)
+                    . "' AND property = '" . WmsDb::escapeString($pk) . "'"
                 );
                 $st = $db->prepare(
                     'INSERT INTO product_properties (id, product_id, property, value) VALUES (:id, :pid, :p, :v)'
@@ -1267,7 +1276,7 @@ try {
             $have = [];
             $qr = $db->query(
                 "SELECT mark, model, generation, years FROM product_applicability WHERE product_id = '"
-                . SQLite3::escapeString($pid) . "'"
+                . WmsDb::escapeString($pid) . "'"
             );
             while ($qr && ($rowA = $qr->fetchArray(SQLITE3_ASSOC))) {
                 $have[] = mb_strtolower(
@@ -1283,7 +1292,7 @@ try {
             if ($want !== $have) {
                 if (!$dryRun) {
                     $db->exec(
-                        "DELETE FROM product_applicability WHERE product_id = '" . SQLite3::escapeString($pid) . "'"
+                        "DELETE FROM product_applicability WHERE product_id = '" . WmsDb::escapeString($pid) . "'"
                     );
                     $st = $db->prepare(
                         'INSERT INTO product_applicability (id, product_id, mark, model, only_model, generation, years)

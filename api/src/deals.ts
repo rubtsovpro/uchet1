@@ -1586,6 +1586,12 @@ export async function upsertDealRecord(d: Record<string, unknown>): Promise<void
   // Бюджет Amo часто 0 при amount=0 в строках — сумма из qty×price
   await recalcDealTotals(id);
 
+  if (items.length) {
+    void import('./warehouse-tasks.js')
+      .then(({ syncOpenHandoffLinesForDeal }) => syncOpenHandoffLinesForDeal(id))
+      .catch(() => {});
+  }
+
   if (rawStatusId(prevStatusId) !== rawStatusId(nextStatusId)) {
     void import('./deal-stock-flow.js')
       .then(({ maybeWriteOffStoAfterAmoStatusSync }) => {

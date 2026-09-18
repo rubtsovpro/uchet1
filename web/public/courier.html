@@ -8,7 +8,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>Курьер · Учёт №1</title>
-  <!-- courier-ui rev=uchetn1-20260828-courier-registry -->
+  <!-- courier-ui rev=uchetn1-20260918-courier-cards -->
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <style>
@@ -286,6 +286,192 @@
       padding: 40px 16px;
       font-weight: 600;
     }
+    .handoffs-list { display: flex; flex-direction: column; gap: 8px; }
+    .handoff-row {
+      border: 2px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+      border-radius: 14px;
+      background: var(--card);
+      padding: 10px 12px;
+    }
+    .handoff-row.is-done { opacity: 0.92; }
+    .cr-card-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .cr-card-check input { width: 18px; height: 18px; accent-color: var(--accent); }
+    .handoff-route-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px 14px;
+      margin: 0 0 10px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+      background: linear-gradient(
+        180deg,
+        var(--card) 0%,
+        color-mix(in srgb, var(--accent) 6%, var(--card)) 100%
+      );
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+    .handoff-route-from {
+      flex: 0 1 auto;
+      max-width: 38%;
+      min-width: 0;
+      text-align: left;
+      word-break: break-word;
+    }
+    .handoff-route-track {
+      flex: 1 1 auto;
+      min-width: 48px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 0;
+    }
+    .handoff-route-line {
+      height: 0;
+      border-top: 1px dashed color-mix(in srgb, var(--accent) 42%, var(--line));
+    }
+    .handoff-route-arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+      color: var(--accent);
+      box-shadow: 0 1px 3px rgba(13, 50, 50, .1);
+    }
+    .handoff-route-arrow svg { display: block; width: 15px; height: 15px; }
+    .handoff-route-to {
+      flex: 0 1 auto;
+      max-width: 38%;
+      min-width: 0;
+      text-align: right;
+      color: #1d4ed8;
+      word-break: break-word;
+    }
+    .handoff-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .handoff-head-main { min-width: 0; flex: 1 1 auto; }
+    .handoff-head strong { font-size: 16px; font-weight: 800; line-height: 1.25; word-break: break-word; }
+    .handoff-done-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #e5e7eb;
+      color: #374151;
+      font-size: 11px;
+      font-weight: 800;
+      vertical-align: 2px;
+    }
+    .handoff-meta { font-size: 12px; color: var(--muted); font-weight: 600; text-align: right; }
+    .handoff-meta-deal { font-weight: 800; color: var(--text); }
+    .handoff-sale-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .handoff-sale-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.2;
+      border: 1.5px solid #0d7377;
+      background: #e6f4f4;
+      color: #0a4f52;
+    }
+    .handoff-sale-chip .chip-k {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      opacity: 0.85;
+    }
+    .handoff-sale-chip.is-pay-ok { border-color: var(--ok); background: #ecfdf5; color: #065f46; }
+    .handoff-sale-chip.is-pay-bad { border-color: var(--danger); background: #fef2f2; color: #991b1b; }
+    .handoff-deal-meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 4px 12px;
+      margin: 0 0 8px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--accent) 8%, var(--card));
+      border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .handoff-deal-meta .k { color: var(--muted); font-weight: 600; }
+    .handoff-deal-meta a { color: inherit; }
+    .handoff-lines-tbl {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      line-height: 1.35;
+      margin: 6px 0 0;
+    }
+    .handoff-lines-tbl th,
+    .handoff-lines-tbl td {
+      border: 1px solid var(--line);
+      padding: 6px 8px;
+      vertical-align: top;
+      text-align: left;
+    }
+    .handoff-lines-tbl th {
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 11px;
+    }
+    .handoff-lines-tbl td.num,
+    .handoff-lines-tbl th.num { text-align: center; white-space: nowrap; width: 4rem; }
+    .handoff-lines-tbl .art {
+      display: block;
+      font-weight: 700;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 2px;
+    }
+    .handoff-actionbar {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .handoff-secondary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .handoff-secondary.is-print { background: #0f766e; border-color: #0f766e; color: #fff; }
+    .handoff-actionbar .row-actions { margin-left: auto; }
+    .handoffs-empty { margin: 8px 0 0; color: var(--muted); font-weight: 600; }
     @media (max-width: 720px) {
       .who { display: none; }
       table.cr-table { min-width: 0; }
@@ -468,6 +654,7 @@
       }
       const r = await fetch('/api' + path, {
         credentials: 'same-origin',
+        cache: 'no-store',
         ...(opts || {}),
         method,
         headers,
@@ -555,35 +742,153 @@
       all.indeterminate = n > 0 && !all.checked;
     }
 
-    function rowHtml(r) {
-      const dealId = String(r.deal_id || '').trim();
-      const buyer = String(r.buyer_name || '').trim() || '—';
-      const phone = String(r.buyer_phone || '').trim();
-      const pay = String(r.payment_label || (r.is_paid ? 'Оплачено' : 'Не оплачено'));
-      const payCls = r.is_paid ? 'pay-ok' : 'pay-bad';
-      const payType = String(r.amo_payment_type || '').trim();
+    function dealTitle(r) {
+      const id = String(r.deal_id || '').trim();
+      const name = String(r.deal_name || '').replace(/\s+/g, ' ').trim();
+      const generic = !name || name === id || /^сделка\s*#?\s*/i.test(name);
+      if (!generic) return name;
+      const buyer = String(r.buyer_name || '').trim();
+      if (id && buyer) return 'Заказ №' + id + ' · ' + buyer;
+      if (buyer) return buyer;
+      return id ? 'Заказ №' + id : String(r.title || 'Задание');
+    }
+
+    function routeBarHtml(r) {
       const route = routeLabel(r);
-      const title = dealId ? 'С' + dealId : String(r.title || 'Задание');
-      const ship = String(r.shipment_label || r.amo_shipment || '').trim();
+      const parts = String(route || '').split(/\s*→\s*/);
+      const from = (parts[0] || 'Курьер').trim();
+      const to = parts.length > 1 ? parts.slice(1).join(' → ').trim() : String(r.shipment_label || r.amo_shipment || '').trim();
+      if (!from && !to) return '';
+      return (
+        '<div class="handoff-route-bar">' +
+        '<span class="handoff-route-from">' + esc(from || 'Курьер') + '</span>' +
+        '<span class="handoff-route-track" aria-hidden="true">' +
+        '<span class="handoff-route-line"></span>' +
+        '<span class="handoff-route-arrow">' +
+        '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+        '<path d="M2.5 8h9.5M9 5.5L12 8 9 10.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>' +
+        '</svg></span>' +
+        '<span class="handoff-route-line"></span>' +
+        '</span>' +
+        '<span class="handoff-route-to">' + esc(to || '—') + '</span>' +
+        '</div>'
+      );
+    }
+
+    function saleChipsHtml(r) {
+      const chips = [];
+      const chip = (k, v, cls) => {
+        const val = String(v || '').trim();
+        if (!val) return;
+        chips.push(
+          '<span class="handoff-sale-chip' + (cls ? ' ' + cls : '') + '"><span class="chip-k">' +
+          esc(k) + '</span>' + esc(val) + '</span>'
+        );
+      };
+      chip('Канал', r.amo_channel);
+      chip('Отправка', r.shipment_label || r.amo_shipment);
+      chip('Оплата', r.payment_label, r.is_paid ? 'is-pay-ok' : 'is-pay-bad');
+      chip('Тип', r.amo_payment_type);
+      if (!chips.length) return '';
+      return '<div class="handoff-sale-chips">' + chips.join('') + '</div>';
+    }
+
+    function metaHtml(r) {
+      const rows = [];
+      const push = (k, html) => {
+        const val = String(html || '').trim();
+        if (!val) return;
+        rows.push('<div><span class="k">' + esc(k) + '</span><br><span class="v">' + val + '</span></div>');
+      };
+      const buyer = String(r.buyer_name || '').trim();
+      const phone = String(r.buyer_phone || '').trim();
+      const who = String(r.responsible_name || '').trim();
+      push('Клиент', buyer ? esc(buyer) : '');
+      if (phone) {
+        push(
+          'Телефон',
+          '<a href="tel:' + esc(phone.replace(/[^\d+]/g, '')) + '">' + esc(phone) + '</a>'
+        );
+      }
+      push('Ответственный', who ? esc(who) : '');
+      if (!rows.length) return '';
+      return '<div class="handoff-deal-meta">' + rows.join('') + '</div>';
+    }
+
+    function linesHtml(r) {
+      const lines = Array.isArray(r.lines) ? r.lines : [];
+      if (!lines.length) return '<p class="handoffs-empty">Без строк</p>';
+      const body = lines
+        .map((l) => {
+          const sku = String(l.sku || l.code || '').trim();
+          const name = String(l.name || '').trim();
+          const qty = Number(l.qty) || 0;
+          return (
+            '<tr><td class="name">' +
+            (sku ? '<span class="art">' + esc(sku) + '</span>' : '') +
+            esc(name || sku || '—') +
+            '</td><td class="num"><b>' +
+            esc(String(qty)) +
+            '</b></td></tr>'
+          );
+        })
+        .join('');
+      return (
+        '<table class="handoff-lines-tbl"><thead><tr><th>Название</th><th class="num">Кол-во</th></tr></thead><tbody>' +
+        body +
+        '</tbody></table>'
+      );
+    }
+
+    function cardHtml(r) {
+      const dealId = String(r.deal_id || '').trim();
+      const title = dealTitle(r);
+      const docNum = String(r.ship_doc_number || r.transfer_number || '').trim();
       const checked = selected.has(r.id) ? ' checked' : '';
-      const checkCell =
+      const check =
         tab === 'active'
-          ? `<td class="cr-check" data-label=""><input type="checkbox" class="cr-run-chk" data-run-id="${esc(
-              r.id
-            )}"${checked} /></td>`
+          ? '<label class="cr-card-check"><input type="checkbox" class="cr-run-chk" data-run-id="' +
+            esc(r.id) +
+            '"' +
+            checked +
+            ' /> В реестр</label>'
           : '';
-      return `<tr data-run="${esc(r.id)}">
-        ${checkCell}
-        <td data-label="Заказ"><div class="title">${esc(title)}</div>
-          <div class="muted">${statusChip(r)}${ship ? `<span class="chip">${esc(ship)}</span>` : ''}</div></td>
-        <td data-label="Маршрут"><div class="route">${esc(route)}</div>
-          <div class="muted">${esc(String(r.ship_doc_number || r.transfer_number || ''))}</div></td>
-        <td data-label="Клиент"><b>${esc(buyer)}</b>
-          ${phone ? `<div class="muted"><a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">${esc(phone)}</a></div>` : ''}</td>
-        <td data-label="Оплата"><span class="${payCls}">${esc(pay)}</span>
-          ${payType ? `<div class="muted">${esc(payType)}</div>` : ''}</td>
-        <td data-label="Действия">${actionsHtml(r)}</td>
-      </tr>`;
+      const printHref = String(r.print_href || '').trim();
+      const print = printHref
+        ? '<a class="handoff-secondary is-print" href="' +
+          esc(printHref) +
+          (printHref.indexOf('?') >= 0 ? '&' : '?') +
+          'autoprint=1" target="_blank" rel="noopener">Расходная</a>'
+        : '';
+      const actions = actionsHtml(r);
+      const bar = print || actions
+        ? '<div class="handoff-actionbar">' + print + actions + '</div>'
+        : '';
+      return (
+        '<article class="handoff-row' +
+        (tab === 'closed' ? ' is-done' : '') +
+        '" data-run="' +
+        esc(r.id) +
+        '">' +
+        check +
+        routeBarHtml(r) +
+        '<div class="handoff-head"><div class="handoff-head-main"><strong>' +
+        esc(title) +
+        '</strong>' +
+        (tab === 'closed' ? ' <span class="handoff-done-badge">Закрыто</span>' : '') +
+        ' <span class="muted">' +
+        statusChip(r) +
+        '</span>' +
+        saleChipsHtml(r) +
+        '</div><div class="handoff-meta">' +
+        (dealId ? '<strong class="handoff-meta-deal">С' + esc(dealId) + '</strong>' : '') +
+        (docNum ? (dealId ? '<br>' : '') + esc(docNum) : '') +
+        '</div></div>' +
+        metaHtml(r) +
+        linesHtml(r) +
+        bar +
+        '</article>'
+      );
     }
 
     function renderTable(items) {
@@ -600,12 +905,7 @@
         syncSelBar([]);
         return;
       }
-      const headCheck =
-        tab === 'active' ? '<th class="cr-check" title="Выбрать все"></th>' : '';
-      box.innerHTML =
-        `<table class="cr-table"><thead><tr>
-          ${headCheck}<th>Заказ</th><th>Маршрут</th><th>Клиент</th><th>Оплата</th><th></th>
-        </tr></thead><tbody>${items.map(rowHtml).join('')}</tbody></table>`;
+      box.innerHTML = '<div class="handoffs-list">' + items.map(cardHtml).join('') + '</div>';
       bindActions(box);
       syncSelBar(items.map((r) => r.id));
     }

@@ -366,6 +366,7 @@ function widget_handoff_deal_moved_product_qty(int $dealId, string $productGuid)
            AND l.product_id = ?
            AND IFNULL(d.posted, 0) = 1
            AND d.doc_type = 'transfer'
+           AND IFNULL(wt.is_active, 1) = 1
            AND (
              UPPER(IFNULL(wt.code, '')) = 'STO'
              OR UPPER(IFNULL(wt.code, '')) LIKE 'STO-RSV%'

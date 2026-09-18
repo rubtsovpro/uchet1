@@ -190,8 +190,12 @@ export async function snapshotDealFlowLines(dealId: string): Promise<void> {
  * Сколько уже ушло на резерв/курьера по сделке (снимок + проведённые TR/OUT «Передача»).
  * Нужен fallback, если meta-снимок не записался — иначе виджет снова шлёт ту же номенклатуру.
  */
-export async function movedQtyMapForDeal(dealId: string): Promise<Map<string, number>> {
+export async function movedQtyMapForDeal(
+  dealId: string,
+  opts?: { excludeDocId?: string }
+): Promise<Map<string, number>> {
   const id = String(dealId || '').trim();
+  const excludeDocId = String(opts?.excludeDocId || '').trim();
   const map = new Map<string, number>();
   if (!id) return map;
 
@@ -245,8 +249,9 @@ export async function movedQtyMapForDeal(dealId: string): Promise<Map<string, nu
        AND IFNULL(d.comment,'') NOT LIKE '%Спуск на СТО%'
        AND IFNULL(d.comment,'') NOT LIKE '%Возврат на основной%'
        AND IFNULL(d.comment,'') NOT LIKE '%Списание по продаже%'
+       ${excludeDocId ? 'AND d.id != ?' : ''}
      GROUP BY l.product_id`,
-    [id]
+    excludeDocId ? [id, excludeDocId] : [id]
   );
   for (const row of pending) {
     const pid = String(row.product_id || '').trim();
@@ -1331,6 +1336,7 @@ async function dealMovedToBufferQty(dealId: string, productId: string): Promise<
          LEFT JOIN warehouses wf ON wf.id = d.warehouse_id
          WHERE d.deal_id = ? AND l.product_id = ?
            AND IFNULL(d.posted,0) = 1 AND d.doc_type = 'transfer'
+           AND IFNULL(wt.is_active,1) = 1
            AND (
              UPPER(IFNULL(wt.code,'')) = 'STO'
              OR UPPER(IFNULL(wt.code,'')) LIKE 'STO-RSV%'
@@ -1692,8 +1698,8 @@ export async function handoffMainWarehouseIdForSite(site: PickSiteId): Promise<s
 
 /** «Отложено под СТО» контура — альтернативный источник списания. */
 export async function handoffHoldWarehouseIdForSite(site: PickSiteId): Promise<string> {
+  if (site === 'msk') return '';
   const ensured = await ensureStoReserveWarehouses();
-  if (site === 'msk') return String(ensured.mskHold || '');
   return String(ensured.strela || '');
 }
 
