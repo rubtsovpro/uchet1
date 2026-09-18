@@ -25918,58 +25918,6 @@ async function renderDealDetail(id) {
           ? `<p class="muted" style="margin:0 0 10px;font-size:12px;color:#b45309">${esc(itemsLockedReason)}</p>`
           : ''
       }
-      <div class="toolbar deal-find-toolbar" style="margin:0 0 12px;flex-wrap:wrap;align-items:center;gap:8px">
-        <div class="form-pagetabs radio-pills deal-find-axes" role="tablist" aria-label="Поиск в заказе">
-          <button type="button" class="form-pagetab active" data-deal-find-axis="mark" role="tab" aria-selected="true">Марка · штрих</button>
-        </div>
-        <div class="deal-scan-field find deal-find-field" data-axis="mark" style="margin:0;max-width:560px;position:relative;flex:1 1 280px">
-          <input id="deal-scan-unit" class="mono" placeholder="Скан марки или штрихкода…" autocomplete="off" />
-          <input id="deal-find-q" class="hidden" placeholder="Артикул / код / услуга / название…" autocomplete="off" />
-          <input type="hidden" id="deal-find-pid" />
-          <div id="deal-find-suggest" class="suggest hidden"></div>
-          ${uiIcoBtn({
-            id: 'deal-scan-cam',
-            tip: 'Камера · Data Matrix / штрихкод',
-            icon: 'camera',
-            mod: 'deal-scan-cam',
-          })}
-          <button type="button" id="deal-scan-go" class="find-go">Привязать</button>
-          <button type="button" id="deal-find-add" class="find-go primary hidden">В заказ</button>
-          ${
-            needsWhShipTask
-              ? existingWhTask
-                ? `<button type="button" class="primary" id="deal-wh-open" data-task="${esc(
-                    existingWhTask.id
-                  )}" title="Открыть задание складу">Склад · ${esc(
-                    existingWhTask.number || 'задание'
-                  )}</button>${codStockHint}`
-                : `<button type="button" class="primary" id="deal-wh-create" title="${
-                    isCdekCod
-                      ? 'Задание складу · наложка: потом перемещение на доставку'
-                      : 'Создать задание складу (сборка → СДЭК / выдача)'
-                  }">На склад</button>${codStockHint}`
-              : ''
-          }
-          ${stoStockHint}
-          ${productionHint}
-          <span class="muted" id="deal-scan-msg" style="margin-left:4px"></span>
-        </div>
-        ${
-          itemsLocked
-            ? ''
-            : `<button type="button" class="primary" id="deal-item-add-open" aria-expanded="${items.length ? 'false' : 'true'}">Добавить подробно</button>`
-        }
-        <span class="muted" id="deal-amo-auto" style="font-size:11px" title="Изменения сделки в Amo приходят сюда webhook’ом">Amo · webhook</span>
-        ${
-          showStoPayBar
-            ? ''
-            : showAcceptCash
-              ? `<button type="button" id="deal-accept-cash" class="primary" title="Принять наличные" data-tip="Наличные">Наличные</button>`
-              : cashReceived && dealPaid
-                ? '<span class="muted" style="font-size:12px;font-weight:600;color:var(--ok,#047857)">✓ Наличные приняты</span>'
-                : ''
-        }
-      </div>
       ${
         itemsLocked
           ? ''
