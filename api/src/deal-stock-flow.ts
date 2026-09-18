@@ -1945,8 +1945,8 @@ export async function createHandoffPickDraft(input: {
       ? 'авто после оплаты'
       : input.source === 'widget'
         ? who
-          ? `кнопка → Резерв · ${who}`
-          : 'кнопка → Резерв'
+          ? `кнопка → ${reserve ? 'Резерв' : 'Курьер'} · ${who}`
+          : `кнопка → ${reserve ? 'Резерв' : 'Курьер'}`
         : who
           ? `Учёт №1 · ${who}`
           : 'Учёт №1';

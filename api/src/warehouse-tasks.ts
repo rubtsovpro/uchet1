@@ -3512,6 +3512,17 @@ function reserveCardDestName(toCode: string, toName: string, comment: string): s
   return name;
 }
 
+/** «Резерв» в комментарии виджета не делает отправку резервом. Резерв — склад или канал самовывоз/автосервис. */
+function handoffLooksReserveByCodes(toCode: string, toName: string, comment: string): boolean {
+  const code = String(toCode || '').trim().toUpperCase();
+  const name = String(toName || '').trim();
+  const c = String(comment || '');
+  if (/курьер/i.test(name) || code === 'COURIER') return false;
+  if (/^STO-RS[VE]/.test(code) || /резерв/i.test(name)) return true;
+  if (/кнопка\s*→\s*резерв/i.test(c)) return false;
+  return /резерв/i.test(c);
+}
+
 function handoffLinesSignature(
   lines: Array<{ product_id: string; qty: number; warehouse_id?: string }>
 ): string {
@@ -4427,11 +4438,7 @@ async function mapHandoffPickRow(
         )
       : null;
     const byCodesReserve =
-      !isToSto &&
-      !isReturn &&
-      (/^STO-RS[VE]/.test(toCode) ||
-        /резерв/i.test(toNameRaw) ||
-        /резерв/i.test(commentStr));
+      !isToSto && !isReturn && handoffLooksReserveByCodes(toCode, toNameRaw, commentStr);
     const isReserve =
       !isToSto &&
       !isReturn &&
@@ -4584,9 +4591,7 @@ async function mapHandoffPickRow(
   const docRoute =
     fromName && toNameRaw ? `${fromName} → ${toNameRaw}` : fromName || toNameRaw || '';
   const byCodesReserve =
-    !isToSto &&
-    !isReturn &&
-    (/^STO-RS[VE]/.test(toCode) || /резерв/i.test(toNameRaw) || /резерв/i.test(commentStr));
+    !isToSto && !isReturn && handoffLooksReserveByCodes(toCode, toNameRaw, commentStr);
   // Маршрут на карточке — склады документа. Meta — только для черновика без warehouse_to.
   const toName = reserveCardDestName(
     toCode,
