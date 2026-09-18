@@ -25806,8 +25806,8 @@ async function renderDealDetail(id) {
         : 'Филиал и юрлицо подставляются из заказа (Amo) — от чьего имени работаете; менять нельзя',
     })}
     <div class="form-grid">
-      <label>Сумма<input class="mono" value="${esc(formatMoney(d.price))}" readonly /></label>
-      <label>Канал реализации <span class="muted">(обязательно)</span>
+      <label class="hidden">Сумма<input class="mono" value="${esc(formatMoney(d.price))}" readonly /></label>
+      <label class="hidden">Канал реализации <span class="muted">(обязательно)</span>
         ${amoSaleSelectHtml(
           'deal-amo-channel',
           d.amo_channel,
@@ -25854,7 +25854,7 @@ async function renderDealDetail(id) {
           { required: /отправк/i.test(String(d.amo_channel || '')) }
         )}
       </label>
-      <div class="span-2 toolbar-filter" role="group" aria-label="Роль" title="${esc(buyerPayHint)}">
+      <div class="span-2 toolbar-filter hidden" role="group" aria-label="Роль" title="${esc(buyerPayHint)}">
         <span class="toolbar-filter-label">Роль</span>
         <div class="form-pagetabs" id="deal-client-role-tabs" role="tablist">
           <button type="button" class="form-pagetab ${clientRoleValue === 'client' ? 'active' : ''}" data-deal-role="client" role="tab">Клиент</button>
@@ -25910,15 +25910,7 @@ async function renderDealDetail(id) {
     ${dealFold(
       'items',
       `Позиции (${items.length})`,
-      `<p class="muted" style="margin:0 0 8px;font-size:12px">
-        Состав заказа из Amo. Склад при необходимости сканирует <b>марку (Data Matrix)</b> или <b>штрихкод</b> → сверка с позицией.
-      </p>
-      ${
-        itemsLocked
-          ? `<p class="muted" style="margin:0 0 10px;font-size:12px;color:#b45309">${esc(itemsLockedReason)}</p>`
-          : ''
-      }
-      ${
+      `${
         itemsLocked
           ? ''
           : `<div class="deal-items-add form-grid${
