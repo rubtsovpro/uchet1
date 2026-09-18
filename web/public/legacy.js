@@ -25862,7 +25862,7 @@ async function renderDealDetail(id) {
           <button type="button" class="form-pagetab ${clientRoleValue === 'partner_delay' ? 'active' : ''}" data-deal-role="partner_delay" role="tab">Партнёр · отсрочка</button>
         </div>
       </div>
-      <div class="span-2 toolbar-filter" role="group" aria-label="Форма">
+      <div class="span-2 toolbar-filter hidden" role="group" aria-label="Форма">
         <span class="toolbar-filter-label">Форма</span>
         <div class="form-pagetabs" id="deal-buyer-form-tabs" role="tablist">
           <button type="button" class="form-pagetab ${buyerKindValue === 'person' ? 'active' : ''}" data-deal-form="person" role="tab">Физ</button>
@@ -25881,13 +25881,13 @@ async function renderDealDetail(id) {
           ? `<label id="deal-buyer-inn-wrap">ИНН
         <input id="deal-buyer-inn" class="mono" value="${esc(d.buyer_inn || '')}" inputmode="numeric" placeholder="10 или 12 цифр" />
       </label>
-      <label class="span-2" id="deal-buyer-name-wrap">Покупатель
+      <label class="span-2 hidden" id="deal-buyer-name-wrap">Покупатель
         <span class="suggest-anchor">
           <input id="deal-buyer-name" value="${esc(buyerDisplayName)}" autocomplete="off" placeholder="Название или контрагент" />
           <div id="deal-buyer-suggest" class="suggest hidden"></div>
         </span>
       </label>`
-          : `<label class="span-2" id="deal-buyer-name-wrap">Покупатель
+          : `<label class="span-2 hidden" id="deal-buyer-name-wrap">Покупатель
         <span class="suggest-anchor">
           <input id="deal-buyer-name" value="${esc(buyerDisplayName)}" autocomplete="off" placeholder="ФИО или контрагент" />
           <div id="deal-buyer-suggest" class="suggest hidden"></div>
@@ -25897,15 +25897,15 @@ async function renderDealDetail(id) {
         <input id="deal-buyer-inn" class="mono" value="${esc(d.buyer_inn || '')}" inputmode="numeric" placeholder="10 или 12 цифр" />
       </label>`
       }
-      <label>Телефон
+      <label class="hidden">Телефон
         <input id="deal-buyer-phone" value="${esc(formatPhoneField(d.buyer_phone || ''))}" autocomplete="tel" />
       </label>
-      <label class="span-2" style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+      <label class="span-2 hidden" style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
         <button type="button" class="primary" id="deal-buyer-save">Сохранить покупателя</button>
         <span class="muted" style="font-size:11px">Введите ФИО или телефон — подскажутся клиенты из учёта. Можно вписать своё: новый контрагент, дубль по телефону не создаём; в Amo уходит с проверкой.</span>
       </label>
     </div>
-    <p class="muted" id="deal-msg" style="margin:0 0 8px;font-size:12px;min-height:1.2em"></p>
+    <p class="muted hidden" id="deal-msg" style="margin:0 0 8px;font-size:12px;min-height:1.2em"></p>
     ${buildDealReturnPanelHtml(d, dealReturnDocs)}
     ${dealFold(
       'items',
