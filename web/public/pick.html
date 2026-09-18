@@ -11,7 +11,7 @@
   <title>Склад · задачи · Учёт №1</title>
   <!-- pick-ui rev=pick-handoff-lot-meta-20260917 -->
   <script>
-    window.__PICK_UI_REV = 'pc97';
+    window.__PICK_UI_REV = 'pc98';
   </script>
   <script>
     document.documentElement.setAttribute('data-theme', 'light');
@@ -6399,9 +6399,12 @@
 
     function handoffCompleteLabel(h, deal) {
       if (h && h.is_to_sto) return '✓ На СТО';
+      const to = String((h && (h.dest_warehouse_name || h.warehouse_to_name)) || '');
+      const toCourier = /курьер/i.test(to);
+      if (toCourier) return '✓ Курьеру';
       if (h && h.is_reserve) return '✓ На резерв';
       if (h && h.is_ship) {
-        return handoffIsCdek(deal) ? '✓ На отправку' : '✓ На склад курьера';
+        return handoffIsCdek(deal) ? '✓ На отправку' : '✓ Курьеру';
       }
       return '✓ Готово';
     }
