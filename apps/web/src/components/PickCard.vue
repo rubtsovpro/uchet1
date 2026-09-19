@@ -1,37 +1,19 @@
 <template>
   <div class="pick-move">
+    <div v-if="routeFrom || routeTo" class="pick-route">
+      <span class="pick-route-side is-from">{{ routeFrom || '—' }}</span>
+      <span class="pick-route-track" aria-hidden="true">
+        <span class="pick-route-line" />
+        <span class="pick-route-arrow">→</span>
+        <span class="pick-route-line" />
+      </span>
+      <span class="pick-route-side is-to">{{ routeTo || '—' }}</span>
+    </div>
     <div class="pick-move-head">
       <div>
         <div class="pick-move-title">{{ row.number || row.deal_id }} · {{ title }}</div>
-        <div class="pick-move-caption">
-          <template v-if="mode === 'handoff'">Перемещение</template>
-          <span v-if="row.route_label || row.purpose_label || row.channel">
-            <template v-if="mode === 'handoff'"> · </template>{{ row.route_label || row.purpose_label || row.channel }}
-          </span>
-          <span v-if="row.deal_id"> · {{ row.deal_id }}</span>
-          <span v-if="row.cdek_number"> · СДЭК {{ row.cdek_number }}</span>
-        </div>
+        <div v-if="row.cdek_number" class="pick-move-caption">СДЭК {{ row.cdek_number }}</div>
       </div>
-      <q-btn
-        v-if="mode === 'handoff' || (mode === 'open' && row.id && !String(row.id).startsWith('return:'))"
-        color="primary"
-        unelevated
-        dense
-        no-caps
-        label="Собрано"
-        :loading="busyId === String(row.id)"
-        @click="$emit('complete', String(row.id))"
-      />
-      <q-btn
-        v-else-if="mode === 'return'"
-        color="orange"
-        unelevated
-        dense
-        no-caps
-        label="Вернуть"
-        :loading="busyId === `ret:${row.deal_id}`"
-        @click="$emit('complete-return', String(row.deal_id))"
-      />
     </div>
 
     <q-markup-table v-if="lines.length" flat dense>
@@ -69,34 +51,59 @@
     </q-markup-table>
     <div v-else class="text-grey-6 text-caption q-pa-sm">Нет строк / ячеек</div>
 
-    <div class="row q-gutter-sm q-pa-sm">
+    <div class="pick-move-foot">
+      <div class="row q-gutter-sm">
+        <q-btn
+          v-if="printHref"
+          outline
+          dense
+          no-caps
+          color="primary"
+          icon="print"
+          :label="String(row.print_label || 'Печать')"
+          :href="printHref + '?autoprint=1'"
+          target="_blank"
+        />
+        <q-btn
+          v-if="showCdek"
+          outline
+          dense
+          no-caps
+          color="orange"
+          icon="local_shipping"
+          :label="row.cdek_number ? `СДЭК ${row.cdek_number}` : 'СДЭК места'"
+          @click="$emit('cdek', String(row.deal_id))"
+        />
+        <q-btn
+          v-if="mode === 'handoff' || mode === 'open'"
+          flat
+          dense
+          no-caps
+          color="negative"
+          label="Отмена"
+          :loading="busyId === `cancel:${row.id}`"
+          @click="$emit('cancel', String(row.id))"
+        />
+      </div>
       <q-btn
-        v-if="printHref"
-        outline
-        dense
+        v-if="mode === 'handoff' || (mode === 'open' && row.id && !String(row.id).startsWith('return:'))"
         color="primary"
-        icon="print"
-        :label="String(row.print_label || 'Печать')"
-        :href="printHref + '?autoprint=1'"
-        target="_blank"
+        unelevated
+        dense
+        no-caps
+        label="Собрано"
+        :loading="busyId === String(row.id)"
+        @click="$emit('complete', String(row.id))"
       />
       <q-btn
-        v-if="showCdek"
-        outline
-        dense
+        v-else-if="mode === 'return'"
         color="orange"
-        icon="local_shipping"
-        :label="row.cdek_number ? `СДЭК ${row.cdek_number}` : 'СДЭК места'"
-        @click="$emit('cdek', String(row.deal_id))"
-      />
-      <q-btn
-        v-if="mode === 'handoff' || mode === 'open'"
-        flat
+        unelevated
         dense
-        color="negative"
-        label="Отмена"
-        :loading="busyId === `cancel:${row.id}`"
-        @click="$emit('cancel', String(row.id))"
+        no-caps
+        label="Вернуть"
+        :loading="busyId === `ret:${row.deal_id}`"
+        @click="$emit('complete-return', String(row.deal_id))"
       />
     </div>
   </div>
@@ -126,6 +133,21 @@ const title = computed(() => {
   const d = props.row.deal as Record<string, unknown> | undefined;
   return String(d?.title || d?.buyer_name || props.row.buyer_name || '').trim() || '—';
 });
+
+function routeSide(raw: unknown, index: number): string {
+  const direct = String(raw || '').trim();
+  if (direct) return direct;
+  const parts = String(props.row.route_label || '')
+    .split('→')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts[index] || '';
+}
+
+const routeFrom = computed(() => routeSide(props.row.warehouse_name, 0));
+const routeTo = computed(() =>
+  routeSide(props.row.warehouse_to_name || props.row.dest_warehouse_name, 1)
+);
 
 const lines = computed(() =>
   Array.isArray(props.row.lines) ? (props.row.lines as Array<Record<string, unknown>>) : []
@@ -179,5 +201,46 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   margin-top: 2px;
   font-size: 12px;
   color: #64748b;
+}
+.pick-route {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+.pick-route-side {
+  flex: 0 1 auto;
+  max-width: 42%;
+}
+.pick-route-side.is-to {
+  text-align: right;
+}
+.pick-route-track {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 48px;
+}
+.pick-route-line {
+  flex: 1;
+  border-top: 1px dotted #94a3b8;
+}
+.pick-route-arrow {
+  color: #0f766e;
+  line-height: 1;
+}
+.pick-move-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+}
+.pick-move-foot .row {
+  margin-right: auto;
 }
 </style>
