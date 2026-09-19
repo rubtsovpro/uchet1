@@ -2,19 +2,25 @@
   <q-layout view="lHh Lpr lFf" class="sb-layout">
     <q-header class="sb-header text-dark">
       <q-toolbar class="sb-toolbar">
-        <q-space />
-        <div v-if="meLabel" class="sb-user">
-          <div class="sb-user-name">{{ meLabel }}</div>
-          <div v-if="meHint" class="sb-user-hint">{{ meHint }}</div>
+        <div class="sb-title">
+          <span class="sb-product">Учёт №1</span>
+          <label class="sb-org">
+            <span class="sr-only">Филиал</span>
+            <select v-model="companyId" class="sb-org-select" aria-label="Филиал" @change="saveCompany">
+              <option v-if="allBranchesLabel" value="">{{ allBranchesLabel }}</option>
+              <option v-for="c in companies" :key="c.id" :value="c.id">{{ c.name }}</option>
+            </select>
+          </label>
         </div>
-        <q-btn
-          flat
-          class="sb-icon-btn"
-          icon="sym_o_logout"
-          aria-label="Выйти"
-          :loading="loggingOut"
-          @click="logout"
-        />
+        <q-space />
+        <div v-if="rates.length" class="sb-rates" title="Курсы ЦБ РФ">
+          <template v-for="(r, i) in rates" :key="r.code || i">
+            <span v-if="i" class="sb-rate-sep">·</span>
+            <span class="sb-rate"><b>{{ r.symbol || r.code }}</b> {{ fmtRate(r.rate) }}</span>
+          </template>
+        </div>
+        <div v-if="meLabel" class="sb-user-plain">{{ meLabel }}</div>
+        <q-btn flat no-caps class="sb-logout" label="Выйти" :loading="loggingOut" @click="logout" />
       </q-toolbar>
     </q-header>
 
@@ -23,12 +29,11 @@
       v-model:mini="drawerMini"
       show-if-above
       :breakpoint="1025"
-      :width="268"
+      :width="236"
       :mini-width="72"
       class="sb-drawer"
     >
       <div class="sb-drawer-inner">
-      <div class="sb-brand">Учёт №1</div>
       <q-list class="sb-nav">
         <q-item
           v-for="item in nav"
@@ -81,18 +86,14 @@ type Me = {
   login?: string;
   role?: string;
   email?: string;
+  isSystemAdmin?: boolean;
+  rights?: { company_ids?: string[] };
 };
 
-const ROLE_LABEL: Record<string, string> = {
-  admin: 'Администратор',
-  warehouse: 'Склад',
-  courier: 'Курьер',
-  photographer: 'Фотограф',
-  manager: 'Менеджер',
-  accountant: 'Бухгалтер',
-  purchaser: 'Закупки',
-  sto: 'СТО',
-};
+type Company = { id: string; name: string; code?: string; is_active?: number };
+type RateItem = { code?: string; symbol?: string; rate?: number | null };
+
+const CONTOUR_KEY = 'wms.contour-company.v1';
 
 const $q = useQuasar();
 const drawer = ref(false);
@@ -100,6 +101,10 @@ const drawerMini = ref(false);
 const menuOpener = computed(() => $q.screen.width <= 1024 && !drawer.value);
 const health = ref<Health | null>(null);
 const me = ref<Me | null>(null);
+const companies = ref<Company[]>([]);
+const companyId = ref('');
+const allBranchesLabel = ref('Все филиалы');
+const rates = ref<RateItem[]>([]);
 const loggingOut = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -107,15 +112,6 @@ const meLabel = computed(() => {
   const m = me.value;
   if (!m) return '';
   return String(m.name || m.login || '').trim();
-});
-
-const meHint = computed(() => {
-  const m = me.value;
-  if (!m) return '';
-  const role = ROLE_LABEL[String(m.role || '')] || '';
-  const login = String(m.login || '').trim();
-  if (role && login && login !== meLabel.value) return `${role} · ${login}`;
-  return role || (login !== meLabel.value ? login : '');
 });
 
 const nav: { label: string; icon: string; to?: { name: string }; href?: string }[] = [
@@ -160,6 +156,70 @@ async function refreshHealth() {
   }
 }
 
+function fmtRate(n: number | null | undefined) {
+  return Number(n || 0).toLocaleString('ru-RU', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function saveCompany() {
+  try {
+    localStorage.setItem(CONTOUR_KEY, companyId.value || '');
+  } catch {
+    /* ignore */
+  }
+}
+
+async function loadCompanies() {
+  try {
+    const data = await api.get<{ items?: Company[] }>('/api/company/companies');
+    let items = (data.items || []).filter((c) => Number(c.is_active) !== 0);
+    const meCos =
+      me.value &&
+      !me.value.isSystemAdmin &&
+      me.value.role !== 'admin' &&
+      Array.isArray(me.value.rights?.company_ids) &&
+      me.value.rights.company_ids.length
+        ? me.value.rights.company_ids.map(String)
+        : null;
+    if (meCos) items = items.filter((c) => meCos.includes(String(c.id)));
+    companies.value = items;
+    allBranchesLabel.value = meCos ? (items.length > 1 ? 'Все доступные' : '') : 'Все филиалы';
+    let cur = '';
+    try {
+      cur = String(localStorage.getItem(CONTOUR_KEY) || '').trim();
+    } catch {
+      cur = '';
+    }
+    const pnevmo =
+      items.find((c) => String(c.code || '').toUpperCase() === 'PNEVMO') ||
+      items.find((c) => /пневмо/i.test(String(c.name || '')));
+    if (!cur && pnevmo && !meCos) cur = String(pnevmo.id);
+    if (meCos && items.length === 1) cur = String(items[0].id);
+    else if (cur && !items.some((c) => String(c.id) === cur)) cur = meCos && items[0] ? String(items[0].id) : String(pnevmo?.id || '');
+    companyId.value = cur;
+    saveCompany();
+  } catch {
+    companies.value = [];
+  }
+}
+
+async function loadRates() {
+  try {
+    const data = await api.get<{ items?: RateItem[] }>('/api/currencies/header');
+    rates.value = (data.items || []).filter((i) => i.rate != null);
+  } catch {
+    rates.value = [];
+  }
+}
+  try {
+    me.value = await api.get<Me>('/api/me');
+  } catch {
+    me.value = null;
+  }
+}
+
 async function loadMe() {
   try {
     me.value = await api.get<Me>('/api/me');
@@ -181,7 +241,11 @@ async function logout() {
 
 onMounted(() => {
   void refreshHealth();
-  void loadMe();
+  void (async () => {
+    await loadMe();
+    await loadCompanies();
+  })();
+  void loadRates();
   timer = setInterval(() => void refreshHealth(), 15000);
 });
 onUnmounted(() => {
