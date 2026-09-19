@@ -35,7 +35,8 @@
     </div>
     <div class="pick-move-head">
       <div class="pick-move-meta">
-        <div class="pick-move-num">{{ headNum }}</div>
+        <a v-if="dealHref" class="pick-move-num pick-open" :href="dealHref" target="_blank" rel="noopener">{{ headNum }}</a>
+        <div v-else class="pick-move-num">{{ headNum }}</div>
         <div v-if="startedWhen" class="pick-move-when">начало {{ startedWhen }}</div>
         <div v-if="taskWhen" class="pick-move-when">задача {{ taskWhen }}</div>
         <div v-if="mode === 'done' && (moveNum || collectedWhen)" class="pick-move-tail">
@@ -43,7 +44,8 @@
           <div v-if="collectedWhen" class="pick-move-when">{{ collectedWhen }}</div>
         </div>
       </div>
-      <div class="pick-move-title">{{ title }}</div>
+      <a v-if="dealHref" class="pick-move-title pick-open" :href="dealHref" target="_blank" rel="noopener">{{ title }}</a>
+      <div v-else class="pick-move-title">{{ title }}</div>
     </div>
     <div v-if="row.cdek_number" class="pick-move-caption">СДЭК {{ row.cdek_number }}</div>
 
@@ -156,6 +158,18 @@ function stamp(raw: unknown): string {
 const startedWhen = computed(() => stamp(props.row.order_created_at));
 const taskWhen = computed(() => stamp(props.row.created_at));
 
+const dealId = computed(() => {
+  const id = String(props.row.deal_id || '').trim();
+  if (id) return id;
+  const num = String(props.row.number || '').trim();
+  const m = num.match(/^р(\d+)$/i);
+  return m ? m[1] : '';
+});
+
+const dealHref = computed(() =>
+  dealId.value ? `/deals/${encodeURIComponent(dealId.value)}` : ''
+);
+
 const dealNum = computed(() => {
   const id = String(props.row.deal_id || '').trim();
   const num = String(props.row.number || '').trim();
@@ -251,6 +265,14 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   align-items: baseline;
   gap: 10px;
   margin-left: auto;
+}
+.pick-open {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+.pick-open:hover {
+  color: #0f766e;
 }
 .pick-move-num {
   flex: 0 0 auto;
