@@ -69,7 +69,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref } from 'vue';
+import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import { api } from '@/boot/api';
 
@@ -91,16 +91,41 @@ type Me = {
 type Company = { id: string; name: string; code?: string; is_active?: number };
 
 const CONTOUR_KEY = 'wms.contour-company.v1';
+const DRAWER_MINI_KEY = 'wms.drawer-mini.v1';
+
+function readDrawerMini(): boolean {
+  try {
+    return localStorage.getItem(DRAWER_MINI_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 const $q = useQuasar();
 const drawer = ref(false);
-const drawerMini = ref(false);
+const drawerMini = ref(readDrawerMini());
+watch(drawerMini, (mini) => {
+  try {
+    localStorage.setItem(DRAWER_MINI_KEY, mini ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+});
 const menuOpener = computed(() => $q.screen.width <= 1024 && !drawer.value);
 const health = ref<Health | null>(null);
 const me = ref<Me | null>(null);
 const companies = ref<Company[]>([]);
 const companyId = ref('');
 provide('contourCompanyId', companyId);
+const contourSite = computed(() => {
+  const row = companies.value.find((c) => String(c.id) === companyId.value);
+  const code = String(row?.code || '').toUpperCase();
+  const name = String(row?.name || '').toLowerCase();
+  if (code === 'STRELA' || code === 'СТРЕЛА' || name.includes('стрел')) return 'strela';
+  if (code === 'FOGEL' || code === 'ФОГЕЛЬ' || name.includes('фогел')) return 'fogel';
+  return 'msk';
+});
+provide('contourSite', contourSite);
 const loggingOut = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 

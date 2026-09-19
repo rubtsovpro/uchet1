@@ -36,6 +36,7 @@ import {
   pickerBoard,
   pickerBoardLightProduction,
   pickSitesCatalog,
+  resolvePickSiteForDeal,
   setHandoffPickLineSource,
   stockReturnPickSlipHtml,
   stockReturnsForPick,
@@ -258,9 +259,20 @@ export function mountPickRoutes(api: Hono): void {
 api.get('/warehouse/pick/returns', async (c) => {
   const actor = await actorFromContext(c);
   if (!actor) return c.json({ error: 'unauthorized' }, 401);
-  const items = await stockReturnsForPick(80);
+  const site = (c.req.query('site') || '').trim();
+  let items = await stockReturnsForPick(80);
+  if (site && site !== 'all') {
+    const filtered: Array<Record<string, unknown>> = [];
+    for (const item of items) {
+      const dealId = String(item.deal_id || '').trim();
+      const whId = String(item.warehouse_id || item.from_warehouse_id || '').trim();
+      const pickSite = await resolvePickSiteForDeal(dealId, whId);
+      if (pickSite === site) filtered.push(item);
+    }
+    items = filtered;
+  }
   const body = { items };
-  const etag = listRowsEtag(items as Array<Record<string, unknown>>, ['returns']);
+  const etag = listRowsEtag(items as Array<Record<string, unknown>>, ['returns', site || 'all']);
   return jsonWithEtag(c, body, etag);
 });
 api.get('/warehouse/pick/returns/:dealId/print', async (c) => {

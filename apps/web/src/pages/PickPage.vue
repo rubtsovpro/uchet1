@@ -200,7 +200,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, inject, onMounted, reactive, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Dialog, Notify } from 'quasar';
 import { api } from '@/boot/api';
@@ -226,7 +226,11 @@ type PageResp = {
   page?: number;
   pages?: number;
 };
-const site = 'msk';
+const siteRef = inject<ComputedRef<string> | Ref<string>>('contourSite', ref('msk'));
+const site = computed(() => {
+  const v = String(siteRef.value || 'msk');
+  return v === 'strela' || v === 'fogel' ? v : 'msk';
+});
 const PICK_TABS = ['handoffs', 'open', 'returns', 'done'] as const;
 type PickTab = (typeof PICK_TABS)[number];
 const route = useRoute();
@@ -476,7 +480,7 @@ const openGroups = computed(() => {
 });
 
 async function loadDone() {
-  const q = encodeURIComponent(site);
+  const q = encodeURIComponent(site.value);
   const search = filterQ.value.trim();
   const searchQ = search ? `&q=${encodeURIComponent(search)}` : '';
   const done = await api.get<PageResp>(
@@ -492,7 +496,7 @@ async function loadDone() {
 async function load() {
   loading.value = true;
   error.value = '';
-  const q = encodeURIComponent(site);
+  const q = encodeURIComponent(site.value);
   try {
     const [today, ho, ret] = await Promise.all([
       api.get<Board>(`/api/warehouse/pick/today?site=${q}`),
@@ -706,6 +710,14 @@ async function regenCdek() {
     cdekBusy.value = false;
   }
 }
+
+watch(site, () => {
+  pageOf.handoffs = 1;
+  pageOf.open = 1;
+  pageOf.returns = 1;
+  pageOf.done = 1;
+  void load();
+});
 
 onMounted(() => {
   void load();
