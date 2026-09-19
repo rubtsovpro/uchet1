@@ -32,6 +32,7 @@
           :key="item.label"
           clickable
           v-bind="item.to ? { to: item.to } : { href: item.href }"
+          :exact="!!item.exact"
           active-class="sb-nav-active"
           @click="closeIfNarrow"
         >
@@ -104,8 +105,8 @@ const meLabel = computed(() => {
   return String(m.name || m.login || '').trim();
 });
 
-const nav: { label: string; icon: string; to?: { name: string }; href?: string }[] = [
-  { label: 'Главное', icon: 'sym_o_home', to: { name: 'home' } },
+const nav: { label: string; icon: string; to?: { name: string }; href?: string; exact?: boolean }[] = [
+  { label: 'Главное', icon: 'sym_o_home', to: { name: 'home' }, exact: true },
   { label: 'Склад', icon: 'sym_o_warehouse', href: '/warehouses' },
   { label: 'Сделки', icon: 'sym_o_handshake', to: { name: 'deals' } },
   { label: 'Продажи', icon: 'sym_o_shopping_bag', href: '/sales' },
