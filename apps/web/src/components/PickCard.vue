@@ -49,7 +49,7 @@
       <thead>
         <tr>
           <th class="pick-chk"></th>
-          <th class="text-left">Артикул</th>
+          <th class="text-left">Мастер</th>
           <th class="text-left">Наименование</th>
           <th class="text-right">Кол-во</th>
           <th class="text-left">Ячейка</th>
@@ -61,7 +61,7 @@
           <td class="pick-chk">
             <span class="pick-box" :class="{ 'is-on': ln.already_moved }">{{ ln.already_moved ? '✓' : '' }}</span>
           </td>
-          <td>{{ ln.article || ln.sku || '—' }}</td>
+          <td>{{ masterSku(ln) }}</td>
           <td>
             <div>{{ ln.name || '—' }}</div>
             <div v-if="lotMeta(ln).length" class="pick-lot">
@@ -219,8 +219,12 @@ function cellLabel(ln: Record<string, unknown>) {
   return String(ln.cells_label || ln.lot_cell_code || ln.done_cell || ln.cell_code || '').trim() || '—';
 }
 
+function masterSku(ln: Record<string, unknown>) {
+  return String(ln.master_sku || ln.article || ln.sku || '').trim() || '—';
+}
+
 function moveSku(ln: Record<string, unknown>) {
-  return String(ln.fact_sku || ln.master_sku || ln.article || ln.sku || '').trim() || '—';
+  return String(ln.fact_sku || '').trim() || '—';
 }
 
 function routeSide(raw: unknown, index: number): string {

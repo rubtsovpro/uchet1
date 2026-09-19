@@ -26,6 +26,28 @@
     </q-tabs>
     <q-separator />
 
+    <div class="pick-pager">
+      <q-btn
+        flat
+        dense
+        round
+        icon="sym_o_chevron_left"
+        color="grey-7"
+        :disable="currentPage <= 1"
+        @click="shiftPage(-1)"
+      />
+      <span class="pick-pager-n">{{ currentPage }} / {{ currentPages }}</span>
+      <q-btn
+        flat
+        dense
+        round
+        icon="sym_o_chevron_right"
+        color="grey-7"
+        :disable="currentPage >= currentPages"
+        @click="shiftPage(1)"
+      />
+    </div>
+
     <q-banner v-if="error" class="bg-negative text-white q-mt-md" rounded>
       {{ error }}
       <template #action>
@@ -61,7 +83,7 @@
       <q-tab-panel name="handoffs" class="q-pa-none">
         <q-list class="q-gutter-y-sm">
           <PickCard
-            v-for="row in filteredHandoffs"
+            v-for="row in pagedHandoffs"
             :key="String(row.id)"
             :row="row"
             mode="handoff"
@@ -80,7 +102,7 @@
       <q-tab-panel name="returns" class="q-pa-none">
         <q-list class="q-gutter-y-sm">
           <PickCard
-            v-for="row in filteredReturns"
+            v-for="row in pagedReturns"
             :key="String(row.deal_id || row.id)"
             :row="row"
             mode="return"
@@ -96,7 +118,7 @@
       <q-tab-panel name="done" class="q-pa-none">
         <q-list class="q-gutter-y-sm">
           <PickCard
-            v-for="row in filteredDone"
+            v-for="row in completed"
             :key="String(row.id)"
             :row="row"
             mode="done"
@@ -105,7 +127,7 @@
             @cdek="openCdek"
             @line-source="setLineSource"
           />
-          <q-item v-if="!loading && !filteredDone.length">
+          <q-item v-if="!loading && !completed.length">
             <q-item-section class="text-grey-6">Нет закрытых</q-item-section>
           </q-item>
         </q-list>
@@ -145,7 +167,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { Dialog, Notify } from 'quasar';
 import { api } from '@/boot/api';
 import PickCard from '@/components/PickCard.vue';
@@ -164,7 +186,12 @@ type Board = {
   handoffs_completed_total?: number;
 };
 type ListResp = { items?: Array<Record<string, unknown>>; completed_total?: number };
-type PageResp = { items?: Array<Record<string, unknown>>; total?: number };
+type PageResp = {
+  items?: Array<Record<string, unknown>>;
+  total?: number;
+  page?: number;
+  pages?: number;
+};
 const site = 'msk';
 const tab = ref('handoffs');
 const filterQ = ref('');
@@ -177,6 +204,9 @@ const handoffs = ref<Array<Record<string, unknown>>>([]);
 const returns = ref<Array<Record<string, unknown>>>([]);
 const completed = ref<Array<Record<string, unknown>>>([]);
 const completedTotal = ref(0);
+const donePages = ref(1);
+const pageSize = 15;
+const pageOf = reactive({ handoffs: 1, open: 1, returns: 1, done: 1 });
 
 const cdekOpen = ref(false);
 const cdekDealId = ref('');
@@ -207,21 +237,65 @@ function matchRow(row: Record<string, unknown>): boolean {
 const filteredOpen = computed(() => openRows.value.filter(matchRow));
 const filteredHandoffs = computed(() => handoffs.value.filter(matchRow));
 const filteredReturns = computed(() => returns.value.filter(matchRow));
-const filteredDone = computed(() => completed.value.filter(matchRow));
+
+function pageCount(n: number): number {
+  return Math.max(1, Math.ceil(Math.max(0, n) / pageSize));
+}
+function pageSlice<T>(rows: T[], page: number): T[] {
+  const start = (Math.max(1, page) - 1) * pageSize;
+  return rows.slice(start, start + pageSize);
+}
+
+const pagedHandoffs = computed(() => pageSlice(filteredHandoffs.value, pageOf.handoffs));
+const pagedReturns = computed(() => pageSlice(filteredReturns.value, pageOf.returns));
+const pagedOpen = computed(() => pageSlice(filteredOpen.value, pageOf.open));
+
+const currentPage = computed({
+  get() {
+    if (tab.value === 'open') return pageOf.open;
+    if (tab.value === 'returns') return pageOf.returns;
+    if (tab.value === 'done') return pageOf.done;
+    return pageOf.handoffs;
+  },
+  set(n: number) {
+    if (tab.value === 'open') pageOf.open = n;
+    else if (tab.value === 'returns') pageOf.returns = n;
+    else if (tab.value === 'done') pageOf.done = n;
+    else pageOf.handoffs = n;
+  },
+});
+const currentPages = computed(() => {
+  if (tab.value === 'open') return pageCount(filteredOpen.value.length);
+  if (tab.value === 'returns') return pageCount(filteredReturns.value.length);
+  if (tab.value === 'done') return donePages.value;
+  return pageCount(filteredHandoffs.value.length);
+});
+
+function shiftPage(delta: number) {
+  currentPage.value = Math.min(currentPages.value, Math.max(1, currentPage.value + delta));
+}
+
+function clampClientPages() {
+  pageOf.handoffs = Math.min(pageOf.handoffs, pageCount(filteredHandoffs.value.length));
+  pageOf.open = Math.min(pageOf.open, pageCount(filteredOpen.value.length));
+  pageOf.returns = Math.min(pageOf.returns, pageCount(filteredReturns.value.length));
+}
 
 const openGroups = computed(() => {
+  const source = pagedOpen.value;
   const groups = board.value?.groups;
   if (Array.isArray(groups) && groups.length) {
+    const allowed = new Set(source.map((row) => String(row.id || row.number || '')));
     return groups
       .map((g) => ({
         key: String(g.key || g.label || 'g'),
         label: String(g.label || g.key || 'Задачи'),
-        tasks: (g.tasks || []).filter(matchRow),
+        tasks: (g.tasks || []).filter((row) => allowed.has(String(row.id || row.number || '')) && matchRow(row)),
       }))
       .filter((g) => g.tasks.length);
   }
   const byType = new Map<string, Array<Record<string, unknown>>>();
-  for (const row of filteredOpen.value) {
+  for (const row of source) {
     const key = String(row.pick_type || row.channel || 'other');
     if (!byType.has(key)) byType.set(key, []);
     byType.get(key)!.push(row);
@@ -233,28 +307,68 @@ const openGroups = computed(() => {
   }));
 });
 
+async function loadDone() {
+  const q = encodeURIComponent(site);
+  const search = filterQ.value.trim();
+  const searchQ = search ? `&q=${encodeURIComponent(search)}` : '';
+  const done = await api.get<PageResp>(
+    `/api/warehouse/pick/handoffs/completed?site=${q}&page=${pageOf.done}&limit=${pageSize}${searchQ}`
+  );
+  completed.value = done.items || [];
+  completedTotal.value = Number(done.total || 0);
+  donePages.value = Math.max(1, Number(done.pages) || pageCount(completedTotal.value));
+  const safe = Math.max(1, Number(done.page) || 1);
+  if (pageOf.done > donePages.value) pageOf.done = safe;
+}
+
 async function load() {
   loading.value = true;
   error.value = '';
   const q = encodeURIComponent(site);
   try {
-    const [today, ho, ret, done] = await Promise.all([
+    const [today, ho, ret] = await Promise.all([
       api.get<Board>(`/api/warehouse/pick/today?site=${q}`),
       api.get<ListResp>(`/api/warehouse/pick/handoffs?site=${q}&limit=40`),
       api.get<ListResp>(`/api/warehouse/pick/returns?site=${q}`),
-      api.get<PageResp>(`/api/warehouse/pick/handoffs/completed?site=${q}&page=1&limit=15`),
+      loadDone(),
     ]);
     board.value = today;
     handoffs.value = ho.items || [];
     returns.value = ret.items || [];
-    completed.value = done.items || [];
-    completedTotal.value = Number(ho.completed_total ?? today.handoffs_completed_total ?? done.total ?? 0);
+    clampClientPages();
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Ошибка загрузки';
   } finally {
     loading.value = false;
   }
 }
+
+watch(
+  () => pageOf.done,
+  () => {
+    void loadDone().catch((e) => {
+      error.value = e instanceof Error ? e.message : 'Ошибка загрузки';
+    });
+  }
+);
+
+let filterTimer: ReturnType<typeof setTimeout> | undefined;
+watch(filterQ, () => {
+  pageOf.handoffs = 1;
+  pageOf.open = 1;
+  pageOf.returns = 1;
+  if (filterTimer) clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => {
+    if (pageOf.done !== 1) pageOf.done = 1;
+    else {
+      void loadDone().catch((e) => {
+        error.value = e instanceof Error ? e.message : 'Ошибка загрузки';
+      });
+    }
+  }, 300);
+});
+
+watch([filteredHandoffs, filteredOpen, filteredReturns], clampClientPages);
 
 async function completeHandoff(id: string) {
   busyId.value = id;
@@ -406,5 +520,19 @@ onMounted(() => {
 <style scoped>
 .pick-page :deep(.q-tab-panels) {
   background: transparent;
+}
+.pick-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 4px 8px 0;
+}
+.pick-pager-n {
+  min-width: 72px;
+  text-align: center;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: #64748b;
 }
 </style>
