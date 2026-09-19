@@ -17,7 +17,7 @@
       </div>
     </div>
 
-    <q-markup-table v-if="lines.length" flat dense>
+    <q-markup-table v-if="lines.length" class="pick-grid" flat dense separator="cell">
       <thead>
         <tr>
           <th class="text-left">Артикул</th>
@@ -215,7 +215,10 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  background: #f1f4f6;
+  border-radius: 10px;
   font-size: 13px;
   font-weight: 600;
   color: #0f172a;
@@ -241,6 +244,24 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
 .pick-route-arrow {
   color: #0f766e;
   line-height: 1;
+}
+.pick-grid {
+  border: 1px solid #d7dee7;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.pick-grid :deep(table) {
+  border-collapse: collapse;
+}
+.pick-grid :deep(th),
+.pick-grid :deep(td) {
+  border: 1px solid #d7dee7;
+}
+.pick-grid :deep(thead th) {
+  background: #f8fafc;
+}
+.pick-grid :deep(tbody tr:nth-child(even) td) {
+  background: #f3f5f8;
 }
 .pick-move-foot {
   display: grid;
