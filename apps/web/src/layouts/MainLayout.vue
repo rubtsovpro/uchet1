@@ -2,16 +2,6 @@
   <q-layout view="lHh Lpr lFf" class="sb-layout">
     <q-header class="sb-header text-dark">
       <q-toolbar class="sb-toolbar">
-        <div class="sb-brand sb-brand-bar lt-lg">Учёт №1</div>
-        <q-input
-          v-model="searchQ"
-          dense
-          borderless
-          placeholder="Поиск"
-          class="sb-search"
-        >
-          <template #prepend><q-icon name="sym_o_search" /></template>
-        </q-input>
         <q-space />
         <div v-if="meLabel" class="sb-user">
           <div class="sb-user-name">{{ meLabel }}</div>
@@ -38,6 +28,7 @@
       class="sb-drawer"
     >
       <div class="sb-drawer-inner">
+      <div class="sb-brand">Учёт №1</div>
       <q-list class="sb-nav">
         <q-item
           v-for="item in nav"
@@ -110,7 +101,6 @@ const menuOpener = computed(() => $q.screen.width <= 1024 && !drawer.value);
 const health = ref<Health | null>(null);
 const me = ref<Me | null>(null);
 const loggingOut = ref(false);
-const searchQ = ref('');
 let timer: ReturnType<typeof setInterval> | null = null;
 
 const meLabel = computed(() => {

@@ -1,19 +1,6 @@
 <template>
   <q-page class="section-page">
-    <div class="row items-center q-mb-md q-gutter-sm">
-      <div class="section-title">Задания складу</div>
-      <q-chip
-        v-if="shift"
-        dense
-        :color="shift.open ? 'positive' : 'grey-4'"
-        :text-color="shift.open ? 'white' : 'dark'"
-        :label="shiftLabel"
-      />
-      <q-space />
-      <q-btn v-if="shift && !shift.open" unelevated no-caps color="primary" label="Открыть смену" @click="startShift" />
-      <q-btn v-if="shift?.open" flat no-caps color="negative" label="Закрыть смену" @click="endShift" />
-      <q-btn flat round icon="refresh" :loading="loading" @click="load" />
-    </div>
+    <div class="section-title q-mb-md">Задания складу</div>
 
     <div class="section-card">
     <div class="row items-center q-gutter-sm q-pa-sm">
@@ -165,7 +152,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { Dialog, Notify } from 'quasar';
 import { api } from '@/boot/api';
 import PickCard from '@/components/PickCard.vue';
@@ -178,8 +165,6 @@ type Board = {
 };
 type ListResp = { items?: Array<Record<string, unknown>>; completed_total?: number };
 type PageResp = { items?: Array<Record<string, unknown>>; total?: number };
-type Shift = { open?: boolean; kind?: string; kind_label?: string; started_at?: string };
-
 const site = ref<'msk' | 'strela' | 'fogel'>('msk');
 const tab = ref('open');
 const filterQ = ref('');
@@ -200,9 +185,6 @@ const handoffs = ref<Array<Record<string, unknown>>>([]);
 const returns = ref<Array<Record<string, unknown>>>([]);
 const completed = ref<Array<Record<string, unknown>>>([]);
 const completedTotal = ref(0);
-const shift = ref<Shift | null>(null);
-const pollSec = 25;
-let timer: ReturnType<typeof setInterval> | null = null;
 
 const cdekOpen = ref(false);
 const cdekDealId = ref('');
@@ -259,44 +241,12 @@ const openGroups = computed(() => {
   }));
 });
 
-const shiftLabel = computed(() => {
-  if (!shift.value) return 'Смена…';
-  if (!shift.value.open) return 'Смена закрыта';
-  return `Смена · ${shift.value.kind_label || shift.value.kind || 'открыта'}`;
-});
-
 function dealTitle(row: Record<string, unknown>): string {
   const d = row.deal as Record<string, unknown> | undefined;
   return String(d?.title || d?.buyer_name || row.buyer_name || '').trim() || '—';
 }
 function printHref(row: Record<string, unknown>): string {
   return String(row.print_href || '').trim();
-}
-
-async function loadShift() {
-  try {
-    shift.value = await api.get<Shift>('/api/warehouse/pick/shift');
-  } catch {
-    shift.value = null;
-  }
-}
-
-async function startShift() {
-  try {
-    shift.value = await api.post<Shift>('/api/warehouse/pick/shift/start', { kind: 'day' });
-    Notify.create({ type: 'positive', message: 'Смена открыта' });
-  } catch (e) {
-    Notify.create({ type: 'negative', message: e instanceof Error ? e.message : 'Ошибка' });
-  }
-}
-
-async function endShift() {
-  try {
-    shift.value = await api.post<Shift>('/api/warehouse/pick/shift/end', {});
-    Notify.create({ type: 'positive', message: 'Смена закрыта' });
-  } catch (e) {
-    Notify.create({ type: 'negative', message: e instanceof Error ? e.message : 'Ошибка' });
-  }
 }
 
 async function load() {
@@ -310,7 +260,6 @@ async function load() {
       api.get<ListResp>(`/api/warehouse/pick/returns?site=${q}`),
       api.get<PageResp>(`/api/warehouse/pick/handoffs/completed?site=${q}&page=1&limit=15`),
     ]);
-    void loadShift();
     board.value = today;
     handoffs.value = ho.items || [];
     returns.value = ret.items || [];
@@ -468,10 +417,6 @@ async function regenCdek() {
 watch(site, () => void load());
 onMounted(() => {
   void load();
-  timer = setInterval(() => void load(), pollSec * 1000);
-});
-onUnmounted(() => {
-  if (timer) clearInterval(timer);
 });
 </script>
 

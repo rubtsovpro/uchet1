@@ -35,11 +35,16 @@ body {
 }
 
 .sb-brand {
+  flex: 0 0 auto;
   padding: 18px 20px 8px;
   font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.03em;
   color: var(--sb-accent);
+}
+
+.q-drawer--mini .sb-brand {
+  display: none;
 }
 
 .sb-brand-bar {
