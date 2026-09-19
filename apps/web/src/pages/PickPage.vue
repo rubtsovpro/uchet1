@@ -4,7 +4,6 @@
 
     <div class="section-card">
     <div class="row items-center q-gutter-sm q-pa-sm">
-      <q-btn-toggle v-model="site" toggle-color="primary" :options="siteOptions" no-caps unelevated dense rounded />
       <q-input
         v-model="filterQ"
         dense
@@ -55,7 +54,7 @@
           </q-list>
         </div>
         <q-item v-if="!loading && !filteredOpen.length" class="text-grey-6">
-          Нет заданий на производство · {{ siteLabel }}
+          Нет заданий на производство
         </q-item>
       </q-tab-panel>
 
@@ -165,17 +164,9 @@ type Board = {
 };
 type ListResp = { items?: Array<Record<string, unknown>>; completed_total?: number };
 type PageResp = { items?: Array<Record<string, unknown>>; total?: number };
-const site = ref<'msk' | 'strela' | 'fogel'>('msk');
+const site = 'msk';
 const tab = ref('open');
 const filterQ = ref('');
-const siteOptions = [
-  { label: 'МСК', value: 'msk' },
-  { label: 'Стрела', value: 'strela' },
-  { label: 'Фогель', value: 'fogel' },
-];
-const siteLabel = computed(
-  () => siteOptions.find((o) => o.value === site.value)?.label || site.value
-);
 
 const loading = ref(false);
 const error = ref('');
@@ -252,7 +243,7 @@ function printHref(row: Record<string, unknown>): string {
 async function load() {
   loading.value = true;
   error.value = '';
-  const q = encodeURIComponent(site.value);
+  const q = encodeURIComponent(site);
   try {
     const [today, ho, ret, done] = await Promise.all([
       api.get<Board>(`/api/warehouse/pick/today?site=${q}`),
@@ -414,7 +405,6 @@ async function regenCdek() {
   }
 }
 
-watch(site, () => void load());
 onMounted(() => {
   void load();
 });
