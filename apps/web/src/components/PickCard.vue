@@ -77,7 +77,7 @@
     </q-markup-table>
     <div v-else class="text-grey-6 text-caption q-pa-sm">Нет строк / ячеек</div>
 
-    <div class="pick-move-foot">
+    <div v-if="mode !== 'done'" class="pick-move-foot">
       <div class="pick-move-side">
         <a
           v-if="printHref"
@@ -100,7 +100,7 @@
       </div>
       <div class="pick-move-side is-end">
         <q-btn
-          v-if="mode === 'handoff' || mode === 'open' || mode === 'done'"
+          v-if="mode === 'handoff' || mode === 'open'"
           class="btn-cancel"
           flat
           dense
