@@ -1,23 +1,45 @@
 <template>
   <div class="pick-move">
-    <div v-if="routeFrom || routeTo" class="pick-route">
-      <span class="pick-route-side is-from">{{ routeFrom || '—' }}</span>
-      <span class="pick-route-track" aria-hidden="true">
-        <span class="pick-route-line" />
-        <span class="pick-route-arrow">→</span>
-        <span class="pick-route-line" />
-      </span>
-      <span class="pick-route-side is-to">{{ routeTo || '—' }}</span>
+    <div class="pick-route-row">
+      <div v-if="routeFrom || routeTo" class="pick-route">
+        <span class="pick-route-side is-from">{{ routeFrom || '—' }}</span>
+        <span class="pick-route-track" aria-hidden="true">
+          <span class="pick-route-line" />
+          <span class="pick-route-arrow">→</span>
+          <span class="pick-route-line" />
+        </span>
+        <span class="pick-route-side is-to">{{ routeTo || '—' }}</span>
+      </div>
+      <q-btn
+        v-if="mode === 'handoff' || (mode === 'open' && row.id && !String(row.id).startsWith('return:'))"
+        class="pick-done"
+        color="primary"
+        unelevated
+        dense
+        no-caps
+        label="Собрано"
+        :loading="busyId === String(row.id)"
+        @click="$emit('complete', String(row.id))"
+      />
+      <q-btn
+        v-else-if="mode === 'return'"
+        class="pick-done"
+        color="primary"
+        unelevated
+        dense
+        no-caps
+        label="Вернуть"
+        :loading="busyId === `ret:${row.deal_id}`"
+        @click="$emit('complete-return', String(row.deal_id))"
+      />
     </div>
     <div class="pick-move-head">
-      <div>
-        <div class="pick-move-num">{{ row.number || row.deal_id }}</div>
-        <div class="pick-move-title">{{ title }}</div>
-        <div v-if="row.cdek_number" class="pick-move-caption">СДЭК {{ row.cdek_number }}</div>
-      </div>
+      <div class="pick-move-num">{{ row.number || row.deal_id }}</div>
+      <div class="pick-move-title">{{ title }}</div>
     </div>
+    <div v-if="row.cdek_number" class="pick-move-caption">СДЭК {{ row.cdek_number }}</div>
 
-    <q-markup-table v-if="lines.length" class="pick-grid" flat dense separator="cell">
+    <q-markup-table v-if="lines.length" class="pick-grid" flat dense separator="none" wrap-cells>
       <thead>
         <tr>
           <th class="text-left">Артикул</th>
@@ -72,28 +94,6 @@
           <q-icon name="sym_o_local_shipping" />
           <span>СДЭК</span>
         </button>
-      </div>
-      <div class="pick-move-mid">
-        <q-btn
-          v-if="mode === 'handoff' || (mode === 'open' && row.id && !String(row.id).startsWith('return:'))"
-          color="primary"
-          unelevated
-          dense
-          no-caps
-          label="Собрано"
-          :loading="busyId === String(row.id)"
-          @click="$emit('complete', String(row.id))"
-        />
-        <q-btn
-          v-else-if="mode === 'return'"
-          color="primary"
-          unelevated
-          dense
-          no-caps
-          label="Вернуть"
-          :loading="busyId === `ret:${row.deal_id}`"
-          @click="$emit('complete-return', String(row.deal_id))"
-        />
       </div>
       <div class="pick-move-side is-end">
         <q-btn
@@ -190,18 +190,21 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
 }
 .pick-move-head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
 }
 .pick-move-num {
+  flex: 0 0 auto;
   font-size: 12px;
-  font-weight: 600;
-  line-height: 1.2;
+  font-weight: 400;
+  line-height: 1.3;
   color: #64748b;
+  white-space: nowrap;
 }
 .pick-move-title {
-  margin-top: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
@@ -211,17 +214,28 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   font-size: 12px;
   color: #64748b;
 }
+.pick-route-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
 .pick-route {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 0 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
   padding: 8px 12px;
   background: #f1f4f6;
   border-radius: 10px;
   font-size: 13px;
   font-weight: 600;
   color: #0f172a;
+}
+.pick-done {
+  flex: 0 0 auto;
 }
 .pick-route-side {
   flex: 0 1 auto;
@@ -246,29 +260,41 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   line-height: 1;
 }
 .pick-grid {
-  border: 1px solid #d7dee7;
-  border-radius: 8px;
-  overflow: hidden;
-}
-.pick-grid :deep(table) {
-  border-collapse: collapse;
+  margin: 0;
 }
 .pick-grid :deep(th),
 .pick-grid :deep(td) {
-  border: 1px solid #d7dee7;
+  border: 0;
+  border-bottom: 1px solid #eef2f6;
+  padding: 8px;
+  white-space: normal;
+}
+.pick-grid :deep(th:first-child),
+.pick-grid :deep(td:first-child) {
+  padding-left: 0;
+}
+.pick-grid :deep(th:last-child),
+.pick-grid :deep(td:last-child) {
+  padding-right: 0;
 }
 .pick-grid :deep(thead th) {
-  background: #f8fafc;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
+  padding-top: 0;
+  padding-bottom: 6px;
 }
-.pick-grid :deep(tbody tr:nth-child(even) td) {
-  background: #f3f5f8;
+.pick-grid :deep(tbody tr:last-child td) {
+  border-bottom: 0;
+  padding-bottom: 0;
 }
 .pick-move-foot {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding-top: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 12px;
 }
 .pick-move-side {
   display: flex;
@@ -278,9 +304,7 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
 }
 .pick-move-side.is-end {
   justify-content: flex-end;
-}
-.pick-move-mid {
-  justify-self: center;
+  margin-left: auto;
 }
 .pick-link {
   display: inline-flex;
