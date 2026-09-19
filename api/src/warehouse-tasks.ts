@@ -3008,7 +3008,10 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   }
 
   const metaHtml = metaRows
-    .map(([k, v]) => `<tr><th class="l">${pickEsc(k)}</th><td class="l">${pickEsc(v)}</td></tr>`)
+    .map(([k, v]) => {
+      const strong = k === 'Канал реализации';
+      return `<tr><th class="l">${pickEsc(k)}</th><td class="l${strong ? ' is-strong' : ''}">${pickEsc(v)}</td></tr>`;
+    })
     .join('');
 
   const docProductIds = lines.map((l) => String(l.product_id || '')).filter(Boolean);
@@ -3144,14 +3147,15 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   .slip-head {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
+    justify-content: flex-start;
+    gap: 8px;
     margin: 0 0 4px;
     font-size: 12px;
     font-weight: 400;
     line-height: 1.3;
   }
   .slip-when { color: #555; white-space: nowrap; }
+  table.meta td.is-strong { font-weight: 800; }
   .deal-title {
     margin: 0 0 8px;
     font-size: 15px;
@@ -3242,7 +3246,7 @@ ${
       ? `<div class="route"><div class="route-side"><span class="route-k">Откуда</span>${pickEsc(routeFrom || '—')}</div><span class="route-track" aria-hidden="true"><span class="route-line"></span><span class="route-arrow">→</span><span class="route-line"></span></span><div class="route-side is-to"><span class="route-k">Куда</span>${pickEsc(routeTo || '—')}</div></div>`
       : ''
   }
-<div class="slip-head"><span>${pickEsc(num)}</span>${movedAt ? `<span class="slip-when">${pickEsc(movedAt)}</span>` : ''}</div>
+<div class="slip-head"><span>${pickEsc(num.replace(/^[РP]/, ''))}</span>${movedAt ? `<span class="slip-when">${pickEsc(movedAt)}</span>` : ''}</div>
 ${
     dealId || (d && d.name)
       ? `<p class="deal-title">${pickEsc(
