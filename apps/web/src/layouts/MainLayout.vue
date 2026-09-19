@@ -36,7 +36,6 @@
       :width="268"
       class="sb-drawer"
     >
-      <div class="sb-brand">Учёт №1</div>
       <q-list class="sb-nav">
         <q-item
           v-for="item in nav"
