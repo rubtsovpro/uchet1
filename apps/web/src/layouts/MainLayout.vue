@@ -68,6 +68,9 @@ const ROLE_LABEL: Record<string, string> = {
   courier: 'Курьер',
   photographer: 'Фотограф',
   manager: 'Менеджер',
+  accountant: 'Бухгалтер',
+  purchaser: 'Закупки',
+  sto: 'СТО',
 };
 
 const drawer = ref(false);
