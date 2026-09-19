@@ -53,7 +53,7 @@
           <th class="text-left">Наименование</th>
           <th class="text-right">Кол-во</th>
           <th class="text-left">Ячейка</th>
-          <th class="text-left">Склад</th>
+          <th class="text-left">К перемещению</th>
         </tr>
       </thead>
       <tbody>
@@ -70,20 +70,7 @@
           </td>
           <td class="text-right">{{ ln.qty }}</td>
           <td>{{ cellLabel(ln) }}</td>
-          <td>
-            <q-select
-              v-if="whOptions(ln).length > 1 && row.id"
-              dense
-              outlined
-              emit-value
-              map-options
-              :model-value="String(ln.warehouse_id || ln.from_warehouse_id || '')"
-              :options="whOptions(ln)"
-              style="min-width: 140px"
-              @update:model-value="(v) => onWh(ln, String(v))"
-            />
-            <span v-else>{{ ln.from_warehouse_name || ln.warehouse_name || '—' }}</span>
-          </td>
+          <td>{{ moveSku(ln) }}</td>
         </tr>
       </tbody>
     </q-markup-table>
@@ -145,7 +132,6 @@ const emit = defineEmits<{
   cancel: [id: string];
   'complete-return': [dealId: string];
   cdek: [dealId: string];
-  'line-source': [payload: { id: string; product_id: string; warehouse_id: string }];
 }>();
 
 const title = computed(() => {
@@ -230,6 +216,10 @@ function cellLabel(ln: Record<string, unknown>) {
   return String(ln.cells_label || ln.lot_cell_code || ln.done_cell || ln.cell_code || '').trim() || '—';
 }
 
+function moveSku(ln: Record<string, unknown>) {
+  return String(ln.fact_sku || ln.master_sku || ln.article || ln.sku || '').trim() || '—';
+}
+
 function routeSide(raw: unknown, index: number): string {
   const direct = String(raw || '').trim();
   if (direct) return direct;
@@ -257,24 +247,6 @@ const showCdek = computed(() => {
   const ch = String(d?.ship_channel || d?.amo_shipment || '');
   return /cdek|сдэк/i.test(ch) && !!props.row.deal_id;
 });
-
-function whOptions(ln: Record<string, unknown>) {
-  const stock = Array.isArray(ln.stock_wh) ? (ln.stock_wh as Array<Record<string, unknown>>) : [];
-  return stock
-    .map((w) => ({
-      label: `${w.name || w.warehouse_name || w.id} · ${w.qty ?? ''}`,
-      value: String(w.id || w.warehouse_id || ''),
-    }))
-    .filter((o) => o.value);
-}
-
-function onWh(ln: Record<string, unknown>, warehouse_id: string) {
-  emit('line-source', {
-    id: String(props.row.id),
-    product_id: String(ln.product_id || ''),
-    warehouse_id,
-  });
-}
 </script>
 
 <style scoped>
