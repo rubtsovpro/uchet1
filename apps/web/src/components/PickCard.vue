@@ -76,10 +76,10 @@
         />
         <q-btn
           v-if="mode === 'handoff' || mode === 'open'"
-          flat
+          outline
           dense
           no-caps
-          color="negative"
+          color="primary"
           label="Отмена"
           :loading="busyId === `cancel:${row.id}`"
           @click="$emit('cancel', String(row.id))"
@@ -97,7 +97,7 @@
       />
       <q-btn
         v-else-if="mode === 'return'"
-        color="orange"
+        color="primary"
         unelevated
         dense
         no-caps

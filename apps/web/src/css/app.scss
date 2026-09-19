@@ -316,11 +316,46 @@ body {
   padding: 0;
 }
 
+.sb-layout .q-btn:not(.q-btn--round) {
+  border-radius: 10px;
+  font-weight: 500;
+}
+
 .sb-layout .q-btn.bg-primary.q-btn--unelevated {
-  background: #fff !important;
-  color: #0f766e !important;
-  border: 1px solid #99f6e4;
+  background: #0f766e !important;
+  color: #fff !important;
+  border: 0;
   box-shadow: none !important;
+  min-height: 32px;
+  padding: 0 14px;
+}
+
+.sb-layout .q-btn.q-btn--outline {
+  background: #f1f4f6 !important;
+  color: #0f766e !important;
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.sb-layout .q-btn.q-btn--outline::before {
+  border: 0;
+}
+
+.sb-layout .q-btn.q-btn--outline .q-icon {
+  color: #0f766e;
+}
+
+.sb-layout .q-btn-toggle {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.sb-layout .q-btn-toggle .q-btn {
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .sb-layout .q-btn-toggle .q-btn.bg-primary {
