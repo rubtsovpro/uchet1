@@ -37,7 +37,7 @@
       <q-tab-panel name="open" class="q-pa-none">
         <div v-for="g in openGroups" :key="g.key" class="q-mb-md">
           <div class="text-subtitle2 q-mb-xs">{{ g.label }} · {{ g.tasks.length }}</div>
-          <q-list bordered separator class="rounded-borders bg-white">
+          <q-list class="q-gutter-y-sm">
             <PickCard
               v-for="row in g.tasks"
               :key="String(row.id || row.number)"
@@ -59,7 +59,7 @@
       </q-tab-panel>
 
       <q-tab-panel name="handoffs" class="q-pa-none">
-        <q-list bordered separator class="rounded-borders bg-white">
+        <q-list class="q-gutter-y-sm">
           <PickCard
             v-for="row in filteredHandoffs"
             :key="String(row.id)"
@@ -78,7 +78,7 @@
       </q-tab-panel>
 
       <q-tab-panel name="returns" class="q-pa-none">
-        <q-list bordered separator class="rounded-borders bg-white">
+        <q-list class="q-gutter-y-sm">
           <PickCard
             v-for="row in filteredReturns"
             :key="String(row.deal_id || row.id)"
@@ -94,7 +94,7 @@
       </q-tab-panel>
 
       <q-tab-panel name="done" class="q-pa-none">
-        <q-list bordered separator class="rounded-borders bg-white">
+        <q-list class="q-gutter-y-sm">
           <q-item v-for="row in filteredDone" :key="String(row.id)">
             <q-item-section>
               <q-item-label>{{ row.number }} · {{ dealTitle(row) }}</q-item-label>
