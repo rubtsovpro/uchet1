@@ -189,10 +189,10 @@
             <q-input v-model.number="box.weight" type="number" dense outlined label="Вес, кг" style="width: 100px" />
           </div>
         </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="Отмена" v-close-popup />
-          <q-btn flat color="orange" label="Пересоздать" :loading="cdekBusy" @click="regenCdek" />
-          <q-btn color="primary" unelevated label="Сохранить" :loading="cdekBusy" @click="saveCdek" />
+        <q-card-actions align="right" class="cdek-actions">
+          <q-btn class="btn-cancel" flat dense no-caps label="Отмена" v-close-popup />
+          <q-btn outline dense no-caps label="Пересоздать" :loading="cdekBusy" @click="regenCdek" />
+          <q-btn class="cdek-save" unelevated dense no-caps label="Сохранить" :loading="cdekBusy" @click="saveCdek" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -738,6 +738,40 @@ onMounted(() => {
   min-width: 720px;
   max-width: 960px;
   width: 92vw;
+}
+.cdek-actions {
+  gap: 8px;
+}
+.cdek-card :deep(.q-btn:not(.q-btn--round)) {
+  border-radius: 10px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  min-height: 32px;
+}
+.cdek-card :deep(.cdek-save) {
+  background: #0f766e !important;
+  color: #fff !important;
+  box-shadow: none !important;
+  padding: 0 14px;
+}
+.cdek-card :deep(.q-btn--outline) {
+  background: #f1f4f6 !important;
+  color: #0f766e !important;
+  padding: 0 12px;
+}
+.cdek-card :deep(.q-btn--outline::before) {
+  border: 0;
+}
+.cdek-card :deep(.btn-cancel) {
+  background: transparent !important;
+  color: #dc2626 !important;
+  box-shadow: none !important;
+  min-height: 0;
+  padding: 0 4px;
+}
+.cdek-card :deep(.btn-cancel .q-focus-helper) {
+  display: none;
 }
 .cdek-places {
   display: grid;
