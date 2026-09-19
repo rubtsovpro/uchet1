@@ -44,7 +44,6 @@
       </div>
       <div class="pick-move-title">{{ title }}</div>
     </div>
-    <div v-if="cdekNumber" class="pick-move-caption">СДЭК {{ cdekNumber }}</div>
 
     <q-markup-table v-if="lines.length" class="pick-grid" flat dense separator="none" wrap-cells>
       <thead>
