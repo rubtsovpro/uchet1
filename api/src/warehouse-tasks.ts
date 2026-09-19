@@ -2991,24 +2991,23 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   if (d?.amo_branch) metaRows.push(['Филиал', String(d.amo_branch)]);
   if (d?.city) metaRows.push(['Город', String(d.city)]);
   if (d?.cdek_number) metaRows.push(['СДЭК №', String(d.cdek_number)]);
+  let routeFrom = '';
+  let routeTo = '';
   if (isToSto) {
     metaRows.push(['Задача', 'Спуск на СТО / самовывоз']);
-    metaRows.push(['Откуда', fromName]);
-    metaRows.push(['Куда', toStoName]);
-    metaRows.push(['Маршрут', `${fromName} → ${toStoName}`]);
+    routeFrom = fromName;
+    routeTo = toStoName;
   } else if (reserveMeta) {
     metaRows.push(['Задача', reserveMeta.purpose_label]);
-    metaRows.push(['Откуда', reserveMeta.from_warehouse_name]);
-    metaRows.push(['Склад резерва', reserveMeta.dest_warehouse_name]);
-    metaRows.push(['Маршрут', reserveMeta.route_label]);
+    routeFrom = String(reserveMeta.from_warehouse_name || '');
+    routeTo = String(reserveMeta.dest_warehouse_name || '');
   } else if (shipMeta) {
     metaRows.push(['Задача', shipMeta.purpose_label]);
-    metaRows.push(['Откуда', shipMeta.from_warehouse_name]);
-    metaRows.push(['Куда', shipMeta.dest_warehouse_name]);
-    metaRows.push(['Маршрут', shipMeta.route_label]);
+    routeFrom = String(shipMeta.from_warehouse_name || '');
+    routeTo = String(shipMeta.dest_warehouse_name || '');
   } else if (doc.warehouse_name) {
-    metaRows.push(['Склад', String(doc.warehouse_name)]);
-    if (doc.warehouse_to_name) metaRows.push(['Куда', String(doc.warehouse_to_name)]);
+    routeFrom = String(doc.warehouse_name);
+    routeTo = String(doc.warehouse_to_name || '');
   }
 
   const channel = String(d?.amo_channel || '').trim();
@@ -3215,8 +3214,24 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   .lot-meta { font-size: 11px; color: #0d7377; font-weight: 600; margin-top: 4px; line-height: 1.35; }
   .lot-meta b { font-weight: 800; color: #063e40; }
   .foot { margin-top: 14px; font-size: 11px; color: #666; border-top: 1px dashed #aaa; padding-top: 8px; }
-  .sign { margin-top: 18px; display: flex; gap: 24px; }
-  .sign div { flex: 1; border-top: 1px solid #333; padding-top: 4px; font-size: 11px; }
+  .route {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 12px;
+    padding: 8px 12px;
+    background: #f1f4f6;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  .route-side { flex: 1 1 0; min-width: 0; }
+  .route-side.is-to { text-align: right; }
+  .route-k { display: block; margin-bottom: 2px; font-size: 11px; font-weight: 600; color: #64748b; }
+  .route-track { flex: 1 1 auto; display: flex; align-items: center; gap: 6px; min-width: 48px; }
+  .route-line { flex: 1; border-top: 1px dotted #94a3b8; }
+  .route-arrow { color: #0d7377; line-height: 1; }
   @media print { .toolbar { display: none !important; } body { margin: 0; } }
 </style>
 </head>
@@ -3238,6 +3253,11 @@ ${
   }
 <p class="sub">Учёт №1 · передано на склад${when ? ' · ' + pickEsc(when) : ''}</p>
 ${channelBanner}
+${
+    routeFrom || routeTo
+      ? `<div class="route"><div class="route-side"><span class="route-k">Откуда</span>${pickEsc(routeFrom || '—')}</div><span class="route-track" aria-hidden="true"><span class="route-line"></span><span class="route-arrow">→</span><span class="route-line"></span></span><div class="route-side is-to"><span class="route-k">Куда</span>${pickEsc(routeTo || '—')}</div></div>`
+      : ''
+  }
 <table class="meta">${metaHtml || '<tr><td>—</td></tr>'}</table>
 ${alreadyMovedHtml}
 <table class="grid">
@@ -3252,11 +3272,6 @@ ${alreadyMovedHtml}
   </tr></thead>
   <tbody>${tableBodyHtml || '<tr><td colspan="7" class="c">Нет строк</td></tr>'}</tbody>
 </table>
-<div class="sign">
-  <div>Собрал · подпись</div>
-  <div>Проверил · подпись</div>
-  <div>Дата</div>
-</div>
 <p class="foot">Распечатано ${pickEsc(new Date().toLocaleString('ru-RU'))} · ${pickEsc(
     String(doc.warehouse_name || ''))
   } · сумма ${Number(doc.amount || 0).toLocaleString('ru-RU')} ₽</p>
