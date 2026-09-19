@@ -227,6 +227,7 @@ type PageResp = {
   pages?: number;
 };
 const siteRef = inject<ComputedRef<string> | Ref<string>>('contourSite', ref('msk'));
+const sectionRef = inject<Ref<string>>('warehouseSection', ref('tasks'));
 const site = computed(() => {
   const v = String(siteRef.value || 'msk');
   return v === 'strela' || v === 'fogel' ? v : 'msk';
@@ -421,9 +422,16 @@ function shiftPage(delta: number) {
 let urlLock = false;
 function writeUrl() {
   const page = String(pageOf[tab.value]);
-  if (String(route.query.tab || '') === tab.value && String(route.query.page || '') === page) return;
+  const section = sectionRef.value === 'places' ? 'places' : 'tasks';
+  if (
+    String(route.query.tab || '') === tab.value &&
+    String(route.query.page || '') === page &&
+    String(route.query.section || '') === section
+  ) {
+    return;
+  }
   urlLock = true;
-  void router.replace({ query: { ...route.query, tab: tab.value, page } }).finally(() => {
+  void router.replace({ query: { ...route.query, section, tab: tab.value, page } }).finally(() => {
     urlLock = false;
   });
 }
