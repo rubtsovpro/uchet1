@@ -92,14 +92,15 @@
           target="_blank"
         />
         <button
-          v-if="showCdek"
+          v-if="showCdek && cdekNumber"
           type="button"
           class="pick-link"
           @click="$emit('cdek', String(row.deal_id))"
         >
           <q-icon name="sym_o_local_shipping" />
-          <span>{{ cdekNumber ? 'СДЭК' : 'Трек не создан' }}</span>
+          <span>СДЭК</span>
         </button>
+        <span v-else-if="showCdek" class="pick-note">Трек не создан</span>
       </div>
       <div class="pick-move-side is-end">
         <q-btn
@@ -464,5 +465,10 @@ const showCdek = computed(() => {
   color: #94a3b8;
   font-size: 18px;
   font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+}
+.pick-note {
+  font-size: 13px;
+  line-height: 1;
+  color: #64748b;
 }
 </style>

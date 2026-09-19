@@ -136,7 +136,7 @@
     </div>
 
     <q-dialog v-model="cdekOpen" persistent maximized-mobile>
-      <q-card style="min-width: 420px; max-width: 640px">
+      <q-card class="cdek-card" :class="{ 'is-wide': cdekMulti }">
         <q-card-section class="row items-center">
           <div class="text-h6">СДЭК · места · {{ cdekDealId }}</div>
           <q-space />
@@ -145,11 +145,44 @@
         <q-card-section>
           <div v-if="cdekErr" class="text-negative q-mb-sm">{{ cdekErr }}</div>
           <div class="row q-gutter-sm items-center q-mb-md">
-            <div class="text-subtitle2">Коробок: {{ cdekBoxes }}</div>
+            <div class="text-subtitle2">Мест: {{ cdekBoxes }}</div>
             <q-btn dense flat icon="remove" :disable="cdekBoxes <= 1" @click="cdekBoxes--" />
-            <q-btn dense flat icon="add" @click="cdekBoxes++" />
+            <q-btn dense flat icon="add" :disable="cdekBoxes >= cdekMax" @click="cdekBoxes++" />
           </div>
-          <div v-for="(box, bi) in cdekDims" :key="bi" class="row q-gutter-sm q-mb-sm">
+          <div v-if="cdekMulti" class="cdek-places">
+            <div
+              v-for="(box, bi) in cdekDims"
+              :key="bi"
+              class="cdek-place"
+              :class="{ 'is-over': cdekOver === bi + 1 }"
+              @dragover.prevent="cdekOver = bi + 1"
+              @dragleave="cdekOver = 0"
+              @drop="dropUnit(bi + 1, $event)"
+            >
+              <div class="cdek-place-h">Место {{ bi + 1 }}</div>
+              <div class="cdek-chips">
+                <div
+                  v-for="u in unitsIn(bi + 1)"
+                  :key="u.unit_key"
+                  class="cdek-chip"
+                  draggable="true"
+                  @dragstart="dragUnit(u.unit_key, $event)"
+                >
+                  <b>{{ u.sku || '—' }}</b>
+                  <span>{{ u.title }}</span>
+                  <span v-if="u.qty_total > 1" class="cdek-chip-n">{{ u.unit_index }}/{{ u.qty_total }}</span>
+                </div>
+                <div v-if="!unitsIn(bi + 1).length" class="cdek-empty">Перетащите товар сюда</div>
+              </div>
+              <div class="row q-gutter-xs">
+                <q-input v-model.number="box.l" type="number" dense outlined label="Д, см" class="cdek-dim" />
+                <q-input v-model.number="box.w" type="number" dense outlined label="Ш, см" class="cdek-dim" />
+                <q-input v-model.number="box.h" type="number" dense outlined label="В, см" class="cdek-dim" />
+                <q-input v-model.number="box.weight" type="number" dense outlined label="Вес, кг" class="cdek-dim" />
+              </div>
+            </div>
+          </div>
+          <div v-else v-for="(box, bi) in cdekDims" :key="bi" class="row q-gutter-sm q-mb-sm">
             <q-input v-model.number="box.l" type="number" dense outlined label="Д, см" style="width: 90px" />
             <q-input v-model.number="box.w" type="number" dense outlined label="Ш, см" style="width: 90px" />
             <q-input v-model.number="box.h" type="number" dense outlined label="В, см" style="width: 90px" />
@@ -234,14 +267,99 @@ const cdekDealId = ref('');
 const cdekErr = ref('');
 const cdekBusy = ref(false);
 const cdekBoxes = ref(1);
-const cdekDims = ref<Array<{ l: number; w: number; h: number; weight: number }>>([
-  { l: 20, w: 20, h: 20, weight: 1 },
-]);
+const cdekMax = ref(1);
+const cdekOver = ref(0);
+const cdekDrag = ref('');
+type CdekUnit = {
+  unit_key: string;
+  title: string;
+  sku: string;
+  unit_index: number;
+  qty_total: number;
+};
+type CdekDim = { l: number; w: number; h: number; weight: number };
+const cdekUnits = ref<CdekUnit[]>([]);
+const cdekBoxOf = ref<Record<string, number>>({});
+const cdekDims = ref<CdekDim[]>([{ l: 20, w: 20, h: 20, weight: 1 }]);
+const cdekMulti = computed(() => cdekUnits.value.length > 1);
+
+function blankDim(): CdekDim {
+  return { l: 20, w: 20, h: 20, weight: 1 };
+}
+function dimOr(n: number, fallback: number): number {
+  return Number(n) > 0 ? Number(n) : fallback;
+}
 
 watch(cdekBoxes, (n) => {
-  while (cdekDims.value.length < n) cdekDims.value.push({ l: 20, w: 20, h: 20, weight: 1 });
-  if (cdekDims.value.length > n) cdekDims.value = cdekDims.value.slice(0, n);
+  const count = Math.max(1, Math.min(n, cdekMax.value || n));
+  if (count !== n) {
+    cdekBoxes.value = count;
+    return;
+  }
+  while (cdekDims.value.length < count) cdekDims.value.push(blankDim());
+  if (cdekDims.value.length > count) cdekDims.value = cdekDims.value.slice(0, count);
+  const next = { ...cdekBoxOf.value };
+  for (const key of Object.keys(next)) {
+    if (next[key] > count || next[key] < 1) next[key] = count;
+  }
+  cdekBoxOf.value = next;
 });
+
+function unitsIn(box: number): CdekUnit[] {
+  return cdekUnits.value.filter((u) => (cdekBoxOf.value[u.unit_key] || 1) === box);
+}
+function dragUnit(key: string, ev: DragEvent) {
+  cdekDrag.value = key;
+  ev.dataTransfer?.setData('text/plain', key);
+  if (ev.dataTransfer) ev.dataTransfer.effectAllowed = 'move';
+}
+function dropUnit(box: number, ev: DragEvent) {
+  const key = ev.dataTransfer?.getData('text/plain') || cdekDrag.value;
+  cdekOver.value = 0;
+  if (!key) return;
+  cdekBoxOf.value = { ...cdekBoxOf.value, [key]: box };
+}
+function cdekPayload(): Record<string, unknown> {
+  const count = cdekDims.value.length;
+  if (!cdekMulti.value || count <= 1) {
+    const b = cdekDims.value[0] || blankDim();
+    return {
+      packages_count: 1,
+      split_packages: false,
+      package_length_cm: b.l,
+      package_width_cm: b.w,
+      package_height_cm: b.h,
+      package_weight_kg: b.weight,
+    };
+  }
+  const dims: Record<string, { weight_kg: number; length_cm: number; width_cm: number; height_cm: number }> = {};
+  cdekDims.value.forEach((b, i) => {
+    dims[String(i + 1)] = {
+      weight_kg: Number(b.weight) || 0,
+      length_cm: Number(b.l) || 0,
+      width_cm: Number(b.w) || 0,
+      height_cm: Number(b.h) || 0,
+    };
+  });
+  const boxes: Record<string, number> = {};
+  for (const u of cdekUnits.value) {
+    const n = cdekBoxOf.value[u.unit_key] || 1;
+    boxes[u.unit_key] = Math.min(count, Math.max(1, n));
+  }
+  return {
+    packages_count: count,
+    split_packages: true,
+    package_item_boxes: boxes,
+    package_boxes_dims: dims,
+  };
+}
+function cdekSplitError(): string {
+  if (!cdekMulti.value || cdekDims.value.length <= 1) return '';
+  for (let i = 1; i <= cdekDims.value.length; i++) {
+    if (!unitsIn(i).length) return `В месте ${i} нет товаров`;
+  }
+  return '';
+}
 
 const openRows = computed(() => board.value?.open || []);
 
@@ -493,24 +611,55 @@ async function openCdek(dealId: string) {
   cdekErr.value = '';
   cdekOpen.value = true;
   cdekBusy.value = true;
+  cdekUnits.value = [];
+  cdekBoxOf.value = {};
+  cdekMax.value = 1;
   try {
     const pack = await api.get<Record<string, unknown>>(
       `/api/warehouse/pick/handoffs/${encodeURIComponent(dealId)}/cdek-pack`
     );
-    const packages = Array.isArray(pack.packages)
-      ? (pack.packages as Array<Record<string, unknown>>)
-      : Array.isArray(pack.places)
-        ? (pack.places as Array<Record<string, unknown>>)
-        : [];
-    if (packages.length) {
-      cdekBoxes.value = packages.length;
-      cdekDims.value = packages.map((p) => ({
-        l: Number(p.length || p.l || 20) || 20,
-        w: Number(p.width || p.w || 20) || 20,
-        h: Number(p.height || p.h || 20) || 20,
-        weight: Number(p.weight || 1) || 1,
-      }));
+    const units = Array.isArray(pack.units) ? (pack.units as Array<Record<string, unknown>>) : [];
+    cdekUnits.value = units
+      .map((u) => ({
+        unit_key: String(u.unit_key || '').trim(),
+        title: String(u.title || u.sku || 'Позиция'),
+        sku: String(u.sku || '').trim(),
+        unit_index: Number(u.unit_index) || 1,
+        qty_total: Number(u.qty_total) || 1,
+      }))
+      .filter((u) => u.unit_key);
+    const max = Number(pack.packages_max) || cdekUnits.value.length || 1;
+    cdekMax.value = Math.max(1, max);
+    const savedBoxes = (pack.package_item_boxes || {}) as Record<string, number>;
+    const assigned: Record<string, number> = {};
+    cdekUnits.value.forEach((u, i) => {
+      const n = Number(savedBoxes[u.unit_key]) || 0;
+      assigned[u.unit_key] = n >= 1 ? n : (i % cdekMax.value) + 1;
+    });
+    const dimsRaw = (pack.package_boxes_dims || {}) as Record<
+      string,
+      { weight_kg?: number; length_cm?: number; width_cm?: number; height_cm?: number }
+    >;
+    const count = Math.max(1, Math.min(cdekMax.value, Number(pack.packages_count) || 1));
+    const fallback: CdekDim = {
+      l: dimOr(Number(pack.package_length_cm), 20),
+      w: dimOr(Number(pack.package_width_cm), 20),
+      h: dimOr(Number(pack.package_height_cm), 20),
+      weight: dimOr(Number(pack.package_weight_kg), 1),
+    };
+    const dims: CdekDim[] = [];
+    for (let i = 1; i <= count; i++) {
+      const box = dimsRaw[String(i)] || {};
+      dims.push({
+        l: dimOr(Number(box.length_cm), fallback.l),
+        w: dimOr(Number(box.width_cm), fallback.w),
+        h: dimOr(Number(box.height_cm), fallback.h),
+        weight: dimOr(Number(box.weight_kg), fallback.weight),
+      });
     }
+    cdekBoxOf.value = assigned;
+    cdekDims.value = dims;
+    cdekBoxes.value = count;
   } catch (e) {
     cdekErr.value = e instanceof Error ? e.message : 'Не удалось загрузить';
   } finally {
@@ -519,17 +668,15 @@ async function openCdek(dealId: string) {
 }
 
 async function saveCdek() {
+  const splitErr = cdekSplitError();
+  if (splitErr) {
+    cdekErr.value = splitErr;
+    return;
+  }
   cdekBusy.value = true;
   cdekErr.value = '';
   try {
-    await api.post(`/api/warehouse/pick/handoffs/${encodeURIComponent(cdekDealId.value)}/cdek-pack`, {
-      packages: cdekDims.value.map((b) => ({
-        length: b.l,
-        width: b.w,
-        height: b.h,
-        weight: b.weight,
-      })),
-    });
+    await api.post(`/api/warehouse/pick/handoffs/${encodeURIComponent(cdekDealId.value)}/cdek-pack`, cdekPayload());
     Notify.create({ type: 'positive', message: 'Места СДЭК сохранены' });
     cdekOpen.value = false;
   } catch (e) {
@@ -540,19 +687,17 @@ async function saveCdek() {
 }
 
 async function regenCdek() {
+  const splitErr = cdekSplitError();
+  if (splitErr) {
+    cdekErr.value = splitErr;
+    return;
+  }
   cdekBusy.value = true;
   cdekErr.value = '';
   try {
     await api.post(
       `/api/warehouse/pick/handoffs/${encodeURIComponent(cdekDealId.value)}/cdek-regenerate`,
-      {
-        packages: cdekDims.value.map((b) => ({
-          length: b.l,
-          width: b.w,
-          height: b.h,
-          weight: b.weight,
-        })),
-      }
+      cdekPayload()
     );
     Notify.create({ type: 'positive', message: 'СДЭК пересоздан' });
   } catch (e) {
@@ -584,5 +729,62 @@ onMounted(() => {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   color: #64748b;
+}
+.cdek-card {
+  min-width: 420px;
+  max-width: 640px;
+}
+.cdek-card.is-wide {
+  min-width: 720px;
+  max-width: 960px;
+  width: 92vw;
+}
+.cdek-places {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+.cdek-place {
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fafc;
+}
+.cdek-place.is-over {
+  border-color: #0f766e;
+  background: #f0fdfa;
+}
+.cdek-place-h {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.cdek-chip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: grab;
+  font-size: 12px;
+}
+.cdek-chip b {
+  color: #0f766e;
+  font-weight: 700;
+}
+.cdek-chip-n,
+.cdek-empty {
+  color: #64748b;
+  font-size: 12px;
+}
+.cdek-empty {
+  padding: 8px 0;
+}
+.cdek-dim {
+  width: 88px;
 }
 </style>
