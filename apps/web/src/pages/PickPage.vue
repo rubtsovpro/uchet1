@@ -95,24 +95,18 @@
 
       <q-tab-panel name="done" class="q-pa-none">
         <q-list class="q-gutter-y-sm">
-          <q-item v-for="row in filteredDone" :key="String(row.id)">
-            <q-item-section>
-              <q-item-label>{{ row.number }} · {{ dealTitle(row) }}</q-item-label>
-              <q-item-label caption>{{ row.route_label }} · {{ row.deal_id }}</q-item-label>
-            </q-item-section>
-            <q-item-section side>
-              <q-btn
-                v-if="printHref(row)"
-                flat
-                dense
-                icon="print"
-                :href="printHref(row) + '?autoprint=1'"
-                target="_blank"
-              />
-            </q-item-section>
-          </q-item>
+          <PickCard
+            v-for="row in filteredDone"
+            :key="String(row.id)"
+            :row="row"
+            mode="done"
+            :busy-id="busyId"
+            @cancel="cancelHandoff"
+            @cdek="openCdek"
+            @line-source="setLineSource"
+          />
           <q-item v-if="!loading && !filteredDone.length">
-            <q-item-section class="text-grey-6">Пусто · всего {{ completedTotal }}</q-item-section>
+            <q-item-section class="text-grey-6">Нет закрытых</q-item-section>
           </q-item>
         </q-list>
       </q-tab-panel>
@@ -231,14 +225,6 @@ const openGroups = computed(() => {
     tasks,
   }));
 });
-
-function dealTitle(row: Record<string, unknown>): string {
-  const d = row.deal as Record<string, unknown> | undefined;
-  return String(d?.title || d?.buyer_name || row.buyer_name || '').trim() || '—';
-}
-function printHref(row: Record<string, unknown>): string {
-  return String(row.print_href || '').trim();
-}
 
 async function load() {
   loading.value = true;

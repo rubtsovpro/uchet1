@@ -100,7 +100,7 @@
       </div>
       <div class="pick-move-side is-end">
         <q-btn
-          v-if="mode === 'handoff' || mode === 'open'"
+          v-if="mode === 'handoff' || mode === 'open' || mode === 'done'"
           class="btn-cancel"
           flat
           dense
@@ -120,7 +120,7 @@ import { computed } from 'vue';
 const props = withDefaults(
   defineProps<{
     row: Record<string, unknown>;
-    mode?: 'open' | 'handoff' | 'return';
+    mode?: 'open' | 'handoff' | 'return' | 'done';
     busyId?: string;
   }>(),
   { mode: 'open', busyId: '' }
