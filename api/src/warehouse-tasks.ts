@@ -2986,7 +2986,6 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
 
   const metaRows: Array<[string, string]> = [];
   if (d?.buyer_name) metaRows.push(['Покупатель', String(d.buyer_name)]);
-  if (d?.buyer_phone) metaRows.push(['Телефон', String(d.buyer_phone)]);
   if (d?.responsible_name) metaRows.push(['Менеджер', String(d.responsible_name)]);
   if (d?.amo_channel) metaRows.push(['Канал реализации', String(d.amo_channel)]);
   if (d?.amo_shipment) metaRows.push(['Способ отправки', String(d.amo_shipment)]);
@@ -3158,7 +3157,7 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   table.meta td.is-strong { font-weight: 800; }
   .deal-title {
     margin: 0 0 8px;
-    font-size: 15px;
+    font-size: 12px;
     font-weight: 800;
     line-height: 1.3;
     color: #111;
@@ -3203,21 +3202,21 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   }
   table.grid { width: 100%; border-collapse: collapse; margin-top: 6px; }
   table.grid th, table.grid td { border: 1px solid #333; padding: 6px 7px; vertical-align: top; }
-  table.grid th { background: #eef5f5; font-weight: 800; text-align: center; font-size: 11px; }
+  table.grid th { background: #eef5f5; font-weight: 800; text-align: center; font-size: 12px; }
   .c { text-align: center; }
   .l { text-align: left; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .muted { color: #666; font-size: 11px; }
-  .cell-td { font-size: 18px; font-weight: 800; letter-spacing: 0.02em; line-height: 1.25; }
-  .bc-td { color: #111; font-size: 13px; font-weight: 800; }
+  .muted { color: #666; font-size: 12px; }
+  .cell-td { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; line-height: 1.25; }
+  .bc-td { color: #111; font-size: 12px; font-weight: 800; }
   .row-done td { background: #f3f4f6; color: #374151; }
   .row-done .cell-td { color: #047857; }
-  .chk-done { color: #047857; font-weight: 900; font-size: 16px; }
-  .chk-shipped { color: #047857; font-weight: 900; font-size: 16px; }
-  .done-note { font-size: 10px; color: #6b7280; font-weight: 600; margin-top: 2px; }
-  .lot-meta { font-size: 11px; color: #0d7377; font-weight: 600; margin-top: 4px; line-height: 1.35; }
+  .chk-done { color: #047857; font-weight: 900; font-size: 12px; }
+  .chk-shipped { color: #047857; font-weight: 900; font-size: 12px; }
+  .done-note { font-size: 12px; color: #6b7280; font-weight: 600; margin-top: 2px; }
+  .lot-meta { font-size: 12px; color: #0d7377; font-weight: 600; margin-top: 4px; line-height: 1.35; }
   .lot-meta b { font-weight: 800; color: #063e40; }
-  .foot { margin-top: 14px; font-size: 11px; color: #666; border-top: 1px dashed #aaa; padding-top: 8px; }
+  .foot { margin-top: 14px; font-size: 12px; color: #666; border-top: 1px dashed #aaa; padding-top: 8px; }
   .route {
     display: flex;
     align-items: center;
@@ -3226,13 +3225,13 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
     padding: 8px 12px;
     background: #f1f4f6;
     border-radius: 10px;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
     color: #0f172a;
   }
   .route-side { flex: 1 1 0; min-width: 0; }
   .route-side.is-to { text-align: right; }
-  .route-k { display: block; margin-bottom: 2px; font-size: 11px; font-weight: 600; color: #64748b; }
+  .route-k { display: block; margin-bottom: 2px; font-size: 12px; font-weight: 600; color: #64748b; }
   .route-track { flex: 1 1 auto; display: flex; align-items: center; gap: 6px; min-width: 48px; }
   .route-line { flex: 1; border-top: 1px dotted #94a3b8; }
   .route-arrow { color: #0d7377; line-height: 1; }
@@ -3273,9 +3272,6 @@ ${alreadyMovedHtml}
   </tr></thead>
   <tbody>${tableBodyHtml || '<tr><td colspan="7" class="c">Нет строк</td></tr>'}</tbody>
 </table>
-<p class="foot">Распечатано ${pickEsc(new Date().toLocaleString('ru-RU'))} · ${pickEsc(
-    String(doc.warehouse_name || ''))
-  } · сумма ${Number(doc.amount || 0).toLocaleString('ru-RU')} ₽</p>
 <script>${autoprint}</script>
 </body></html>`;
 }
