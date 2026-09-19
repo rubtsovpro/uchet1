@@ -185,7 +185,7 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
 
 <style scoped>
 .pick-move {
-  padding: 10px 12px 8px;
+  padding: 12px;
   background: #fff;
 }
 .pick-move-head {
