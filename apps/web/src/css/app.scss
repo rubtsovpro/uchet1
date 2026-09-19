@@ -381,6 +381,14 @@ body {
   padding: 0 12px;
 }
 
+.section-card .q-tab.q-tab--active {
+  color: #0f766e !important;
+}
+
+.section-card .q-tab__indicator {
+  background: #0f766e;
+}
+
 .section-card .q-tab-panels,
 .section-card .q-list {
   border: 0;
