@@ -48,6 +48,7 @@
     <q-markup-table v-if="lines.length" class="pick-grid" flat dense separator="none" wrap-cells>
       <thead>
         <tr>
+          <th class="pick-chk"></th>
           <th class="text-left">Артикул</th>
           <th class="text-left">Наименование</th>
           <th class="text-right">Кол-во</th>
@@ -57,6 +58,9 @@
       </thead>
       <tbody>
         <tr v-for="(ln, i) in lines" :key="i">
+          <td class="pick-chk">
+            <span class="pick-box" :class="{ 'is-on': ln.already_moved }">{{ ln.already_moved ? '✓' : '' }}</span>
+          </td>
           <td>{{ ln.article || ln.sku || '—' }}</td>
           <td>
             <div>{{ ln.name || '—' }}</div>
@@ -309,6 +313,25 @@ const showCdek = computed(() => {
   line-height: 1.3;
   color: #64748b;
   white-space: nowrap;
+}
+.pick-chk {
+  width: 28px;
+  text-align: center;
+}
+.pick-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 1;
+  color: #0f766e;
+}
+.pick-box.is-on {
+  border-color: #0f766e;
 }
 .pick-lot {
   margin-top: 4px;

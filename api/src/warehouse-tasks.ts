@@ -2974,6 +2974,14 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
       })
     : '';
   const num = String(doc.number || '').trim() || id.slice(0, 8);
+  const movedDates = [
+    ...String(commentStr || '')
+      .split(/Склад ГОТОВО/i)[0]
+      .matchAll(/(\d{2}\.\d{2}\.\d{4})[,\s]+(\d{2}:\d{2})/g),
+  ];
+  const movedAt = movedDates.length
+    ? `${movedDates[movedDates.length - 1][1]} ${movedDates[movedDates.length - 1][2]}`
+    : parseHandoffTransferLabel(commentStr, String(doc.created_at || ''));
   const d = deal && !deal.missing ? deal : null;
 
   const metaRows: Array<[string, string]> = [];
@@ -3000,10 +3008,7 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   }
 
   const metaHtml = metaRows
-    .map(([k, v]) => {
-      const isCh = k === 'Канал реализации';
-      return `<tr class="${isCh ? 'is-channel' : ''}"><th class="l">${pickEsc(k)}</th><td class="l${isCh ? ' channel-td' : ''}">${pickEsc(v)}</td></tr>`;
-    })
+    .map(([k, v]) => `<tr><th class="l">${pickEsc(k)}</th><td class="l">${pickEsc(v)}</td></tr>`)
     .join('');
 
   const docProductIds = lines.map((l) => String(l.product_id || '')).filter(Boolean);
@@ -3136,6 +3141,17 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   * { box-sizing: border-box; }
   body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; font-size: 12px; color: #111; margin: 10px; }
   h1 { font-size: 20px; margin: 0 0 4px; font-weight: 800; letter-spacing: -0.02em; }
+  .slip-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 0 4px;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.3;
+  }
+  .slip-when { color: #555; white-space: nowrap; }
   .deal-title {
     margin: 0 0 8px;
     font-size: 15px;
@@ -3226,7 +3242,7 @@ ${
       ? `<div class="route"><div class="route-side"><span class="route-k">Откуда</span>${pickEsc(routeFrom || '—')}</div><span class="route-track" aria-hidden="true"><span class="route-line"></span><span class="route-arrow">→</span><span class="route-line"></span></span><div class="route-side is-to"><span class="route-k">Куда</span>${pickEsc(routeTo || '—')}</div></div>`
       : ''
   }
-<h1>${pickEsc(num)}</h1>
+<div class="slip-head"><span>${pickEsc(num)}</span>${movedAt ? `<span class="slip-when">${pickEsc(movedAt)}</span>` : ''}</div>
 ${
     dealId || (d && d.name)
       ? `<p class="deal-title">${pickEsc(
@@ -4345,7 +4361,8 @@ async function mapHandoffPickRow(
   // light + список /pick/today: без dealPickContext / stock_wh / lot — иначе N×SQL вешает event loop.
   // Строки документа + ячейки склада-источника нужны: иначе UI показывает «Без строк» при живом черновике.
   if (light) {
-    const rawLines = await all(
+    const [rawLines, movedRows] = await Promise.all([
+      all(
       `SELECT l.qty, l.product_id,
               IFNULL(l.warehouse_id,'') AS warehouse_id,
               IFNULL(p.sku,'') AS sku, IFNULL(p.name,'') AS name,
@@ -4357,7 +4374,12 @@ async function mapHandoffPickRow(
        WHERE l.doc_id = ?
        ORDER BY l.line_no ASC, l.id ASC`,
       [id]
-    ) as Array<Record<string, unknown>>;
+    ) as Promise<Array<Record<string, unknown>>>,
+      dealId && routeKind
+        ? dealSkipLinesOnRoute(dealId, routeKind, { beforeDocId: id })
+        : Promise.resolve([]),
+    ]);
+    const movedIds = new Set(movedRows.map((m) => String(m.product_id || '').trim()).filter(Boolean));
     const lines = await Promise.all(rawLines.map(async (l) => {
       const productId = String(l.product_id || '').trim();
       const lineWh =
@@ -4414,6 +4436,7 @@ async function mapHandoffPickRow(
         cells_label: loc.cells_label,
         stock_wh: [],
         ...lotFields,
+        already_moved: movedIds.has(productId),
       };
     }));
     const slimDeal = dealId
