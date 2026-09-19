@@ -85,25 +85,6 @@ body {
   outline: none;
 }
 
-.sb-rates {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--sb-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.sb-rates b {
-  color: var(--sb-text);
-  font-weight: 600;
-}
-
-.sb-rate-sep {
-  color: #cbd5e1;
-}
-
 .sb-user-plain {
   font-size: 12px;
   font-weight: 500;

@@ -19,8 +19,8 @@
     </div>
 
     <q-tabs v-model="tab" no-caps class="text-grey-8" active-color="primary" indicator-color="primary" align="left">
-      <q-tab name="open" :label="`Производство · ${filteredOpen.length}`" />
       <q-tab name="handoffs" :label="`Перемещения · ${filteredHandoffs.length}`" />
+      <q-tab name="open" :label="`Производство · ${filteredOpen.length}`" />
       <q-tab name="returns" :label="`Возвраты · ${filteredReturns.length}`" />
       <q-tab name="done" :label="`Закрытые · ${completedTotal}`" />
     </q-tabs>
@@ -165,7 +165,7 @@ type Board = {
 type ListResp = { items?: Array<Record<string, unknown>>; completed_total?: number };
 type PageResp = { items?: Array<Record<string, unknown>>; total?: number };
 const site = 'msk';
-const tab = ref('open');
+const tab = ref('handoffs');
 const filterQ = ref('');
 
 const loading = ref(false);

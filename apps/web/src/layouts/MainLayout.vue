@@ -10,12 +10,6 @@
           </select>
         </label>
         <q-space />
-        <div v-if="rates.length" class="sb-rates" title="Курсы ЦБ РФ">
-          <template v-for="(r, i) in rates" :key="r.code || i">
-            <span v-if="i" class="sb-rate-sep">·</span>
-            <span class="sb-rate"><b>{{ r.symbol || r.code }}</b> {{ fmtRate(r.rate) }}</span>
-          </template>
-        </div>
         <div v-if="meLabel" class="sb-user-plain">{{ meLabel }}</div>
         <q-btn flat no-caps class="sb-logout" label="Выйти" :loading="loggingOut" @click="logout" />
       </q-toolbar>
@@ -89,7 +83,6 @@ type Me = {
 };
 
 type Company = { id: string; name: string; code?: string; is_active?: number };
-type RateItem = { code?: string; symbol?: string; rate?: number | null };
 
 const CONTOUR_KEY = 'wms.contour-company.v1';
 
@@ -102,7 +95,6 @@ const me = ref<Me | null>(null);
 const companies = ref<Company[]>([]);
 const companyId = ref('');
 const allBranchesLabel = ref('Все филиалы');
-const rates = ref<RateItem[]>([]);
 const loggingOut = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -154,13 +146,6 @@ async function refreshHealth() {
   }
 }
 
-function fmtRate(n: number | null | undefined) {
-  return Number(n || 0).toLocaleString('ru-RU', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
 function saveCompany() {
   try {
     localStorage.setItem(CONTOUR_KEY, companyId.value || '');
@@ -203,15 +188,6 @@ async function loadCompanies() {
   }
 }
 
-async function loadRates() {
-  try {
-    const data = await api.get<{ items?: RateItem[] }>('/api/currencies/header');
-    rates.value = (data.items || []).filter((i) => i.rate != null);
-  } catch {
-    rates.value = [];
-  }
-}
-
 async function loadMe() {
   try {
     me.value = await api.get<Me>('/api/me');
@@ -237,7 +213,6 @@ onMounted(() => {
     await loadMe();
     await loadCompanies();
   })();
-  void loadRates();
   timer = setInterval(() => void refreshHealth(), 15000);
 });
 onUnmounted(() => {
