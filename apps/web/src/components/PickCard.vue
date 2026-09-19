@@ -36,9 +36,11 @@
     <div class="pick-move-head">
       <div class="pick-move-meta">
         <div class="pick-move-num">{{ headNum }}</div>
-        <div class="pick-move-side">
+        <div v-if="startedWhen" class="pick-move-when">начало {{ startedWhen }}</div>
+        <div v-if="taskWhen" class="pick-move-when">задача {{ taskWhen }}</div>
+        <div v-if="mode === 'done' && (moveNum || collectedWhen)" class="pick-move-tail">
           <div v-if="moveNum" class="pick-move-num">{{ moveNum }}</div>
-          <div v-if="shownWhen" class="pick-move-when">{{ shownWhen }}</div>
+          <div v-if="collectedWhen" class="pick-move-when">{{ collectedWhen }}</div>
         </div>
       </div>
       <div class="pick-move-title">{{ title }}</div>
@@ -151,7 +153,8 @@ function stamp(raw: unknown): string {
   return '';
 }
 
-const orderWhen = computed(() => stamp(props.row.order_created_at || props.row.created_at));
+const startedWhen = computed(() => stamp(props.row.order_created_at));
+const taskWhen = computed(() => stamp(props.row.created_at));
 
 const dealNum = computed(() => {
   const id = String(props.row.deal_id || '').trim();
@@ -171,11 +174,11 @@ const moveNum = computed(() => {
   return num && num !== dealNum.value ? num : '';
 });
 
-const shownWhen = computed(() => {
-  if (props.mode === 'done') {
-    return stamp(props.row.completed_label || props.row.transfer_label) || orderWhen.value;
-  }
-  return orderWhen.value;
+const collectedWhen = computed(() => {
+  if (props.mode !== 'done') return '';
+  const comment = String(props.row.comment || '');
+  const ready = comment.match(/Склад ГОТОВО\s*·\s*([^·]+)/i)?.[1] || props.row.completed_label;
+  return stamp(ready);
 });
 
 function routeSide(raw: unknown, index: number): string {
@@ -243,7 +246,7 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   gap: 10px;
   width: 100%;
 }
-.pick-move-side {
+.pick-move-tail {
   display: flex;
   align-items: baseline;
   gap: 10px;
