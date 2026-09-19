@@ -213,12 +213,6 @@ async function loadRates() {
     rates.value = [];
   }
 }
-  try {
-    me.value = await api.get<Me>('/api/me');
-  } catch {
-    me.value = null;
-  }
-}
 
 async function loadMe() {
   try {
