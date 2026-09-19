@@ -58,8 +58,6 @@ body {
   align-items: center;
   min-width: 0;
   max-width: 240px;
-  padding-left: 10px;
-  border-left: 1px solid #f1f5f9;
 }
 
 .sb-org-select {
@@ -149,11 +147,11 @@ body {
 
 .sb-brand {
   flex: 0 0 auto;
-  padding: 18px 20px 8px;
-  font-size: 22px;
+  padding: 14px 16px 6px;
+  font-size: 15px;
   font-weight: 700;
-  letter-spacing: -0.03em;
-  color: var(--sb-accent);
+  letter-spacing: -0.035em;
+  color: var(--sb-text);
 }
 
 .q-drawer--mini .sb-brand {

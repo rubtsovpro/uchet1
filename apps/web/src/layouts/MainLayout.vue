@@ -2,16 +2,13 @@
   <q-layout view="lHh Lpr lFf" class="sb-layout">
     <q-header class="sb-header text-dark">
       <q-toolbar class="sb-toolbar">
-        <div class="sb-title">
-          <span class="sb-product">Учёт №1</span>
-          <label class="sb-org">
-            <span class="sr-only">Филиал</span>
-            <select v-model="companyId" class="sb-org-select" aria-label="Филиал" @change="saveCompany">
-              <option v-if="allBranchesLabel" value="">{{ allBranchesLabel }}</option>
-              <option v-for="c in companies" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </select>
-          </label>
-        </div>
+        <label class="sb-org">
+          <span class="sr-only">Филиал</span>
+          <select v-model="companyId" class="sb-org-select" aria-label="Филиал" @change="saveCompany">
+            <option v-if="allBranchesLabel" value="">{{ allBranchesLabel }}</option>
+            <option v-for="c in companies" :key="c.id" :value="c.id">{{ c.name }}</option>
+          </select>
+        </label>
         <q-space />
         <div v-if="rates.length" class="sb-rates" title="Курсы ЦБ РФ">
           <template v-for="(r, i) in rates" :key="r.code || i">
@@ -34,6 +31,7 @@
       class="sb-drawer"
     >
       <div class="sb-drawer-inner">
+      <div class="sb-brand">Учёт №1</div>
       <q-list class="sb-nav">
         <q-item
           v-for="item in nav"
