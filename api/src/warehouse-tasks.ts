@@ -4427,12 +4427,14 @@ async function mapHandoffPickRow(
           ship_channel: string;
           name: string;
           buyer_name: string;
+          created_at: string;
         }>(
           `SELECT IFNULL(amo_channel,'') AS amo_channel,
                   IFNULL(amo_shipment,'') AS amo_shipment,
                   IFNULL(ship_channel,'') AS ship_channel,
                   IFNULL(name,'') AS name,
-                  IFNULL(buyer_name,'') AS buyer_name
+                  IFNULL(buyer_name,'') AS buyer_name,
+                  IFNULL(created_at,'') AS created_at
            FROM crm_deals WHERE id = ?`,
           [dealId]
         )
@@ -4486,6 +4488,7 @@ async function mapHandoffPickRow(
       deal_id: dealId,
       comment: commentStr,
       created_at: createdAt,
+      order_created_at: String(slimDeal?.created_at || createdAt || ''),
       doc_date: String(row.doc_date || ''),
       doc_type: String(row.doc_type || ''),
       warehouse_id: warehouseId,

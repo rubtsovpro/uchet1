@@ -36,6 +36,7 @@
     <div class="pick-move-head">
       <div class="pick-move-num">{{ row.number || row.deal_id }}</div>
       <div class="pick-move-title">{{ title }}</div>
+      <div v-if="orderWhen" class="pick-move-when">{{ orderWhen }}</div>
     </div>
     <div v-if="row.cdek_number" class="pick-move-caption">СДЭК {{ row.cdek_number }}</div>
 
@@ -136,6 +137,13 @@ const title = computed(() => {
   return String(d?.title || d?.buyer_name || props.row.buyer_name || '').trim() || '—';
 });
 
+const orderWhen = computed(() => {
+  const raw = String(props.row.order_created_at || props.row.created_at || '').trim();
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return '';
+  return `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}`;
+});
+
 function routeSide(raw: unknown, index: number): string {
   const direct = String(raw || '').trim();
   if (direct) return direct;
@@ -208,6 +216,15 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
+}
+.pick-move-when {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.3;
+  color: #64748b;
+  white-space: nowrap;
 }
 .pick-move-caption {
   margin-top: 2px;
