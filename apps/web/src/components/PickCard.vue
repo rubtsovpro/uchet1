@@ -44,7 +44,7 @@
       </div>
       <div class="pick-move-title">{{ title }}</div>
     </div>
-    <div v-if="row.cdek_number" class="pick-move-caption">СДЭК {{ row.cdek_number }}</div>
+    <div v-if="cdekNumber" class="pick-move-caption">СДЭК {{ cdekNumber }}</div>
 
     <q-markup-table v-if="lines.length" class="pick-grid" flat dense separator="none" wrap-cells>
       <thead>
@@ -95,7 +95,7 @@
           @click="$emit('cdek', String(row.deal_id))"
         >
           <q-icon name="sym_o_local_shipping" />
-          <span>СДЭК</span>
+          <span>{{ cdekNumber ? 'СДЭК' : 'Трек не создан' }}</span>
         </button>
       </div>
       <div class="pick-move-side is-end">
@@ -241,9 +241,14 @@ const lines = computed(() =>
 
 const printHref = computed(() => String(props.row.print_href || '').trim());
 
+const cdekNumber = computed(() => {
+  const d = props.row.deal as Record<string, unknown> | undefined;
+  return String(props.row.cdek_number || d?.cdek_number || '').trim();
+});
+
 const showCdek = computed(() => {
   const d = props.row.deal as Record<string, unknown> | undefined;
-  if (props.row.is_ship || props.row.cdek_number) return !!props.row.deal_id;
+  if (props.row.is_ship || cdekNumber.value) return !!props.row.deal_id;
   const ch = String(d?.ship_channel || d?.amo_shipment || '');
   return /cdek|сдэк/i.test(ch) && !!props.row.deal_id;
 });

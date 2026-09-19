@@ -2983,9 +2983,6 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   if (d?.amo_channel) metaRows.push(['Канал реализации', String(d.amo_channel)]);
   if (d?.amo_shipment) metaRows.push(['Способ отправки', String(d.amo_shipment)]);
   else if (d?.ship_channel_label) metaRows.push(['Канал склада', String(d.ship_channel_label)]);
-  if (d?.amo_payment_type) metaRows.push(['Тип оплаты', String(d.amo_payment_type)]);
-  if (d?.payment_label) metaRows.push(['Оплата', String(d.payment_label)]);
-  if (d?.amo_branch) metaRows.push(['Филиал', String(d.amo_branch)]);
   let routeFrom = '';
   let routeTo = '';
   if (isToSto) {
