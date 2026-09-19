@@ -120,12 +120,11 @@ const meHint = computed(() => {
 
 const nav: { label: string; icon: string; to?: { name: string }; href?: string }[] = [
   { label: 'Главное', icon: 'sym_o_home', to: { name: 'home' } },
-  { label: 'CRM', icon: 'sym_o_groups', href: '/crm' },
+  { label: 'Склад', icon: 'sym_o_warehouse', href: '/warehouses' },
   { label: 'Сделки', icon: 'sym_o_handshake', to: { name: 'deals' } },
   { label: 'Продажи', icon: 'sym_o_shopping_bag', href: '/sales' },
   { label: 'Документы', icon: 'sym_o_description', href: '/documents' },
   { label: 'Закупки', icon: 'sym_o_shopping_cart', href: '/purchases' },
-  { label: 'Склад', icon: 'sym_o_warehouse', href: '/warehouses' },
   { label: 'Задания складу', icon: 'sym_o_inventory_2', to: { name: 'pick' } },
   { label: 'Курьер', icon: 'sym_o_local_shipping', to: { name: 'courier' } },
   { label: 'Работы', icon: 'sym_o_handyman', href: '/works' },
@@ -138,6 +137,7 @@ const nav: { label: string; icon: string; to?: { name: string }; href?: string }
   { label: 'Настройки', icon: 'sym_o_settings', href: '/settings' },
   { label: 'Идеи и ошибки', icon: 'sym_o_lightbulb', href: '/ideas' },
   { label: 'Помощь', icon: 'sym_o_help', href: '/help' },
+  { label: 'CRM', icon: 'sym_o_groups', href: '/crm' },
 ];
 
 function toggleMenu() {
