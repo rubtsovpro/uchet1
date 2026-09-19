@@ -33,7 +33,7 @@
       </template>
     </q-banner>
 
-    <q-tab-panels v-model="tab" animated class="bg-transparent">
+    <q-tab-panels v-model="tab" class="pick-panels bg-transparent">
       <q-tab-panel name="open" class="q-pa-none">
         <div v-for="g in openGroups" :key="g.key" class="q-mb-md">
           <div class="text-subtitle2 q-mb-xs">{{ g.label }} · {{ g.tasks.length }}</div>
