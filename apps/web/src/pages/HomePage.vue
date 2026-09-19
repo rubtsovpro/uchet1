@@ -1,14 +1,6 @@
 <template>
-  <q-page padding class="q-gutter-md">
-    <div class="text-h5 text-weight-bold">Учёт №1 · dual-run</div>
-
-    <div class="row q-gutter-sm">
-      <q-btn color="primary" unelevated :to="{ name: 'pick' }" label="Склад · задачи" />
-      <q-btn color="primary" unelevated :to="{ name: 'courier' }" label="Курьер" />
-      <q-btn color="primary" unelevated :to="{ name: 'production' }" label="Производство" />
-      <q-btn color="primary" unelevated :to="{ name: 'deals' }" label="Сделки" />
-      <q-btn outline color="primary" href="/pick" label="Legacy /pick" />
-    </div>
+  <q-page class="section-page">
+    <div class="section-title q-mb-md">Главная</div>
 
     <q-card flat bordered v-if="status">
       <q-card-section>

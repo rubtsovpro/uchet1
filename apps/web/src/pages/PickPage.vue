@@ -1,38 +1,39 @@
 <template>
-  <q-page class="q-pa-md pick-page">
-    <div class="row items-center q-mb-sm q-gutter-sm">
-      <div class="text-h6 text-weight-bold">Склад · задачи</div>
+  <q-page class="section-page">
+    <div class="row items-center q-mb-md q-gutter-sm">
+      <div class="section-title">Задания складу</div>
       <q-chip
         v-if="shift"
         dense
-        :color="shift.open ? 'positive' : 'grey-5'"
+        :color="shift.open ? 'positive' : 'grey-4'"
         :text-color="shift.open ? 'white' : 'dark'"
         :label="shiftLabel"
       />
-      <q-btn v-if="shift && !shift.open" dense unelevated color="primary" label="Смена" @click="startShift" />
-      <q-btn v-if="shift?.open" dense flat color="negative" label="Закрыть смену" @click="endShift" />
       <q-space />
-      <q-btn-toggle v-model="site" toggle-color="primary" :options="siteOptions" dense unelevated />
-      <q-btn flat dense icon="open_in_new" href="/pick" target="_blank" label="Классика" />
-      <q-btn flat icon="refresh" :loading="loading" @click="load" />
+      <q-btn v-if="shift && !shift.open" unelevated no-caps color="primary" label="Открыть смену" @click="startShift" />
+      <q-btn v-if="shift?.open" flat no-caps color="negative" label="Закрыть смену" @click="endShift" />
+      <q-btn flat round icon="refresh" :loading="loading" @click="load" />
     </div>
 
-    <div class="row items-center q-gutter-sm q-mb-sm">
+    <div class="section-card">
+    <div class="row items-center q-gutter-sm q-pa-sm">
+      <q-btn-toggle v-model="site" toggle-color="primary" :options="siteOptions" no-caps unelevated dense rounded />
       <q-input
         v-model="filterQ"
         dense
         outlined
+        rounded
         clearable
-        placeholder="Фильтр: номер, сделка, клиент…"
+        placeholder="Номер, сделка, клиент"
         class="col-grow"
         style="max-width: 360px"
       >
-        <template #append><q-icon name="search" /></template>
+        <template #prepend><q-icon name="search" /></template>
       </q-input>
     </div>
 
-    <q-tabs v-model="tab" dense class="text-primary" active-color="primary" indicator-color="primary" align="left">
-      <q-tab name="open" :label="`Задачи · ${filteredOpen.length}`" />
+    <q-tabs v-model="tab" no-caps class="text-grey-8" active-color="primary" indicator-color="primary" align="left">
+      <q-tab name="open" :label="`Производство · ${filteredOpen.length}`" />
       <q-tab name="handoffs" :label="`Расходные · ${filteredHandoffs.length}`" />
       <q-tab name="returns" :label="`Возвраты · ${filteredReturns.length}`" />
       <q-tab name="done" :label="`Закрытые · ${completedTotal}`" />
@@ -67,7 +68,7 @@
           </q-list>
         </div>
         <q-item v-if="!loading && !filteredOpen.length" class="text-grey-6">
-          Нет открытых задач · {{ siteLabel }}
+          Нет заданий на производство · {{ siteLabel }}
         </q-item>
       </q-tab-panel>
 
@@ -130,6 +131,7 @@
         </q-list>
       </q-tab-panel>
     </q-tab-panels>
+    </div>
 
     <q-dialog v-model="cdekOpen" persistent maximized-mobile>
       <q-card style="min-width: 420px; max-width: 640px">
@@ -216,11 +218,7 @@ watch(cdekBoxes, (n) => {
   if (cdekDims.value.length > n) cdekDims.value = cdekDims.value.slice(0, n);
 });
 
-const openRows = computed(() => {
-  const open = board.value?.open || [];
-  const extra = handoffs.value.slice(0, 20);
-  return [...open, ...extra.map((h) => ({ ...h, channel: h.purpose_label || 'handoff' }))];
-});
+const openRows = computed(() => board.value?.open || []);
 
 function matchRow(row: Record<string, unknown>): boolean {
   const q = filterQ.value.trim().toLowerCase();
