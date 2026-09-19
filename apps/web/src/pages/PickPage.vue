@@ -168,6 +168,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { Dialog, Notify } from 'quasar';
 import { api } from '@/boot/api';
 import PickCard from '@/components/PickCard.vue';
@@ -193,7 +194,21 @@ type PageResp = {
   pages?: number;
 };
 const site = 'msk';
-const tab = ref('handoffs');
+const PICK_TABS = ['handoffs', 'open', 'returns', 'done'] as const;
+type PickTab = (typeof PICK_TABS)[number];
+const route = useRoute();
+const router = useRouter();
+
+function pickTab(raw: unknown): PickTab {
+  const v = String(raw || '').trim();
+  return (PICK_TABS as readonly string[]).includes(v) ? (v as PickTab) : 'handoffs';
+}
+function pickPage(raw: unknown): number {
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+const tab = ref<PickTab>(pickTab(route.query.tab));
 const filterQ = ref('');
 
 const loading = ref(false);
@@ -206,7 +221,13 @@ const completed = ref<Array<Record<string, unknown>>>([]);
 const completedTotal = ref(0);
 const donePages = ref(1);
 const pageSize = 15;
-const pageOf = reactive({ handoffs: 1, open: 1, returns: 1, done: 1 });
+const startPage = pickPage(route.query.page);
+const pageOf = reactive({
+  handoffs: tab.value === 'handoffs' ? startPage : 1,
+  open: tab.value === 'open' ? startPage : 1,
+  returns: tab.value === 'returns' ? startPage : 1,
+  done: tab.value === 'done' ? startPage : 1,
+});
 
 const cdekOpen = ref(false);
 const cdekDealId = ref('');
@@ -274,6 +295,35 @@ const currentPages = computed(() => {
 function shiftPage(delta: number) {
   currentPage.value = Math.min(currentPages.value, Math.max(1, currentPage.value + delta));
 }
+
+let urlLock = false;
+function writeUrl() {
+  const page = String(pageOf[tab.value]);
+  if (String(route.query.tab || '') === tab.value && String(route.query.page || '') === page) return;
+  urlLock = true;
+  void router.replace({ query: { ...route.query, tab: tab.value, page } }).finally(() => {
+    urlLock = false;
+  });
+}
+
+watch(
+  () => [tab.value, pageOf.handoffs, pageOf.open, pageOf.returns, pageOf.done] as const,
+  () => {
+    if (!urlLock) writeUrl();
+  },
+  { immediate: true }
+);
+
+watch(
+  () => [String(route.query.tab || ''), String(route.query.page || '')] as const,
+  ([qTab, qPage]) => {
+    if (urlLock) return;
+    const nextTab = pickTab(qTab);
+    const nextPage = pickPage(qPage);
+    if (tab.value !== nextTab) tab.value = nextTab;
+    if (pageOf[nextTab] !== nextPage) pageOf[nextTab] = nextPage;
+  }
+);
 
 function clampClientPages() {
   pageOf.handoffs = Math.min(pageOf.handoffs, pageCount(filteredHandoffs.value.length));
