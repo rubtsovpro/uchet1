@@ -2973,13 +2973,10 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
         beforeDocId: id,
       })
     : '';
-  const when = parseHandoffTransferLabel(commentStr, String(doc.created_at || ''));
   const num = String(doc.number || '').trim() || id.slice(0, 8);
   const d = deal && !deal.missing ? deal : null;
 
   const metaRows: Array<[string, string]> = [];
-  if (dealId) metaRows.push(['Сделка Amo', dealId]);
-  if (d?.name) metaRows.push(['Заказ', String(d.name)]);
   if (d?.buyer_name) metaRows.push(['Покупатель', String(d.buyer_name)]);
   if (d?.buyer_phone) metaRows.push(['Телефон', String(d.buyer_phone)]);
   if (d?.responsible_name) metaRows.push(['Менеджер', String(d.responsible_name)]);
@@ -2989,31 +2986,21 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
   if (d?.amo_payment_type) metaRows.push(['Тип оплаты', String(d.amo_payment_type)]);
   if (d?.payment_label) metaRows.push(['Оплата', String(d.payment_label)]);
   if (d?.amo_branch) metaRows.push(['Филиал', String(d.amo_branch)]);
-  if (d?.city) metaRows.push(['Город', String(d.city)]);
-  if (d?.cdek_number) metaRows.push(['СДЭК №', String(d.cdek_number)]);
   let routeFrom = '';
   let routeTo = '';
   if (isToSto) {
-    metaRows.push(['Задача', 'Спуск на СТО / самовывоз']);
     routeFrom = fromName;
     routeTo = toStoName;
   } else if (reserveMeta) {
-    metaRows.push(['Задача', reserveMeta.purpose_label]);
     routeFrom = String(reserveMeta.from_warehouse_name || '');
     routeTo = String(reserveMeta.dest_warehouse_name || '');
   } else if (shipMeta) {
-    metaRows.push(['Задача', shipMeta.purpose_label]);
     routeFrom = String(shipMeta.from_warehouse_name || '');
     routeTo = String(shipMeta.dest_warehouse_name || '');
   } else if (doc.warehouse_name) {
     routeFrom = String(doc.warehouse_name);
     routeTo = String(doc.warehouse_to_name || '');
   }
-
-  const channel = String(d?.amo_channel || '').trim();
-  const channelBanner = channel
-    ? `<div class="channel-banner"><div class="channel-k">Канал реализации</div><div class="channel-v">${pickEsc(channel)}</div></div>`
-    : '';
 
   const metaHtml = metaRows
     .map(([k, v]) => {
@@ -3237,7 +3224,6 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
 </head>
 <body${onload}>
 <div class="toolbar"><button type="button" onclick="window.print()">Печать · прикрепить к коробке</button></div>
-<span class="badge">СБОРКА</span><span class="badge">РАСХОДНАЯ</span>
 <h1>${pickEsc(num)}</h1>
 ${
     dealId || (d && d.name)
@@ -3251,8 +3237,6 @@ ${
         )}</p>`
       : ''
   }
-<p class="sub">Учёт №1 · передано на склад${when ? ' · ' + pickEsc(when) : ''}</p>
-${channelBanner}
 ${
     routeFrom || routeTo
       ? `<div class="route"><div class="route-side"><span class="route-k">Откуда</span>${pickEsc(routeFrom || '—')}</div><span class="route-track" aria-hidden="true"><span class="route-line"></span><span class="route-arrow">→</span><span class="route-line"></span></span><div class="route-side is-to"><span class="route-k">Куда</span>${pickEsc(routeTo || '—')}</div></div>`
