@@ -52,23 +52,29 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { inject, ref, watch, type Ref } from 'vue';
 import { api } from '@/boot/api';
 import PickPage from '@/pages/PickPage.vue';
 
 const section = ref('tasks');
+const contourId = inject<Ref<string>>('contourCompanyId', ref(''));
 const rows = ref<Array<Record<string, unknown>>>([]);
 const loading = ref(false);
 const error = ref('');
-const loaded = ref(false);
 
 async function loadPlaces() {
+  const id = String(contourId.value || '').trim();
+  if (!id) {
+    rows.value = [];
+    return;
+  }
   loading.value = true;
   error.value = '';
   try {
-    const data = await api.get<Array<Record<string, unknown>>>('/api/warehouses');
+    const data = await api.get<Array<Record<string, unknown>>>(
+      `/api/warehouses?company_id=${encodeURIComponent(id)}`
+    );
     rows.value = Array.isArray(data) ? data : [];
-    loaded.value = true;
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Ошибка загрузки';
   } finally {
@@ -76,8 +82,8 @@ async function loadPlaces() {
   }
 }
 
-watch(section, (name) => {
-  if (name === 'places' && !loaded.value && !loading.value) void loadPlaces();
+watch([section, contourId], () => {
+  if (section.value === 'places') void loadPlaces();
 });
 </script>
 

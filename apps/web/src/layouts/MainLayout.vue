@@ -69,7 +69,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, provide, ref } from 'vue';
 import { useQuasar } from 'quasar';
 import { api } from '@/boot/api';
 
@@ -100,6 +100,7 @@ const health = ref<Health | null>(null);
 const me = ref<Me | null>(null);
 const companies = ref<Company[]>([]);
 const companyId = ref('');
+provide('contourCompanyId', companyId);
 const loggingOut = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 
