@@ -4,6 +4,12 @@
       <q-toolbar class="sb-toolbar">
         <q-btn flat dense round icon="menu" class="lt-lg" aria-label="Меню" @click="drawer = !drawer" />
         <div class="sb-brand">Учёт №1</div>
+        <q-space />
+        <div v-if="meLabel" class="sb-user">
+          <div class="sb-user-name">{{ meLabel }}</div>
+          <div v-if="meHint" class="sb-user-hint">{{ meHint }}</div>
+        </div>
+        <q-btn flat no-caps icon="logout" label="Выйти" class="sb-logout" :loading="loggingOut" @click="logout" />
       </q-toolbar>
     </q-header>
 
@@ -49,9 +55,41 @@ type Health = {
   redis?: { ok?: boolean; mode?: string };
 };
 
+type Me = {
+  name?: string;
+  login?: string;
+  role?: string;
+  email?: string;
+};
+
+const ROLE_LABEL: Record<string, string> = {
+  admin: 'Администратор',
+  warehouse: 'Склад',
+  courier: 'Курьер',
+  photographer: 'Фотограф',
+  manager: 'Менеджер',
+};
+
 const drawer = ref(false);
 const health = ref<Health | null>(null);
+const me = ref<Me | null>(null);
+const loggingOut = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
+
+const meLabel = computed(() => {
+  const m = me.value;
+  if (!m) return '';
+  return String(m.name || m.login || '').trim();
+});
+
+const meHint = computed(() => {
+  const m = me.value;
+  if (!m) return '';
+  const role = ROLE_LABEL[String(m.role || '')] || '';
+  const login = String(m.login || '').trim();
+  if (role && login && login !== meLabel.value) return `${role} · ${login}`;
+  return role || (login !== meLabel.value ? login : '');
+});
 
 const nav = [
   { label: 'Главная', icon: 'home', to: { name: 'home' } },
@@ -79,8 +117,28 @@ async function refreshHealth() {
   }
 }
 
+async function loadMe() {
+  try {
+    me.value = await api.get<Me>('/api/me');
+  } catch {
+    me.value = null;
+  }
+}
+
+async function logout() {
+  if (loggingOut.value) return;
+  loggingOut.value = true;
+  try {
+    await api.post('/api/logout', {});
+  } catch {
+    /* сессию всё равно сбрасываем на экране входа */
+  }
+  window.location.replace('/login');
+}
+
 onMounted(() => {
   void refreshHealth();
+  void loadMe();
   timer = setInterval(() => void refreshHealth(), 15000);
 });
 onUnmounted(() => {

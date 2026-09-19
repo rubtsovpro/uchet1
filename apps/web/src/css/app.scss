@@ -39,6 +39,35 @@ body {
   letter-spacing: -0.02em;
 }
 
+.sb-user {
+  text-align: right;
+  line-height: 1.15;
+  margin-right: 4px;
+  min-width: 0;
+}
+
+.sb-user-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.sb-user-hint {
+  font-size: 12px;
+  color: var(--sb-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.sb-logout {
+  color: var(--sb-text);
+}
+
 .sb-drawer {
   background: var(--sb-side);
 }
