@@ -4,7 +4,7 @@
       <q-toolbar class="sb-toolbar">
         <label class="sb-org">
           <span class="sr-only">Филиал</span>
-          <select v-model="companyId" class="sb-org-select" aria-label="Филиал" @change="saveCompany">
+          <select v-model="companyId" class="sb-org-select" aria-label="Филиал">
             <option v-for="c in companies" :key="c.id" :value="c.id">{{ c.name }}</option>
           </select>
         </label>
@@ -115,8 +115,25 @@ const menuOpener = computed(() => $q.screen.width <= 1024 && !drawer.value);
 const health = ref<Health | null>(null);
 const me = ref<Me | null>(null);
 const companies = ref<Company[]>([]);
-const companyId = ref('');
+function readContour(): string {
+  try {
+    return String(localStorage.getItem(CONTOUR_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+const companyId = ref(readContour());
 provide('contourCompanyId', companyId);
+watch(companyId, (id) => {
+  const v = String(id || '').trim();
+  if (!v) return;
+  try {
+    localStorage.setItem(CONTOUR_KEY, v);
+  } catch {
+    /* ignore */
+  }
+});
 const contourSite = computed(() => {
   const row = companies.value.find((c) => String(c.id) === companyId.value);
   const code = String(row?.code || '').toUpperCase();
@@ -176,14 +193,6 @@ async function refreshHealth() {
   }
 }
 
-function saveCompany() {
-  try {
-    localStorage.setItem(CONTOUR_KEY, companyId.value || '');
-  } catch {
-    /* ignore */
-  }
-}
-
 async function loadCompanies() {
   try {
     const data = await api.get<{ items?: Company[] }>('/api/company/companies');
@@ -198,12 +207,7 @@ async function loadCompanies() {
         : null;
     if (meCos) items = items.filter((c) => meCos.includes(String(c.id)));
     companies.value = items;
-    let cur = '';
-    try {
-      cur = String(localStorage.getItem(CONTOUR_KEY) || '').trim();
-    } catch {
-      cur = '';
-    }
+    let cur = String(companyId.value || readContour()).trim();
     const pnevmo =
       items.find((c) => String(c.code || '').toUpperCase() === 'PNEVMO') ||
       items.find((c) => /пневмо/i.test(String(c.name || '')));
@@ -211,7 +215,6 @@ async function loadCompanies() {
       cur = String((meCos ? items[0] : pnevmo || items[0])?.id || '');
     }
     companyId.value = cur;
-    saveCompany();
   } catch {
     companies.value = [];
   }
