@@ -154,7 +154,26 @@ function stamp(raw: unknown): string {
   return '';
 }
 
-const taskWhen = computed(() => stamp(props.row.created_at));
+function datesIn(raw: string): string[] {
+  const out: string[] = [];
+  const re = /(\d{2}\.\d{2}\.\d{4})[,\s]+(\d{2}:\d{2})/g;
+  for (const m of raw.matchAll(re)) out.push(`${m[1]} ${m[2]}`);
+  return out;
+}
+
+const collectedWhen = computed(() => {
+  if (props.mode !== 'done') return '';
+  const comment = String(props.row.comment || '');
+  const ready = comment.match(/Склад ГОТОВО\s*·\s*([^·]+)/i)?.[1] || props.row.completed_label;
+  return stamp(ready);
+});
+
+const taskWhen = computed(() => {
+  if (props.mode !== 'done') return stamp(props.row.created_at);
+  const head = String(props.row.comment || '').split(/Склад ГОТОВО/i)[0] || '';
+  const dates = datesIn(head);
+  return dates.length ? dates[dates.length - 1] : '';
+});
 
 const dealId = computed(() => {
   const id = String(props.row.deal_id || '').trim();
@@ -184,13 +203,6 @@ const moveNum = computed(() => {
   if (props.mode !== 'done') return '';
   const num = String(props.row.number || '').trim();
   return num && num !== dealNum.value ? num : '';
-});
-
-const collectedWhen = computed(() => {
-  if (props.mode !== 'done') return '';
-  const comment = String(props.row.comment || '');
-  const ready = comment.match(/Склад ГОТОВО\s*·\s*([^·]+)/i)?.[1] || props.row.completed_label;
-  return stamp(ready);
 });
 
 function routeSide(raw: unknown, index: number): string {
