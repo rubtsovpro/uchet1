@@ -35,8 +35,9 @@
     </div>
     <div class="pick-move-head">
       <div class="pick-move-meta">
-        <div class="pick-move-num">{{ row.number || row.deal_id }}</div>
-        <div v-if="orderWhen" class="pick-move-when">{{ orderWhen }}</div>
+        <div class="pick-move-num">{{ headNum }}</div>
+        <div v-if="moveNum" class="pick-move-num">{{ moveNum }}</div>
+        <div v-if="shownWhen" class="pick-move-when">{{ shownWhen }}</div>
       </div>
       <div class="pick-move-title">{{ title }}</div>
     </div>
@@ -139,11 +140,40 @@ const title = computed(() => {
   return String(d?.title || d?.buyer_name || props.row.buyer_name || '').trim() || '—';
 });
 
-const orderWhen = computed(() => {
-  const raw = String(props.row.order_created_at || props.row.created_at || '').trim();
-  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
-  if (!m) return '';
-  return `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}`;
+function stamp(raw: unknown): string {
+  const s = String(raw || '').trim();
+  const ru = s.match(/(\d{2}\.\d{2}\.\d{4})[,\s]+(\d{2}:\d{2})/);
+  if (ru) return `${ru[1]} ${ru[2]}`;
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (iso) return `${iso[3]}.${iso[2]}.${iso[1]} ${iso[4]}:${iso[5]}`;
+  return '';
+}
+
+const orderWhen = computed(() => stamp(props.row.order_created_at || props.row.created_at));
+
+const dealNum = computed(() => {
+  const id = String(props.row.deal_id || '').trim();
+  const num = String(props.row.number || '').trim();
+  if (/^р/i.test(num)) return num;
+  if (id) return `Р${id}`;
+  return num;
+});
+
+const headNum = computed(() =>
+  props.mode === 'done' ? dealNum.value : String(props.row.number || props.row.deal_id || '')
+);
+
+const moveNum = computed(() => {
+  if (props.mode !== 'done') return '';
+  const num = String(props.row.number || '').trim();
+  return num && num !== dealNum.value ? num : '';
+});
+
+const shownWhen = computed(() => {
+  if (props.mode === 'done') {
+    return stamp(props.row.completed_label || props.row.transfer_label) || orderWhen.value;
+  }
+  return orderWhen.value;
 });
 
 function routeSide(raw: unknown, index: number): string {
@@ -209,6 +239,7 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   display: flex;
   align-items: baseline;
   gap: 10px;
+  width: 100%;
 }
 .pick-move-num {
   flex: 0 0 auto;
@@ -225,6 +256,7 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
 }
 .pick-move-when {
   flex: 0 0 auto;
+  margin-left: auto;
   font-size: 12px;
   font-weight: 400;
   line-height: 1.3;
