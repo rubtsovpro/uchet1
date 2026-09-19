@@ -2,7 +2,6 @@
   <q-layout view="lHh Lpr lFf" class="sb-layout">
     <q-header class="sb-header text-dark">
       <q-toolbar class="sb-toolbar">
-        <q-btn flat dense round icon="menu" class="lt-lg sb-icon-btn" aria-label="Меню" @click="drawer = !drawer" />
         <div class="sb-brand sb-brand-bar lt-lg">Учёт №1</div>
         <q-input
           v-model="searchQ"
@@ -11,7 +10,7 @@
           placeholder="Поиск"
           class="sb-search"
         >
-          <template #prepend><q-icon name="search" /></template>
+          <template #prepend><q-icon name="sym_o_search" /></template>
         </q-input>
         <q-space />
         <div v-if="meLabel" class="sb-user">
@@ -21,7 +20,7 @@
         <q-btn
           flat
           class="sb-icon-btn"
-          icon="logout"
+          icon="sym_o_logout"
           aria-label="Выйти"
           :loading="loggingOut"
           @click="logout"
@@ -31,11 +30,14 @@
 
     <q-drawer
       v-model="drawer"
+      v-model:mini="drawerMini"
       show-if-above
       :breakpoint="1025"
       :width="268"
+      :mini-width="72"
       class="sb-drawer"
     >
+      <div class="sb-drawer-inner">
       <q-list class="sb-nav">
         <q-item
           v-for="item in nav"
@@ -51,7 +53,20 @@
           <q-item-section>{{ item.label }}</q-item-section>
         </q-item>
       </q-list>
+      <div class="sb-drawer-toggle">
+        <q-btn flat class="sb-icon-btn" icon="sym_o_menu" aria-label="Меню" @click="toggleMenu" />
+      </div>
+      </div>
     </q-drawer>
+
+    <q-btn
+      v-if="menuOpener"
+      flat
+      class="sb-icon-btn sb-menu-fab"
+      icon="sym_o_menu"
+      aria-label="Меню"
+      @click="drawer = true"
+    />
 
     <q-page-container>
       <router-view />
@@ -61,6 +76,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { useQuasar } from 'quasar';
 import { api } from '@/boot/api';
 
 type Health = {
@@ -87,7 +103,10 @@ const ROLE_LABEL: Record<string, string> = {
   sto: 'СТО',
 };
 
+const $q = useQuasar();
 const drawer = ref(false);
+const drawerMini = ref(false);
+const menuOpener = computed(() => $q.screen.width <= 1024 && !drawer.value);
 const health = ref<Health | null>(null);
 const me = ref<Me | null>(null);
 const loggingOut = ref(false);
@@ -110,26 +129,34 @@ const meHint = computed(() => {
 });
 
 const nav: { label: string; icon: string; to?: { name: string }; href?: string }[] = [
-  { label: 'Главное', icon: 'home', to: { name: 'home' } },
-  { label: 'CRM', icon: 'groups', href: '/crm' },
-  { label: 'Сделки', icon: 'handshake', to: { name: 'deals' } },
-  { label: 'Продажи', icon: 'shopping_bag', href: '/sales' },
-  { label: 'Документы', icon: 'description', href: '/documents' },
-  { label: 'Закупки', icon: 'shopping_cart', href: '/purchases' },
-  { label: 'Склад', icon: 'warehouse', href: '/warehouses' },
-  { label: 'Задания складу', icon: 'inventory_2', to: { name: 'pick' } },
-  { label: 'Курьер', icon: 'local_shipping', to: { name: 'courier' } },
-  { label: 'Работы', icon: 'handyman', href: '/works' },
-  { label: 'Производство', icon: 'precision_manufacturing', to: { name: 'production' } },
-  { label: 'Деньги', icon: 'payments', href: '/money' },
-  { label: 'Налоги', icon: 'account_balance', href: '/tax' },
-  { label: 'Касса', icon: 'point_of_sale', href: '/kassa' },
-  { label: 'Персонал', icon: 'badge', href: '/staff' },
-  { label: 'Компания', icon: 'apartment', href: '/company' },
-  { label: 'Настройки', icon: 'settings', href: '/settings' },
-  { label: 'Идеи и ошибки', icon: 'lightbulb', href: '/ideas' },
-  { label: 'Помощь', icon: 'help', href: '/help' },
+  { label: 'Главное', icon: 'sym_o_home', to: { name: 'home' } },
+  { label: 'CRM', icon: 'sym_o_groups', href: '/crm' },
+  { label: 'Сделки', icon: 'sym_o_handshake', to: { name: 'deals' } },
+  { label: 'Продажи', icon: 'sym_o_shopping_bag', href: '/sales' },
+  { label: 'Документы', icon: 'sym_o_description', href: '/documents' },
+  { label: 'Закупки', icon: 'sym_o_shopping_cart', href: '/purchases' },
+  { label: 'Склад', icon: 'sym_o_warehouse', href: '/warehouses' },
+  { label: 'Задания складу', icon: 'sym_o_inventory_2', to: { name: 'pick' } },
+  { label: 'Курьер', icon: 'sym_o_local_shipping', to: { name: 'courier' } },
+  { label: 'Работы', icon: 'sym_o_handyman', href: '/works' },
+  { label: 'Производство', icon: 'sym_o_precision_manufacturing', to: { name: 'production' } },
+  { label: 'Деньги', icon: 'sym_o_payments', href: '/money' },
+  { label: 'Налоги', icon: 'sym_o_account_balance', href: '/tax' },
+  { label: 'Касса', icon: 'sym_o_point_of_sale', href: '/kassa' },
+  { label: 'Персонал', icon: 'sym_o_badge', href: '/staff' },
+  { label: 'Компания', icon: 'sym_o_apartment', href: '/company' },
+  { label: 'Настройки', icon: 'sym_o_settings', href: '/settings' },
+  { label: 'Идеи и ошибки', icon: 'sym_o_lightbulb', href: '/ideas' },
+  { label: 'Помощь', icon: 'sym_o_help', href: '/help' },
 ];
+
+function toggleMenu() {
+  if (window.innerWidth <= 1024) {
+    drawer.value = !drawer.value;
+    return;
+  }
+  drawerMini.value = !drawerMini.value;
+}
 
 function closeIfNarrow() {
   if (window.innerWidth <= 1024) drawer.value = false;

@@ -3,6 +3,7 @@ import { createPinia } from 'pinia';
 import { Quasar, Notify, Dialog, Loading } from 'quasar';
 import quasarLang from 'quasar/lang/ru';
 import '@quasar/extras/material-icons/material-icons.css';
+import '@quasar/extras/material-symbols-outlined/material-symbols-outlined.css';
 import 'quasar/src/css/index.sass';
 import './css/app.scss';
 import App from './App.vue';
