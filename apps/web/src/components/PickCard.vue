@@ -11,7 +11,8 @@
     </div>
     <div class="pick-move-head">
       <div>
-        <div class="pick-move-title">{{ row.number || row.deal_id }} · {{ title }}</div>
+        <div class="pick-move-num">{{ row.number || row.deal_id }}</div>
+        <div class="pick-move-title">{{ title }}</div>
         <div v-if="row.cdek_number" class="pick-move-caption">СДЭК {{ row.cdek_number }}</div>
       </div>
     </div>
@@ -193,7 +194,14 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   justify-content: space-between;
   gap: 12px;
 }
+.pick-move-num {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #64748b;
+}
 .pick-move-title {
+  margin-top: 2px;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
