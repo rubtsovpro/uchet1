@@ -294,7 +294,7 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding-top: 12px;
+  padding-top: 20px;
 }
 .pick-move-side {
   display: flex;
