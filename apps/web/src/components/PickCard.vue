@@ -36,8 +36,10 @@
     <div class="pick-move-head">
       <div class="pick-move-meta">
         <div class="pick-move-num">{{ headNum }}</div>
-        <div v-if="moveNum" class="pick-move-num">{{ moveNum }}</div>
-        <div v-if="shownWhen" class="pick-move-when">{{ shownWhen }}</div>
+        <div class="pick-move-side">
+          <div v-if="moveNum" class="pick-move-num">{{ moveNum }}</div>
+          <div v-if="shownWhen" class="pick-move-when">{{ shownWhen }}</div>
+        </div>
       </div>
       <div class="pick-move-title">{{ title }}</div>
     </div>
@@ -241,6 +243,12 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   gap: 10px;
   width: 100%;
 }
+.pick-move-side {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-left: auto;
+}
 .pick-move-num {
   flex: 0 0 auto;
   font-size: 12px;
@@ -256,7 +264,6 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
 }
 .pick-move-when {
   flex: 0 0 auto;
-  margin-left: auto;
   font-size: 12px;
   font-weight: 400;
   line-height: 1.3;
