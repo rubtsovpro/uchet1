@@ -1,6 +1,6 @@
 <template>
-  <q-page class="section-page">
-    <div class="section-title q-mb-md">Задания складу</div>
+  <component :is="embedded ? 'div' : 'q-page'" :class="embedded ? '' : 'section-page'">
+    <div v-if="!embedded" class="section-title q-mb-md">Задания складу</div>
 
     <div class="section-card">
     <div class="row items-center q-gutter-sm q-pa-sm">
@@ -141,7 +141,7 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
-  </q-page>
+  </component>
 </template>
 
 <script setup lang="ts">
@@ -149,6 +149,13 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { Dialog, Notify } from 'quasar';
 import { api } from '@/boot/api';
 import PickCard from '@/components/PickCard.vue';
+
+withDefaults(
+  defineProps<{
+    embedded?: boolean;
+  }>(),
+  { embedded: false }
+);
 
 type Board = {
   counts?: { open?: number };

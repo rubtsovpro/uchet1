@@ -35,16 +35,14 @@
     </div>
     <div class="pick-move-head">
       <div class="pick-move-meta">
-        <a v-if="dealHref" class="pick-move-num pick-open" :href="dealHref" target="_blank" rel="noopener">{{ headNum }}</a>
-        <div v-else class="pick-move-num">{{ headNum }}</div>
+        <button v-if="headNum" type="button" class="pick-move-num pick-open" @click="copyNum">{{ headNum }}</button>
         <div v-if="taskWhen" class="pick-move-when">{{ taskWhen }}</div>
         <div v-if="mode === 'done' && (moveNum || collectedWhen)" class="pick-move-tail">
           <div v-if="moveNum" class="pick-move-num">{{ moveNum }}</div>
           <div v-if="collectedWhen" class="pick-move-when">{{ collectedWhen }}</div>
         </div>
       </div>
-      <a v-if="dealHref" class="pick-move-title pick-open" :href="dealHref" target="_blank" rel="noopener">{{ title }}</a>
-      <div v-else class="pick-move-title">{{ title }}</div>
+      <div class="pick-move-title">{{ title }}</div>
     </div>
     <div v-if="row.cdek_number" class="pick-move-caption">СДЭК {{ row.cdek_number }}</div>
 
@@ -130,6 +128,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { Notify } from 'quasar';
 
 const props = withDefaults(
   defineProps<{
@@ -191,26 +190,24 @@ const dealId = computed(() => {
   return m ? m[1] : '';
 });
 
-const dealHref = computed(() =>
-  dealId.value ? `/deals/${encodeURIComponent(dealId.value)}` : ''
-);
+const headNum = computed(() => dealId.value);
 
-const dealNum = computed(() => {
-  const id = String(props.row.deal_id || '').trim();
-  const num = String(props.row.number || '').trim();
-  if (/^р/i.test(num)) return num;
-  if (id) return `Р${id}`;
-  return num;
-});
-
-const headNum = computed(() =>
-  props.mode === 'done' ? dealNum.value : String(props.row.number || props.row.deal_id || '')
-);
+async function copyNum() {
+  const text = headNum.value;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    Notify.create({ type: 'positive', message: 'Скопировано', timeout: 800 });
+  } catch {
+    Notify.create({ type: 'negative', message: 'Не удалось скопировать', timeout: 1200 });
+  }
+}
 
 const moveNum = computed(() => {
   if (props.mode !== 'done') return '';
   const num = String(props.row.number || '').trim();
-  return num && num !== dealNum.value ? num : '';
+  if (!num || num === headNum.value || num === `Р${headNum.value}`) return '';
+  return num;
 });
 
 function lotMeta(ln: Record<string, unknown>) {
@@ -304,6 +301,10 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   margin-left: auto;
 }
 .pick-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
   color: inherit;
   text-decoration: none;
   cursor: pointer;

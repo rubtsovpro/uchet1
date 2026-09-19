@@ -113,12 +113,11 @@ const meLabel = computed(() => {
 
 const nav: { label: string; icon: string; to?: { name: string }; href?: string; exact?: boolean }[] = [
   { label: 'Главное', icon: 'sym_o_home', to: { name: 'home' }, exact: true },
-  { label: 'Склад', icon: 'sym_o_warehouse', href: '/warehouses' },
+  { label: 'Склад', icon: 'sym_o_warehouse', to: { name: 'warehouse' } },
   { label: 'Сделки', icon: 'sym_o_handshake', to: { name: 'deals' } },
   { label: 'Продажи', icon: 'sym_o_shopping_bag', href: '/sales' },
   { label: 'Документы', icon: 'sym_o_description', href: '/documents' },
   { label: 'Закупки', icon: 'sym_o_shopping_cart', href: '/purchases' },
-  { label: 'Задания складу', icon: 'sym_o_inventory_2', to: { name: 'pick' } },
   { label: 'Курьер', icon: 'sym_o_local_shipping', to: { name: 'courier' } },
   { label: 'Работы', icon: 'sym_o_handyman', href: '/works' },
   { label: 'Производство', icon: 'sym_o_precision_manufacturing', to: { name: 'production' } },
