@@ -43,7 +43,13 @@
         </q-item>
       </q-list>
       <div class="sb-drawer-toggle">
-        <q-btn flat class="sb-icon-btn" icon="sym_o_menu" aria-label="Меню" @click="toggleMenu" />
+        <q-btn
+          flat
+          class="sb-icon-btn"
+          :icon="drawerMini ? 'sym_o_chevron_right' : 'sym_o_chevron_left'"
+          aria-label="Меню"
+          @click="toggleMenu"
+        />
       </div>
       </div>
     </q-drawer>

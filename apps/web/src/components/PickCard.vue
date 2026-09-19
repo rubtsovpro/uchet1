@@ -61,9 +61,17 @@
       <tbody>
         <tr v-for="(ln, i) in lines" :key="i">
           <td>{{ ln.article || ln.sku || '—' }}</td>
-          <td>{{ ln.name || '—' }}</td>
+          <td>
+            <div>{{ ln.name || '—' }}</div>
+            <div v-if="lotMeta(ln).length" class="pick-lot">
+              <template v-for="(bit, bi) in lotMeta(ln)" :key="bi">
+                <span v-if="bi"> · </span>
+                <span>{{ bit.label }}: </span><b>{{ bit.value }}</b>
+              </template>
+            </div>
+          </td>
           <td class="text-right">{{ ln.qty }}</td>
-          <td>{{ ln.cells_label || ln.done_cell || ln.cell_code || '—' }}</td>
+          <td>{{ cellLabel(ln) }}</td>
           <td>
             <q-select
               v-if="whOptions(ln).length > 1 && row.id"
@@ -205,6 +213,25 @@ const moveNum = computed(() => {
   return num && num !== dealNum.value ? num : '';
 });
 
+function lotMeta(ln: Record<string, unknown>) {
+  const master = String(ln.master_sku || ln.article || ln.sku || '').trim();
+  const fact = String(ln.fact_sku || '').trim() || master;
+  const supplier = String(ln.supplier || '').trim();
+  const lotCell = String(ln.lot_cell_code || ln.cells_label || ln.cell_code || '').trim();
+  const brand = String(ln.brand || ln.deal_brand || ln.product_brand || '').trim();
+  const bits: Array<{ label: string; value: string }> = [];
+  if (brand) bits.push({ label: 'Бренд', value: brand });
+  if (master) bits.push({ label: 'Мастер', value: master });
+  if (fact) bits.push({ label: 'На складе', value: fact });
+  if (supplier) bits.push({ label: 'Поставщик', value: supplier });
+  if (lotCell) bits.push({ label: 'Яч.', value: lotCell });
+  return bits;
+}
+
+function cellLabel(ln: Record<string, unknown>) {
+  return String(ln.cells_label || ln.lot_cell_code || ln.done_cell || ln.cell_code || '').trim() || '—';
+}
+
 function routeSide(raw: unknown, index: number): string {
   const direct = String(raw || '').trim();
   if (direct) return direct;
@@ -304,6 +331,17 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   line-height: 1.3;
   color: #64748b;
   white-space: nowrap;
+}
+.pick-lot {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 600;
+  color: #0f766e;
+}
+.pick-lot b {
+  color: #134e4a;
+  font-weight: 700;
 }
 .pick-move-caption {
   margin-top: 2px;
