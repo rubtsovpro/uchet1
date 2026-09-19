@@ -345,6 +345,26 @@ body {
   color: #0f766e;
 }
 
+.sb-layout .q-btn.btn-cancel {
+  background: #fdecec !important;
+  color: #c2414a !important;
+}
+
+.sb-layout .q-btn.btn-icon {
+  background: #fff !important;
+  color: #0f766e !important;
+  border: 1px solid #e2e8f0;
+  min-width: 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  box-shadow: none !important;
+}
+
+.sb-layout .q-btn.btn-icon .q-icon {
+  color: #0f766e;
+}
+
 .sb-layout .q-btn-toggle {
   border: 1px solid #e2e8f0;
   border-radius: 10px;

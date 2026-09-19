@@ -55,31 +55,29 @@
       <div class="row q-gutter-sm">
         <q-btn
           v-if="printHref"
-          outline
+          class="btn-icon"
+          unelevated
           dense
-          no-caps
-          color="primary"
           icon="print"
-          :label="String(row.print_label || 'Печать')"
+          :aria-label="String(row.print_label || 'Печать')"
           :href="printHref + '?autoprint=1'"
           target="_blank"
         />
         <q-btn
           v-if="showCdek"
-          outline
+          class="btn-icon"
+          unelevated
           dense
-          no-caps
-          color="orange"
           icon="local_shipping"
-          :label="row.cdek_number ? `СДЭК ${row.cdek_number}` : 'СДЭК места'"
+          :aria-label="row.cdek_number ? `СДЭК ${row.cdek_number}` : 'СДЭК места'"
           @click="$emit('cdek', String(row.deal_id))"
         />
         <q-btn
           v-if="mode === 'handoff' || mode === 'open'"
+          class="btn-cancel"
           outline
           dense
           no-caps
-          color="primary"
           label="Отмена"
           :loading="busyId === `cancel:${row.id}`"
           @click="$emit('cancel', String(row.id))"
