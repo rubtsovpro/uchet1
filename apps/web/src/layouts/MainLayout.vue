@@ -5,7 +5,6 @@
         <label class="sb-org">
           <span class="sr-only">Филиал</span>
           <select v-model="companyId" class="sb-org-select" aria-label="Филиал" @change="saveCompany">
-            <option v-if="allBranchesLabel" value="">{{ allBranchesLabel }}</option>
             <option v-for="c in companies" :key="c.id" :value="c.id">{{ c.name }}</option>
           </select>
         </label>
@@ -101,7 +100,6 @@ const health = ref<Health | null>(null);
 const me = ref<Me | null>(null);
 const companies = ref<Company[]>([]);
 const companyId = ref('');
-const allBranchesLabel = ref('Все филиалы');
 const loggingOut = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -174,7 +172,6 @@ async function loadCompanies() {
         : null;
     if (meCos) items = items.filter((c) => meCos.includes(String(c.id)));
     companies.value = items;
-    allBranchesLabel.value = meCos ? (items.length > 1 ? 'Все доступные' : '') : 'Все филиалы';
     let cur = '';
     try {
       cur = String(localStorage.getItem(CONTOUR_KEY) || '').trim();
@@ -184,9 +181,9 @@ async function loadCompanies() {
     const pnevmo =
       items.find((c) => String(c.code || '').toUpperCase() === 'PNEVMO') ||
       items.find((c) => /пневмо/i.test(String(c.name || '')));
-    if (!cur && pnevmo && !meCos) cur = String(pnevmo.id);
-    if (meCos && items.length === 1) cur = String(items[0].id);
-    else if (cur && !items.some((c) => String(c.id) === cur)) cur = meCos && items[0] ? String(items[0].id) : String(pnevmo?.id || '');
+    if (!items.some((c) => String(c.id) === cur)) {
+      cur = String((meCos ? items[0] : pnevmo || items[0])?.id || '');
+    }
     companyId.value = cur;
     saveCompany();
   } catch {
