@@ -55,6 +55,10 @@ jobs:
             find api/node_modules/.bin web/node_modules/.bin -type l -exec chmod -h a+x {} + 2>/dev/null || true
             NODE_ENV= npm run build --prefix api
             NODE_ENV= npm run build --prefix web
+            if [[ -d apps/web ]]; then
+              NODE_ENV= npm install --prefix apps/web
+              NODE_ENV= npm run build --prefix apps/web
+            fi
             if [[ -d web/public && -d web/dist ]]; then
               rsync -a --exclude 'assets/' web/public/ web/dist/ || true
             fi

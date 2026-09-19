@@ -1,10 +1,6 @@
 <template>
   <q-page padding class="q-gutter-md">
     <div class="text-h5 text-weight-bold">Учёт №1 · dual-run</div>
-    <div class="text-body2 text-grey-7">
-      Старый и новый UI работают параллельно на одних данных (SQLite → API). Postgres — зеркало
-      для будущего cutover.
-    </div>
 
     <div class="row q-gutter-sm">
       <q-btn color="primary" unelevated :to="{ name: 'pick' }" label="Склад · задачи" />
