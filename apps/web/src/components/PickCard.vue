@@ -37,8 +37,7 @@
       <div class="pick-move-meta">
         <a v-if="dealHref" class="pick-move-num pick-open" :href="dealHref" target="_blank" rel="noopener">{{ headNum }}</a>
         <div v-else class="pick-move-num">{{ headNum }}</div>
-        <div v-if="startedWhen" class="pick-move-when">начало {{ startedWhen }}</div>
-        <div v-if="taskWhen" class="pick-move-when">задача {{ taskWhen }}</div>
+        <div v-if="taskWhen" class="pick-move-when">{{ taskWhen }}</div>
         <div v-if="mode === 'done' && (moveNum || collectedWhen)" class="pick-move-tail">
           <div v-if="moveNum" class="pick-move-num">{{ moveNum }}</div>
           <div v-if="collectedWhen" class="pick-move-when">{{ collectedWhen }}</div>
@@ -155,7 +154,6 @@ function stamp(raw: unknown): string {
   return '';
 }
 
-const startedWhen = computed(() => stamp(props.row.order_created_at));
 const taskWhen = computed(() => stamp(props.row.created_at));
 
 const dealId = computed(() => {
