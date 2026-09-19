@@ -52,26 +52,49 @@
     <div v-else class="text-grey-6 text-caption q-pa-sm">Нет строк / ячеек</div>
 
     <div class="pick-move-foot">
-      <div class="row q-gutter-sm">
-        <q-btn
+      <div class="pick-move-side">
+        <a
           v-if="printHref"
-          class="btn-icon"
-          unelevated
-          dense
-          icon="sym_o_print"
-          :aria-label="String(row.print_label || 'Печать')"
+          class="pick-link"
           :href="printHref + '?autoprint=1'"
           target="_blank"
-        />
-        <q-btn
+        >
+          <q-icon name="sym_o_print" />
+          <span>Печать</span>
+        </a>
+        <button
           v-if="showCdek"
-          class="btn-icon"
+          type="button"
+          class="pick-link"
+          @click="$emit('cdek', String(row.deal_id))"
+        >
+          <q-icon name="sym_o_local_shipping" />
+          <span>СДЭК</span>
+        </button>
+      </div>
+      <div class="pick-move-mid">
+        <q-btn
+          v-if="mode === 'handoff' || (mode === 'open' && row.id && !String(row.id).startsWith('return:'))"
+          color="primary"
           unelevated
           dense
-          icon="sym_o_local_shipping"
-          :aria-label="row.cdek_number ? `СДЭК ${row.cdek_number}` : 'СДЭК места'"
-          @click="$emit('cdek', String(row.deal_id))"
+          no-caps
+          label="Собрано"
+          :loading="busyId === String(row.id)"
+          @click="$emit('complete', String(row.id))"
         />
+        <q-btn
+          v-else-if="mode === 'return'"
+          color="primary"
+          unelevated
+          dense
+          no-caps
+          label="Вернуть"
+          :loading="busyId === `ret:${row.deal_id}`"
+          @click="$emit('complete-return', String(row.deal_id))"
+        />
+      </div>
+      <div class="pick-move-side is-end">
         <q-btn
           v-if="mode === 'handoff' || mode === 'open'"
           class="btn-cancel"
@@ -83,26 +106,6 @@
           @click="$emit('cancel', String(row.id))"
         />
       </div>
-      <q-btn
-        v-if="mode === 'handoff' || (mode === 'open' && row.id && !String(row.id).startsWith('return:'))"
-        color="primary"
-        unelevated
-        dense
-        no-caps
-        label="Собрано"
-        :loading="busyId === String(row.id)"
-        @click="$emit('complete', String(row.id))"
-      />
-      <q-btn
-        v-else-if="mode === 'return'"
-        color="primary"
-        unelevated
-        dense
-        no-caps
-        label="Вернуть"
-        :loading="busyId === `ret:${row.deal_id}`"
-        @click="$emit('complete-return', String(row.deal_id))"
-      />
     </div>
   </div>
 </template>
@@ -232,13 +235,42 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   line-height: 1;
 }
 .pick-move-foot {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: flex-end;
   gap: 8px;
   padding-top: 8px;
 }
-.pick-move-foot .row {
-  margin-right: auto;
+.pick-move-side {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.pick-move-side.is-end {
+  justify-content: flex-end;
+}
+.pick-move-mid {
+  justify-self: center;
+}
+.pick-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #0f766e;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  text-decoration: none;
+  cursor: pointer;
+}
+.pick-link .q-icon {
+  color: #94a3b8;
+  font-size: 18px;
+  font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
 }
 </style>
