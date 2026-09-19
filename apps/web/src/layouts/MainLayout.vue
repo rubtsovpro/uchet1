@@ -8,7 +8,6 @@
         <q-btn flat stretch :to="{ name: 'courier' }" label="Курьер" />
         <q-btn flat stretch :to="{ name: 'production' }" label="Производство" />
         <q-btn flat stretch :to="{ name: 'deals' }" label="Сделки" />
-        <q-btn flat stretch href="/pick" label="Legacy" />
         <q-space />
         <q-chip
           v-if="health"
