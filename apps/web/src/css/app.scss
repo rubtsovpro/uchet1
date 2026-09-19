@@ -346,8 +346,15 @@ body {
 }
 
 .sb-layout .q-btn.btn-cancel {
-  background: #fdecec !important;
-  color: #c2414a !important;
+  background: transparent !important;
+  color: #dc2626 !important;
+  box-shadow: none !important;
+  min-height: 0;
+  padding: 0 4px;
+}
+
+.sb-layout .q-btn.btn-cancel .q-focus-helper {
+  display: none;
 }
 
 .sb-layout .q-btn-toggle {

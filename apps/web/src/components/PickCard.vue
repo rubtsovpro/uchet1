@@ -98,7 +98,7 @@
         <q-btn
           v-if="mode === 'handoff' || mode === 'open'"
           class="btn-cancel"
-          outline
+          flat
           dense
           no-caps
           label="Отмена"
