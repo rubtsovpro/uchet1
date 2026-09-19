@@ -91,6 +91,16 @@
 
     <div v-if="mode !== 'done'" class="pick-move-foot">
       <div class="pick-move-side">
+        <q-btn
+          v-if="printHref"
+          outline
+          dense
+          no-caps
+          icon="sym_o_print"
+          label="Печать"
+          :href="printHref + '?autoprint=1'"
+          target="_blank"
+        />
         <button
           v-if="showCdek"
           type="button"
@@ -111,16 +121,6 @@
           label="Отмена"
           :loading="busyId === `cancel:${row.id}`"
           @click="$emit('cancel', String(row.id))"
-        />
-        <q-btn
-          v-if="printHref"
-          outline
-          dense
-          no-caps
-          icon="sym_o_print"
-          label="Печать"
-          :href="printHref + '?autoprint=1'"
-          target="_blank"
         />
       </div>
     </div>
