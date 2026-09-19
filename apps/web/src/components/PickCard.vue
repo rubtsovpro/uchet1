@@ -58,7 +58,7 @@
           class="btn-icon"
           unelevated
           dense
-          icon="print"
+          icon="sym_o_print"
           :aria-label="String(row.print_label || 'Печать')"
           :href="printHref + '?autoprint=1'"
           target="_blank"
@@ -68,7 +68,7 @@
           class="btn-icon"
           unelevated
           dense
-          icon="local_shipping"
+          icon="sym_o_local_shipping"
           :aria-label="row.cdek_number ? `СДЭК ${row.cdek_number}` : 'СДЭК места'"
           @click="$emit('cdek', String(row.deal_id))"
         />
