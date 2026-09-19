@@ -240,7 +240,7 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 18px;
 }
 .pick-route {
   display: flex;
