@@ -3224,6 +3224,11 @@ export async function handoffPickSlipHtml(docId: string, opts?: { autoprint?: bo
 </head>
 <body${onload}>
 <div class="toolbar"><button type="button" onclick="window.print()">Печать · прикрепить к коробке</button></div>
+${
+    routeFrom || routeTo
+      ? `<div class="route"><div class="route-side"><span class="route-k">Откуда</span>${pickEsc(routeFrom || '—')}</div><span class="route-track" aria-hidden="true"><span class="route-line"></span><span class="route-arrow">→</span><span class="route-line"></span></span><div class="route-side is-to"><span class="route-k">Куда</span>${pickEsc(routeTo || '—')}</div></div>`
+      : ''
+  }
 <h1>${pickEsc(num)}</h1>
 ${
     dealId || (d && d.name)
@@ -3235,11 +3240,6 @@ ${
             d?.company_name ? String(d.company_name) : ''
           )
         )}</p>`
-      : ''
-  }
-${
-    routeFrom || routeTo
-      ? `<div class="route"><div class="route-side"><span class="route-k">Откуда</span>${pickEsc(routeFrom || '—')}</div><span class="route-track" aria-hidden="true"><span class="route-line"></span><span class="route-arrow">→</span><span class="route-line"></span></span><div class="route-side is-to"><span class="route-k">Куда</span>${pickEsc(routeTo || '—')}</div></div>`
       : ''
   }
 <table class="meta">${metaHtml || '<tr><td>—</td></tr>'}</table>
