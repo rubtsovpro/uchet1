@@ -20,7 +20,7 @@
 
     <q-tabs v-model="tab" no-caps class="text-grey-8" active-color="primary" indicator-color="primary" align="left">
       <q-tab name="open" :label="`Производство · ${filteredOpen.length}`" />
-      <q-tab name="handoffs" :label="`Расходные · ${filteredHandoffs.length}`" />
+      <q-tab name="handoffs" :label="`Перемещения · ${filteredHandoffs.length}`" />
       <q-tab name="returns" :label="`Возвраты · ${filteredReturns.length}`" />
       <q-tab name="done" :label="`Закрытые · ${completedTotal}`" />
     </q-tabs>
@@ -72,7 +72,7 @@
             @line-source="setLineSource"
           />
           <q-item v-if="!loading && !filteredHandoffs.length">
-            <q-item-section class="text-grey-6">Нет расходных</q-item-section>
+            <q-item-section class="text-grey-6">Нет перемещений</q-item-section>
           </q-item>
         </q-list>
       </q-tab-panel>

@@ -1,39 +1,40 @@
 <template>
-  <q-expansion-item dense expand-separator>
-    <template #header>
-      <q-item-section>
-        <q-item-label>
-          {{ row.number || row.deal_id }} · {{ title }}
-        </q-item-label>
-        <q-item-label caption>
-          {{ row.route_label || row.purpose_label || row.channel }}
+  <div class="pick-move">
+    <div class="pick-move-head">
+      <div>
+        <div class="pick-move-title">{{ row.number || row.deal_id }} · {{ title }}</div>
+        <div class="pick-move-caption">
+          <template v-if="mode === 'handoff'">Перемещение</template>
+          <span v-if="row.route_label || row.purpose_label || row.channel">
+            <template v-if="mode === 'handoff'"> · </template>{{ row.route_label || row.purpose_label || row.channel }}
+          </span>
           <span v-if="row.deal_id"> · {{ row.deal_id }}</span>
           <span v-if="row.cdek_number"> · СДЭК {{ row.cdek_number }}</span>
-        </q-item-label>
-      </q-item-section>
-      <q-item-section side top>
-        <q-btn
-          v-if="mode === 'handoff' || (mode === 'open' && row.id && !String(row.id).startsWith('return:'))"
-          color="primary"
-          unelevated
-          dense
-          label="Собрано"
-          :loading="busyId === String(row.id)"
-          @click.stop="$emit('complete', String(row.id))"
-        />
-        <q-btn
-          v-else-if="mode === 'return'"
-          color="orange"
-          unelevated
-          dense
-          label="Вернуть"
-          :loading="busyId === `ret:${row.deal_id}`"
-          @click.stop="$emit('complete-return', String(row.deal_id))"
-        />
-      </q-item-section>
-    </template>
+        </div>
+      </div>
+      <q-btn
+        v-if="mode === 'handoff' || (mode === 'open' && row.id && !String(row.id).startsWith('return:'))"
+        color="primary"
+        unelevated
+        dense
+        no-caps
+        label="Собрано"
+        :loading="busyId === String(row.id)"
+        @click="$emit('complete', String(row.id))"
+      />
+      <q-btn
+        v-else-if="mode === 'return'"
+        color="orange"
+        unelevated
+        dense
+        no-caps
+        label="Вернуть"
+        :loading="busyId === `ret:${row.deal_id}`"
+        @click="$emit('complete-return', String(row.deal_id))"
+      />
+    </div>
 
-    <q-markup-table v-if="lines.length" flat dense class="q-ma-sm">
+    <q-markup-table v-if="lines.length" flat dense>
       <thead>
         <tr>
           <th class="text-left">Артикул</th>
@@ -98,7 +99,7 @@
         @click="$emit('cancel', String(row.id))"
       />
     </div>
-  </q-expansion-item>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -157,3 +158,26 @@ function onWh(ln: Record<string, unknown>, warehouse_id: string) {
   });
 }
 </script>
+
+<style scoped>
+.pick-move {
+  padding: 10px 12px 8px;
+  background: #fff;
+}
+.pick-move-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pick-move-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.pick-move-caption {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #64748b;
+}
+</style>
