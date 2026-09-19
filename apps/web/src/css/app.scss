@@ -23,88 +23,115 @@ body {
 }
 
 .sb-header {
-  background: #fff !important;
+  background: var(--sb-bg) !important;
   color: var(--sb-text);
-  border-bottom: 1px solid var(--sb-line);
   box-shadow: none !important;
 }
 
 .sb-toolbar {
-  min-height: 56px;
+  min-height: 72px;
+  padding: 10px 16px;
+  gap: 12px;
 }
 
 .sb-brand {
-  font-size: 18px;
+  padding: 18px 20px 8px;
+  font-size: 22px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
+  color: var(--sb-accent);
+}
+
+.sb-brand-bar {
+  padding: 0;
+  font-size: 18px;
+}
+
+.sb-search {
+  width: min(420px, 42vw);
+  background: #e8ebed;
+  border-radius: 14px;
+  padding: 0 12px;
+}
+
+.sb-search .q-field__control {
+  min-height: 44px;
+}
+
+.sb-search .q-icon {
+  color: var(--sb-accent);
 }
 
 .sb-user {
-  text-align: right;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  background: #fff;
+  border-radius: 16px;
+  padding: 8px 16px;
   line-height: 1.15;
-  margin-right: 4px;
   min-width: 0;
+  min-height: 52px;
 }
 
 .sb-user-name {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 700;
+  color: #243036;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 280px;
+  max-width: 240px;
 }
 
 .sb-user-hint {
+  margin-top: 2px;
   font-size: 12px;
   color: var(--sb-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 280px;
+  max-width: 240px;
 }
 
-.sb-logout {
-  color: var(--sb-text);
+.sb-icon-btn {
+  width: 48px;
+  height: 48px;
+  min-width: 48px;
+  border-radius: 14px;
+  background: #fff;
+  color: var(--sb-accent);
 }
 
 .sb-drawer {
-  background: var(--sb-side);
+  background: #fff;
 }
 
 .sb-nav {
-  padding: 12px 8px;
+  padding: 8px 10px 20px;
 }
 
 .sb-nav .q-item {
-  border-radius: 10px;
+  border-radius: 12px;
   margin-bottom: 2px;
-  min-height: 44px;
-  color: #3a3f45;
+  min-height: 46px;
+  color: #2b3136;
+  padding-left: 10px;
 }
 
 .sb-nav .q-item__section--avatar {
-  min-width: 36px;
-  color: #6d7278;
+  min-width: 34px;
+  color: #2b3136;
 }
 
 .sb-nav-active {
-  background: var(--sb-accent-soft) !important;
+  background: #e8f3f2 !important;
   color: var(--sb-accent) !important;
   box-shadow: inset 3px 0 0 var(--sb-accent);
 }
 
 .sb-nav-active .q-icon {
   color: var(--sb-accent);
-}
-
-.sb-drawer-foot {
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: 16px;
-  color: var(--sb-muted);
-  font-size: 12px;
 }
 
 .section-page {

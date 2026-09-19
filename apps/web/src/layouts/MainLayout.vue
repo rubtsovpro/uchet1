@@ -2,14 +2,30 @@
   <q-layout view="hHh Lpr lFf" class="sb-layout">
     <q-header class="sb-header text-dark">
       <q-toolbar class="sb-toolbar">
-        <q-btn flat dense round icon="menu" class="lt-lg" aria-label="Меню" @click="drawer = !drawer" />
-        <div class="sb-brand">Учёт №1</div>
+        <q-btn flat dense round icon="menu" class="lt-lg sb-icon-btn" aria-label="Меню" @click="drawer = !drawer" />
+        <div class="sb-brand sb-brand-bar lt-lg">Учёт №1</div>
+        <q-input
+          v-model="searchQ"
+          dense
+          borderless
+          placeholder="Поиск"
+          class="sb-search"
+        >
+          <template #prepend><q-icon name="search" /></template>
+        </q-input>
         <q-space />
         <div v-if="meLabel" class="sb-user">
           <div class="sb-user-name">{{ meLabel }}</div>
           <div v-if="meHint" class="sb-user-hint">{{ meHint }}</div>
         </div>
-        <q-btn flat no-caps icon="logout" label="Выйти" class="sb-logout" :loading="loggingOut" @click="logout" />
+        <q-btn
+          flat
+          class="sb-icon-btn"
+          icon="logout"
+          aria-label="Выйти"
+          :loading="loggingOut"
+          @click="logout"
+        />
       </q-toolbar>
     </q-header>
 
@@ -17,10 +33,10 @@
       v-model="drawer"
       show-if-above
       :breakpoint="1025"
-      :width="248"
-      bordered
+      :width="268"
       class="sb-drawer"
     >
+      <div class="sb-brand">Учёт №1</div>
       <q-list class="sb-nav">
         <q-item
           v-for="item in nav"
@@ -36,7 +52,6 @@
           <q-item-section>{{ item.label }}</q-item-section>
         </q-item>
       </q-list>
-      <div v-if="healthLabel" class="sb-drawer-foot">{{ healthLabel }}</div>
     </q-drawer>
 
     <q-page-container>
@@ -77,6 +92,7 @@ const drawer = ref(false);
 const health = ref<Health | null>(null);
 const me = ref<Me | null>(null);
 const loggingOut = ref(false);
+const searchQ = ref('');
 let timer: ReturnType<typeof setInterval> | null = null;
 
 const meLabel = computed(() => {
@@ -101,12 +117,6 @@ const nav = [
   { label: 'Производство', icon: 'precision_manufacturing', to: { name: 'production' } },
   { label: 'Сделки', icon: 'handshake', to: { name: 'deals' } },
 ];
-
-const healthLabel = computed(() => {
-  const h = health.value;
-  if (!h) return '';
-  return h.ok ? 'Сервер на связи' : 'Сервер не отвечает';
-});
 
 function closeIfNarrow() {
   if (window.innerWidth <= 1024) drawer.value = false;
